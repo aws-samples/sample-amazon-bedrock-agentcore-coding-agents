@@ -52,6 +52,22 @@ SECURITY_GROUP = infra["INFRA_SECURITY_GROUP"]
 # after it is set attaches the mount via update_agent_runtime.
 S3FILES_AP_ARN = infra.get("INFRA_S3FILES_AP_ARN", "")
 S3FILES_BUCKET = infra["INFRA_BUCKET"]
+
+
+def _s3files_policy_resources() -> list:
+    """Resource ARNs for the S3Files IAM statement.
+
+    When the access point is known, scope to that AP + its file system. When it is
+    NOT known yet (the predeploy-mountless boot path: the attendee creates the
+    access point on Stage 1 and a later re-run attaches it), scope to this account's
+    S3Files file systems / access points in-region. Never emit empty-string ARNs,
+    which would make put_role_policy reject the whole policy as malformed."""
+    if S3FILES_AP_ARN:
+        return [S3FILES_AP_ARN, S3FILES_AP_ARN.rsplit("/access-point/", 1)[0]]
+    return [
+        f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:file-system/*",
+        f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:access-point/*",
+    ]
 ECR_URI = local.get("ECR_URI") or os.environ.get("ECR_URI")
 
 if not ECR_URI:
@@ -194,10 +210,7 @@ def create_execution_role() -> str:
                     "s3files:ClientWrite",
                     "s3files:ClientRootAccess",
                 ],
-                "Resource": [
-                    S3FILES_AP_ARN,
-                    S3FILES_AP_ARN.rsplit("/access-point/", 1)[0],
-                ],
+                "Resource": _s3files_policy_resources(),
             },
             {
                 "Sid": "EFS",
