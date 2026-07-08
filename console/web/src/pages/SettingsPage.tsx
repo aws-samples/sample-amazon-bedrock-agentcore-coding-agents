@@ -20,8 +20,6 @@ import {
   saveGithubCredential,
   setMergePolicy,
   getKiroStatus,
-  saveKiroKey,
-  clearKiroKey,
   getRuntimes,
   wireRuntime,
   addRuntime,
@@ -297,20 +295,12 @@ function RuntimesCard() {
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [descDrafts, setDescDrafts] = useState<Record<string, string>>({});
-  // Per-role drafts for the "Add agent" form: a description and (kiro only) the
-  // API key entered alongside the ARN/URL.
+  // Per-role drafts for the "Add agent" form: a description field.
   const [addDescDrafts, setAddDescDrafts] = useState<Record<string, string>>({});
-  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState('');
-  // Kiro's API key lives in the Token Vault, NOT on the runtime ARN — so it is
-  // attached to an ALREADY-wired Kiro runtime separately (the event pre-creates the
-  // Kiro runtime; the attendee only adds the ksk_ key). We track its presence to
-  // show "key set / no key" on the wired Kiro instance and to drive the inline
-  // "+ Add API key" editor below (mirrors the "+ Add description" affordance).
+  // Kiro's API key status (read-only; provisioned by the workshop via Token Vault).
   const [kiro, setKiro] = useState<KiroStatus | null>(null);
-  const [kiroKeyOpen, setKiroKeyOpen] = useState(false);
-  const [kiroKeyDraft, setKiroKeyDraft] = useState('');
   // Which role's "add another instance" input is expanded. Collapsed by default
   // (R11): a wired role just shows its ARN(s); the add-instance field appears
   // only when you click "+ Add instance".
@@ -337,38 +327,6 @@ function RuntimesCard() {
     getRuntimes().then(applyStatus).catch(() => {}).finally(() => setLoading(false));
     getKiroStatus().then(setKiro).catch(() => {});
   }, []);
-
-  // Attach (or replace) the Kiro API key on the already-wired Kiro runtime. This
-  // does NOT touch the ARN — it stores the ksk_ key in the Token Vault so the
-  // pre-created runtime can authenticate with no redeploy.
-  async function saveKiro(arn: string) {
-    const key = kiroKeyDraft.trim();
-    if (!key || busy) return;
-    setBusy(arn);
-    setError('');
-    try {
-      const next = await saveKiroKey(key);
-      if (next.error) setError(next.error);
-      else {
-        setKiro(next);
-        setKiroKeyOpen(false);
-        setKiroKeyDraft('');
-      }
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Saving the Kiro key failed.');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function removeKiro(arn: string) {
-    setBusy(arn);
-    try {
-      setKiro(await clearKiroKey());
-    } catch { /* unchanged on error */ } finally {
-      setBusy(null);
-    }
-  }
 
   async function saveDescription(role: string, arn: string) {
     setBusy(arn);
@@ -398,7 +356,6 @@ function RuntimesCard() {
       const input = {
         arn,
         description: (addDescDrafts[role] ?? '').trim() || undefined,
-        apiKey: role === 'kiro' ? ((keyDrafts[role] ?? '').trim() || undefined) : undefined,
       };
       const next = grow ? await addRuntime(role, input) : await wireRuntime(role, input);
       if (next.error) setError(next.error);
@@ -406,7 +363,6 @@ function RuntimesCard() {
         applyStatus(next);
         setDrafts((d) => ({ ...d, [role]: '' }));
         setAddDescDrafts((d) => ({ ...d, [role]: '' }));
-        setKeyDrafts((d) => ({ ...d, [role]: '' }));
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Wiring failed.');
@@ -438,8 +394,9 @@ function RuntimesCard() {
         </div>
         <CardDescription>
           Wire each agent's runtime ARN so the orchestrator can dispatch to it. The event
-          pre-provisions the opencode and Kiro runtimes, so you only paste their ARN (and, for
-          Kiro, add its API key); Claude Code is the one you build and deploy by hand.
+          pre-provisions the opencode and Kiro runtimes, so you only paste their ARN;
+          Claude Code is the one you build and deploy by hand. The Kiro API key is
+          provisioned by the workshop (Token Vault) and cannot be changed here.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -529,64 +486,19 @@ function RuntimesCard() {
                             </button>
                           )
                         )}
-                        {/* Kiro's credential is the API key, NOT the ARN: the event pre-creates
-                            the Kiro runtime, so the attendee only ATTACHES a ksk_ key to this
-                            already-wired instance. Collapsed like the description (R24): shows
-                            "key set" once stored, or "+ Add API key" to open the field. The key
-                            is stored in the Token Vault via the credential provider, never on the
-                            ARN. */}
-                        {r.role === 'kiro' && !isEnv && (
-                          kiroKeyOpen ? (
-                            <div className="flex items-center gap-2">
-                              <Input
-                                type="password"
-                                placeholder="ksk_..."
-                                value={kiroKeyDraft}
-                                onChange={(e) => setKiroKeyDraft(e.target.value)}
-                                disabled={busy === inst.arn}
-                                className="font-mono text-xs"
-                                autoComplete="off"
-                                autoFocus
-                              />
-                              <Button type="button" variant="outline" size="sm"
-                                disabled={busy === inst.arn || !kiroKeyDraft.trim()}
-                                onClick={() => saveKiro(inst.arn)}>
-                                {busy === inst.arn ? '...' : 'Save'}
-                              </Button>
-                              <Button type="button" variant="ghost" size="sm"
-                                onClick={() => { setKiroKeyOpen(false); setKiroKeyDraft(''); }}>
-                                Cancel
-                              </Button>
-                            </div>
-                          ) : kiro?.connected ? (
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <Badge variant="secondary" className="text-xs">API key set</Badge>
-                              <span className="font-mono">{kiro.key_tail ? `ksk_••••${kiro.key_tail}` : 'ksk_••••'}</span>
-                              <button
-                                type="button"
-                                onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(true); }}
-                                className="hover:text-foreground"
-                              >
-                                Replace
-                              </button>
-                              <button
-                                type="button"
-                                disabled={busy === inst.arn}
-                                onClick={() => removeKiro(inst.arn)}
-                                className="hover:text-destructive"
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(true); }}
-                              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                            >
-                              <Plus className="size-3" /> Add API key <span className="text-muted-foreground/70">(stored in Token Vault)</span>
-                            </button>
-                          )
+                        {/* Kiro's API key is provisioned by the workshop (Token Vault).
+                            Display its status read-only; the console cannot set or clear it. */}
+                        {r.role === 'kiro' && (
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            {kiro?.connected ? (
+                              <>
+                                <Badge variant="secondary" className="text-xs">API key set</Badge>
+                                <span className="font-mono">{kiro.key_tail ? `ksk_••••${kiro.key_tail}` : 'ksk_••••'}</span>
+                              </>
+                            ) : (
+                              <Badge variant="outline" className="text-xs">Managed by workshop (Token Vault)</Badge>
+                            )}
+                          </div>
                         )}
                       </div>
                     );
@@ -599,12 +511,10 @@ function RuntimesCard() {
                       role={r.role}
                       arn={drafts[r.role] ?? ''}
                       desc={addDescDrafts[r.role] ?? ''}
-                      apiKey={keyDrafts[r.role] ?? ''}
                       busy={busy === r.role}
                       submitLabel="Add agent"
                       onArn={(v) => setDrafts((d) => ({ ...d, [r.role]: v }))}
                       onDesc={(v) => setAddDescDrafts((d) => ({ ...d, [r.role]: v }))}
-                      onApiKey={(v) => setKeyDrafts((d) => ({ ...d, [r.role]: v }))}
                       onSubmit={() => { wire(r.role, true); setAddOpen(null); }}
                       onCancel={() => setAddOpen(null)}
                     />
@@ -623,12 +533,10 @@ function RuntimesCard() {
                   role={r.role}
                   arn={drafts[r.role] ?? ''}
                   desc={addDescDrafts[r.role] ?? ''}
-                  apiKey={keyDrafts[r.role] ?? ''}
                   busy={busy === r.role}
                   submitLabel="Wire agent"
                   onArn={(v) => setDrafts((d) => ({ ...d, [r.role]: v }))}
                   onDesc={(v) => setAddDescDrafts((d) => ({ ...d, [r.role]: v }))}
-                  onApiKey={(v) => setKeyDrafts((d) => ({ ...d, [r.role]: v }))}
                   onSubmit={() => wire(r.role)}
                 />
               )}
@@ -641,26 +549,22 @@ function RuntimesCard() {
   );
 }
 
-// One agent's wire form: an ARN-or-URL field, an optional description, and (only
-// for the kiro role) its API key. Each field is its own labeled row, so the
-// placeholders never overlap. Submit is disabled until the ARN/URL is present.
+// One agent's wire form: an ARN-or-URL field and an optional description.
+// Each field is its own labeled row. Submit is disabled until the ARN/URL is present.
 function AgentForm({
-  role, arn, desc, apiKey, busy, submitLabel,
-  onArn, onDesc, onApiKey, onSubmit, onCancel,
+  role, arn, desc, busy, submitLabel,
+  onArn, onDesc, onSubmit, onCancel,
 }: {
   role: string;
   arn: string;
   desc: string;
-  apiKey: string;
   busy: boolean;
   submitLabel: string;
   onArn: (v: string) => void;
   onDesc: (v: string) => void;
-  onApiKey: (v: string) => void;
   onSubmit: () => void;
   onCancel?: () => void;
 }) {
-  const isKiro = role === 'kiro';
   return (
     <div className="space-y-2 rounded-md border border-border/60 bg-muted/10 p-2.5">
       <div className="space-y-1">
@@ -683,20 +587,6 @@ function AgentForm({
             onChange={(e) => onDesc(e.target.value)}
             disabled={busy}
             className="text-xs"
-          />
-        </div>
-      )}
-      {isKiro && (
-        <div className="space-y-1">
-          <Label className="text-xs">Kiro API key <span className="text-muted-foreground">(stored in Token Vault)</span></Label>
-          <Input
-            type="password"
-            placeholder="ksk_..."
-            value={apiKey}
-            onChange={(e) => onApiKey(e.target.value)}
-            disabled={busy}
-            className="font-mono text-xs"
-            autoComplete="off"
           />
         </div>
       )}

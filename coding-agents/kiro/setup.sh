@@ -118,12 +118,19 @@ else
 fi
 
 # Step 2: Store API key in credential provider (encrypted via KMS)
-# Get the key from env var or prompt interactively
+# Get the key from env var, or prompt interactively ONLY when a human is on a TTY.
+# In the CFN bootstrap (no TTY) a blank key must FAIL LOUD, never block on a prompt.
 if [ -z "${KIRO_API_KEY:-}" ]; then
-  echo ""
-  echo "  Enter your KIRO_API_KEY (from https://app.kiro.dev -> API Keys):"
-  read -rsp "  > " KIRO_API_KEY
-  echo ""
+  if [ -t 0 ]; then
+    echo ""
+    echo "  Enter your KIRO_API_KEY (from https://app.kiro.dev -> API Keys):"
+    read -rsp "  > " KIRO_API_KEY
+    echo ""
+  else
+    echo "  ERROR: KIRO_API_KEY is not set and no TTY is available to prompt." >&2
+    echo "  Re-run with KIRO_API_KEY=ksk_... ./setup.sh to seed the Token Vault." >&2
+    exit 1
+  fi
 fi
 
 if [ -z "$KIRO_API_KEY" ]; then

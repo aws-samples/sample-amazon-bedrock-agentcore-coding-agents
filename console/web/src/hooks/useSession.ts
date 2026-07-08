@@ -240,3 +240,24 @@ export async function searchFiles(sessionId: string, query: string) {
   });
   return r.json() as Promise<{ query: string; results: SearchFileResult[]; truncated?: boolean; error?: string }>;
 }
+
+export interface DirEntry { name: string; path: string; }
+export interface ListDirsResult {
+  path: string;
+  label: string;
+  parent: string | null;
+  home: string;
+  entries: DirEntry[];
+  error?: string;
+}
+
+// Directory browser for the Open Folder modal: returns immediate subdirectories
+// of `path` (dirs only, sorted), a display label, and the parent path for "Up"
+// navigation (null at home — can't navigate above home).
+export async function listDirs(sessionId: string, path: string): Promise<ListDirsResult> {
+  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/list-dirs`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  return r.json() as Promise<ListDirsResult>;
+}

@@ -18,6 +18,7 @@ import {
   Collapsible, CollapsibleTrigger, CollapsibleContent,
   Shimmer,
   Tabs, TabsList, TabsTrigger, TabsContent,
+  Input, Button,
 } from '@foxl/ui';
 import {
   CheckCircle2, AlertCircle, GitPullRequest, ChevronDown, Check, X, FileText,
@@ -27,8 +28,9 @@ import {
 } from 'lucide-react';
 import {
   streamChat, getRun, getRunTerminals, getRunResult, getRunDiff, listModels, getGithubStatus,
-  listSuggestions,
+  listSuggestions, getRuntimes, wireRuntime,
   type ChatEvent, type RunSummary, type RunResult, type RunDiff, type AgentEvent, type ModelOption,
+  type RuntimeStatus,
 } from '../api';
 import { RunDetailPanel } from '../components/RunDetailPanel';
 import { RunActivityRows } from '../components/RunActivityRows';
@@ -132,6 +134,25 @@ export function FleetsPage() {
   }, []);
   const [attachments, setAttachments] = useState<{ name: string; text: string }[]>([]);
   const [streaming, setStreaming] = useState(false);
+  // Orchestrator wiring state: fetched once on mount, then polled.
+  const [runtimes, setRuntimes] = useState<RuntimeStatus | null>(null);
+  const [orchWireDraft, setOrchWireDraft] = useState('');
+  const [orchWiring, setOrchWiring] = useState(false);
+  const [orchWireError, setOrchWireError] = useState('');
+
+  const refreshRuntimes = useCallback(() => {
+    getRuntimes().then(setRuntimes).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshRuntimes();
+    const t = setInterval(refreshRuntimes, 5000);
+    return () => clearInterval(t);
+  }, [refreshRuntimes]);
+
+  const orchRole = runtimes?.roles.find((r) => r.role === 'orchestrator');
+  const orchWired = orchRole?.wired ?? false;
+
   // GitHub repo chip, fetched once; null = not connected or not yet loaded.
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
   // Prompt chips on the empty state, fetched from the real workflow registry;
@@ -451,7 +472,7 @@ export function FleetsPage() {
             squished by a long transcript. A "jump to latest" affordance floats
             just above it whenever the reader has scrolled up. */}
         <div className="relative shrink-0">
-          {!isAtBottom && !empty && (
+          {!isAtBottom && !empty && orchWired && (
             <button
               type="button"
               onClick={() => scrollToBottom()}
@@ -462,6 +483,64 @@ export function FleetsPage() {
               Latest
             </button>
           )}
+        {!orchWired ? (
+          <div className="border-t border-border bg-background px-4 py-4">
+            <div className="mx-auto max-w-2xl">
+              <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/30 px-6 py-8">
+                <p className="text-center text-sm text-muted-foreground">
+                  The orchestrator is not wired. Deploy the coordinator in Lab 2, then wire its runtime ARN or dev URL below.
+                </p>
+                <div className="flex w-full max-w-lg gap-2">
+                  <Input
+                    value={orchWireDraft}
+                    onChange={(e) => setOrchWireDraft(e.target.value)}
+                    placeholder="https:// or arn:aws:bedrock-agentcore:..."
+                    className="text-sm"
+                    onKeyDown={async (e) => {
+                      if (e.key === 'Enter') {
+                        const url = orchWireDraft.trim();
+                        if (!url || orchWiring) return;
+                        setOrchWiring(true);
+                        setOrchWireError('');
+                        try {
+                          const next = await wireRuntime('orchestrator', url);
+                          if (next.error) setOrchWireError(next.error);
+                          else { setRuntimes(next); setOrchWireDraft(''); }
+                        } catch (err) {
+                          setOrchWireError(err instanceof Error ? err.message : 'Failed to wire runtime.');
+                        } finally {
+                          setOrchWiring(false);
+                        }
+                      }
+                    }}
+                  />
+                  <Button
+                    onClick={async () => {
+                      const url = orchWireDraft.trim();
+                      if (!url || orchWiring) return;
+                      setOrchWiring(true);
+                      setOrchWireError('');
+                      try {
+                        const next = await wireRuntime('orchestrator', url);
+                        if (next.error) setOrchWireError(next.error);
+                        else { setRuntimes(next); setOrchWireDraft(''); }
+                      } catch (err) {
+                        setOrchWireError(err instanceof Error ? err.message : 'Failed to wire runtime.');
+                      } finally {
+                        setOrchWiring(false);
+                      }
+                    }}
+                    disabled={!orchWireDraft.trim() || orchWiring}
+                    size="sm"
+                  >
+                    {orchWiring ? <Loader2 className="size-4 animate-spin" /> : 'Connect'}
+                  </Button>
+                </div>
+                {orchWireError && <p className="text-xs text-destructive">{orchWireError}</p>}
+              </div>
+            </div>
+          </div>
+        ) : (
         <PromptInput>
           <PromptInputForm onSubmit={send}>
             {attachments.length > 0 && (
@@ -527,6 +606,7 @@ export function FleetsPage() {
             The orchestrator runs on AgentCore Runtime. It answers, and dispatches agents only when a task needs them.
           </p>
         </PromptInput>
+        )}
         </div>
       </div>
     </div>

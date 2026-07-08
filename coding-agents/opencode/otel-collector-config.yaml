@@ -1,0 +1,77 @@
+# OpenTelemetry Collector (otelcol-contrib 0.116.1) — the in-container telemetry
+# sidecar. It is started at container boot by /app/entrypoint.sh, BEFORE the agent
+# CLI runs, so it holds the Runtime EXECUTION-ROLE credentials (not a shell
+# session's). Agents emit UNSIGNED OTLP to 127.0.0.1:4318; the collector re-signs
+# every outbound AWS request with SigV4 and fans the signals out three ways:
+#
+#   logs    -> CloudWatch Logs  /workshop/coding-agents/telemetry  (awscloudwatchlogs)
+#   traces  -> X-Ray Transaction Search -> aws/spans log group     (otlphttp + sigv4auth)
+#   metrics -> CloudWatch EMF   namespace Workshop/CodingAgents     (awsemf)
+#
+# The log group and X-Ray Transaction Search are pre-created by the workshop
+# CloudFormation stack; this collector only writes to them. Region and the log
+# stream name are read from the Runtime environment (AWS_REGION, WORKSHOP_AGENT_NAME).
+
+extensions:
+  # Liveness probe the content curls: `curl -fsS http://127.0.0.1:13133` returns
+  # {"status":"Server available", ...} once the collector is up.
+  health_check:
+    endpoint: 0.0.0.0:13133
+  # SigV4 signer for the AWS OTLP (X-Ray) endpoint. Uses the default AWS credential
+  # chain, which at boot resolves to the Runtime execution role.
+  sigv4auth:
+    region: "${env:AWS_REGION:-us-west-2}"
+    service: "xray"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  batch/traces:
+    timeout: 5s
+  batch/metrics:
+    timeout: 60s
+  batch/logs:
+    timeout: 5s
+
+exporters:
+  # Logs -> CloudWatch Logs. Stream = WORKSHOP_AGENT_NAME (claude_code / opencode).
+  awscloudwatchlogs:
+    region: "${env:AWS_REGION:-us-west-2}"
+    log_group_name: "/workshop/coding-agents/telemetry"
+    log_stream_name: "${env:WORKSHOP_AGENT_NAME:-agent}"
+  # Traces -> X-Ray Transaction Search (OTLP ingestion). SigV4-signed; spans land
+  # in the aws/spans CloudWatch log group when Transaction Search is enabled.
+  otlphttp/xray:
+    endpoint: "https://xray.${env:AWS_REGION:-us-west-2}.amazonaws.com"
+    auth:
+      authenticator: sigv4auth
+    compression: none
+  # Metrics -> CloudWatch via EMF, namespace Workshop/CodingAgents.
+  awsemf:
+    region: "${env:AWS_REGION:-us-west-2}"
+    namespace: "Workshop/CodingAgents"
+    log_group_name: "/workshop/coding-agents/metrics"
+    log_stream_name: "${env:WORKSHOP_AGENT_NAME:-agent}"
+
+service:
+  extensions: [health_check, sigv4auth]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch/logs]
+      exporters: [awscloudwatchlogs]
+    traces:
+      receivers: [otlp]
+      processors: [batch/traces]
+      exporters: [otlphttp/xray]
+    metrics:
+      receivers: [otlp]
+      processors: [batch/metrics]
+      exporters: [awsemf]
+  telemetry:
+    logs:
+      level: warn

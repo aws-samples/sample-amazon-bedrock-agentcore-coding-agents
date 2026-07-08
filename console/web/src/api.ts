@@ -334,14 +334,6 @@ export interface KiroStatus {
 
 export const getKiroStatus = () => get<KiroStatus>('/api/orchestrator/kiro');
 
-// Paste a Kiro API key (ksk_...); the backend stores it in the Token Vault so the
-// deployed Kiro runtime authenticates with no redeploy.
-export const saveKiroKey = (api_key: string) =>
-  post<KiroStatus>('/api/orchestrator/kiro', { api_key });
-
-export const clearKiroKey = () =>
-  post<KiroStatus>('/api/orchestrator/kiro', { clear: true });
-
 /* ---------------- Module 2: wirable AgentCore runtimes ---------------- */
 
 // Per-role AgentCore runtime wiring. The orchestrator (real-only) dispatches each
@@ -371,13 +363,11 @@ export interface RuntimeStatus {
 
 export const getRuntimes = () => get<RuntimeStatus>('/api/orchestrator/runtimes');
 
-// One agent to wire: its ARN or a local http(s):// dev URL, an optional
-// description (used to route tasks), and, for the kiro role, its API key (stored
-// in the Token Vault on save). Used by both wire (first) and add (grow the fleet).
+// One agent to wire: its ARN or a local http(s):// dev URL and an optional
+// description (used to route tasks). Used by both wire (first) and add (grow the fleet).
 export interface AgentWireInput {
   arn: string;
   description?: string;
-  apiKey?: string;
 }
 
 // Wire a role to a SINGLE runtime (replaces any prior fleet for that role).
@@ -386,18 +376,16 @@ export const wireRuntime = (role: string, input: string | AgentWireInput) => {
   return post<RuntimeStatus & { error?: string }>('/api/orchestrator/runtimes', {
     role, arn: i.arn,
     ...(i.description ? { description: i.description } : {}),
-    ...(i.apiKey ? { api_key: i.apiKey } : {}),
   });
 };
 
 // Grow a role's FLEET: add another deployed instance of the same type
-// (2 Claude Code, 5 Codex, and so on). Dispatch round-robins across the fleet.
+// (2 Claude Code, 5 opencode, and so on). Dispatch round-robins across the fleet.
 export const addRuntime = (role: string, input: string | AgentWireInput) => {
   const i: AgentWireInput = typeof input === 'string' ? { arn: input } : input;
   return post<RuntimeStatus & { error?: string }>('/api/orchestrator/runtimes', {
     role, arn: i.arn, add: true,
     ...(i.description ? { description: i.description } : {}),
-    ...(i.apiKey ? { api_key: i.apiKey } : {}),
   });
 };
 

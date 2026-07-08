@@ -7,19 +7,17 @@
 # S3 Files access point the attendee created on Stage 1 page 1. Fast, image in ECR.
 #
 # But the pre-build is best-effort and NOT guaranteed on every account: a Workshop
-# Studio account often ships with a blank KiroApiKey (WS temp accounts cannot issue
-# a Kiro key), so the bootstrap skips Kiro's build and there is no image in ECR. To
-# keep ONE command working everywhere (the governing test), this script self-heals:
-# if the image was not pre-built, it runs the agent's setup.sh first (build + push),
-# then deploy.py. For kiro that build works WITHOUT a key too: with no KIRO_API_KEY
-# it builds --skip-identity (no Token Vault identity), and the attendee adds their
-# ksk_ key on the wired instance in console Settings afterwards. Pass KIRO_API_KEY
-# only if you want the identity provisioned during this build.
+# bootstrap normally pre-builds Kiro AND seeds its Token Vault identity from the
+# KiroApiKey stack parameter, so this command just re-runs deploy.py to attach the
+# mount. On the rare account where the image was NOT pre-built, this script
+# self-heals by running setup.sh (build + Token Vault identity) first, then
+# deploy.py. Kiro's Token Vault identity is required for it to authenticate, so a
+# key must be available: pass KIRO_API_KEY here if the image needs building.
 #
-# Usage (from src/coding-agents):
+# Usage (from coding-agents):
 #   ./deploy-prebuilt.sh opencode
-#   ./deploy-prebuilt.sh kiro                        # keyless: builds --skip-identity if not pre-built
-#   KIRO_API_KEY=ksk_... ./deploy-prebuilt.sh kiro   # also provision the Token Vault identity now
+#   ./deploy-prebuilt.sh kiro                        # attach mount (image + key already provisioned)
+#   KIRO_API_KEY=ksk_... ./deploy-prebuilt.sh kiro   # also build the image + seed the identity now
 set -euo pipefail
 
 AGENT="${1:-}"
@@ -41,20 +39,17 @@ fi
 # it now so deploy.py has an image. deploy.py otherwise fails "ECR_URI not found".
 if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; then
   echo "No pre-built ${AGENT} image found (agent.config has no ECR_URI); building it now..."
-  # Kiro's build only needs a key to ALSO provision its Token Vault identity. With
-  # no key (the common Workshop Studio case: WS temp accounts cannot issue a ksk_),
-  # build the image WITHOUT identity via --skip-identity, exactly like the bootstrap
-  # does; deploy.py still creates the Runtime + ARN, and the attendee adds their key
-  # on the wired instance in console Settings later (run.sh reads it from Token Vault
-  # at session start). This keeps the ONE command working keyless everywhere.
+  # Kiro needs its Token Vault identity to authenticate, and setup.sh seeds it from
+  # KIRO_API_KEY. If the identity was already seeded at bootstrap (the normal case)
+  # but the image is missing, pass KIRO_API_KEY to rebuild+reseed. Fail loud rather
+  # than deploy a keyless Kiro that cannot authenticate.
   if [ "$AGENT" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
-    echo "  No KIRO_API_KEY set; building kiro without its Token Vault identity"
-    echo "  (--skip-identity). Add your ksk_ key on the wired Kiro instance in"
-    echo "  console Settings after it deploys."
-    ( cd "${SCRIPT_DIR}/${AGENT}" && ./setup.sh --skip-identity )
-  else
-    ( cd "${SCRIPT_DIR}/${AGENT}" && ./setup.sh )
+    echo "  ERROR: ${AGENT} image is missing and KIRO_API_KEY is not set." >&2
+    echo "  Kiro authenticates via a Token Vault identity seeded from the key." >&2
+    echo "  Re-run: KIRO_API_KEY=ksk_... ./deploy-prebuilt.sh kiro" >&2
+    exit 1
   fi
+  ( cd "${SCRIPT_DIR}/${AGENT}" && ./setup.sh )
 fi
 
 # The access point ARN is the piece the attendee adds on Stage 1 page 1. It is

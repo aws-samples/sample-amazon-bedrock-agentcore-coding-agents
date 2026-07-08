@@ -82,6 +82,13 @@ def chat_stream(conversation_id: str, prompt: str, model_id: str | None = None,
     console shows a normal chatbot answer with no run panel. A run is born only
     when the agent calls a dispatch_*/run_build tool; the engine then fails loud
     at pre-flight if the role's runtime is not wired (never a local fake)."""
+    # Guard: refuse to chat when the orchestrator runtime is not wired.
+    if not runtime_config.resolve("orchestrator"):
+        yield {"type": "error",
+               "error": "The orchestrator is not wired. Deploy the coordinator (Lab 2) "
+                        "and wire its runtime ARN before starting a chat."}
+        yield {"type": "done"}
+        return
     # Propagate user identity into the engine context for audit attribution.
     if user_identity:
         from identity_baggage import UserIdentity, set_current_identity
@@ -245,14 +252,12 @@ def dispatch(method: str, path: str, body: dict | None,
                                        body.get("merge_policy"))
             return (400, out) if "error" in out else (200, out)
         if path == "/api/kiro":
-            # Paste a Kiro API key (ksk_...) -> store it in the AgentCore Identity
-            # Token Vault so the deployed Kiro runtime authenticates with no redeploy.
-            if body is None:
-                return 400, {"error": "invalid JSON body"}
-            if body.get("clear"):
-                return 200, kiro_config.clear_api_key()
-            out = kiro_config.save_api_key(body.get("api_key", ""))
-            return (400, out) if "error" in out else (200, out)
+            # The Kiro API key is NOT settable from the console: it is the shared
+            # facilitator ksk_ key seeded into the AgentCore Identity Token Vault at
+            # deploy time (CFN ProvisionPreBuiltAgents -> kiro/setup.sh). A participant
+            # can never paste or clear it, so this write path is closed.
+            return 403, {"error": "The Kiro API key is provisioned by the workshop "
+                         "(Token Vault) and cannot be set from the console."}
         if path == "/api/runtimes":
             # Wire (or unwire) a role's deployed AgentCore runtime ARN. The same
             # surface the Settings pane and the terminal write to. A role is a
@@ -273,14 +278,12 @@ def dispatch(method: str, path: str, body: dict | None,
                 out = runtime_config.save_description(
                     body.get("role", ""), body.get("arn", ""), body.get("description", ""))
                 return (400, out) if "error" in out else (200, out)
-            # A Kiro agent carries its own API key: store it in the Token Vault
-            # BEFORE wiring the ARN, so a bad key fails the whole add (never a wired
-            # runtime that can't authenticate). Only the kiro role uses this.
-            api_key = (body.get("api_key") or "").strip()
-            if api_key and body.get("role") == "kiro":
-                kout = kiro_config.save_api_key(api_key)
-                if "error" in kout:
-                    return 400, {"error": f"Kiro API key: {kout['error']}"}
+            # The Kiro API key is NEVER accepted here: it is provisioned by the
+            # workshop into the Token Vault at deploy time, not pasted alongside an
+            # ARN. An api_key on this POST is rejected so no console path can set it.
+            if (body.get("api_key") or "").strip():
+                return 403, {"error": "The Kiro API key is provisioned by the workshop "
+                             "(Token Vault) and cannot be set from the console."}
             if body.get("add"):
                 out = runtime_config.add_runtime(body.get("role", ""), body.get("arn", ""))
             else:

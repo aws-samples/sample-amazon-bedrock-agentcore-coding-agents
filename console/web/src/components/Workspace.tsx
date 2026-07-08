@@ -15,6 +15,7 @@ import { CodeEditor } from './CodeEditor';
 import {
   PromptDialog, ConfirmDeleteDialog, type PromptRequest, type ConfirmRequest,
 } from './WorkspaceDialogs';
+import { OpenFolderDialog } from './OpenFolderDialog';
 import {
   useSession, listTree, readFile, writeFile, deleteFile, renameFile, makeDir,
   searchFiles, type FileNode, type SearchFileResult,
@@ -140,6 +141,8 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
   // File-op dialogs (replace window.prompt / confirm / alert).
   const [prompt, setPrompt] = useState<PromptRequest | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  // Folder-browser dialog (replaces the plain text prompt for Open Folder).
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
 
   const termRef = useRef<TerminalHandle>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -491,10 +494,7 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
   }, [session, refreshTree]);
 
   function promptOpenFolder() {
-    setPrompt({
-      kind: 'open-folder', initial: '~',
-      onSubmit: async (p) => { await doOpenFolder(p); return null; },
-    });
+    setFolderBrowserOpen(true);
   }
 
   // ── Content search (Cmd/Ctrl+F) ───────────────────────────────────────────
@@ -791,6 +791,13 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
     </div>
     <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
     <ConfirmDeleteDialog request={confirm} onClose={() => setConfirm(null)} />
+    <OpenFolderDialog
+      open={folderBrowserOpen}
+      onClose={() => setFolderBrowserOpen(false)}
+      sessionId={session.sessionId}
+      onConfirm={(path) => doOpenFolder(path)}
+      initialPath={vroot}
+    />
     {quickOpen && (
       <QuickOpen
         files={tree.filter((n) => !n.is_dir).map((n) => n.path)}

@@ -125,6 +125,27 @@ def create_execution_role() -> str:
                 ],
             },
             {
+                # Lab 3 telemetry: the baked-in OpenTelemetry collector (started at
+                # container boot by entrypoint.sh) ships this runtime's signals to
+                # CloudWatch Logs (/workshop/coding-agents/telemetry + /metrics),
+                # X-Ray Transaction Search (aws/spans), and CloudWatch metrics
+                # (Workshop/CodingAgents). Without these the collector's exporters
+                # get AccessDenied and telemetry never lands.
+                "Sid": "Telemetry",
+                "Effect": "Allow",
+                "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogGroups",
+                    "logs:DescribeLogStreams",
+                    "xray:PutTraceSegments",
+                    "xray:PutSpans",
+                    "xray:PutSpansForIndexing",
+                    "cloudwatch:PutMetricData",
+                ],
+                "Resource": ["*"],
+            },
+            {
                 "Sid": "BedrockInvoke",
                 "Effect": "Allow",
                 "Action": [

@@ -836,6 +836,46 @@ def _folder_label(path: str) -> str:
     return path
 
 
+def _list_dirs(raw_path: str | None) -> dict:
+    """Immediate SUBDIRECTORIES of a path, for the VS Code-style Open Folder finder
+    modal to navigate one level at a time. ``~`` / ``$VARS`` / ``/mnt/s3files`` are
+    expanded the same way _open_folder resolves them, so the finder and the actual
+    open agree. Returns {path, label, parent, entries:[{name,path}]} where entries
+    are directories only (files are irrelevant to a folder picker), sorted, dot-dirs
+    skipped except the agent-steering ones, bounded so a huge dir stays responsive.
+    A missing/blank path defaults to the box HOME (the finder's starting point)."""
+    home = os.path.expanduser("~")
+    requested = (str(raw_path).strip() if raw_path else "") or "~"
+    mount_override = os.environ.get("WORKSHOP_S3FILES_DIR")
+    if requested == "/mnt/s3files" and mount_override:
+        target = os.path.abspath(mount_override)
+    else:
+        target = os.path.abspath(os.path.expandvars(os.path.expanduser(requested)))
+    if not os.path.isdir(target) or not os.access(target, os.R_OK):
+        return {"error": f"not a readable directory: {requested}"}
+    entries: list[dict] = []
+    try:
+        for name in sorted(os.listdir(target)):
+            if len(entries) >= 500:
+                break
+            if name.startswith(".") and name not in _KEEP_DOTDIRS:
+                continue
+            full = os.path.join(target, name)
+            if name in _SKIP_DIRS:
+                continue
+            try:
+                if os.path.isdir(full):
+                    entries.append({"name": name, "path": full})
+            except OSError:
+                continue
+    except OSError as exc:
+        return {"error": str(exc)}
+    parent = os.path.dirname(target.rstrip(os.sep)) or "/"
+    return {"path": target, "label": _folder_label(target),
+            "parent": None if os.path.realpath(target) == os.path.realpath(home) else parent,
+            "home": home, "entries": entries}
+
+
 def _open_folder(session: dict, raw_path: str | None) -> dict:
     """VS Code "Open Folder": re-root a Development session at ``raw_path`` (``~``
     and ``$VARS`` expanded). A falsy path CLOSES the folder (a no-folder welcome
@@ -1881,6 +1921,12 @@ def dispatch(method: str, path: str, body: dict | None) -> tuple[int, dict]:
                     if not session.get("_dev"):
                         return 400, {"error": "open-folder is only for the Development workspace"}
                     return 200, _open_folder(session, (body or {}).get("path"))
+                if action == "list-dirs":
+                    # Backing store for the VS Code-style Open Folder finder MODAL:
+                    # one level of subdirectories to navigate. Read-only; dev only.
+                    if not session.get("_dev"):
+                        return 400, {"error": "list-dirs is only for the Development workspace"}
+                    return 200, _list_dirs((body or {}).get("path"))
         return 404, {"error": "not found", "path": path}
 
     if method == "DELETE":
