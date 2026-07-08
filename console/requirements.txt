@@ -1,0 +1,16 @@
+# Console backend (FastAPI/uvicorn). The deploy box installs these before
+# launching `python3 console/server.py` (or `uvicorn server:app`).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+# Required by the login form: server.py's /login + Cognito callback do
+# `await request.form()`, and FastAPI/Starlette can only parse form bodies when
+# python-multipart is installed. Without it the deployed /console/login 500s
+# ("Internal Server Error") even though fastapi+uvicorn import fine.
+python-multipart>=0.0.9
+# The console runs the Strands orchestrator brain (chat.py) in-process via
+# connection_api.chat_stream, so the chat and task-dispatch path needs the SDK.
+strands-agents
+strands-agents-tools
+# The engine's acceptance gate runs pytest, and the deploy-and-observe page runs
+# it over the wire, so pytest must be importable by the console python.
+pytest>=8.0

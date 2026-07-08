@@ -1,0 +1,6 @@
+# The orchestrator agent's runtime dependencies.
+# The agent reasons with Strands and is hosted by the AgentCore Runtime SDK; the
+# build engine runs its deterministic acceptance gate inside this container.
+strands-agents>=1.26.0
+bedrock-agentcore>=0.1.0
+pytest>=8.0.0

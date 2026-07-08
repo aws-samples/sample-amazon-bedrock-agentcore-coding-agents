@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="Coding Agents on Amazon Bedrock AgentCore Runtime: host coding agents, run fleets, and govern them." />
+  <!-- Favicon = the sidebar Brand mark (lucide Boxes on the brand gradient square). -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <title>AgentCore Coding Agents Console</title>
+  <script>
+    // Apply theme before first paint to avoid a flash. Light is the default
+    // (screenshots embed on white workshop pages); a stored preference wins.
+    (function () {
+      try {
+        var stored = localStorage.getItem('console-theme');
+        if (stored === 'dark') document.documentElement.classList.add('dark');
+      } catch (e) { /* localStorage may be blocked; default to light */ }
+    })();
+  </script>
+</head>
+<body class="antialiased bg-background text-foreground">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

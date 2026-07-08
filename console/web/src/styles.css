@@ -1,0 +1,398 @@
+@import 'tailwindcss';
+/* Geist: the brand's geometric sans (self-hosted woff2 via fontsource), loaded
+   before the token sheet so --font-sans resolves to a real face.
+   NOTE: Geist Mono is intentionally NOT imported. Its variable mono face renders
+   some two-char operator sequences as a single broken glyph (e.g. `>=` collapsed),
+   which is unacceptable in a code editor. --font-mono below uses a STANDARD coding
+   stack (JetBrains Mono / SF Mono / Menlo / Consolas) instead, everywhere mono is
+   used (editor, terminal, file tree, code chips, inputs). */
+@import '@fontsource-variable/geist/index.css';
+@import './vendor/ui/styles.css';
+/* highlight.js syntax theme for fenced code blocks (rehype-highlight emits
+   .hljs-* classes; this paints them). github-dark-dimmed reads well on the
+   dark code surface the chat uses for <pre>. */
+@import 'highlight.js/styles/github-dark-dimmed.css';
+
+/*
+ * Tailwind v4 scans the consuming project's source by default. The vendored
+ * component packages (ui + code) ship hard-coded utility classes the scanner
+ * never sees otherwise, so the sidebar/composer/cards would render without
+ * their radii and widths. Tell v4 to also scan the vendored sources.
+ */
+@source "./vendor/ui/**/*.{ts,tsx}";
+@source "./vendor/code/**/*.{ts,tsx}";
+
+/*
+ * Map the shadcn HSL token variables (declared in the vendored ui styles.css
+ * :root / .dark) onto Tailwind v4 utility names so bg-background,
+ * text-muted-foreground, border-input, etc. resolve.
+ */
+@theme inline {
+  /* DESIGN.md radius ladder: the in-app base (--geist-radius) is 6px. md=6,
+     sm=4, lg=8: tight, engineered corners, NOT the 100px marketing pill (that
+     shape is reserved for hero CTAs, not in-product chrome). */
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-md: var(--radius);
+  --radius-sm: calc(var(--radius) - 2px);
+
+  /* Geist carries everything narrative (the sans). The technical layer (code,
+     terminal, file tree, tabular labels) uses the standard mono stack in
+     --font-mono below, NOT Geist Mono. Inter is the sans fallback. */
+  --font-sans:
+    "Geist Variable", Inter, system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  /* Semantic status tones: a single blue success (DESIGN.md: success doubles
+     as the link blue, NOT green) and the amber warning. Components use
+     text-success / bg-warning instead of literal green-600 / amber-500, so a
+     theme switch moves every status pill at once. */
+  --color-success: hsl(var(--success));
+  --color-warning: hsl(var(--warning));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-sidebar: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  /* Standard coding-font stack (NO Geist Mono, see the import note up top). These
+     are the faces VS Code and common editors use; they render operator pairs (>=, ->,
+     !=) as the literal two characters, never a collapsed ligature glyph. */
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+
+  /* DESIGN.md elevation: STACKED subtle shadows (multiple small offsets at
+     4 to 12% black) + an inset hairline ring, NEVER a single heavy drop. These
+     override Tailwind's default shadow-sm/shadow/shadow-md/shadow-lg so every
+     `shadow-*` utility app-wide adopts the Vercel calm-elevation feel. */
+  --shadow-2xs: 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow-xs: 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow-sm: 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
+  --shadow: 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
+  --shadow-md: 0 2px 2px rgb(0 0 0 / 0.04), 0 8px 8px -8px rgb(0 0 0 / 0.06);
+  --shadow-lg: 0 2px 2px rgb(0 0 0 / 0.04), 0 8px 16px -4px rgb(0 0 0 / 0.06);
+  --shadow-xl:
+    0 1px 1px rgb(0 0 0 / 0.02), 0 8px 16px -4px rgb(0 0 0 / 0.06),
+    0 24px 32px -8px rgb(0 0 0 / 0.08);
+
+  --animate-accordion-down: accordion-down var(--motion-base) cubic-bezier(0, 0, 0.2, 1);
+  --animate-accordion-up: accordion-up var(--motion-base) cubic-bezier(0, 0, 0.2, 1);
+}
+
+/*
+ * Easing tokens registered in @theme (NOT @theme inline) so Tailwind v4 BOTH
+ * emits them as :root custom properties (for var(--ease-soft) in keyframes/
+ * arbitrary values) AND generates the `ease-soft` / `ease-standard` /
+ * `ease-sheet` transition-timing-function utilities. Previously these lived in
+ * a plain :root block, so the bare `ease-soft` class never generated; every
+ * `ease-soft` (here AND in the vendored foxl collapsibles) silently fell back
+ * to the default `ease`. Registering them here is what makes the easing real.
+ */
+@theme {
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-soft: cubic-bezier(0, 0, 0.2, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root {
+  /* Durations stay in :root (not @theme) so the reduced-motion media query
+     below can collapse them to ~0; they're consumed via duration-(--motion-base)
+     arbitrary utilities and var(--motion-base) in keyframes. */
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --motion-slow: 300ms;
+}
+
+@keyframes accordion-down {
+  from { height: 0; }
+  to { height: var(--radix-accordion-content-height); }
+}
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to { height: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 1ms;
+    --motion-base: 1ms;
+    --motion-slow: 1ms;
+  }
+  .animate-in,
+  .animate-out { animation-duration: 1ms !important; }
+  /* Kill the looping/decorative motions outright: a 1ms loop still spins the
+     CPU and reads as a flicker. The shimmer is special: it paints text via a
+     moving gradient clipped to the glyphs, so freezing it would leave the text
+     half-invisible, so restore it to solid muted-foreground instead. */
+  .animate-caret,
+  .animate-working-dot,
+  .animate-pulse-ring,
+  .animate-enter-up { animation: none !important; }
+  .md-stream > :last-child::after { animation: none !important; }
+  .animate-shimmer {
+    animation: none !important;
+    background: none !important;
+    -webkit-text-fill-color: currentColor !important;
+    color: hsl(var(--muted-foreground)) !important;
+  }
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+@plugin 'tailwindcss-animate';
+/* The standard Tailwind markdown engine. Without this, every `prose*` class is
+   inert, which is why chat h1/h2/h3, lists, and code blocks rendered as
+   unstyled text. This generates the real `prose` typography rules. */
+@plugin '@tailwindcss/typography';
+
+@layer base {
+  * { border-color: hsl(var(--border)); }
+  html, body, #root { height: 100%; }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans);
+    /* "cv11" gives Geist its single-storey a; rlig/calt are standard. */
+    font-feature-settings: "rlig" 1, "calt" 1, "cv11" 1;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+  /* DESIGN.md: display sizes carry aggressive NEGATIVE tracking (part of the
+     voice; reverting to default tracking breaks the brand). Headings get a
+     small global default; per-size tracking is tuned at the call site. */
+  h1, h2, h3 { letter-spacing: -0.02em; }
+}
+
+/* Slim scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.2);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.35); }
+
+/* Default cursor:pointer on interactive elements that don't opt in themselves. */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+summary { cursor: pointer; }
+button:disabled,
+[role='button'][aria-disabled='true'] { cursor: not-allowed; }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@utility animate-shimmer {
+  animation: shimmer var(--tw-animate-duration, 2s) linear infinite;
+}
+
+/* ── Production motion library ─────────────────────────────────────────────
+ * Every animation below touches only compositor-friendly props (transform,
+ * opacity), never layout props, so they stay at 60fps and never reflow.
+ * Reduced-motion neutralizes them above. The cubic-beziers reuse the
+ * --ease-* tokens' intent (soft deceleration) for a coherent feel.            */
+
+/* Typing caret: the block that trails streaming assistant text. A smooth
+ * opacity breathe (not a hard 0/1 blink), so it reads as "alive and writing". */
+@keyframes caret-blink {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0.15; }
+}
+@utility animate-caret {
+  animation: caret-blink 1.1s var(--ease-soft, ease) infinite;
+}
+
+/* The "Working" wave: three dots that rise and fall in sequence, the
+ * Claude/Codex-level loading affordance. Each dot delays its start so the
+ * crest travels left→right. transform+opacity only. */
+@keyframes working-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
+@utility animate-working-dot {
+  animation: working-dot 1.2s var(--ease-soft, ease-in-out) infinite;
+}
+
+/* Breathing ring: a soft expanding halo behind a live status node (the
+ * "this role is running" pulse). Scales + fades; sits in an ::before-style
+ * absolutely-positioned sibling so it never disturbs layout. */
+@keyframes pulse-ring {
+  0% { transform: scale(0.7); opacity: 0.55; }
+  70%, 100% { transform: scale(2.1); opacity: 0; }
+}
+@utility animate-pulse-ring {
+  animation: pulse-ring 1.8s var(--ease-soft, cubic-bezier(0, 0, 0.2, 1)) infinite;
+}
+
+/* Entry: a chat item / card rising a few px while fading in. Used on
+ * mount so new transcript items and route content settle in rather than
+ * snapping. One-shot (forwards). */
+@keyframes enter-up {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@utility animate-enter-up {
+  animation: enter-up var(--motion-base, 220ms) var(--ease-soft, cubic-bezier(0, 0, 0.2, 1)) both;
+}
+
+/* ── Chat markdown ─────────────────────────────────────────────────────────
+ * prose-chat = Tailwind Typography `prose` retuned for a compact chat bubble:
+ * full-width, dark-mode aware, tighter vertical rhythm, real heading sizes,
+ * and a dark fenced-code surface that pairs with the highlight.js theme. This
+ * is the standard markdown stack (typography plugin + react-markdown +
+ * rehype-highlight), not hand-rolled element hacks.                          */
+.prose-chat {
+  @apply prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed;
+}
+/* Tighter rhythm than prose's defaults: chat bubbles are dense. */
+.prose-chat :where(p, ul, ol, pre, blockquote, table):not(:first-child) { margin-top: 0.5rem; }
+.prose-chat :where(p, ul, ol, pre, blockquote, table):not(:last-child) { margin-bottom: 0.5rem; }
+.prose-chat :where(li) { margin-top: 0.125rem; margin-bottom: 0.125rem; }
+/* Real, distinguishable heading sizes (the old [&_h1]:text-base hacks made
+   h1/h2/h3 nearly identical). */
+.prose-chat :where(h1) { font-size: 1.05rem; margin: 0.75rem 0 0.4rem; font-weight: 650; }
+.prose-chat :where(h2) { font-size: 0.95rem; margin: 0.7rem 0 0.35rem; font-weight: 650; }
+.prose-chat :where(h3) { font-size: 0.875rem; margin: 0.6rem 0 0.3rem; font-weight: 600; }
+.prose-chat :where(h4, h5, h6) { font-size: 0.8rem; margin: 0.5rem 0 0.25rem; font-weight: 600; }
+.prose-chat :where(h1, h2, h3, h4):first-child { margin-top: 0; }
+/* Inline code: a subtle chip. The typography plugin adds `` quotes around
+   inline code by default, so strip them. */
+.prose-chat :where(code):not(pre code) {
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.3rem;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.82em;
+  font-weight: 500;
+}
+.prose-chat :where(code):not(pre code)::before,
+.prose-chat :where(code):not(pre code)::after { content: none; }
+/* Fenced blocks: a dark editor surface; highlight.js paints the tokens. */
+.prose-chat :where(pre) {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.6rem;
+  padding: 0.75rem 0.9rem;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+.prose-chat :where(pre code) { background: none; padding: 0; font-weight: 400; }
+.prose-chat :where(a) { text-decoration: underline; text-underline-offset: 2px; }
+.prose-chat :where(table) { font-size: 0.82rem; }
+.prose-chat :where(th, td) { padding: 0.3rem 0.5rem; }
+
+/* Streaming caret: a blinking bar hung off the END of the last rendered
+   block via ::after, so it trails the final character inline rather than
+   dropping to its own line under the prose. inline-block keeps it on the text
+   baseline; the keyframe is the shared caret-blink. */
+.md-stream > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  border-radius: 1px;
+  vertical-align: text-bottom;
+  background: hsl(var(--foreground) / 0.6);
+  animation: caret-blink 1.1s var(--ease-soft, ease) infinite;
+}
+/* A fenced code block as the last child shouldn't get a floating caret inside
+   its scroll box, so suppress it there (the prose text above already streams). */
+.md-stream > pre:last-child::after { content: none; }
+
+/* ── Vercel brand signatures (DESIGN.md) ───────────────────────────────────
+ * The mesh gradient is the brand's ENTIRE decorative system. It lives at hero
+ * scale only, never miniaturised to an icon, never reduced to a single colour.
+ * Three stop-pairs (develop blue→teal · preview violet→pink · ship coral→amber)
+ * collapse into one multi-stop wash used as an atmospheric backdrop behind a
+ * page header. Use as a positioned ::before-style layer with low opacity so ink
+ * text stays legible on top.                                                  */
+@utility mesh-gradient {
+  background-image:
+    radial-gradient(at 18% 8%, #007cf022 0px, transparent 52%),
+    radial-gradient(at 78% 12%, #ff008018 0px, transparent 50%),
+    radial-gradient(at 52% 0%, #7928ca1f 0px, transparent 48%),
+    radial-gradient(at 92% 32%, #f9cb2820 0px, transparent 46%),
+    radial-gradient(at 5% 40%, #00dfd81c 0px, transparent 44%);
+}
+
+/* The brand wordmark / hero accent: a multi-stop gradient clipped to the
+   glyphs. Uses the develop→preview→ship stops as one object (do not reorder). */
+@utility text-gradient-brand {
+  background-image: linear-gradient(
+    100deg, #007cf0, #00dfd8 28%, #7928ca 52%, #ff0080 74%, #f9cb28
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Section eyebrow: the small mono label above a heading that signals the
+   "technical platform" voice (DESIGN.md: caption-mono, uppercase effect via
+   tracking). 11px, mono, wide tracking, muted. */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+/* Inset-hairline elevation ring: the brand's "you can see this card" cue.
+   Pairs an inset 1px ring with the stacked drop so the card edge stays crisp
+   even where the drop is nearly invisible on the soft canvas. */
+@utility ring-hairline {
+  box-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.06),
+    0 1px 1px rgb(0 0 0 / 0.02),
+    0 2px 2px rgb(0 0 0 / 0.04);
+}
+.dark .ring-hairline {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.07),
+    0 1px 2px rgb(0 0 0 / 0.4);
+}
+
+/* A slow drift for the brand gradient when it backs a live/hero element:
+   compositor-only (background-position), neutralised under reduced-motion. */
+@keyframes brand-drift {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+@utility animate-brand-drift {
+  animation: brand-drift 8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-brand-drift { animation: none !important; }
+}

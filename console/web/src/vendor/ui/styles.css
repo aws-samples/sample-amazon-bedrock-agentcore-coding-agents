@@ -1,0 +1,91 @@
+/*
+ * @foxl/ui design tokens: Vercel-inspired light system (see DESIGN.md).
+ *
+ * HSL CSS variables consumed by the console (Tailwind v4 maps them in
+ * src/styles.css via @theme inline). The palette is the DESIGN.md gray ladder:
+ *  - a SOFT near-white canvas body (--background 98%) with PURE-WHITE cards
+ *    (--card 100%): the soft/white contrast is what makes cards read as
+ *    elevated surfaces held by a hairline + a subtle stacked shadow.
+ *  - ink-near-black text + primary (#171717 → 9%).
+ *  - one hairline border step (#ebebeb → 92%).
+ *  - a single blue accent (#0070f3 → 212°) for links + focus rings.
+ *  - the brand mesh-gradient stops mapped onto chart-1..5 so data viz carries
+ *    the brand colour without a sixth accent leaking into the chrome.
+ */
+
+:root {
+  --background: 0 0% 98%;          /* canvas-soft #fafafa, the page body */
+  --foreground: 0 0% 9%;           /* ink #171717 */
+  --card: 0 0% 100%;               /* pure-white card surface */
+  --card-foreground: 0 0% 9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 9%;
+  --primary: 0 0% 9%;              /* ink, the single primary CTA colour */
+  --primary-foreground: 0 0% 98%;
+  --secondary: 0 0% 96.1%;         /* canvas-soft-2 #f5f5f5 */
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96.1%;
+  --muted-foreground: 0 0% 40%;    /* body #4d4d4d → mute, legible on soft canvas */
+  --accent: 0 0% 96.1%;            /* hover wash */
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 84% 47%;        /* error #ee0000 */
+  --destructive-foreground: 0 0% 98%;
+  --success: 212 100% 47%;         /* link/success #0070f3, blue, not green */
+  --warning: 37 91% 55%;           /* warning #f5a623 */
+  --border: 0 0% 92.2%;            /* hairline #ebebeb */
+  --input: 0 0% 92.2%;
+  --ring: 212 100% 47%;            /* blue focus halo, the Vercel signature */
+  /* chart-1..5 = the brand mesh-gradient stops (blue/teal/violet/amber/pink) */
+  --chart-1: 212 100% 47%;
+  --chart-2: 178 100% 44%;
+  --chart-3: 270 67% 47%;
+  --chart-4: 37 91% 55%;
+  --chart-5: 330 100% 50%;
+  --radius: 0.375rem;              /* 6px = --geist-radius (DESIGN.md in-app base): rounded-md
+                                      buttons/inputs = 6px, rounded-lg cards = 8px (marketing radius) */
+  --sidebar-background: 0 0% 100%; /* white chrome against the soft content canvas */
+  --sidebar-foreground: 0 0% 30%;
+  --sidebar-primary: 0 0% 9%;
+  --sidebar-primary-foreground: 0 0% 98%;
+  --sidebar-accent: 0 0% 96.1%;
+  --sidebar-accent-foreground: 0 0% 9%;
+  --sidebar-border: 0 0% 92.2%;
+  --sidebar-ring: 212 100% 47%;
+}
+
+.dark {
+  --background: 0 0% 4%;           /* near-black #0a0a0a */
+  --foreground: 0 0% 93%;
+  --card: 0 0% 7%;                 /* lifted above the body so cards still read */
+  --card-foreground: 0 0% 93%;
+  --popover: 0 0% 7%;
+  --popover-foreground: 0 0% 93%;
+  --primary: 0 0% 98%;             /* polarity-flip: white primary on dark */
+  --primary-foreground: 0 0% 9%;
+  --secondary: 0 0% 13%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 0 0% 13%;
+  --muted-foreground: 0 0% 60%;
+  --accent: 0 0% 15%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 72% 45%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 212 100% 55%;
+  --warning: 37 91% 58%;
+  --border: 0 0% 14%;
+  --input: 0 0% 18%;
+  --ring: 212 100% 52%;
+  --chart-1: 212 100% 55%;
+  --chart-2: 178 90% 48%;
+  --chart-3: 270 70% 62%;
+  --chart-4: 37 91% 58%;
+  --chart-5: 330 90% 60%;
+  --sidebar-background: 0 0% 5%;
+  --sidebar-foreground: 0 0% 65%;
+  --sidebar-primary: 0 0% 98%;
+  --sidebar-primary-foreground: 0 0% 9%;
+  --sidebar-accent: 0 0% 13%;
+  --sidebar-accent-foreground: 0 0% 98%;
+  --sidebar-border: 0 0% 14%;
+  --sidebar-ring: 212 100% 55%;
+}

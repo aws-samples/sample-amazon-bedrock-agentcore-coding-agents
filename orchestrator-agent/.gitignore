@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.bedrock_agentcore/
+agentcore/.cli/
+.env.local
+orchestrator/
+src/
+usecase-sample-to-mcp/
+usecase-critter-lab/

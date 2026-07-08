@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="opencode">
+  <title>opencode</title>
+  <rect width="24" height="24" rx="5" fill="#131010"/>
+  <g transform="translate(5.6 4) scale(0.0533)">
+    <path d="M180 240H60V120H180V240Z" fill="#4B4646"/>
+    <path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="#F1ECEC"/>
+  </g>
+</svg>

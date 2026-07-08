@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Hermes">
+  <circle cx="12" cy="12" r="11" fill="#0ea5e9"/>
+  <path d="M8 16V8l4 4 4-4v8" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

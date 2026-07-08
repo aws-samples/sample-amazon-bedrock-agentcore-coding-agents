@@ -1,0 +1,44 @@
+# secrets / local
+.env
+*.pem
+*.private-key.pem
+.deployed-state.json
+runtime_config.json
+infra.config
+agent.config
+.DS_Store
+*.local.sh
+*.local.md
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+
+# OMC / agent session scratch state (not source)
+.omc/
+**/.omc/
+
+# local dev evidence / scratch
+.runs/
+
+# Agent deliverable written by Module 1 verification (canonical copy is the harness reference)
+usecase-sample-to-mcp/mcp_server.py
+
+# orchestrator-agent CodeZip build inputs staged by stage_engine.py (not source):
+# the co-located engine package, the staged usecase Skills, and the CLI project dirs.
+orchestrator-agent/orchestrator/
+orchestrator-agent/src/
+orchestrator-agent/agentcore/
+orchestrator-agent/.bedrock_agentcore/
+orchestrator-agent/uv.lock
+
+# Local agent tooling, Claude Code skills installed per-developer, not shipped
+.claude/
+skills-lock.json

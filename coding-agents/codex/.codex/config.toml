@@ -1,0 +1,12 @@
+# Codex runtime settings. Project instructions live in AGENTS.md.
+model = "openai.gpt-5.5"
+model_provider = "amazon-bedrock"
+model_reasoning_effort = "medium"
+
+[model_providers.amazon-bedrock.aws]
+region = "us-east-2"
+
+# Direct shells start here. The launcher adds the actual per-run directory at
+# startup so orchestrated runs do not stop on a directory trust prompt.
+[projects."/mnt/s3files"]
+trust_level = "trusted"
