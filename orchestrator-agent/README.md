@@ -26,10 +26,10 @@ Run the customer instructions in
 The essential sequence is:
 
 ```bash
-cd ~/src/orchestrator-agent
+cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent
 python3 stage_engine.py
 
-cd ~/src
+cd ~/sample-amazon-bedrock-agentcore-coding-agents
 agentcore create --name CodingAgents --no-agent --skip-git
 cd CodingAgents
 agentcore add agent --name orchestrator --type byo --build Container \
@@ -44,10 +44,10 @@ Generated AgentCore project files remain untracked.
 Before GitHub is connected, verify the container without dispatching a build:
 
 ```bash
-cd ~/src/CodingAgents
+cd ~/sample-amazon-bedrock-agentcore-coding-agents/CodingAgents
 agentcore dev --logs
 # In another terminal:
-cd ~/src/CodingAgents
+cd ~/sample-amazon-bedrock-agentcore-coding-agents/CodingAgents
 agentcore dev --stream \
   "Use route_task to classify a backend-only version-string fix. Do not dispatch."
 ```

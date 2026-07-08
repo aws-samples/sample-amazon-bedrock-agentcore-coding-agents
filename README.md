@@ -10,8 +10,9 @@ step is reproducible with the CLI, starting from this one clone.
 This repository is the single source of truth for all demo and harness **code**. The
 matching Workshop Studio teaching content (guided lab pages and the CloudFormation
 template) is published on Workshop Studio; the CloudFormation bootstrap clones this
-repository directly to `~/src`, so the customer-reproducible path is exactly a
-`git clone` of this URL followed by the CLI steps the workshop teaches.
+repository directly into the box home, so the customer-reproducible path is exactly a
+`git clone` of this URL (which yields `~/sample-amazon-bedrock-agentcore-coding-agents`)
+followed by the CLI steps the workshop teaches.
 
 ## Layout
 

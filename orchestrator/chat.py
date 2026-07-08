@@ -242,14 +242,15 @@ def build_tools() -> list:
     # so it can answer "what does cost_analyzer expose?" or check a file BEFORE
     # deciding whether (and how) to dispatch, instead of spinning up a microVM
     # just to look. All four resolve paths under the workspace root
-    # (WORKSHOP_REPO_ROOT, ~/src on the box) and refuse to escape it; exec_command
+    # (WORKSHOP_REPO_ROOT, the clone on the box) and refuse to escape it; exec_command
     # additionally passes through the SAME policy.screen() guardrail the engine
     # enforces on a role's shell, so the console's Governance rules apply here too.
     import os as _os
     import subprocess as _subprocess
 
     def _ws_root() -> str:
-        return _os.environ.get("WORKSHOP_REPO_ROOT") or _os.path.expanduser("~/src")
+        return _os.environ.get("WORKSHOP_REPO_ROOT") or _os.path.expanduser(
+            "~/sample-amazon-bedrock-agentcore-coding-agents")
 
     def _resolve_in_ws(rel: str) -> str | None:
         """Absolute path for a workspace-relative path, or None if it escapes the

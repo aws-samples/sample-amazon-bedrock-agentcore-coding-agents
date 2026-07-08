@@ -21,9 +21,9 @@ import {
 } from '../hooks/useSession';
 
 // The default virtual root before the session reports its own (the clone-first
-// ~/src checkout). The live root is the session's `workspace` (~/src, ~,
-// /mnt/s3files once opened, or any opened folder).
-const DEFAULT_VROOT = '~/src';
+// ~/sample-amazon-bedrock-agentcore-coding-agents checkout). The live root is the
+// session's `workspace` (the clone, ~, /mnt/s3files once opened, or any opened folder).
+const DEFAULT_VROOT = '~/sample-amazon-bedrock-agentcore-coding-agents';
 // Join a directory path with a new child name into a workspace-relative path.
 const joinDir = (vroot: string, dir: string | undefined, name: string) => {
   const baseDir = (dir ?? vroot).replace(vroot, '').replace(/^\/+/, '');
@@ -51,7 +51,7 @@ const widthKey = (agentId: string) => `ws:sidebar:${agentId}`;
 // clone-first checkout; /mnt/s3files is added here automatically once the attendee
 // opens it (after creating S3 Files in Stage 1), never hardcoded as always-present.
 const RECENT_KEY = 'ws:recent-folders';
-const RECENT_SEED = ['~/src'];
+const RECENT_SEED = ['~/sample-amazon-bedrock-agentcore-coding-agents'];
 const RECENT_MAX = 6;
 function loadRecent(): string[] {
   const saved = loadJSON<string[]>(RECENT_KEY, []);

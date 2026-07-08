@@ -21,10 +21,10 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-// The default virtual root (the clone-first ~/src checkout); the live root is the
-// session's, passed in as `vroot` so an opened folder (~, /mnt/s3files, or any
-// path) builds a correct tree.
-const DEFAULT_VROOT = '~/src';
+// The default virtual root (the clone-first ~/sample-amazon-bedrock-agentcore-coding-agents
+// checkout); the live root is the session's, passed in as `vroot` so an opened
+// folder (~, /mnt/s3files, or any path) builds a correct tree.
+const DEFAULT_VROOT = '~/sample-amazon-bedrock-agentcore-coding-agents';
 
 // Workspace-relative path (drop the vroot prefix) for the "Copy relative path"
 // menu action; the full virtual path is what "Copy path" yields.

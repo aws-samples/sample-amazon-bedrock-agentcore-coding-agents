@@ -181,7 +181,7 @@ def test_load_grading_imports_the_contract_and_adapters():
     # The grading dir sits next to the orchestrator package in every tree
     # (../usecase-sample-to-mcp/grading), so resolve it relative to this test file.
     # That runs unchanged from the repo answer-key AND from the attendee's own
-    # tree at ~/src, never a hardcoded solution/ segment.
+    # tree at ~/sample-amazon-bedrock-agentcore-coding-agents, never a hardcoded solution/ segment.
     here = os.path.dirname(os.path.abspath(__file__))
     grading = os.path.join(os.path.dirname(here), "usecase-sample-to-mcp", "grading")
     grade, InProcessClient, RemoteMCPClient = reviewer.load_grading(grading)

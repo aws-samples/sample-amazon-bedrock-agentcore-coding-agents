@@ -46,12 +46,13 @@ function clearSessionId(agentId: string) {
 export function useSession() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [alive, setAlive] = useState(false);
-  // The workspace root the session opened at (its virtual label: ~/src, ~,
+  // The workspace root the session opened at (its virtual label: the clone, ~,
   // /mnt/s3files once the attendee opens it, or whatever folder is open), and
   // whether a folder is open at all (false = the VS Code "no folder" welcome
   // state). The Workspace reads these to root its tree. Clone-first default is
-  // ~/src (the cloned repo); the backend reports the real label on connect.
-  const [workspace, setWorkspace] = useState<string>('~/src');
+  // ~/sample-amazon-bedrock-agentcore-coding-agents (the cloned repo); the backend
+  // reports the real label on connect.
+  const [workspace, setWorkspace] = useState<string>('~/sample-amazon-bedrock-agentcore-coding-agents');
   const [hasFolder, setHasFolder] = useState<boolean>(true);
   const stream = useRef<EventSource | null>(null);
 

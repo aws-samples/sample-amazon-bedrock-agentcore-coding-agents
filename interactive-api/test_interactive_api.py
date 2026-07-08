@@ -503,7 +503,7 @@ def test_pty_env_reaches_aws_credentials_through_the_home_jail():
 def test_dev_session_roots_at_the_empty_s3files_mount(tmp_path, monkeypatch):
     """V1 (empty-mount re-arch): the Development workspace's CWD is the SHARED
     /mnt/s3files mount, which starts EMPTY, while HOME is the box's REAL login home
-    (so ~/.aws + ~/src resolve for Stage 2; the cwd and HOME are deliberately
+    (so ~/.aws + the clone resolve for Stage 2; the cwd and HOME are deliberately
     different). The tree starts [] (no monorepo dirs, no pre-seeded files): the
     attendee builds coding-agents/ by hand into a blank slate.
 
@@ -646,21 +646,24 @@ def test_default_dev_root_is_env_resolved(tmp_path, monkeypatch):
     assert ws2 == os.path.expanduser("~") and label2 == "~"
 
 
-def test_default_dev_root_is_clone_first_src(tmp_path, monkeypatch):
+def test_default_dev_root_is_clone_first_clone(tmp_path, monkeypatch):
     """Clone-first: with NO mount env set, a fresh Development session opens at
-    ~/src (the public repo the box cloned), labelled ~/src, NEVER /mnt/s3files
-    (which the attendee has not created yet). Falls back to HOME if ~/src absent."""
+    ~/<clone dirname> (the public repo the box cloned), labelled the same, NEVER
+    /mnt/s3files (which the attendee has not created yet). Falls back to HOME if
+    the clone is absent. A plain `git clone` of the public repo yields exactly
+    ~/sample-amazon-bedrock-agentcore-coding-agents."""
     fake_home = tmp_path / "home"
-    (fake_home / "src").mkdir(parents=True)
+    dirname = ia._clone_dirname()
+    (fake_home / dirname).mkdir(parents=True)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.delenv("WORKSHOP_S3FILES_DIR", raising=False)
     monkeypatch.delenv("WORKSHOP_DEV_ROOT", raising=False)
     ws, label = ia._default_dev_root()
-    assert ws == str(fake_home / "src") and label == "~/src"
+    assert ws == str(fake_home / dirname) and label == "~/" + dirname
 
-    # No ~/src on a bare box -> HOME, never the mount.
+    # No clone on a bare box -> HOME, never the mount.
     import shutil
-    shutil.rmtree(fake_home / "src")
+    shutil.rmtree(fake_home / dirname)
     ws2, label2 = ia._default_dev_root()
     assert ws2 == str(fake_home) and label2 == "~"
 

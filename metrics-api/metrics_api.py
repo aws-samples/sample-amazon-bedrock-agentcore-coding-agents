@@ -153,6 +153,12 @@ class Handler(BaseHTTPRequestHandler):
         host = self.headers.get("Host")
         if not origin or not host:
             return None
+        # Never reflect a CRLF-bearing Origin into the Access-Control-Allow-Origin
+        # response header: `Origin: http://host/\r\n...` keeps netloc==host and would
+        # otherwise pass the equality gate below, letting an obs-fold header ride the
+        # reflection (py/http-response-splitting). A real origin never contains CRLF.
+        if "\r" in origin or "\n" in origin:
+            return None
         try:
             authority = urlparse(origin).netloc
         except ValueError:

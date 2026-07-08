@@ -309,9 +309,10 @@ _NO_PRODUCER_ERROR = (
 
 # Terminal DISPLAY scrubbing. Commands EXECUTE with real absolute paths (the engine
 # runs them locally on this box), but the transcript the console renders must read
-# like the attendee's runtime: the clone root shows as ``~/src`` and the home dir as
-# ``~``, never a build box's ``/Users/.../workspaces/...`` or ``/home/ubuntu`` path.
-# Longest paths first so a nested match (repo root under home) wins over its prefix.
+# like the attendee's runtime: the clone root shows as ``~/<clone dirname>`` and the
+# home dir as ``~``, never a build box's ``/Users/.../workspaces/...`` or
+# ``/home/ubuntu`` path. Longest paths first so a nested match (repo root under home)
+# wins over its prefix.
 def _display_scrub(text: str) -> str:
     if not text:
         return text
@@ -324,8 +325,12 @@ def _display_scrub(text: str) -> str:
         "WORKSHOP_REPO_ROOT",
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     home = os.path.expanduser("~")
+    # The clone label follows the repo-root basename (a plain `git clone` of the
+    # public repo yields ~/<repo name>), so the transcript matches the path the
+    # content's `cd ~/<name>` targets regardless of where the box cloned it.
+    clone_label = "~/" + os.path.basename(os.path.normpath(repo_root)) if repo_root else "~"
     for real, shown in sorted(
-            ((repo_root, "~/src"), (home, "~")), key=lambda p: -len(p[0])):
+            ((repo_root, clone_label), (home, "~")), key=lambda p: -len(p[0])):
         if real and real != "/":
             text = text.replace(real, shown)
     return text

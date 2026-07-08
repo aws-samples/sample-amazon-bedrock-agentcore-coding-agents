@@ -317,8 +317,8 @@ def _agent_env(agent_id: str) -> dict[str, str]:
     # THIS terminal, but the HOME pin (below, in _pty_open) hides ~/-relative paths.
     # Export the resolved harness dir so the content can `cd
     # "$WORKSHOP_CODING_AGENTS_DIR/claude-code"` portably: coding-agents in
-    # the dev repo, ~/src/coding-agents on the attendee box, with no `~` and
-    # no hardcoded layout. HOME stays pinned (per-session CLI configs are preserved);
+    # the dev repo, ~/<clone dirname>/coding-agents on the attendee box, with no
+    # `~` and no hardcoded layout. HOME stays pinned (per-session CLI configs are preserved);
     # only the harness location is surfaced, since the jail never chrooted the FS.
     env.setdefault("WORKSHOP_CODING_AGENTS_DIR", _coding_agents_dir())
     if agent_id == "claude-code":
@@ -508,8 +508,8 @@ def _pty_open(session: dict, rows: int = 0, cols: int = 0) -> dict:
     # session's ~/.local/bin/claude (mirrored from the real install by
     # _stage_agent_config) goes FIRST on PATH; resolving the binary through
     # HOME satisfies claude's install self-check, so no "setup issue" line.
-    # The Development build shell uses the real home (so ~, ~/src, ~/.aws, and the
-    # build CLIs resolve like a build-box login); a role session jails HOME to its
+    # The Development build shell uses the real home (so ~, the clone, ~/.aws, and
+    # the build CLIs resolve like a build-box login); a role session jails HOME to its
     # scratch workspace so `cd ~` stays in-session and each CLI's config is per-run.
     env["HOME"] = session.get("_home") or session["_root"]
     # Pinning HOME to a jail hides ~/.aws from the AWS SDK's default chain: on a
@@ -697,60 +697,79 @@ def pty_stream(session_id: str, offset: int = 0, should_stop=None):
 
 # The Development workspace is the build and deploy surface (the console terminal
 # that replaces an SSH session into a build box). It starts at the box HOME, where
-# the attendee clones the public workshop repo into ~/src. After the attendee creates
-# and mounts S3 Files, the Open Folder action switches the editor to /mnt/s3files.
-# Every deployed runtime later mounts that same access point at the same path.
+# the attendee clones the public workshop repo into ~/<clone dirname>. After the
+# attendee creates and mounts S3 Files, the Open Folder action switches the editor
+# to /mnt/s3files. Every deployed runtime later mounts that same access point at
+# the same path.
 #
 # HOME is the box's real home, not the mount. That keeps ~/.aws and the cloned
-# ~/src payload available before and after Open Folder changes the workspace root.
+# payload available before and after Open Folder changes the workspace root.
 #
 # Returns (real workspace path, virtual UI label).
 # cwd resolution remains wirable for tests and capture. WORKSHOP_DEV_ROOT=home forces
 # the clone-first starting point. WORKSHOP_S3FILES_DIR or a real writable mount selects
 # /mnt/s3files. A plain local box with neither starts at HOME. This is configuration,
 # never a fallback from a failed runtime dispatch.
+def _clone_dirname() -> str:
+    """Basename of the workshop clone on the box. A plain
+    ``git clone https://github.com/aws-samples/sample-amazon-bedrock-agentcore-coding-agents.git``
+    with no explicit target produces exactly this directory (the repo name), so
+    ``~/<name>`` is what the attendee reproducing the workshop by hand actually
+    gets. Wirable (WORKSHOP_CLONE_DIRNAME) so tests/capture can use a short name."""
+    return (os.environ.get("WORKSHOP_CLONE_DIRNAME")
+            or "sample-amazon-bedrock-agentcore-coding-agents")
+
+
 def _clone_dir() -> str | None:
     """The real workshop-clone dir, if one is configured/present. On the box the
-    clone is at $HOME/src (== ~/src for the ubuntu user, since HomeFolder is that
-    user's home), so the unset/`src` resolution below already finds it; an absolute
-    WORKSHOP_DEV_ROOT is honored as a test/capture override."""
+    clone is at $HOME/<clone dirname> (== ~/<name> for the ubuntu user, since
+    HomeFolder is that user's home), so the unset resolution below already finds
+    it; an absolute WORKSHOP_DEV_ROOT is honored as a test/capture override."""
     raw = (os.environ.get("WORKSHOP_DEV_ROOT") or "").strip()
     if raw.startswith("/") and os.path.isdir(raw):
         return os.path.abspath(raw)
-    src = os.path.join(os.path.expanduser("~"), "src")
-    return src if os.path.isdir(src) else None
+    clone = os.path.join(os.path.expanduser("~"), _clone_dirname())
+    return clone if os.path.isdir(clone) else None
 
 
 def _clone_label(path: str) -> str:
-    """A clone dir named ``src`` is shown as ``~/src`` (the path the content's
-    ``cd ~/src`` targets) regardless of its real parent; anything else verbatim."""
-    return "~/src" if os.path.basename(os.path.normpath(path)) == "src" else path
+    """The clone dir is shown as ``~/<clone dirname>`` (the path the content's
+    ``cd ~/<name>`` targets) regardless of its real parent; anything else
+    verbatim."""
+    return ("~/" + _clone_dirname()
+            if os.path.basename(os.path.normpath(path)) == _clone_dirname()
+            else path)
 
 
 def _default_dev_root() -> tuple[str, str]:
     """Return (workspace_dir, virtual_label) for a fresh Development session.
 
-    The workshop is clone-first: the box has the public repo at ~/src before the
-    attendee does anything, and S3 Files does NOT exist yet (they create it in
-    Stage 1). So a fresh session opens at ~/src, never /mnt/s3files; the attendee
-    switches to the mount with Open Folder AFTER creating it.
+    The workshop is clone-first: the box has the public repo cloned at
+    ~/<clone dirname> before the attendee does anything, and S3 Files does NOT
+    exist yet (they create it in Stage 1). So a fresh session opens at the clone,
+    never /mnt/s3files; the attendee switches to the mount with Open Folder AFTER
+    creating it.
 
     Start resolution (configuration, never a fallback from a failed dispatch):
       WORKSHOP_DEV_ROOT=home                -> HOME
-      WORKSHOP_DEV_ROOT=src                 -> ~/src if present, else HOME
+      WORKSHOP_DEV_ROOT=src                 -> the clone if present, else HOME
+                                               (``src`` is a legacy alias for the
+                                               clone-first start, not a dir name)
       WORKSHOP_DEV_ROOT=/abs/path           -> that dir (a test/capture override;
                                                the box does not need it since the
-                                               clone is at $HOME/src == ~/src)
+                                               clone is at $HOME/<clone dirname>)
       WORKSHOP_DEV_ROOT=mount, or
         WORKSHOP_S3FILES_DIR set            -> the mount seam, labelled
                                                /mnt/s3files (EXPLICIT opt-in:
                                                tests and capture)
-      otherwise (unset)                     -> ~/src if present, else HOME
-    A clone dir named ``src`` is always shown as ``~/src`` (the path the content's
-    ``cd ~/src`` targets), regardless of its real parent. The mount is an explicit
-    start only for tests/capture; on the real box the start is the clone."""
+      otherwise (unset)                     -> the clone if present, else HOME
+    The clone dir is always shown as ``~/<clone dirname>`` (the path the content's
+    ``cd ~/<name>`` targets), regardless of its real parent. The mount is an
+    explicit start only for tests/capture; on the real box the start is the
+    clone."""
     real_home = os.path.expanduser("~")
-    src = os.path.join(real_home, "src")
+    clone = os.path.join(real_home, _clone_dirname())
+    clone_label = "~/" + _clone_dirname()
     raw = (os.environ.get("WORKSHOP_DEV_ROOT") or "").strip()
     forced = raw.lower()
     explicit_mount = os.environ.get("WORKSHOP_S3FILES_DIR")
@@ -758,14 +777,16 @@ def _default_dev_root() -> tuple[str, str]:
     if forced == "home":
         return real_home, "~"
     # An explicit absolute path: a test/capture override. The real box does not
-    # need it (the clone is at $HOME/src, found by the unset/`src` branch below).
+    # need it (the clone is at $HOME/<clone dirname>, found by the unset/`src`
+    # branch below).
     if raw.startswith("/") and os.path.isdir(raw):
         return os.path.abspath(raw), _clone_label(raw)
-    # An explicit WORKSHOP_DEV_ROOT=src starts at ~/src even when the mount seam
-    # (WORKSHOP_S3FILES_DIR) is also set: capture needs the clone-first START at
-    # ~/src while still having the mount available for the later Open Folder shots.
-    if forced == "src" and os.path.isdir(src):
-        return src, "~/src"
+    # An explicit WORKSHOP_DEV_ROOT=src (legacy clone-first alias) starts at the
+    # clone even when the mount seam (WORKSHOP_S3FILES_DIR) is also set: capture
+    # needs the clone-first START at the clone while still having the mount
+    # available for the later Open Folder shots.
+    if forced == "src" and os.path.isdir(clone):
+        return clone, clone_label
     # Explicit mount start (tests/capture only). Real boxes set neither var.
     if forced == "mount" or explicit_mount:
         if explicit_mount:
@@ -777,9 +798,9 @@ def _default_dev_root() -> tuple[str, str]:
         cwd = os.path.join(_STAGE1_DIR, "s3files-home")
         os.makedirs(cwd, exist_ok=True)
         return cwd, "/mnt/s3files"
-    if os.path.isdir(src):
-        return src, "~/src"
-    # No ~/src (plain local box, nothing cloned): the login HOME, VS Code-like.
+    if os.path.isdir(clone):
+        return clone, clone_label
+    # No clone (plain local box, nothing cloned): the login HOME, VS Code-like.
     return real_home, "~"
 
 
@@ -793,7 +814,7 @@ def _dev_root() -> tuple[str, str]:
 def _folder_label(path: str) -> str:
     """The virtual root label the UI shows for an opened folder: the real HOME is
     rendered as ``~`` (VS Code-style), a path under HOME as ``~/<rel>`` (so the
-    clone shows ``~/src``), every other absolute path verbatim."""
+    clone shows ``~/<clone dirname>``), every other absolute path verbatim."""
     home = os.path.expanduser("~")
     rp = os.path.realpath(path)
     if rp == os.path.realpath(home):
@@ -803,11 +824,12 @@ def _folder_label(path: str) -> str:
         return "/mnt/s3files"
     if path == "/mnt/s3files":
         return "/mnt/s3files"
-    # The configured workshop clone ($HOME/src on the box) shows as ~/src.
+    # The configured workshop clone ($HOME/<clone dirname> on the box) shows as
+    # ~/<clone dirname>.
     clone = _clone_dir()
     if clone and rp == os.path.realpath(clone):
         return _clone_label(clone)
-    # A path inside HOME renders VS Code-style as ~/<relative> (e.g. ~/src).
+    # A path inside HOME renders VS Code-style as ~/<relative>.
     rp_home = os.path.realpath(home)
     if rp == rp_home or rp.startswith(rp_home + os.sep):
         return "~/" + os.path.relpath(rp, rp_home)
@@ -893,7 +915,7 @@ def _new_session(agent_id: str) -> dict:
         "_has_folder": True,       # a folder is open (False = VS Code no-folder welcome)
         "_real_cwd": workspace,
         # HOME for the shell: the real home for the Development build box (so `~`
-        # and `~/src` resolve like a build-box login), else the scratch jail.
+        # and the clone resolve like a build-box login), else the scratch jail.
         "_home": dev_home or workspace,
         "_dev": bool(dev),         # Development build shell vs role scratch jail
         "_tools": [],
@@ -915,8 +937,8 @@ def _to_virtual(session: dict, text: str) -> str:
     # Map the session's real workspace root to the /mnt/s3files virtual root for
     # BOTH role and Development sessions. The frontend's file tree strips
     # /mnt/s3files to render the workspace's own top-level entries; without this a
-    # dev session (rooted at the real ~/src abs path) rendered the entire absolute
-    # path as phantom folders (home > ubuntu > src > coding-agents > ...) and the
+    # dev session (rooted at the real clone abs path) rendered the entire absolute
+    # path as phantom folders (home > ubuntu > <clone> > coding-agents > ...) and the
     # open/read/write round-trip broke (_safe_join expects /mnt/s3files-relative).
     # The interactive PTY is a separate raw stream, so real paths still show in the
     # live terminal; only the file tree + scripted /input output are normalized.
@@ -945,7 +967,7 @@ def _run_command(session: dict, raw: str) -> str:
     # (real CodeZip + marker), never a host-installed `agentcore` that would
     # shadow it and make the deploy a no-op. Mirrors the PTY launch exactly.
     env = _agent_env(session["agent_id"])
-    # Mirror the PTY's HOME so `~`/`~/src` resolve the same in scripted /input as in
+    # Mirror the PTY's HOME so `~`/the clone resolve the same in scripted /input as in
     # the interactive shell (the dev build shell uses the real checkout's parent).
     if session.get("_home"):
         env["HOME"] = session["_home"]
@@ -1907,6 +1929,12 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         host = self.headers.get("Host")
         if not origin or not host:
+            return None
+        # Never reflect a CRLF-bearing Origin into the Access-Control-Allow-Origin
+        # response header: `Origin: http://host/\r\n...` keeps netloc==host and would
+        # otherwise pass the equality gate below, letting an obs-fold header ride the
+        # reflection (py/http-response-splitting). A real origin never contains CRLF.
+        if "\r" in origin or "\n" in origin:
             return None
         try:
             authority = urlparse(origin).netloc

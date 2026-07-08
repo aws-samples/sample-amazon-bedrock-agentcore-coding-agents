@@ -6,8 +6,8 @@ import { DEV_AGENT_ID } from './agents/environments';
  * Development: the main Module 1 workspace, an IDE-style full-height shell (file
  * tree + editor + terminal) that fills the viewport, distinct from the small
  * role-config cards on the Agents page. A live shell on the workshop box starts
- * at ~/src (the cloned repo); the attendee opens the shared /mnt/s3files mount
- * with Open Folder after creating S3 Files in Stage 1.
+ * at ~/sample-amazon-bedrock-agentcore-coding-agents (the cloned repo); the attendee
+ * opens the shared /mnt/s3files mount with Open Folder after creating S3 Files in Stage 1.
  * This is where you write code, run the agentcore CLI, build images, and deploy.
  * The three coding agents live under Agents; their deploys land on the Fleet.
  */

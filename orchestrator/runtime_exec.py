@@ -336,11 +336,23 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
     # the workdir also resolves off WORKSHOP_REPO_ROOT, mirroring the bundle.
     mnt = os.environ.get("WORKSHOP_S3FILES_DIR", "/mnt/s3files")
     repo_root = os.environ.get("WORKSHOP_REPO_ROOT", os.getcwd())
-    candidates = [
-        os.path.join(mnt, run_subdir, artifact_rel),
-        os.path.join(repo_root, ".runs", run_subdir, artifact_rel),
-        os.path.join(repo_root, run_subdir, artifact_rel),
-    ]
+
+    # Defense-in-depth: only read a candidate that resolves INSIDE its base dir.
+    # run_subdir is a server run id or governance-probe/<role> (role gated by the
+    # resolve() allowlist) and artifact_rel is a fixed literal, so no traversal
+    # string reaches here today; this keeps the read-back contained even if a
+    # future caller feeds run_subdir a less-trusted value (py/path-injection).
+    def _contained(base: str, *parts: str) -> str | None:
+        full = os.path.realpath(os.path.join(base, *parts))
+        base_real = os.path.realpath(base)
+        return full if (full == base_real
+                        or full.startswith(base_real + os.sep)) else None
+
+    candidates = [c for c in (
+        _contained(mnt, run_subdir, artifact_rel),
+        _contained(repo_root, ".runs", run_subdir, artifact_rel),
+        _contained(repo_root, run_subdir, artifact_rel),
+    ) if c]
     artifact = ""
     for _ in range(6):
         for path in candidates:
