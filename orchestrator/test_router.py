@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import router  # noqa: E402
 from router import Route, RouteError, route  # noqa: E402
 
-ALL_THREE = ["claude-code", "kiro", "opencode"]
+ALL_THREE = ["claude-code", "claude-code-validator", "opencode"]
 
 
 # ---------------------------------------------------------------- the registry
@@ -33,7 +33,7 @@ EXPECTED_REGISTRY = {
     "build/fullstack-v1":      (ALL_THREE, "critter-lab", False),
     "patch/backend-v1":        (["claude-code"], "sample-to-mcp", False),
     "patch/frontend-v1":       (["opencode"], "sample-to-mcp", False),
-    "review/pr-v1":            (["kiro"], "sample-to-mcp", True),
+    "review/pr-v1":            (["claude-code-validator"], "sample-to-mcp", True),
 }
 
 
@@ -101,7 +101,7 @@ def test_use_claude_code_routes_to_backend_only():
 def test_use_kiro_routes_to_review_only():
     r = route("use kiro to check the contract")
     assert r.workflow_ref == "review/pr-v1"
-    assert r.agents == ["kiro"]
+    assert r.agents == ["claude-code-validator"]
 
 
 # ------------------------------------------------------------- rungs 3-6: intent
@@ -109,7 +109,7 @@ def test_review_intent_routes_to_review_workflow():
     r = route("review the PR from the last run")
     assert r.workflow_ref == "review/pr-v1"
     assert r.read_only is True
-    assert r.agents == ["kiro"]
+    assert r.agents == ["claude-code-validator"]
 
 
 def test_fullstack_intent_routes_to_critter_lab_all_three():

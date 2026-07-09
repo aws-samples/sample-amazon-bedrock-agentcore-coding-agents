@@ -37,9 +37,12 @@ from typing import Any
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _HARNESS = os.path.join(_HERE, "harness")
 
-# Where each role's steering file lives, in its own real format.
+# Where each role's steering file lives, in its own real format. The validator is
+# a second Claude Code steered by an acceptance-contract CLAUDE.md (it replaced
+# Kiro's .kiro/steering); the kiro entry stays for the restorable legacy path.
 HARNESS_FILES = {
     "claude-code": os.path.join(_HARNESS, "claude-code", "CLAUDE.md"),
+    "claude-code-validator": os.path.join(_HARNESS, "claude-code-validator", "CLAUDE.md"),
     "opencode": os.path.join(_HARNESS, "opencode", "AGENTS.md"),
     "kiro": os.path.join(_HARNESS, "kiro", ".kiro", "steering", "validator.md"),
 }
@@ -49,6 +52,7 @@ HARNESS_FILES = {
 # live under harness/<usecase>/).
 _STEERING_REL = {
     "claude-code": os.path.join("claude-code", "CLAUDE.md"),
+    "claude-code-validator": os.path.join("claude-code-validator", "CLAUDE.md"),
     "opencode": os.path.join("opencode", "AGENTS.md"),
     "kiro": os.path.join("kiro", ".kiro", "steering", "validator.md"),
 }
@@ -185,12 +189,14 @@ def parse_ui_spec(agents_md_path: str | None = None) -> dict[str, Any]:
     return spec
 
 
-def parse_gate_spec(kiro_md_path: str | None = None) -> dict[str, Any]:
-    """Parse the validator ``harness:gate`` block from the Kiro steering file.
+def parse_gate_spec(gate_md_path: str | None = None) -> dict[str, Any]:
+    """Parse the validator ``harness:gate`` block from the validator steering file
+    (the Claude Code validator's ``CLAUDE.md``; the legacy Kiro steering carried
+    the same block).
 
     Returns ``contract`` (path), ``checks`` (list), ``max_iterations`` (int).
     """
-    path = kiro_md_path or HARNESS_FILES["kiro"]
+    path = gate_md_path or HARNESS_FILES["claude-code-validator"]
     body = _fenced_block(_read(path), "harness:gate")
     spec: dict[str, Any] = {"contract": "usecase-sample-to-mcp/grading/",
                             "checks": [], "max_iterations": 2}

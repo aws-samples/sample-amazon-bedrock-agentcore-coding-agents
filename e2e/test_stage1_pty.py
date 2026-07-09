@@ -261,13 +261,14 @@ def test_opencode_config_staged_on_disk(console, cookie):
         close_session(console, cookie, sid)
 
 
-def test_kiro_steering_staged_on_disk(console, cookie):
-    """The kiro shell has its steering file (~/.kiro/steering/agent.md, model auto)."""
-    sid = open_session(console, cookie, "kiro")
+def test_claude_code_validator_env_set_in_shell(console, cookie):
+    """The claude-code-validator shell exports the same Bedrock env as claude-code: CLAUDE_CODE_USE_BEDROCK=1."""
+    sid = open_session(console, cookie, "claude-code-validator")
     try:
         open_pty(console, cookie, sid)
-        out = _run(console, cookie, sid, "cat .kiro/steering/agent.md", "Kiro session")
-        assert "auto" in out, out[-600:]
+        out = _run(console, cookie, sid,
+                   f"echo {_OK}=$CLAUDE_CODE_USE_BEDROCK", f"{_OK}=1")
+        assert f"{_OK}=1" in out, out[-400:]
     finally:
         close_session(console, cookie, sid)
 
@@ -276,7 +277,7 @@ def test_kiro_steering_staged_on_disk(console, cookie):
 # The shelf catalog contract (the agents list the shell deploys onto).
 # ---------------------------------------------------------------------------
 def test_agents_catalog_shape_and_ids(console, cookie):
-    """GET /api/dev/agents lists exactly claude-code,kiro,opencode with the shelf fields."""
+    """GET /api/dev/agents lists exactly claude-code,claude-code-validator,opencode with the shelf fields."""
     _, out = req(console, "GET", "/api/dev/agents", headers=cookie)
     ids = {a["agent_id"] for a in out["agents"]}
     assert ids == set(SUPPORTED_AGENTS), ids

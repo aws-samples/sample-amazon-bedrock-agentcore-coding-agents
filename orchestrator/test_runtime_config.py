@@ -47,10 +47,10 @@ def test_save_then_resolve_from_settings():
 
 
 def test_env_wins_over_file(monkeypatch):
-    runtime_config.save_runtime("kiro", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/file")
-    monkeypatch.setenv(runtime_config._env_key("kiro"),
+    runtime_config.save_runtime("claude-code-validator", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/file")
+    monkeypatch.setenv(runtime_config._env_key("claude-code-validator"),
                        "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/env")
-    hit = runtime_config.resolve("kiro")
+    hit = runtime_config.resolve("claude-code-validator")
     assert hit[1] == "environment" and hit[0].endswith("runtime/env")
 
 
@@ -80,10 +80,10 @@ def test_resolve_map_collects_wired_roles():
 
 def test_clear_one_role():
     runtime_config.save_runtime("claude-code", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/cc")
-    runtime_config.save_runtime("kiro", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/k")
+    runtime_config.save_runtime("claude-code-validator", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/k")
     runtime_config.clear_runtime("claude-code")
     assert runtime_config.resolve("claude-code") is None
-    assert runtime_config.resolve("kiro") is not None  # untouched
+    assert runtime_config.resolve("claude-code-validator") is not None  # untouched
 
 
 def test_clear_all():
@@ -115,7 +115,7 @@ def test_executor_reads_wired_arn(monkeypatch):
     runtime_config.save_runtime("claude-code", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/cc")
     ex = executor.AgentCoreExecutor(runtime_arns={})  # no explicit mapping
     assert ex.runtime_arn("claude-code") == "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/cc"
-    assert ex.runtime_arn("kiro") is None  # unwired
+    assert ex.runtime_arn("claude-code-validator") is None  # unwired
 
 
 # ------------------------------------------------------------------ fleet (#76)
@@ -167,7 +167,7 @@ def test_pick_singleton_always_returns_the_one():
 
 
 def test_pick_unwired_is_none():
-    assert runtime_config.pick("kiro") is None
+    assert runtime_config.pick("claude-code-validator") is None
 
 
 def test_env_carries_a_comma_separated_fleet(monkeypatch):
@@ -213,14 +213,14 @@ def test_fleet_round_trips_through_the_file():
     import json as _json
     for tag in ("cx-1", "cx-2"):
         runtime_config.add_runtime("opencode", _arn(tag))
-    runtime_config.save_runtime("kiro", _arn("k"))
+    runtime_config.save_runtime("claude-code-validator", _arn("k"))
     with open(runtime_config._settings_path(), encoding="utf-8") as f:
         raw = _json.load(f)["runtimes"]
     assert isinstance(raw["opencode"], list) and len(raw["opencode"]) == 2
-    assert isinstance(raw["kiro"], str)  # one instance -> bare string
+    assert isinstance(raw["claude-code-validator"], str)  # one instance -> bare string
     # reloads identically
     assert len(runtime_config.instances("opencode")) == 2
-    assert len(runtime_config.instances("kiro")) == 1
+    assert len(runtime_config.instances("claude-code-validator")) == 1
 
 
 # --- per-role descriptions (U17): what each agent does, read by the chatbot ---
@@ -256,15 +256,15 @@ def test_description_survives_other_instance_writes():
 
 
 def test_empty_description_clears_one_instance():
-    runtime_config.save_runtime("kiro", "kiro-ID01")
-    runtime_config.save_description("kiro", "kiro-ID01", "Writes the gate")
-    runtime_config.save_description("kiro", "kiro-ID01", "")
-    assert runtime_config.describe_arn("kiro-ID01") == ""
+    runtime_config.save_runtime("claude-code-validator", "ccv-ID01")
+    runtime_config.save_description("claude-code-validator", "ccv-ID01", "Writes the gate")
+    runtime_config.save_description("claude-code-validator", "ccv-ID01", "")
+    assert runtime_config.describe_arn("ccv-ID01") == ""
 
 
 def test_removing_instance_does_not_describe_unwired_arn():
     """A description only attaches to a wired instance ARN."""
-    out = runtime_config.save_description("kiro", "kiro-NOTWIRED", "x")
+    out = runtime_config.save_description("claude-code-validator", "ccv-NOTWIRED", "x")
     assert "error" in out
 
 
@@ -302,7 +302,7 @@ def test_deployed_runtime_config_is_auto_discovered():
     hit = runtime_config.resolve("opencode")
     assert hit == (_arn("opencode-DEPLOYED"), "deployed")
     # a role with no file stays unwired
-    assert runtime_config.resolve("kiro") is None
+    assert runtime_config.resolve("claude-code-validator") is None
 
 
 def test_settings_and_env_win_over_a_deployed_file():
@@ -316,11 +316,11 @@ def test_settings_and_env_win_over_a_deployed_file():
 def test_deployed_role_carries_a_default_description():
     """An auto-discovered instance is described by the role default (never blank),
     so the console card explains what the agent does without the attendee typing."""
-    _write_deployed("kiro", _arn("kiro-DEPLOYED"))
+    _write_deployed("claude-code-validator", _arn("ccv-DEPLOYED"))
     st = runtime_config.status()
-    kiro = next(r for r in st["roles"] if r["role"] == "kiro")
-    assert kiro["wired"] is True and kiro["source"] == "deployed"
-    assert "Validator" in kiro["description"]
+    ccv = next(r for r in st["roles"] if r["role"] == "claude-code-validator")
+    assert ccv["wired"] is True and ccv["source"] == "deployed"
+    assert "Validator" in ccv["description"]
 
 
 def test_a_malformed_deployed_file_is_ignored():

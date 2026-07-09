@@ -96,7 +96,7 @@ def test_lease_release_by_nonowner_is_a_noop():
 # ---------------------------------------------------------------- two-bucket model
 def test_permanent_vs_transient_classification():
     # deterministic failures: resubmit won't help -> stays failed
-    for reason in ("EMPTY_TASK", "UNKNOWN_WORKFLOW:no/such", "HARNESS_MISSING:kiro",
+    for reason in ("EMPTY_TASK", "UNKNOWN_WORKFLOW:no/such", "HARNESS_MISSING:claude-code-validator",
                    "PYTEST_UNAVAILABLE", "NO_RUN_TO_REVIEW"):
         assert _is_permanent(reason) is True, reason
     # transient failures: a human can resume -> needs_human

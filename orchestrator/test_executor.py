@@ -89,12 +89,12 @@ def test_agentcore_resolves_arn_from_mapping_then_env(monkeypatch, tmp_path):
     # seams, so unset roles resolve to None.
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
     monkeypatch.setenv("WORKSHOP_CODING_AGENTS_DIR", str(tmp_path / "coding-agents"))
-    monkeypatch.delenv("AGENTCORE_RUNTIME_KIRO", raising=False)
+    monkeypatch.delenv("AGENTCORE_RUNTIME_CLAUDE_CODE_VALIDATOR", raising=False)
     ex = executor.AgentCoreExecutor(runtime_arns={"claude-code": "arn:from:map"})
     assert ex.runtime_arn("claude-code") == "arn:from:map"
     monkeypatch.setenv("AGENTCORE_RUNTIME_CODEX", "arn:from:env")
     assert ex.runtime_arn("codex") == "arn:from:env"
-    assert ex.runtime_arn("kiro") is None
+    assert ex.runtime_arn("claude-code-validator") is None
 
 
 def test_agentcore_no_arn_fails_loud(monkeypatch, tmp_path):

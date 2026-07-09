@@ -385,7 +385,7 @@ def test_22_stage3_cost_breakdown_attributes_by_agent_and_user(console, cookie):
     attributes the spend to the attendee's own OS identity (per-user cost API)."""
     _, by_agent = req(console, "GET", "/api/metrics/cost-breakdown?by=agent", headers=cookie)
     assert by_agent["by"] == "agent", by_agent
-    assert {"claude-code", "kiro", "opencode"} <= set(by_agent["breakdown"]), by_agent
+    assert {"claude-code", "claude-code-validator", "opencode"} <= set(by_agent["breakdown"]), by_agent
     assert "currency" in by_agent
     _, by_user = req(console, "GET", "/api/metrics/cost-breakdown?by=user", headers=cookie)
     assert by_user["by"] == "user", by_user

@@ -9,8 +9,8 @@ instead picks a route, synthesizing the three references this workshop builds on
   * A complexity check classifies the request before dispatching: simple issues
     take the short inline path, complex ones the full subagent pipeline. Our
     content rules (patch vs full build) are that check, made deterministic.
-  * Explicit user intent wins the backend choice ("use opencode", "kiro로"); an
-    unavailable explicit choice fails loud, and only silent defaults fall back.
+  * Explicit user intent wins the backend choice ("use opencode", "use validator");
+    an unavailable explicit choice fails loud, and only silent defaults fall back.
 
 The router is pure and deterministic: same task string in, same route out, no LLM.
 On AgentCore the same ladder runs inside the orchestrator agent's tool-use loop:
@@ -77,14 +77,14 @@ def usecase_paths(usecase: str) -> dict[str, str]:
 WORKFLOWS: dict[str, dict[str, Any]] = {
     "convert/sample-to-mcp-v1": {
         "version": "1.0.0",
-        "agents": ["claude-code", "kiro", "opencode"],
+        "agents": ["claude-code", "claude-code-validator", "opencode"],
         "usecase": "sample-to-mcp",
         "read_only": False,
         "description": "Full conversion: backend MCP server + chatbot UI + review gate.",
     },
     "build/fullstack-v1": {
         "version": "1.0.0",
-        "agents": ["claude-code", "kiro", "opencode"],
+        "agents": ["claude-code", "claude-code-validator", "opencode"],
         "usecase": "critter-lab",
         "read_only": False,
         "description": "Fun full-stack build: Critter Lab backend + frontend + review gate.",
@@ -105,7 +105,7 @@ WORKFLOWS: dict[str, dict[str, Any]] = {
     },
     "review/pr-v1": {
         "version": "1.0.0",
-        "agents": ["kiro"],
+        "agents": ["claude-code-validator"],
         "usecase": "sample-to-mcp",
         "read_only": True,
         "description": "Review an existing run branch; the gate + critique run, no build.",
@@ -151,8 +151,13 @@ _AGENT_INTENT = [
      "patch/frontend-v1", 'explicit agent intent: "use opencode" → frontend role only'),
     (re.compile(r"\buse claude\b|\buse claude.code\b|claude.?code로|claude.?code만", re.I),
      "patch/backend-v1", 'explicit agent intent: "use claude code" → backend role only'),
-    (re.compile(r"\buse kiro\b|\bwith kiro\b|kiro로|kiro만", re.I),
-     "review/pr-v1", 'explicit agent intent: "use kiro" → validator/review role only'),
+    # The validator is a Claude Code steered by the acceptance contract. "use
+    # validator" is the current phrasing; "use kiro" stays as a hidden back-compat
+    # alias (mirroring the retained "use codex" → frontend), routing to the same
+    # validator/review workflow so old prompts and tests keep working.
+    (re.compile(r"\buse validator\b|\bwith validator\b|validator로|validator만"
+                r"|\buse kiro\b|\bwith kiro\b|kiro로|kiro만", re.I),
+     "review/pr-v1", 'explicit agent intent: "use validator" → validator/review role only'),
 ]
 _REVIEW = re.compile(r"\breview\b.{0,40}\b(pr|pull request|branch|diff|run)\b"
                      r"|\b(pr|pull request)\b.{0,40}\breview\b", re.I | re.S)
@@ -167,8 +172,8 @@ def route(task: str, workflow_ref: str | None = None) -> Route:
 
     Ladder (first match wins):
       1. explicit ``workflow_ref``        : unknown ref raises (fail-closed)
-      2. explicit agent intent in text    : "use opencode" / "kiro로"
-      3. review intent                    : review an existing PR/branch (kiro only)
+      2. explicit agent intent in text    : "use opencode" / "use validator"
+      3. review intent                    : review an existing PR/branch (validator only)
       4. full-stack / fun-build intent    : Critter Lab usecase, all three roles
       5. patch intent                     : small change, backend role only (the
                                             SIMPLE path of the complexity check)

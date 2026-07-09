@@ -228,7 +228,7 @@ def test_stage2_submit_watch_and_review(console, cookie):
 
     _, terms = _req(console, "GET", f"/api/orchestrator/runs/{rid}/terminals",
                     headers=cookie)
-    assert set(terms["terminals"]) == {"claude-code", "kiro", "opencode"}
+    assert set(terms["terminals"]) == {"claude-code", "claude-code-validator", "opencode"}
     assert all(terms["terminals"][a] for a in terms["terminals"])
 
 
@@ -253,7 +253,7 @@ def test_stage3_metrics_reflect_what_just_happened(console, cookie):
     assert dash["runs_total"] >= 1
     _, cost = _req(console, "GET", "/api/metrics/cost-breakdown?by=agent",
                    headers=cookie)
-    assert set(cost["breakdown"]) & {"claude-code", "kiro", "opencode"}
+    assert set(cost["breakdown"]) & {"claude-code", "claude-code-validator", "opencode"}
     _, pol = _req(console, "GET", "/api/metrics/policies", headers=cookie)
     # every Cedar policy row carries the real required fields (metrics_lib.get_policies):
     # tier (hard|soft), a rule_id, an effect, and a human summary; not just a flag.

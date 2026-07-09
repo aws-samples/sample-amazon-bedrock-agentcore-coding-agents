@@ -98,7 +98,7 @@ def test_valid_cookie_passes_the_wall(console, cookie):
     code, body = req(console, "GET", "/api/dev/agents", headers=cookie)
     assert code == 200
     ids = {a["agent_id"] for a in body["agents"]}
-    assert ids == {"claude-code", "kiro", "opencode"}
+    assert ids == {"claude-code", "claude-code-validator", "opencode"}
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,7 @@ def _wire_all(tmp_path, monkeypatch):
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     runtime_config.save_runtime("opencode", "opencode-TESTID0001")
-    runtime_config.save_runtime("kiro", "kiro-TESTID0001")
+    runtime_config.save_runtime("claude-code-validator", "claude_code_validator-TESTID0001")
 
 
 def _call_with(tools, name, **kwargs):

@@ -55,7 +55,7 @@ def _drain_runs(console, cookie):
 BLUEPRINT_PHASES = [
     "admission", "context_hydration", "pre_flight", "agent_execution", "finalization",
 ]
-ALL_THREE = {"claude-code", "kiro", "opencode"}
+ALL_THREE = {"claude-code", "claude-code-validator", "opencode"}
 
 
 def submit(console, cookie, task=None, workflow_ref=None, attempts: int = 60) -> dict:
@@ -199,7 +199,7 @@ def test_use_kiro_intent_routes_review_only(console, cookie):
     run = submit(console, cookie, "use kiro to validate the contract")
     route = poll_route(console, cookie, run["run_id"])
     assert route["workflow_ref"] == "review/pr-v1", route
-    assert route["agents"] == ["kiro"], route
+    assert route["agents"] == ["claude-code-validator"], route
     assert route["read_only"] is True, route
 
 
@@ -284,7 +284,7 @@ def test_reviewer_emits_exactly_the_lgtm_token(console, cookie):
     assert res["review"]["state"] == "approved", res["review"]
     # the EXACT token, surfaced in the validator's terminal critique.md cat.
     terms = _terminals(console, cookie, rid)
-    critique = "".join(e["output"] for e in terms.get("kiro", []))
+    critique = "".join(e["output"] for e in terms.get("claude-code-validator", []))
     assert LGTM_TOKEN in critique, "the exact LGTM pass token must appear in the critique"
 
 
@@ -358,7 +358,7 @@ def test_backend_patch_has_no_kiro_or_opencode_pane(console, cookie):
     poll_terminal(console, cookie, rid)
     terms = _terminals(console, cookie, rid)
     assert "claude-code" in terms, list(terms)
-    assert "kiro" not in terms, f"review pane fabricated on a backend patch: {list(terms)}"
+    assert "claude-code-validator" not in terms, f"review pane fabricated on a backend patch: {list(terms)}"
     assert "opencode" not in terms, f"frontend ran on a backend patch: {list(terms)}"
 
 
@@ -571,7 +571,7 @@ def test_runtimes_status_lists_every_role_unwired_by_default(console, cookie):
     fails loud at dispatch time, not here."""
     _, body = req(console, "GET", "/api/orchestrator/runtimes", headers=cookie)
     roles = {r["role"]: r for r in body["roles"]}
-    assert {"orchestrator", "claude-code", "kiro", "opencode"} <= set(roles), body
+    assert {"orchestrator", "claude-code", "claude-code-validator", "opencode"} <= set(roles), body
     assert body["executor"] == "agentcore" and body["remote_dispatch"] is True, body
     assert all(r["wired"] is False for r in body["roles"]), body
 
@@ -596,7 +596,7 @@ def test_wire_rejects_a_malformed_arn(console, cookie):
     """A junk value fails loud (400), never silently stored."""
     body = expect_status(
         lambda: req(console, "POST", "/api/orchestrator/runtimes",
-                    {"role": "kiro", "arn": "not an arn !!!"}, headers=cookie),
+                    {"role": "claude-code-validator", "arn": "not an arn !!!"}, headers=cookie),
         400)
     assert "error" in body, body
 

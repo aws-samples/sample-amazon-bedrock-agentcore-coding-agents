@@ -33,12 +33,12 @@ from e2e.conftest import (
 # this table, so a registry drift in router.py fails a test rather than slipping by.
 EXPECTED_WORKFLOWS = {
     "convert/sample-to-mcp-v1": {
-        "agents": ["claude-code", "kiro", "opencode"],
+        "agents": ["claude-code", "claude-code-validator", "opencode"],
         "usecase": "sample-to-mcp",
         "read_only": False,
     },
     "build/fullstack-v1": {
-        "agents": ["claude-code", "kiro", "opencode"],
+        "agents": ["claude-code", "claude-code-validator", "opencode"],
         "usecase": "critter-lab",
         "read_only": False,
     },
@@ -53,13 +53,13 @@ EXPECTED_WORKFLOWS = {
         "read_only": False,
     },
     "review/pr-v1": {
-        "agents": ["kiro"],
+        "agents": ["claude-code-validator"],
         "usecase": "sample-to-mcp",
         "read_only": True,
     },
 }
 WORKFLOW_FIELDS = ("workflow_ref", "version", "agents", "usecase", "read_only", "description")
-ORCHESTRATOR_ROLES = ("claude-code", "kiro", "opencode")
+ORCHESTRATOR_ROLES = ("claude-code", "claude-code-validator", "opencode")
 
 
 def _active_runs(console, cookie) -> int:
@@ -160,7 +160,7 @@ def test_workflow_refs_use_documented_agent_ids_only(console, cookie):
 # GET /s2/agents: the orchestrator's three composed roles.
 # ---------------------------------------------------------------------------
 def test_agents_endpoint_has_the_three_roles(console, cookie):
-    """Attendee sees the harness: the orchestrator exposes exactly claude-code, kiro, opencode."""
+    """Attendee sees the harness: the orchestrator exposes exactly claude-code, claude-code-validator, opencode."""
     ids = {a["id"] for a in _agents(console, cookie)}
     assert ids == set(ORCHESTRATOR_ROLES), ids
 
@@ -187,12 +187,12 @@ PHRASING_CASES = [
     # 6. convert intent / default; all three roles, the module-to-MCP conversion.
     pytest.param(
         "Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server with a chatbot UI",
-        "convert/sample-to-mcp-v1", ["claude-code", "kiro", "opencode"], "conversion",
+        "convert/sample-to-mcp-v1", ["claude-code", "claude-code-validator", "opencode"], "conversion",
         id="convert-explicit-word",
     ),
     pytest.param(
         "Turn the cost analyzer skill into an MCP server",
-        "convert/sample-to-mcp-v1", ["claude-code", "kiro", "opencode"], "conversion",
+        "convert/sample-to-mcp-v1", ["claude-code", "claude-code-validator", "opencode"], "conversion",
         id="convert-mcp-server-phrase",
     ),
     # NOTE: there is deliberately NO "intent-less phrasing -> convert default" case
@@ -202,12 +202,12 @@ PHRASING_CASES = [
     # 4. full-stack / Critter; all three roles, the Critter Lab usecase (build/fullstack-v1).
     pytest.param(
         "Build the full-stack Critter Lab app",
-        "build/fullstack-v1", ["claude-code", "kiro", "opencode"], "full-stack",
+        "build/fullstack-v1", ["claude-code", "claude-code-validator", "opencode"], "full-stack",
         id="fullstack-critter",
     ),
     pytest.param(
         "I want a frontend and backend end-to-end app",
-        "build/fullstack-v1", ["claude-code", "kiro", "opencode"], "full-stack",
+        "build/fullstack-v1", ["claude-code", "claude-code-validator", "opencode"], "full-stack",
         id="fullstack-frontend-and-backend",
     ),
     # 5. patch; backend role only (the SIMPLE path of the complexity check).
@@ -233,21 +233,21 @@ PHRASING_CASES = [
         "patch/backend-v1", ["claude-code"], "claude",
         id="use-claude-code",
     ),
-    # 2. explicit agent intent; "use kiro" → validator/review role only (review/pr-v1).
+    # 2. explicit agent intent; "use kiro" back-compat alias → validator/review role only (review/pr-v1).
     pytest.param(
         "use kiro to validate the run",
-        "review/pr-v1", ["kiro"], "kiro",
+        "review/pr-v1", ["claude-code-validator"], "validator",
         id="use-kiro",
     ),
     # 3. review intent → review/pr-v1, validator role only.
     pytest.param(
         "review the PR on the run branch",
-        "review/pr-v1", ["kiro"], "review",
+        "review/pr-v1", ["claude-code-validator"], "review",
         id="review-pr",
     ),
     pytest.param(
         "please review the pull request diff",
-        "review/pr-v1", ["kiro"], "review",
+        "review/pr-v1", ["claude-code-validator"], "review",
         id="review-pull-request",
     ),
 ]
@@ -332,7 +332,7 @@ def test_patch_dispatches_backend_only_not_all_three(console, cookie):
     """The complexity check keeps a patch small: the frontend role is NOT dispatched."""
     run = submit_run(console, cookie, task="fix a typo in the backend docstring")
     route = poll_route(console, cookie, run["run_id"])
-    assert "opencode" not in route["agents"] and "kiro" not in route["agents"], route
+    assert "opencode" not in route["agents"] and "claude-code-validator" not in route["agents"], route
     assert route["agents"] == ["claude-code"], route
 
 
@@ -437,7 +437,7 @@ def test_routed_agents_match_run_detail_agents(console, cookie):
     route = poll_route(console, cookie, run["run_id"])
     code, detail = req(console, "GET", f"/api/orchestrator/runs/{run['run_id']}", headers=cookie)
     assert code == 200, detail
-    assert detail["agents"] == route["agents"] == ["kiro"], detail
+    assert detail["agents"] == route["agents"] == ["claude-code-validator"], detail
 
 
 def test_get_unknown_run_id_is_404(console, cookie):

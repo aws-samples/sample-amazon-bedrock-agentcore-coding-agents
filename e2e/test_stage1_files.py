@@ -312,14 +312,14 @@ def test_scaffold_harness_files_are_real_and_readable(console, cookie):
         close_session(console, cookie, sid)
 
 
-def test_scaffold_harness_kiro_writes_validator_steering(console, cookie):
-    """Scaffolding for kiro writes its spec-driven validator steering, not CLAUDE.md."""
-    sid = open_session(console, cookie, "kiro")
+def test_scaffold_harness_claude_code_validator_writes_claude_md(console, cookie):
+    """Scaffolding for claude-code-validator writes CLAUDE.md (validator role), not .kiro steering."""
+    sid = open_session(console, cookie, "claude-code-validator")
     try:
         _, out = req(console, "POST", f"/api/dev/sessions/{sid}/scaffold-harness",
-                     {"agent_id": "kiro"}, headers=cookie)
-        assert out["agent_id"] == "kiro"
-        assert "/mnt/s3files/.kiro/steering/validator.md" in out["written"]
+                     {"agent_id": "claude-code-validator"}, headers=cookie)
+        assert out["agent_id"] == "claude-code-validator"
+        assert "/mnt/s3files/CLAUDE.md" in out["written"]
     finally:
         close_session(console, cookie, sid)
 

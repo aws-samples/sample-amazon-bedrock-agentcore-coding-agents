@@ -266,33 +266,37 @@ def test_pty_open_type_and_read_real_output(console, cookie, stage1_session):
 #     so the deployed agent appears as an orchestrator subagent on its own.
 # ---------------------------------------------------------------------------
 def test_real_deploy_captures_agent_on_the_shelf(console, cookie):
-    """kiro is not on the shelf until a deploy lands. Write the runtime_config.json
-    `deploy.py` produces (arn:aws:bedrock-agentcore ARN); poll GET
-    /api/agents until kiro reconciles to ready with that exact ARN; smart capture of
-    a deploy, no fake shim, no local:runtime placeholder, no deploy button."""
-    # Empty coding-agents dir on boot, so kiro must NOT be on the shelf yet. This
-    # pre-check makes the ready-state below provably the result of the real config we
-    # write, not stale state from a prior run.
+    """claude-code-validator is not on the shelf until a deploy lands. Write the
+    runtime_config.json `deploy.py` produces (arn:aws:bedrock-agentcore ARN); poll GET
+    /api/agents until claude-code-validator reconciles to ready with that exact ARN;
+    smart capture of a deploy, no fake shim, no local:runtime placeholder, no deploy
+    button."""
+    # Empty coding-agents dir on boot, so claude-code-validator must NOT be on the
+    # shelf yet. This pre-check makes the ready-state below provably the result of the
+    # real config we write, not stale state from a prior run.
     _, before = _req(console, "GET", "/api/dev/agents", headers=cookie)
-    kiro0 = next(a for a in before["agents"] if a["agent_id"] == "kiro")
-    assert kiro0["status"] != "ready", f"kiro already deployed before the test ran: {kiro0}"
+    cv0 = next(a for a in before["agents"] if a["agent_id"] == "claude-code-validator")
+    assert cv0["status"] != "ready", \
+        f"claude-code-validator already deployed before the test ran: {cv0}"
 
-    arn = _write_real_runtime_config("kiro")    # what deploy.py writes in the harness dir
+    arn = _write_real_runtime_config("claude-code-validator")  # what deploy.py writes
     try:
         ready = None
         for _ in range(80):
             _, lst = _req(console, "GET", "/api/dev/agents", headers=cookie)
-            kiro = next(a for a in lst["agents"] if a["agent_id"] == "kiro")
-            if kiro["status"] == "ready" and kiro["runtime_arn"] == arn:
-                ready = kiro
+            cv = next(a for a in lst["agents"] if a["agent_id"] == "claude-code-validator")
+            if cv["status"] == "ready" and cv["runtime_arn"] == arn:
+                ready = cv
                 break
             time.sleep(0.1)
-        assert ready, f"kiro never captured on the shelf after a real deploy: {kiro}"
+        assert ready, \
+            f"claude-code-validator never captured on the shelf after a real deploy: {cv}"
         assert ready["runtime_arn"].startswith("arn:aws:bedrock-agentcore:")
-        assert "runtime/kiro" in ready["runtime_arn"]
+        assert "runtime/claude_code_validator" in ready["runtime_arn"]
     finally:
         try:
-            os.remove(os.path.join(_CODING_AGENTS_DIR, "kiro", "runtime_config.json"))
+            os.remove(os.path.join(_CODING_AGENTS_DIR, "claude-code-validator",
+                                   "runtime_config.json"))
         except OSError:
             pass
 
@@ -351,15 +355,15 @@ def test_edit_agent_name_and_purpose_persists(console, cookie):
 _ROUTER_CASES = [
     ("Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server with "
      "tests + a chatbot UI", "convert/sample-to-mcp-v1",
-     ["claude-code", "kiro", "opencode"]),
+     ["claude-code", "claude-code-validator", "opencode"]),
     ("fix the server version string in mcp_server.py",
      "patch/backend-v1", ["claude-code"]),
     ("use opencode to restyle the chatbot UI",
      "patch/frontend-v1", ["opencode"]),
     ("Build the full-stack Critter Lab app: backend and frontend",
-     "build/fullstack-v1", ["claude-code", "kiro", "opencode"]),
+     "build/fullstack-v1", ["claude-code", "claude-code-validator", "opencode"]),
     ("review the PR from the last run",
-     "review/pr-v1", ["kiro"]),
+     "review/pr-v1", ["claude-code-validator"]),
 ]
 
 

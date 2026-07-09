@@ -79,7 +79,7 @@ const TOOL_LABEL: Record<string, string> = {
   route_task:         'Routing the task',
   dispatch_backend:   'Dispatching backend (Claude Code)',
   dispatch_frontend:  'Dispatching frontend (opencode)',
-  dispatch_validator: 'Dispatching validator (Kiro)',
+  dispatch_validator: 'Dispatching validator (Claude Code)',
   run_build:          'Running the full build',
   run_status:         'Checking run status',
 };

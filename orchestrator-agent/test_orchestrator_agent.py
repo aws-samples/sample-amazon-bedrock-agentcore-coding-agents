@@ -57,7 +57,7 @@ def _wire_all_roles(tmp_path, monkeypatch):
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     runtime_config.save_runtime("opencode", "opencode-TESTID0001")
-    runtime_config.save_runtime("kiro", "kiro-TESTID0001")
+    runtime_config.save_runtime("claude-code-validator", "claude-code-validator-TESTID0001")
     main._agent = None  # drop any cached agent so it rebuilds with the wired tools
 
 
@@ -91,7 +91,7 @@ def _await_terminal(run_id, timeout=60):
 def test_route_task_routes_convert_to_full_workflow():
     out = json.loads(_call("route_task", task="convert the cost analyzer module to an MCP server"))
     assert out["workflow_ref"] == "convert/sample-to-mcp-v1"
-    assert set(out["agents"]) == {"claude-code", "kiro", "opencode"}
+    assert set(out["agents"]) == {"claude-code", "claude-code-validator", "opencode"}
 
 
 def test_route_task_routes_patch_to_backend_only():

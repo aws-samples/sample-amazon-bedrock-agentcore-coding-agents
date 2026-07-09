@@ -438,8 +438,8 @@ function RuntimesCard() {
         </div>
         <CardDescription>
           Wire each agent's runtime ARN so the orchestrator can dispatch to it. The event
-          pre-provisions the opencode and Kiro runtimes, so you only paste their ARN (and, for
-          Kiro, add its API key); Claude Code is the one you build and deploy by hand.
+          pre-provisions the opencode and validator runtimes (both Bedrock-native, no key), so
+          you only paste their ARN; the backend Claude Code is the one you build and deploy by hand.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

@@ -41,8 +41,9 @@ def use_engine(engine: Any) -> None:
     global ENGINE
     ENGINE = engine
 
-# Roles the dispatch_* tools target, by agent id.
-_BACKEND, _FRONTEND, _VALIDATOR = "claude-code", "opencode", "kiro"
+# Roles the dispatch_* tools target, by agent id. The validator is a second
+# Claude Code (steered by the acceptance contract) since Kiro was retired.
+_BACKEND, _FRONTEND, _VALIDATOR = "claude-code", "opencode", "claude-code-validator"
 
 SYSTEM_PROMPT = """\
 You are the orchestrator for a multi-agent coding harness, a chatbot the user \
@@ -52,7 +53,8 @@ and only build when the user actually asks you to.
 ## Your agents (deployed on their own AgentCore Runtimes, called AS TOOLS)
 - dispatch_backend, Claude Code: the backend MCP server (wraps the module).
 - dispatch_frontend, opencode: the chatbot UI on top of that server.
-- dispatch_validator, Kiro: the validator gate spec that defines "done".
+- dispatch_validator, Claude Code (validator): runs the acceptance gate that \
+defines "done".
 Each type is a FLEET, not one agent; you dispatch to a TYPE and the runtime picks \
 an instance. You never address one instance.
 
@@ -91,9 +93,9 @@ When the user is watching an agent's interactive terminal and wants you to drive
 turn by turn, use agent_send(agent_id, message) to type into that same terminal \
 (the user sees your message as an "[orchestrator]" line), agent_read(agent_id) to \
 see what the agent printed, and agent_status(agent_id) to check a terminal is open. \
-agent_id is 'claude-code', 'opencode', or 'kiro'. This talks to the SAME live session \
-the user is watching, so keep turns purposeful; it is for interactive guidance, not \
-for kicking a background build (use dispatch_*/run_build for that).
+agent_id is 'claude-code', 'opencode', or 'claude-code-validator'. This talks to the \
+SAME live session the user is watching, so keep turns purposeful; it is for interactive \
+guidance, not for kicking a background build (use dispatch_*/run_build for that).
 
 ## Voice
 Write like a senior engineer: precise, terse, technical. No emoji, no exclamation \
@@ -167,8 +169,8 @@ def build_tools() -> list:
 
     @tool
     def dispatch_validator(task: str) -> str:
-        """Start the VALIDATOR (Kiro) on its deployed Runtime, the gate spec only.
-        Returns immediately with a run id; the build runs in the background."""
+        """Start the VALIDATOR (Claude Code) on its deployed Runtime, the acceptance
+        gate only. Returns immediately with a run id; the build runs in the background."""
         return json.dumps({"run_id": _kick(_VALIDATOR, task),
                            "agent": _VALIDATOR, "kind": "validator", "status": "started"})
 
@@ -202,10 +204,10 @@ def build_tools() -> list:
     @tool
     def agent_send(agent_id: str, message: str) -> str:
         """Send a message into a coding agent's LIVE interactive terminal (the same
-        Claude Code / opencode / Kiro TUI the human is watching), then return what the
-        agent has printed so far. Use agent_id 'claude-code', 'opencode', or 'kiro'.
-        The agent's terminal must already be open. Follow up with agent_read to see
-        more output as the agent works."""
+        Claude Code / opencode TUI the human is watching), then return what the
+        agent has printed so far. Use agent_id 'claude-code', 'opencode', or
+        'claude-code-validator'. The agent's terminal must already be open. Follow up
+        with agent_read to see more output as the agent works."""
         try:
             m = _shell_mod()
         except Exception:
@@ -220,7 +222,7 @@ def build_tools() -> list:
     @tool
     def agent_read(agent_id: str) -> str:
         """Read the current screen of a coding agent's LIVE terminal (claude-code /
-        opencode / kiro), to see what it has printed since your last agent_send."""
+        opencode / claude-code-validator), to see what it printed since your last agent_send."""
         try:
             m = _shell_mod()
         except Exception:
@@ -229,8 +231,8 @@ def build_tools() -> list:
 
     @tool
     def agent_status(agent_id: str) -> str:
-        """Check whether a coding agent (claude-code / opencode / kiro) has a LIVE
-        terminal open that you can drive with agent_send/agent_read."""
+        """Check whether a coding agent (claude-code / opencode / claude-code-validator)
+        has a LIVE terminal open that you can drive with agent_send/agent_read."""
         try:
             m = _shell_mod()
         except Exception:
@@ -433,7 +435,7 @@ def suggestions() -> dict[str, Any]:
 _ROLE_TO_TOOL = {
     "claude-code": "dispatch_backend",
     "opencode": "dispatch_frontend",
-    "kiro": "dispatch_validator",
+    "claude-code-validator": "dispatch_validator",
 }
 
 

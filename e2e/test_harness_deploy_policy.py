@@ -39,7 +39,7 @@ _CODING_AGENTS = _CODE_ROOT / "coding-agents"
 
 # Codex is kept in the tree but hidden from the served workshop; it still ships a
 # deploy.py, so include it in the invariant. Any role with a deploy.py counts.
-_HARNESS_ROLES = ["claude-code", "opencode", "kiro"]
+_HARNESS_ROLES = ["claude-code", "opencode", "kiro", "claude-code-validator"]
 if (_CODING_AGENTS / "codex" / "deploy.py").exists():
     _HARNESS_ROLES.append("codex")
 

@@ -401,7 +401,7 @@ def test_engine_opens_pr_automatically_after_lgtm(monkeypatch, tmp_path):
     eng = engine.Engine(executor_obj=FixtureExecutor())
     try:
         run = eng.submit("Convert the module to a remote MCP server with tests "
-                         "+ a chatbot UI", ["claude-code", "kiro", "opencode"])
+                         "+ a chatbot UI", ["claude-code", "claude-code-validator", "opencode"])
         deadline = __import__("time").monotonic() + 90
         while run.status not in engine.TERMINAL:
             assert __import__("time").monotonic() < deadline, f"stuck in {run.status}"
@@ -441,7 +441,7 @@ def test_result_payload_surfaces_pr_url_after_auto_open(monkeypatch, tmp_path):
     eng = engine.Engine(executor_obj=FixtureExecutor())
     try:
         run = eng.submit("Convert the module to a remote MCP server with tests "
-                         "+ a chatbot UI", ["claude-code", "kiro", "opencode"])
+                         "+ a chatbot UI", ["claude-code", "claude-code-validator", "opencode"])
         deadline = __import__("time").monotonic() + 90
         while run.status not in engine.TERMINAL:
             assert __import__("time").monotonic() < deadline, f"stuck in {run.status}"

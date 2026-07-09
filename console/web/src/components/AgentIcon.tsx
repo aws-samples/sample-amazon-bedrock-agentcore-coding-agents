@@ -7,6 +7,8 @@ import { AgentBackendIcon } from '@foxl/code/components/AgentBackendIcon';
  */
 const ID_TO_BACKEND: Record<string, string> = {
   'claude-code': 'claudecode',
+  // The validator is a second Claude Code, so it renders the Claude Code mark.
+  'claude-code-validator': 'claudecode',
   kiro: 'kiro',
   codex: 'codex',
   cursor: 'cursor',

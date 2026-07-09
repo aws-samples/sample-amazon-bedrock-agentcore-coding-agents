@@ -44,6 +44,8 @@ REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-w
 # terminal stays clean.
 _AGENT_LAUNCH = {
     "claude-code": "/app/run.sh\n",
+    # The validator is a second Claude Code container, so it launches identically.
+    "claude-code-validator": "/app/run.sh\n",
     "opencode": "/app/run.sh\n",
     "kiro": "/app/run.sh\n",
 }

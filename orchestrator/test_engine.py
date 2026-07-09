@@ -26,7 +26,7 @@ from engine import (  # noqa: E402
 )
 from fixture_executor import FixtureExecutor  # noqa: E402
 
-ALL_AGENTS = ["claude-code", "kiro", "opencode"]
+ALL_AGENTS = ["claude-code", "claude-code-validator", "opencode"]
 
 # A task the router actually classifies (convert intent). The router is now
 # task-agnostic: a filler like "task" matches no intent and fails loud, so tests
@@ -144,7 +144,7 @@ def test_review_workflow_judges_an_existing_run():
     assert built.status == "passed"
     rev = _wait_terminal(engine.submit("review the PR from the last run"))
     assert rev.route["workflow_ref"] == "review/pr-v1"
-    assert rev.agents == ["kiro"]
+    assert rev.agents == ["claude-code-validator"]
     assert rev._review_target == built.run_id
     assert rev.status == "passed" and rev.review["state"] == "approved"
     assert rev.composed_commit is None  # read-only: no new compose
@@ -156,14 +156,14 @@ def test_terminals_record_real_role_shell_work():
     steering file), module probes, pytest, with exit codes."""
     engine = _engine()
     run = _wait_terminal(engine.submit("Convert the module to an MCP server"))
-    assert set(run.terminals) == {"claude-code", "kiro", "opencode"}
+    assert set(run.terminals) == {"claude-code", "claude-code-validator", "opencode"}
     backend = run.terminals["claude-code"]
     assert any("CLAUDE.md" in line["cmd"] for line in backend)        # harness install
     assert any("mcp_server.py" in line["cmd"] for line in backend)    # artifact probe
     assert all(line["exit"] == 0 for line in backend)
-    kiro = run.terminals["kiro"]
-    assert any("pytest" in line["cmd"] for line in kiro)              # the real gate
-    assert any("passed" in line["output"] for line in kiro)
+    validator = run.terminals["claude-code-validator"]
+    assert any("pytest" in line["cmd"] for line in validator)         # the real gate
+    assert any("passed" in line["output"] for line in validator)
     engine.shutdown()
 
 
@@ -305,7 +305,7 @@ def test_role_model_env_override_wires_deploy_time_default(monkeypatch):
     monkeypatch.setenv("WORKSHOP_MODEL_CLAUDE_CODE", "us.anthropic.claude-sonnet-4-6")
     assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "us.anthropic.claude-sonnet-4-6"
     # a different agent is unaffected by the claude-code-specific var
-    assert engine._role_model(run, "kiro", "auto") == "claude-sonnet-4-6"
+    assert engine._role_model(run, "claude-code-validator", "auto") == "claude-sonnet-4-6"
 
     # a per-task options model still overrides the env-wired default
     run.options = {"models": {"claude-code": "claude-opus-4-6"}}

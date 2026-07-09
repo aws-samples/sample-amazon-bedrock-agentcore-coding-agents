@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
-# Deploy a pre-built agent (opencode or kiro) onto the attendee's S3 Files mount.
+# Deploy a pre-built agent (opencode or claude-code-validator) onto the attendee's
+# S3 Files mount.
 #
-# Normally the workshop stack already built this agent's arm64 image (and, for kiro,
-# set up its Token Vault identity) at bootstrap (the slow, mount-independent work),
-# so this script just runs the agent's deploy.py: CreateAgentRuntime attaching the
-# S3 Files access point the attendee created on Stage 1 page 1. Fast, image in ECR.
+# Normally the workshop stack already built this agent's arm64 image at bootstrap
+# (the slow, mount-independent work), so this script just runs the agent's
+# deploy.py: CreateAgentRuntime attaching the S3 Files access point the attendee
+# created on Stage 1 page 1. Fast, image in ECR.
 #
-# But the pre-build is best-effort and NOT guaranteed on every account: a Workshop
-# Studio account often ships with a blank KiroApiKey (WS temp accounts cannot issue
-# a Kiro key), so the bootstrap skips Kiro's build and there is no image in ECR. To
-# keep ONE command working everywhere (the governing test), this script self-heals:
-# if the image was not pre-built, it runs the agent's setup.sh first (build + push),
-# then deploy.py. For kiro that build works WITHOUT a key too: with no KIRO_API_KEY
-# it builds --skip-identity (no Token Vault identity), and the attendee adds their
-# ksk_ key on the wired instance in console Settings afterwards. Pass KIRO_API_KEY
-# only if you want the identity provisioned during this build.
+# But the pre-build is best-effort and NOT guaranteed on every account. To keep ONE
+# command working everywhere (the governing test), this script self-heals: if the
+# image was not pre-built, it runs the agent's setup.sh first (build + push), then
+# deploy.py. Both opencode and the Claude Code validator are Bedrock-native, so
+# there is no vendor key to provision.
 #
-# Usage (from src/coding-agents):
+# The kiro/codex targets are kept as hidden/legacy restore paths (both were retired
+# from the served roster): kiro's build works WITHOUT a key via --skip-identity.
+#
+# Usage (from coding-agents):
 #   ./deploy-prebuilt.sh opencode
-#   ./deploy-prebuilt.sh kiro                        # keyless: builds --skip-identity if not pre-built
-#   KIRO_API_KEY=ksk_... ./deploy-prebuilt.sh kiro   # also provision the Token Vault identity now
+#   ./deploy-prebuilt.sh claude-code-validator       # the validator (Bedrock-native, no key)
+#   ./deploy-prebuilt.sh kiro                        # hidden/legacy: builds --skip-identity if not pre-built
 set -euo pipefail
 
 AGENT="${1:-}"
 case "$AGENT" in
-  opencode|kiro|codex) ;;   # codex kept as a hidden/legacy target; opencode is the frontend
-  *) echo "Usage: $0 <opencode|kiro>" >&2; exit 2 ;;
+  # opencode + claude-code-validator are the pre-provisioned pair; kiro/codex are
+  # kept as hidden/legacy restore targets.
+  opencode|claude-code-validator|kiro|codex) ;;
+  *) echo "Usage: $0 <opencode|claude-code-validator>" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

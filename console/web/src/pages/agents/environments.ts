@@ -11,9 +11,9 @@ export interface AgentRole {
 }
 
 export const AGENT_ROLES: AgentRole[] = [
-  { id: 'claude-code', label: 'Claude Code', blurb: 'Backend role: wire .claude/ skills + CLAUDE.md, then deploy the backend builder.' },
-  { id: 'kiro',        label: 'Kiro',        blurb: 'Validator role: runtime pre-provisioned; stage .kiro/steering and add your Kiro API key.' },
-  { id: 'opencode',    label: 'opencode',    blurb: 'Frontend role: runtime pre-provisioned on Bedrock; stage AGENTS.md and wire the runtime ARN.' },
+  { id: 'claude-code',           label: 'Claude Code', blurb: 'Backend role: wire .claude/ skills + CLAUDE.md, then deploy the backend builder.' },
+  { id: 'claude-code-validator', label: 'Claude Code', blurb: 'Validator role: a second Claude Code, runtime pre-provisioned on Bedrock; stage its acceptance-contract CLAUDE.md.' },
+  { id: 'opencode',              label: 'opencode',    blurb: 'Frontend role: runtime pre-provisioned on Bedrock; stage AGENTS.md and wire the runtime ARN.' },
 ];
 
 export const DEFAULT_AGENT_ROLE = 'claude-code';

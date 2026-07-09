@@ -37,7 +37,7 @@ from engine import (  # noqa: E402
 )
 from fixture_executor import FixtureExecutor  # noqa: E402
 
-ALL_AGENTS = ["claude-code", "kiro", "opencode"]
+ALL_AGENTS = ["claude-code", "claude-code-validator", "opencode"]
 
 
 # --- a fake child proc: looks like Popen, records terminate/kill, no real OS proc

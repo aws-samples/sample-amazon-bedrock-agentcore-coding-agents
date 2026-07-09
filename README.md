@@ -1,8 +1,9 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
-Run multiple coding agents (Claude Code, Kiro, opencode) in parallel on Amazon Bedrock
-AgentCore Runtime, orchestrate them from one chat, grade their output deterministically
-with `pytest`, and govern the fleet (identity, per-user cost, observability).
+Run multiple coding agents (Claude Code, Claude Code validator, opencode) in parallel on
+Amazon Bedrock AgentCore Runtime, orchestrate them from one chat, grade their output
+deterministically with `pytest`, and govern the fleet (identity, per-user cost,
+observability).
 
 This repo is the full workshop payload. Clone it and follow the workshop content; every
 step is reproducible with the CLI, starting from this one clone.
@@ -17,6 +18,10 @@ followed by the CLI steps the workshop teaches.
 ## Layout
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
+  - `claude-code/` backend MCP-server builder (Claude Code, native Bedrock)
+  - `claude-code-validator/` acceptance-contract validator (Claude Code, native Bedrock; steered by a `harness:gate` CLAUDE.md)
+  - `opencode/` frontend chatbot UI builder (opencode, native Bedrock)
+  - `kiro/` legacy restore path (hidden; kept restorable like `codex/`, not on any served roster)
 - `orchestrator/` the Strands orchestrator engine (router, engine, executor, reviewer, github)
 - `orchestrator-agent/` the deployable Strands agent bundle
 - `console/` the React + FastAPI console (Agents / Fleets / Governance)

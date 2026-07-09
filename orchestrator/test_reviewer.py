@@ -144,7 +144,7 @@ def test_review_run_branch_maps_to_the_target_not_the_review(tmp_path):
     so the guard checks the target's id, not the review run's own id."""
     server = tmp_path / "mcp_server.py"
     server.write_text("import cost_analyzer\n")
-    run = _FakeRun(run_id="run_222222_002", agents=["kiro"],
+    run = _FakeRun(run_id="run_222222_002", agents=["claude-code-validator"],
                    route={"read_only": True}, review_target="run_103512_004",
                    server_file=str(server), composed_branch="run/run_103512_004")
     branch = next(c for c in reviewer._critique_checks(run, "cost_analyzer")

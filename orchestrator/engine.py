@@ -37,8 +37,8 @@ How a role's artifact is produced (the step behind the execution seam):
 
   * **AgentCore Runtime (shipped, real-only)**: each role's coding-agent CLI runs
     INSIDE its deployed Runtime: Claude Code (``claude``) writes ``mcp_server.py``,
-    opencode (``opencode``) writes ``chatbot.html``, Kiro (``kiro-cli``) writes the
-    validation report. The engine dispatches over the command shell
+    opencode (``opencode``) writes ``chatbot.html``, and the Claude Code validator
+    (``claude``) writes the validation report. The engine dispatches over the command shell
     (``runtime_exec`` via ``engine._runtime_cli``) against the role's WIRED runtime
     ARN, reads back the artifact the CLI wrote, and the gate grades THAT file. A
     role with no wired runtime fails loud; there is no local fallback.
@@ -413,14 +413,17 @@ AGENTS = [
          "skills": ["configure-claude-code-backend", "harness-setup"],
          "install": "cd coding-agents/claude-code && ./setup.sh && python deploy.py",
      }},
-    {"id": "kiro", "label": "Kiro", "default_role": "validator",
-     "model": "auto", "credential": "token-vault",
+    {"id": "claude-code-validator", "label": "Claude Code", "default_role": "validator",
+     "model": "us.anthropic.claude-opus-4-6-v1", "credential": "bedrock-native",
+     # The validator is a SECOND Claude Code, steered by an acceptance-contract
+     # CLAUDE.md (carrying the ```harness:gate``` block) instead of Kiro's
+     # .kiro/steering. Bedrock-native, so it needs no API key and no Token Vault.
      "harness": {
-         "steering_format": ".kiro/steering/*.md",
-         "steering_path": "coding-assistants/kiro/plugin/steering/agent.md",
-         "local_steering_path": "harness/kiro/.kiro/steering/validator.md",
-         "skills": ["configure-kiro-validator"],
-         "install": "cd coding-agents/kiro && KIRO_API_KEY=ksk_xxx ./setup.sh && python deploy.py",
+         "steering_format": "CLAUDE.md",
+         "steering_path": "coding-agents/claude-code-validator/CLAUDE.md",
+         "local_steering_path": "harness/claude-code-validator/CLAUDE.md",
+         "skills": ["configure-claude-code-validator"],
+         "install": "cd coding-agents/claude-code-validator && ./setup.sh && python deploy.py",
      }},
     {"id": "opencode", "label": "opencode", "default_role": "frontend-builder",
      "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6", "credential": "runtime-iam",
@@ -433,6 +436,12 @@ AGENTS = [
      }},
 ]
 ROLE_BY_AGENT = {a["id"]: a["default_role"] for a in AGENTS}
+
+# The agent id that plays the validator role. It is a second Claude Code
+# (steered by an acceptance-contract CLAUDE.md) since Kiro was retired from the
+# roster; keeping it in one constant makes the validator dispatch path readable
+# and the swap easy to audit.
+_VALIDATOR_AGENT = "claude-code-validator"
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -1084,33 +1093,34 @@ class Engine:
 
     def _cli_validator_report(self, run: Run, pytest_tail: str,
                               role: RoleResult) -> None:
-        """The kiro-cli (running INSIDE its deployed Runtime) writes
-        validation_report.md from the pytest output. pytest stays the only
+        """The validator's Claude Code CLI (running INSIDE its deployed Runtime)
+        writes validation_report.md from the pytest output. pytest stays the only
         acceptance authority (no LLM judge)."""
-        model = self._role_model(run, "kiro", "auto")
+        model = self._role_model(run, _VALIDATOR_AGENT, "us.anthropic.claude-opus-4-6-v1")
         prompt = (
             "You are the validator role in a multi-agent build. Read your steering "
-            "in .kiro/steering/ for your role.\n\nThe deterministic grading contract "
+            "in CLAUDE.md for your role.\n\nThe deterministic grading contract "
             "just ran (pytest):\n" + pytest_tail + "\n\nWrite a validation report of "
             "at most 5 short lines (what the contract covers, what passed, what to "
             "watch post-deploy) and SAVE IT to ./validation_report.md in this "
             "directory. Plain text only. You do NOT decide pass/fail; pytest did.")
-        result = self._runtime_cli(run, "kiro", role, prompt, model, "validation_report.md")
-        report_path = os.path.join(run.roledir("kiro"), "validation_report.md")
+        result = self._runtime_cli(run, _VALIDATOR_AGENT, role, prompt, model,
+                                   "validation_report.md")
+        report_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "validation_report.md")
         self._read_artifact(report_path, "validation_report.md", result)
-        run.term("kiro", "cat validation_report.md")
+        run.term(_VALIDATOR_AGENT, "cat validation_report.md")
 
     def _write_validator_report(self, run: Run, role: RoleResult,
                                 pytest_tail: str) -> None:
         """Produce validation_report.md; the PRODUCE step varies by executor.
 
-        Shipped (AgentCoreExecutor): the real kiro-cli runs INSIDE its deployed
-        Runtime and writes the report (engine._runtime_cli via
+        Shipped (AgentCoreExecutor): the validator's Claude Code CLI runs INSIDE
+        its deployed Runtime and writes the report (engine._runtime_cli via
         _cli_validator_report). Tests (FixtureExecutor): a deterministic report
         from the pytest tail, no model, offline. No other producer exists; a
         real-only shipped path fails loud. pytest stays the ONLY acceptance
         authority in every path; the validator never judges pass/fail."""
-        report_path = os.path.join(run.roledir("kiro"), "validation_report.md")
+        report_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "validation_report.md")
         if self.executor.name == "agentcore":
             self._cli_validator_report(run, pytest_tail, role)
             return
@@ -1118,7 +1128,7 @@ class Engine:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write("validation report: the grading contract ran; "
                         "see the pytest output above.\n")
-            run.add_event("kiro", {"kind": "text",
+            run.add_event(_VALIDATOR_AGENT, {"kind": "text",
                                    "text": "[validator] wrote validation_report.md "
                                            "(deterministic, from the pytest output)"})
             return
@@ -1176,11 +1186,13 @@ class Engine:
             extra skills, install commands) is set up here, in the role's real
             terminal, exactly as a developer would extend their own harness."""
             src = builders.harness_file(agent_id, run.usecase)
-            # The dest filename each harness reads from cwd: kiro-cli scans
-            # .kiro/steering/*.md and the reference places its steering as
-            # agent.md, so the validator's steering lands there in the workdir.
-            rel = {"claude-code": "CLAUDE.md", "opencode": "AGENTS.md",
-                   "kiro": ".kiro/steering/agent.md"}[agent_id]
+            # The dest filename each harness reads from cwd: Claude Code reads
+            # CLAUDE.md (backend AND validator, both Claude Code), opencode reads
+            # AGENTS.md. The validator's acceptance-contract steering lands as its
+            # own CLAUDE.md in the workdir.
+            rel = {"claude-code": "CLAUDE.md",
+                   "claude-code-validator": "CLAUDE.md",
+                   "opencode": "AGENTS.md"}[agent_id]
             dest_dir = os.path.dirname(rel)
             mkdir = f"mkdir -p {dest_dir} && " if dest_dir else ""
             run.term(agent_id, f"{mkdir}cp {json.dumps(src)} {rel} && head -4 {rel}")
@@ -1260,9 +1272,9 @@ class Engine:
                     + (" (sabotaged endpoint for iteration demo)" if sabotage else ""))
 
         def validator(role: RoleResult) -> None:
-            install_harness("kiro")
+            install_harness(_VALIDATOR_AGENT)
             # Prove the contract pre-deploy by running pytest in the terminal.
-            out = run.term("kiro", f"{sys.executable} -m pytest "
+            out = run.term(_VALIDATOR_AGENT, f"{sys.executable} -m pytest "
                                    f"{json.dumps(uc['grading'])} -q --no-header")
             grade, InProcessClient, _ = reviewer.load_grading(uc["grading"])
             verdict = grade(InProcessClient())
@@ -1433,7 +1445,7 @@ class Engine:
         run._server_file = target._server_file
         run._chatbot_file = target._chatbot_file
         run.composed_branch = target.composed_branch
-        role = run.progress.get("kiro")
+        role = run.progress.get(_VALIDATOR_AGENT)
         if role:
             role.state = "working"
         t0 = time.monotonic()
@@ -1452,13 +1464,14 @@ class Engine:
                 time.sleep(0.1)
         run.artifact_endpoint = url
         # Routed-roles invariant: only a role the router actually dispatched gets a
-        # terminal pane. review/pr-v1 routes kiro, so this guard is satisfied today;
-        # it's enforced structurally so a future read-only workflow that routes a
-        # different validator can never fabricate a phantom kiro pane.
-        if "kiro" in run.agents:
-            run.term("kiro", f"echo 'reviewing {target.run_id} (branch "
+        # terminal pane. review/pr-v1 routes the validator, so this guard is
+        # satisfied today; it's enforced structurally so a future read-only
+        # workflow that routes a different validator can never fabricate a phantom
+        # validator pane.
+        if _VALIDATOR_AGENT in run.agents:
+            run.term(_VALIDATOR_AGENT, f"echo 'reviewing {target.run_id} (branch "
                              f"{target.composed_branch or 'n/a'}) at {url}'")
-            run.term("kiro", f"MCP_ENDPOINT_URL={url} {sys.executable} -m pytest "
+            run.term(_VALIDATOR_AGENT, f"MCP_ENDPOINT_URL={url} {sys.executable} -m pytest "
                              f"{json.dumps(uc['grading'])} -q --no-header")
         if role:
             role.state = "done"
@@ -1480,10 +1493,10 @@ class Engine:
         run.gate = verdict.gate
         # Surface the verdict in the validator's terminal, but ONLY when that role
         # was actually dispatched. The review orchestrator is a separate pen; on a
-        # single-role run (patch/backend-v1) fabricating a kiro pane would violate
-        # "only routed roles run". The run log carries the verdict either way.
-        if "kiro" in run.agents:
-            run.term("kiro", f"cat {json.dumps(os.path.join(run.workdir, 'critique.md'))}")
+        # single-role run (patch/backend-v1) fabricating a validator pane would
+        # violate "only routed roles run". The run log carries the verdict either way.
+        if _VALIDATOR_AGENT in run.agents:
+            run.term(_VALIDATOR_AGENT, f"cat {json.dumps(os.path.join(run.workdir, 'critique.md'))}")
         if verdict.lgtm:
             if not (run.route and run.route.get("read_only")):
                 try:

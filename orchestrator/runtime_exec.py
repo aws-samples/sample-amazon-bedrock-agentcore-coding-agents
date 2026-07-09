@@ -68,6 +68,8 @@ _ART_END = "__ARTIFACT_END__"
 # Bedrock, so there is no mantle/us-east-2 special case anymore.
 _ROLE_ENV: dict[str, dict[str, str]] = {
     "claude-code": {"CLAUDE_CODE_USE_BEDROCK": "1", "DISABLE_AUTOUPDATER": "1"},
+    # The validator is a second Claude Code, so it uses the same Bedrock env.
+    "claude-code-validator": {"CLAUDE_CODE_USE_BEDROCK": "1", "DISABLE_AUTOUPDATER": "1"},
     "opencode": {},
     "kiro": {},
 }
@@ -84,7 +86,8 @@ def _cli_invocation(agent_id: str, prompt_var: str, model: str, workdir: str) ->
     it PASSED EXPLICITLY because it anchors its project at the nearest git root, not
     the process cwd, and ``/mnt/s3files/<run>`` is not a git repo.
     """
-    if agent_id == "claude-code":
+    if agent_id in ("claude-code", "claude-code-validator"):
+        # The validator is a second Claude Code, so it runs the same headless CLI.
         m = model or "us.anthropic.claude-opus-4-6-v1"
         return (f'claude --dangerously-skip-permissions --print --max-turns 50 '
                 f'--model {shlex.quote(m)} "${prompt_var}"')
@@ -136,7 +139,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
     cli_region = region
     env = {"AWS_REGION": cli_region, "AWS_DEFAULT_REGION": cli_region,
            **_ROLE_ENV.get(agent_id, {})}
-    if agent_id == "claude-code" and model:
+    if agent_id in ("claude-code", "claude-code-validator") and model:
         env["ANTHROPIC_MODEL"] = model
     # Propagate authenticated run attribution metadata into the runtime.
     identity = None

@@ -417,7 +417,7 @@ def test_06a_stage2_convert_routes_runs_gates_and_composes_all_three(console, co
     # route: the documented workflow + EXACTLY the three roles
     route = _route_of(console, cookie, rid)
     assert route["workflow_ref"] == "convert/sample-to-mcp-v1", route
-    assert set(route["agents"]) == {"claude-code", "kiro", "opencode"}, route
+    assert set(route["agents"]) == {"claude-code", "claude-code-validator", "opencode"}, route
     assert route["read_only"] is False
 
     # autonomy: no POSTs between submit and terminal; the engine drives the phases
@@ -450,14 +450,14 @@ def test_06a_stage2_convert_routes_runs_gates_and_composes_all_three(console, co
 
     # three role terminals, each with at least one transcript entry
     terms = _terminals(console, cookie, rid)
-    for agent in ("claude-code", "kiro", "opencode"):
+    for agent in ("claude-code", "claude-code-validator", "opencode"):
         assert agent in terms, terms.keys()
         assert len(terms[agent]) >= 1, f"{agent} has no terminal output"
 
     # honest local zero: per-role progress reports zero tokens AND zero cost
     _, full = _req(console, "GET", f"/api/orchestrator/runs/{rid}", headers=cookie)
     progress = {p["agent"]: p for p in full["progress"]}
-    assert set(progress) == {"claude-code", "kiro", "opencode"}
+    assert set(progress) == {"claude-code", "claude-code-validator", "opencode"}
     for agent, p in progress.items():
         assert p["tokens"] == 0, f"{agent} tokens must be zero in local mode"
         assert p["cost_usd"] == 0, f"{agent} cost must be zero in local mode"
@@ -481,7 +481,7 @@ def test_06f_stage2_anti_race_all_roles_done_distinct_artifacts(console, cookie)
     rid = ATTENDEE["convert_run"]
     _, full = _req(console, "GET", f"/api/orchestrator/runs/{rid}", headers=cookie)
     progress = {p["agent"]: p for p in full["progress"]}
-    assert {"claude-code", "kiro", "opencode"} <= set(progress)
+    assert {"claude-code", "claude-code-validator", "opencode"} <= set(progress)
     for agent, p in progress.items():
         assert p["state"] == "done", f"{agent} did not finish done (race/winner?): {p}"
     # distinct artifact paths: backend, frontend, reviewer each land their own file
@@ -539,7 +539,7 @@ def test_06b_stage2_backend_patch_dispatches_only_claude_code(console, cookie):
     # …and the terminal panes must agree: ONLY the dispatched role has one.
     terms = _terminals(console, cookie, rid)
     assert "claude-code" in terms
-    assert "kiro" not in terms, f"kiro pane on a backend patch (distribution broke): {list(terms)}"
+    assert "claude-code-validator" not in terms, f"claude-code-validator pane on a backend patch (distribution broke): {list(terms)}"
     assert "opencode" not in terms, f"opencode ran on a backend patch (distribution broke): {list(terms)}"
 
 
@@ -572,10 +572,10 @@ def test_06c_stage2_frontend_patch_dispatches_only_opencode(console, cookie):
 
 
 # 6d. READ-ONLY review: 'review the PR from the last run' -> review/pr-v1, only
-#      kiro, and it produces NO new deliverable (no NEW compose commit).
+#      claude-code-validator, and it produces NO new deliverable (no NEW compose commit).
 def test_06d_stage2_review_is_read_only_no_new_deliverable(console, cookie):
-    """'review the PR from the last run' -> review/pr-v1, only kiro dispatched,
-    read_only True; and the read-only workflow composes NOTHING NEW.
+    """'review the PR from the last run' -> review/pr-v1, only claude-code-validator
+    dispatched, read_only True; and the read-only workflow composes NOTHING NEW.
 
     What distinguishes a review from a build in the result payload: `composed_commit`
     stays null (a review creates NO new commit; engine._finalize only composes when
@@ -586,12 +586,12 @@ def test_06d_stage2_review_is_read_only_no_new_deliverable(console, cookie):
     rid = _submit(console, cookie, "review the PR from the last run")
     route = _route_of(console, cookie, rid)
     assert route["workflow_ref"] == "review/pr-v1", route
-    assert route["agents"] == ["kiro"], route
+    assert route["agents"] == ["claude-code-validator"], route
     assert route["read_only"] is True
     run = _poll_terminal(console, cookie, rid)
     assert run["status"] in ("passed", "needs_human"), run
     terms = _terminals(console, cookie, rid)
-    assert "kiro" in terms
+    assert "claude-code-validator" in terms
     # neither build role runs (and neither has a finalization side-channel here)
     assert "claude-code" not in terms and "opencode" not in terms, terms.keys()
     if run["status"] == "passed":
@@ -617,7 +617,7 @@ def test_06e_stage2_critter_lab_fullstack_all_three_roles(console, cookie):
     ATTENDEE["critter_run"] = rid
     route = _route_of(console, cookie, rid)
     assert route["workflow_ref"] == "build/fullstack-v1", route
-    assert set(route["agents"]) == {"claude-code", "kiro", "opencode"}, route
+    assert set(route["agents"]) == {"claude-code", "claude-code-validator", "opencode"}, route
     assert route["usecase"] == "critter-lab", route
     run = _poll_terminal(console, cookie, rid)
     assert run["status"] in ("passed", "needs_human"), run
@@ -670,7 +670,7 @@ def test_07_stage3_governance_reflects_the_real_journey(console, cookie):
     # cost-breakdown by=agent has rows for all three agents (attribution, no winner)
     _, by_agent = _req(console, "GET", "/api/metrics/cost-breakdown?by=agent", headers=cookie)
     assert by_agent["by"] == "agent"
-    assert {"claude-code", "kiro", "opencode"} <= set(by_agent["breakdown"]), by_agent
+    assert {"claude-code", "claude-code-validator", "opencode"} <= set(by_agent["breakdown"]), by_agent
 
     # cost-breakdown by=user attributes to the local OS user
     _, by_user = _req(console, "GET", "/api/metrics/cost-breakdown?by=user", headers=cookie)

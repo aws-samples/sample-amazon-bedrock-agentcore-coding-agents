@@ -52,7 +52,16 @@ def _settings_path() -> str:
 # GPT-5.x the Codex path needs is allowlist-gated. The codex harness stays in the
 # repo (coding-agents/codex/) but is NOT in this roster, so it never appears as a
 # wireable agent in the console or as a dispatch target.
-ROLES = ("orchestrator", "claude-code", "kiro", "opencode")
+#
+# The validator role is ``claude-code-validator`` (Claude Code, Bedrock-native):
+# it replaced ``kiro`` because the Kiro CLI needs a per-user paid subscription +
+# a ``ksk_`` API key that cannot be provisioned for a public workshop. It runs
+# the SAME Claude Code container as the backend, steered by an acceptance-contract
+# ``CLAUDE.md`` instead of ``.kiro/steering``, so it needs no key and no Token
+# Vault. The kiro harness stays in the repo (coding-agents/kiro/) but is NOT in
+# this roster, so like codex it never appears as a wireable agent or a dispatch
+# target; ``kiro_config.py`` / the ``use kiro`` router alias remain for restore.
+ROLES = ("orchestrator", "claude-code", "claude-code-validator", "opencode")
 
 # A default one-line "what this agent does" per role, so a freshly wired (or
 # auto-discovered) instance carries a meaningful description instead of an empty
@@ -63,8 +72,8 @@ _DEFAULT_DESCRIPTION = {
                     "composes their work, runs the acceptance gate, and opens the PR.",
     "claude-code": "Backend builder (Claude Code): wraps the module as a remote MCP "
                    "server that serves the tools over JSON-RPC.",
-    "kiro": "Validator (Kiro CLI): owns the acceptance contract that defines when a "
-            "build is done.",
+    "claude-code-validator": "Validator (Claude Code): owns the acceptance contract "
+                             "that defines when a build is done, and runs the gate.",
     "opencode": "Frontend builder (opencode): builds the thin chatbot UI on top of "
                 "the MCP server, on Amazon Bedrock.",
 }
@@ -130,12 +139,13 @@ def _load_file() -> dict[str, list[str]]:
 
 
 # The harness deploy.py writes coding-agents/<role>/runtime_config.json with the
-# real deployed ARN. The event pre-provisions Codex and Kiro at box boot (the CFN
-# ProvisionPreBuiltAgents step), so those files exist BEFORE the attendee touches
-# Settings. Auto-discovering them here is what makes the console show Codex/Kiro
-# as already wired (matching what the content says: "the event already wired its
-# Runtime ARN"), the same source of truth the Stage 1 Agents shelf reads. It is
-# the LOWEST-priority source: an explicit env var or a Settings entry still wins.
+# real deployed ARN. The event pre-provisions opencode and the Claude Code
+# validator at box boot (the CFN ProvisionPreBuiltAgents step), so those files
+# exist BEFORE the attendee touches Settings. Auto-discovering them here is what
+# makes the console show them as already wired (matching what the content says:
+# "the event already wired its Runtime ARN"), the same source of truth the Stage 1
+# Agents shelf reads. It is the LOWEST-priority source: an explicit env var or a
+# Settings entry still wins.
 def _coding_agents_dir() -> str:
     """The directory holding each harness's ``<role>/runtime_config.json``.
     Wirable (WORKSHOP_CODING_AGENTS_DIR / WORKSHOP_REPO_ROOT) so tests point it at
@@ -152,7 +162,9 @@ def _coding_agents_dir() -> str:
 
 # Only a role that maps to a real harness directory can be auto-discovered; the
 # orchestrator itself is not a dispatch target and has no coding-agents/ dir.
-_HARNESS_DIRS = {"claude-code": "claude-code", "kiro": "kiro", "opencode": "opencode"}
+_HARNESS_DIRS = {"claude-code": "claude-code",
+                 "claude-code-validator": "claude-code-validator",
+                 "opencode": "opencode"}
 
 
 def _discover_deployed(role: str) -> list[str]:

@@ -95,7 +95,7 @@ def isolated_server_env(port: int, **extra) -> dict:
 # $0.096/hr * 730h * 2 instances. Every grading contract asserts this exact value.
 EC2_FIXTURE_COST = 140.16
 LGTM_TOKEN = "LGTM: no changes needed"
-SUPPORTED_AGENTS = ("claude-code", "kiro", "opencode")
+SUPPORTED_AGENTS = ("claude-code", "claude-code-validator", "opencode")
 TERMINAL_STATUSES = ("passed", "failed", "needs_human")
 
 

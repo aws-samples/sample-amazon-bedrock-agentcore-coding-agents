@@ -224,7 +224,7 @@ def test_stage2_builds_the_deliverable_from_the_harness():
     try:
         run = _wait_terminal(eng.submit(
             "Convert the cost_analyzer module to an MCP server with tests + a chatbot UI",
-            ["claude-code", "kiro", "opencode"]))
+            ["claude-code", "claude-code-validator", "opencode"]))
         result = engine.public_result(run)
 
         # the blueprint passed its REAL pytest acceptance gate (not an LLM judge)
@@ -290,7 +290,7 @@ def test_module_edit_flows_into_the_produced_ui():
         try:
             run = _wait_terminal(eng.submit(
                 "Re-run after adding a new instance type to the module",
-                ["claude-code", "kiro", "opencode"]))
+                ["claude-code", "claude-code-validator", "opencode"]))
             assert run.status == "passed"
             html = open(os.path.join(_deliverable_dir(), "chatbot.html"), encoding="utf-8").read()
             answer = _replay_chatbot_button(html, NEW_TYPE)
@@ -314,7 +314,7 @@ def test_skill_seam_negative_control():
     eng = engine.Engine(executor_obj=FixtureExecutor())
     try:
         run = _wait_terminal(eng.submit(
-            "Baseline run, module unedited", ["claude-code", "kiro", "opencode"]))
+            "Baseline run, module unedited", ["claude-code", "claude-code-validator", "opencode"]))
         assert run.status == "passed"
         html = open(os.path.join(_deliverable_dir(), "chatbot.html"), encoding="utf-8").read()
         answer = _replay_chatbot_button(html, "x9.workshop")
@@ -357,7 +357,7 @@ def test_steering_edit_changes_the_produced_ui():
             run = _wait_terminal(eng.submit(
                 "Convert the cost analyzer module to an MCP server and chatbot UI, "
                 "restyled per the edited AGENTS.md",
-                ["claude-code", "kiro", "opencode"]))
+                ["claude-code", "claude-code-validator", "opencode"]))
             assert run.status == "passed"
             html = open(os.path.join(_deliverable_dir(), "chatbot.html"), encoding="utf-8").read()
             # the produced UI carries the NEW title and the NEW example chip
@@ -444,7 +444,7 @@ def test_stage3_metrics_aggregate_the_real_runs():
 
     cost = metrics_lib.get_cost_breakdown(by="agent")["breakdown"]
     # the three roles all show up as attributed cost buckets (estimated, not a race)
-    assert set(cost) & {"claude-code", "kiro", "opencode"}, f"no per-agent attribution: {cost}"
+    assert set(cost) & {"claude-code", "claude-code-validator", "opencode"}, f"no per-agent attribution: {cost}"
 
     me = __import__("getpass").getuser()
     metrics = metrics_lib.get_user_metrics(me, "24h")

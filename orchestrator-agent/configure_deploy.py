@@ -17,7 +17,9 @@ import boto3
 
 
 HERE = Path(__file__).resolve().parent
-ROLES = ("claude-code", "opencode", "kiro")
+# The validator role is a second Claude Code (claude-code-validator); kiro was
+# retired from the roster (kept in the codebase, off every roster, like codex).
+ROLES = ("claude-code", "opencode", "claude-code-validator")
 
 
 def _region(value: str | None) -> str:
@@ -89,7 +91,7 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     env = {
         "AGENTCORE_RUNTIME_CLAUDE_CODE": arns["claude-code"],
         "AGENTCORE_RUNTIME_OPENCODE": arns["opencode"],
-        "AGENTCORE_RUNTIME_KIRO": arns["kiro"],
+        "AGENTCORE_RUNTIME_CLAUDE_CODE_VALIDATOR": arns["claude-code-validator"],
         "PERUSER_ROLE_ARN": peruser_role,
         "WORKSHOP_BEDROCK_REGION": region,
         "WORKSHOP_EXECUTOR": "agentcore",

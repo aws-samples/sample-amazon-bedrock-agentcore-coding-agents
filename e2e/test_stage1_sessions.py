@@ -40,7 +40,7 @@ def test_agents_list_shape(console, cookie):
 
 
 def test_agents_list_has_exactly_three_ids(console, cookie):
-    """The shelf offers exactly claude-code, kiro, opencode; no more, no fewer."""
+    """The shelf offers exactly claude-code, claude-code-validator, opencode; no more, no fewer."""
     _, out = req(console, "GET", f"{S1}/agents", headers=cookie)
     ids = {a["agent_id"] for a in out["agents"]}
     assert ids == set(SUPPORTED_AGENTS)
@@ -52,7 +52,7 @@ def test_agents_carry_model_and_credential(console, cookie):
     by_id = {a["agent_id"]: a for a in out["agents"]}
     assert by_id["claude-code"]["credential"] == "bedrock-native"
     assert by_id["opencode"]["model"] == "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
-    assert by_id["kiro"]["model"] == "auto"
+    assert by_id["claude-code-validator"]["credential"] == "bedrock-native"
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +95,14 @@ def test_deploy_claude_code_flips_ready(console, cookie):
         undeploy_real("claude-code")
 
 
-def test_deploy_kiro_flips_ready(console, cookie):
-    """A kiro deploy reconciles to ready with kiro's own runtime ARN."""
+def test_deploy_claude_code_validator_flips_ready(console, cookie):
+    """A claude-code-validator deploy reconciles to ready with its own runtime ARN."""
     try:
-        out = deploy_real(console, cookie, "kiro")
+        out = deploy_real(console, cookie, "claude-code-validator")
         assert out["status"] == "ready"
-        assert "runtime/kiro" in out["runtime_arn"]
+        assert "runtime/claude_code_validator" in out["runtime_arn"]
     finally:
-        undeploy_real("kiro")
+        undeploy_real("claude-code-validator")
 
 
 def test_deploy_opencode_flips_ready(console, cookie):
@@ -136,9 +136,9 @@ def test_deploy_without_real_runtime_stays_deploying(console, cookie):
     """With no runtime_config.json (no CreateAgentRuntime yet), the deploy
     endpoint does NOT fake a ready: the agent stays 'deploying' with a null ARN,
     never a local:runtime placeholder."""
-    undeploy_real("kiro")  # ensure no real config
+    undeploy_real("claude-code-validator")  # ensure no real config
     code, out = req(console, "POST", f"{S1}/agents/deploy",
-                    {"agent_id": "kiro"}, headers=cookie)
+                    {"agent_id": "claude-code-validator"}, headers=cookie)
     assert code == 202
     assert out["status"] == "deploying", out
     assert out["runtime_arn"] is None, out
@@ -169,14 +169,14 @@ def test_deploy_unknown_agent_404(console, cookie):
 # ---------------------------------------------------------------------------
 def test_edit_name_and_purpose_persists(console, cookie):
     """Right-click Edit: a new name + purpose are saved and read back on the agent."""
-    code, out = req(console, "POST", f"{S1}/agents/kiro/edit",
+    code, out = req(console, "POST", f"{S1}/agents/claude-code-validator/edit",
                     {"name": "Test Authority", "purpose": "Writes the gate."},
                     headers=cookie)
     assert code == 200
     assert out["name"] == "Test Authority"
     assert out["purpose"] == "Writes the gate."
     # Persisted: a fresh GET reflects the override.
-    _, again = req(console, "GET", f"{S1}/agents/kiro", headers=cookie)
+    _, again = req(console, "GET", f"{S1}/agents/claude-code-validator", headers=cookie)
     assert again["name"] == "Test Authority"
     assert again["purpose"] == "Writes the gate."
 
@@ -246,12 +246,12 @@ def test_open_session_claude_code(console, cookie):
         close_session(console, cookie, sess["session_id"])
 
 
-def test_open_session_kiro(console, cookie):
-    """Opening a Kiro session yields an open workspace bound to the kiro agent."""
-    sid = open_session(console, cookie, "kiro")
+def test_open_session_claude_code_validator(console, cookie):
+    """Opening a claude-code-validator session yields an open workspace bound to that agent."""
+    sid = open_session(console, cookie, "claude-code-validator")
     try:
         _, sess = req(console, "GET", f"{S1}/sessions/{sid}", headers=cookie)
-        assert sess["agent_id"] == "kiro"
+        assert sess["agent_id"] == "claude-code-validator"
         assert sess["workspace"] == "/mnt/s3files"
     finally:
         close_session(console, cookie, sid)

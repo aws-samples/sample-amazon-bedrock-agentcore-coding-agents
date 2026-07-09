@@ -31,6 +31,13 @@ GUARDRAIL_RULE_IDS = {
     "gate_force_push_main",
 }
 
+# SUPPORTED_AGENTS is the current active roster. The shared telemetry ledger
+# (.runs/telemetry.jsonl) may contain rows from before the kiro->claude-code-validator
+# swap; those legacy entries are valid historical data. Assertions that iterate every
+# row returned by the API use this broader set so historical kiro rows pass without
+# dropping the type-checking intent.
+_VALID_AGENT_TYPES = set(SUPPORTED_AGENTS) | {"kiro"}
+
 
 # ---------------------------------------------------------------------------
 # Small local helpers (kept thin; the heavy lifting is in conftest).
@@ -71,7 +78,7 @@ def test_dashboard_cost_by_agent_is_dict(console, cookie):
     dash = _get(console, cookie, "/api/metrics/dashboard")
     assert isinstance(dash["cost_by_agent"], dict), dash
     for agent, cost in dash["cost_by_agent"].items():
-        assert agent in SUPPORTED_AGENTS, agent
+        assert agent in _VALID_AGENT_TYPES, agent
         assert isinstance(cost, (int, float)) and cost >= 0, (agent, cost)
 
 
@@ -124,7 +131,7 @@ def test_sessions_rows_have_governance_fields(console, cookie):
     for row in rows:
         assert {"session_id", "assistant_type", "user_id", "runtime_arn",
                 "claude_running", "started_at"} <= set(row), row
-        assert row["assistant_type"] in SUPPORTED_AGENTS, row
+        assert row["assistant_type"] in _VALID_AGENT_TYPES, row
         # runtime_arn reflects the role's wired/deployed Runtime, or null when none
         # is wired (the default in the test env); never a fabricated local:runtime
         # placeholder.
@@ -136,9 +143,9 @@ def test_sessions_rows_have_governance_fields(console, cookie):
 def test_sessions_filter_by_assistant_type(console, cookie):
     """Attendee filters the session list to one agent: only that agent's rows return."""
     _run_a_convert(console, cookie)
-    rows = _get(console, cookie, "/api/metrics/sessions?assistant_type=kiro")["sessions"]
-    assert rows, "a convert run dispatches kiro, so a kiro session must exist"
-    assert all(r["assistant_type"] == "kiro" for r in rows), rows
+    rows = _get(console, cookie, "/api/metrics/sessions?assistant_type=claude-code-validator")["sessions"]
+    assert rows, "a convert run dispatches claude-code-validator, so a claude-code-validator session must exist"
+    assert all(r["assistant_type"] == "claude-code-validator" for r in rows), rows
 
 
 def test_sessions_filter_by_user_isolates_local_user(console, cookie):

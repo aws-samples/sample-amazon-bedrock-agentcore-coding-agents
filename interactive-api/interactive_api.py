@@ -126,9 +126,12 @@ AGENTS = [
      "name": "Claude Code", "purpose": "Implements backend code and multi-file edits.",
      "model": _CLAUDE_MODEL, "credential": "bedrock-native",
      "status": "not_deployed", "runtime_arn": None, "endpoint": None},
-    {"agent_id": "kiro", "label": "Kiro",
-     "name": "Kiro", "purpose": "Writes and runs acceptance tests (spec-driven).",
-     "model": "auto", "credential": "token-vault",
+    # The validator is a SECOND Claude Code, steered by an acceptance-contract
+    # CLAUDE.md, since Kiro was retired from the roster (its kiro entry is kept in
+    # the codebase but off every roster, like codex).
+    {"agent_id": "claude-code-validator", "label": "Claude Code",
+     "name": "Claude Code (validator)", "purpose": "Runs the acceptance gate that defines done.",
+     "model": _CLAUDE_MODEL, "credential": "bedrock-native",
      "status": "not_deployed", "runtime_arn": None, "endpoint": None},
     {"agent_id": "opencode", "label": "opencode",
      "name": "opencode", "purpose": "Builds the chatbot UI and frontend.",
@@ -321,7 +324,8 @@ def _agent_env(agent_id: str) -> dict[str, str]:
     # `~` and no hardcoded layout. HOME stays pinned (per-session CLI configs are preserved);
     # only the harness location is surfaced, since the jail never chrooted the FS.
     env.setdefault("WORKSHOP_CODING_AGENTS_DIR", _coding_agents_dir())
-    if agent_id == "claude-code":
+    if agent_id in ("claude-code", "claude-code-validator"):
+        # The validator is a second Claude Code, so it gets the same Bedrock env.
         env.update({"CLAUDE_CODE_USE_BEDROCK": "1",
                     "ANTHROPIC_MODEL": _CLAUDE_MODEL,
                     "AWS_REGION": env.get("AWS_REGION", "us-west-2"),
@@ -347,7 +351,8 @@ def _stage_agent_config(session: dict) -> None:
     The PTY exports HOME at the workspace root, so ``~`` is the session."""
     root = session["_root"]
     agent_id = session["agent_id"]
-    if agent_id == "claude-code":
+    if agent_id in ("claude-code", "claude-code-validator"):
+        # Both the backend and the validator are Claude Code; stage the same config.
         # Pre-seed ~/.claude.json so `claude` starts straight into its session
         # (and paints its banner) instead of stopping on the first-run onboarding
         # AND the per-folder "trust this folder?" prompt. The trust gate is keyed

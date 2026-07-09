@@ -36,8 +36,10 @@ import os
 import time
 from typing import Any, Optional
 
-# Valid assistant types (matches the orchestrator's AGENTS roster).
-ASSISTANT_TYPES = ("claude-code", "kiro", "opencode")
+# Valid assistant types (matches the orchestrator's AGENTS roster). The validator
+# is a second Claude Code (claude-code-validator); kiro was retired from the
+# roster (kept in the codebase, off every roster, like codex).
+ASSISTANT_TYPES = ("claude-code", "claude-code-validator", "opencode")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
@@ -266,11 +268,11 @@ def _within(row: dict[str, Any], time_range: str) -> bool:
 # (assumed-role/<PERUSER_ROLE>/<user>), that identity carries the user, so this log
 # is a real per-user cost source with no in-container collector.
 #
-# This is the native-Bedrock path: claude-code AND opencode (the frontend, on the
-# amazon-bedrock provider) both make real Bedrock calls, so both appear here with
-# their caller identity. kiro is vendor-routed, so it does not. See the Stage 3
-# observe lab for that heterogeneity. Fail-soft everywhere: any problem (logging
-# off, role unused, AWS unreachable, offline tests) returns {} and the callers fall
+# This is the native-Bedrock path: claude-code, the claude-code-validator, AND
+# opencode (the frontend, on the amazon-bedrock provider) all make real Bedrock
+# calls, so all appear here with their caller identity. See the Stage 3 observe
+# lab for how telemetry attributes per user. Fail-soft everywhere: any problem
+# (logging off, role unused, AWS unreachable, offline tests) returns {} and the callers fall
 # back to the ledger path, never an invented number.
 # ---------------------------------------------------------------------------
 _INVOCATION_LOG_GROUP = os.getenv("BEDROCK_INVOCATION_LOG_GROUP", "/aws/bedrock/modelinvocations")
