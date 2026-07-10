@@ -7,7 +7,7 @@ import {
 } from '@foxl/ui';
 import {
   FileCode, RefreshCw, X, FilePlus, FolderPlus, TerminalSquare, ChevronsDownUp, Search,
-  ChevronRight, ChevronDown, FolderOpen, FolderInput, House,
+  ChevronRight, ChevronDown, FolderOpen, FolderInput, House, RotateCcw,
 } from 'lucide-react';
 import { Terminal, type TerminalHandle } from './Terminal';
 import { FileTree, folderPaths } from './FileTree';
@@ -497,6 +497,29 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
     setFolderBrowserOpen(true);
   }
 
+  // ── Restart terminal (kill a hung shell) ──────────────────────────────────
+  // When the shell wedges (a runaway build, a frozen agent TUI that stops
+  // responding to keystrokes), this force-kills its process group on the backend
+  // and respawns a fresh bash in the same session/cwd, then re-fits and refocuses.
+  // No page reload, no losing the workspace/tabs.
+  const [restarting, setRestarting] = useState(false);
+  const restartTerminal = useCallback(async () => {
+    if (!session.sessionId || restarting) return;
+    setRestarting(true);
+    setView('terminal');
+    try {
+      termRef.current?.reset();                     // wipe any alt-screen/raw-mode a dead TUI left
+      const size = termRef.current?.fit() ?? { rows: 24, cols: 80 };
+      await session.restart(session.sessionId, size, (s) => termRef.current?.write(s));
+      termRef.current?.focus();
+      await refreshTree(session.sessionId);
+    } catch (e) {
+      toast.error('Could not restart terminal', { description: String(e) });
+    } finally {
+      setRestarting(false);
+    }
+  }, [session, restarting, refreshTree]);
+
   // ── Content search (Cmd/Ctrl+F) ───────────────────────────────────────────
   const runSearch = useCallback(async (q: string) => {
     if (!session.sessionId || !q.trim()) { setSearchResults([]); return; }
@@ -741,13 +764,28 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
               </ContextMenu>
             ))}
           </div>
-          <button
-            onClick={() => setView('terminal')}
-            className={`flex shrink-0 items-center gap-1.5 border-l border-border px-3 py-2 text-[13px] ${view === 'terminal' ? 'bg-background' : 'text-muted-foreground hover:bg-accent/50'}`}
-            title="Terminal"
-          >
-            <TerminalSquare className="size-3.5" /> Terminal
-          </button>
+          <div className={`flex shrink-0 items-stretch border-l border-border ${view === 'terminal' ? 'bg-background' : ''}`}>
+            <button
+              onClick={() => setView('terminal')}
+              className={`flex items-center gap-1.5 py-2 pl-3 pr-2 text-[13px] ${view === 'terminal' ? '' : 'text-muted-foreground hover:bg-accent/50'}`}
+              title="Terminal"
+            >
+              <TerminalSquare className="size-3.5" /> Terminal
+            </button>
+            {/* Restart the shell when it wedges (a hung build, a frozen agent TUI):
+                force-kills the process group and respawns a fresh bash in place. */}
+            {view === 'terminal' && (
+              <button
+                onClick={restartTerminal}
+                disabled={!ready || restarting}
+                className="flex items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+                title="Restart terminal (kills a hung shell and starts a fresh one)"
+                aria-label="Restart terminal"
+              >
+                <RotateCcw className={`size-3.5 ${restarting ? 'animate-spin' : ''}`} />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="relative min-h-0 flex-1">

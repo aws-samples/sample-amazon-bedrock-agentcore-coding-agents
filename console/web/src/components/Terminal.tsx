@@ -10,6 +10,10 @@ export interface TerminalHandle {
   fit: () => { rows: number; cols: number };
   focus: () => void;
   size: () => { rows: number; cols: number };
+  /** Full reset (clears scrollback AND exits any alt-screen/raw mode a crashed
+   *  TUI left behind); used when restarting a hung shell so the fresh prompt
+   *  paints on a clean, sane terminal. */
+  reset: () => void;
 }
 
 interface TerminalProps {
@@ -64,6 +68,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     fit: () => fitConservative.current(),
     focus: () => term.current?.focus(),
     size: () => ({ rows: term.current?.rows ?? 24, cols: term.current?.cols ?? 80 }),
+    // Soft-reset (RIS, \x1bc): drops the alt-screen buffer, restores wrap/origin
+    // modes, and clears scrollback, so a TUI that died mid-draw (raw mode, alt
+    // screen) can't leave the fresh shell painting into garbage.
+    reset: () => { term.current?.write('\x1bc'); },
   }), []);
 
   useEffect(() => {

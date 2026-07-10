@@ -129,6 +129,21 @@ export function useSession() {
     setAlive(false);
   }, []);
 
+  // Kill a hung shell and respawn a fresh one in the SAME session (same cwd,
+  // same staged agent config), without reloading the page. `pty {open}` on the
+  // backend SIGKILLs the old PROCESS GROUP first (_pty_close), so a wedged
+  // foreground process (a runaway build, a frozen agent TUI) that ignores
+  // keystrokes is force-killed here, not just detached. Then re-bind the SSE
+  // stream to the new PTY (its buffer starts empty, so no stale scrollback).
+  const restart = useCallback(async (
+    sid: string, size: { rows: number; cols: number }, onOutput: (s: string) => void,
+  ) => {
+    if (stream.current) { stream.current.close(); stream.current = null; }
+    await pty(sid, { open: true, resize: size });
+    setAlive(true);
+    bindStream(sid, onOutput);
+  }, [bindStream]);
+
   // VS Code "Open Folder": re-root the session at `path` (~ expands server-side),
   // or close to a no-folder state when `path` is null. The backend closes the PTY,
   // so the caller re-opens it (with the measured size) at the new cwd. Returns the
@@ -168,7 +183,7 @@ export function useSession() {
     if (stream.current) { stream.current.close(); stream.current = null; }
   }, []);
 
-  return { sessionId, alive, workspace, hasFolder, open, reattach, send, resize, close, openFolder };
+  return { sessionId, alive, workspace, hasFolder, open, reattach, send, resize, close, restart, openFolder };
 }
 
 // The backend returns nodes as {path, type: 'dir'|'file', size}. Normalize to
