@@ -8,8 +8,8 @@ description: >-
 
 # Configure the Codex frontend builder
 
-Codex builds the thin chatbot UI. Claude Code builds the MCP backend and Kiro
-validates the composed result. There is no race and no winner.
+Codex builds the thin chatbot UI. Claude Code builds the MCP backend and the Claude Code
+validator validates the composed result. There is no race and no winner.
 
 ## Prerequisites
 

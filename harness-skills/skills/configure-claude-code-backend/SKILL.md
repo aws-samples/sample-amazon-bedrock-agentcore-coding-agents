@@ -9,7 +9,7 @@ description: >-
   task", "wire the MCP tools", or asks which agent owns the server/tools side.
   Claude Code runs Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM bedrock:InvokeModel,
   NO API key) on default model us.anthropic.claude-opus-4-6-v1. Opus suits the
-  multi-file backend work. Do NOT use this for Kiro (validator/tests gate) or Codex
+  multi-file backend work. Do NOT use this for the Claude Code validator (tests gate) or opencode
   (frontend chatbot UI); those have their own configure skills.
 ---
 
@@ -21,8 +21,8 @@ harness. Roles do not rotate:
 | Agent | Role | Owns |
 |---|---|---|
 | **Claude Code** (this skill) | **BACKEND** | the AgentCore MCP server: wrap `cost_analyzer`'s 5 functions as FastMCP tools behind the Gateway |
-| Kiro | VALIDATOR | the acceptance gate: runs the pytest contract, decides "done" |
-| Codex | FRONTEND BUILDER | the chatbot UI that calls the MCP tools |
+| Claude Code (validator) | VALIDATOR | the acceptance gate: runs the pytest contract, decides "done" |
+| opencode | FRONTEND BUILDER | the chatbot UI that calls the MCP tools |
 
 This is **not** a race and there is **no winner**. The three agents are the single
 agentic step of the orchestration blueprint, fanned into three roles and composed into ONE
@@ -35,7 +35,7 @@ Why Claude Code is the backend: this role is multi-file, contract-driven server 
 most capable model is the right call for complex/critical work; Opus recognizes rabbit
 holes and self-corrects, where mid-tier models persist in unproductive loops. That is
 why the default model here is `us.anthropic.claude-opus-4-6-v1` and why Claude Code,
-not Kiro or Codex, owns the server.
+not the Claude Code validator or opencode, owns the server.
 
 ---
 
@@ -79,8 +79,8 @@ echo "$GATEWAY_URL"
 
 This is the Bedrock-native, **no-API-key** path. The runtime IAM role carries
 `bedrock:InvokeModel`; there is NO key in env, no Token Vault, no credential provider.
-(Kiro is different: it resolves its `KIRO_API_KEY` through Identity and Token
-Vault. Codex, like Claude Code, uses its Runtime IAM role for Bedrock.)
+(The Claude Code validator uses the same Bedrock-native path: `CLAUDE_CODE_USE_BEDROCK=1`,
+runtime IAM role, no API key. opencode likewise uses its Runtime IAM role for Bedrock.)
 
 ---
 
@@ -106,7 +106,7 @@ Sanity-check the Bedrock-native config that makes this the no-key path:
 grep -n "CLAUDE_CODE_USE_BEDROCK" coding-agents/claude-code/run.sh
 grep -n "InvokeModel" coding-agents/claude-code/deploy.py
 # Expect: CLAUDE_CODE_USE_BEDROCK=1 and an IAM statement granting bedrock:InvokeModel.
-# Expect: NO OPENAI_API_KEY / KIRO_API_KEY / api-key-credential-provider anywhere here.
+# Expect: NO OPENAI_API_KEY / api-key-credential-provider anywhere here.
 ```
 
 ---
@@ -137,8 +137,8 @@ their existing names and inputSchema. Each tool must call the matching cost_anal
 handler and return its structured dict UNCHANGED (e.g. monthly_cost rounded to cents).
 Reject unknown instance types / volume types / storage classes (raise, do not silently
 misprice); the grader checks input validation. Do NOT change pricing values; they are
-illustrative and deterministic. Do NOT write the chatbot UI (Codex) or the test gate
-(Kiro). Done = tools/list returns the 5 tools and tools/call returns the contract values.
+illustrative and deterministic. Do NOT write the chatbot UI (opencode) or the test gate
+(Claude Code validator). Done = tools/list returns the 5 tools and tools/call returns the contract values.
 ```
 
 You can drive the agent interactively to do this work:
@@ -154,7 +154,7 @@ python connect.py --session <session-id>
 
 ## Step 5: Verify over the wire (tools/list + tools/call)
 
-The deterministic acceptance gate is **owned by Kiro (the validator)**, but the backend
+The deterministic acceptance gate is **owned by the Claude Code validator**, but the backend
 agent should self-check its endpoint first so it doesn't hand a broken server to the gate.
 
 ```bash
@@ -180,7 +180,7 @@ awscurl --service bedrock-agentcore --region us-west-2 -X POST "$GATEWAY_URL" \
 ## Step 6: Acceptance gate (deterministic, no LLM judge)
 
 This is the autonomous "definition of done": the same pytest contract the orchestrator
-shells out to in finalization, and the same one Kiro runs as validator. Run it against
+shells out to in finalization, and the same one the Claude Code validator runs. Run it against
 the deployed endpoint by setting `MCP_ENDPOINT_URL`; the test suite swaps its in-process
 adapter for the remote MCP client automatically.
 
@@ -204,7 +204,7 @@ lane owns the verdict, and per-role wall-clock + token cost are recorded as run 
 - **No-key by design.** Claude Code is the Bedrock-native lane on purpose: keeping the
   credential surface minimal (IAM `bedrock:InvokeModel`, no key) is the security-by-default
   and "put the LLM in a box" tenet. Do not bolt a Token Vault / credential provider onto
-  this agent; that belongs to the Kiro and Codex skills.
+  this agent; the Claude Code validator and opencode skills each own their own credential path.
 - **Why Opus for this role.** Model routing is per-task: `pr_review` → Haiku (cheap,
   read-only), `new_task`/`pr_iteration` → Sonnet (balanced), complex/critical →
   **Opus**. Backend MCP server work is the complex/critical case, so the default stays

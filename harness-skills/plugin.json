@@ -1,7 +1,7 @@
 {
   "name": "agentcore-harness",
   "version": "0.1.0",
-  "description": "Configures and runs the 3-agent autonomous coding-agent harness on Amazon Bedrock AgentCore Runtime for the workshop. Locked roles: Claude Code = backend (AgentCore MCP server), Kiro = validator (pytest acceptance gate), Codex = frontend builder (chatbot UI). Skills cover per-agent setup/deploy, the gateway MCP, the acceptance gate, and extending the harness. Fire-and-forget orchestration, no race and no winner.",
+  "description": "Configures and runs the 3-agent autonomous coding-agent harness on Amazon Bedrock AgentCore Runtime for the workshop. Locked roles: Claude Code = backend (AgentCore MCP server), a second Claude Code = validator (pytest acceptance gate), opencode = frontend builder (chatbot UI). Skills cover per-agent setup/deploy, the gateway MCP, the acceptance gate, and extending the harness. Fire-and-forget orchestration, no race and no winner.",
   "author": {
     "name": "AgentCore Coding Agents Workshop"
   },

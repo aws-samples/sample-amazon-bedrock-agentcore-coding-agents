@@ -2,8 +2,8 @@
 name: extend-the-harness
 description: >-
   Decision guide for adding a 4th+ role to OUR 3-agent AgentCore coding-agent harness
-  (Claude Code = BACKEND / AgentCore MCP server, Kiro = VALIDATOR / acceptance gate,
-  Codex = FRONTEND BUILDER / chatbot UI). Use when the user says "add an agent to the
+  (Claude Code = BACKEND / AgentCore MCP server, a second Claude Code = VALIDATOR / acceptance gate,
+  opencode = FRONTEND BUILDER / chatbot UI). Use when the user says "add an agent to the
   harness", "extend the harness", "add a reviewer agent", "add a docs agent", "add a
   security/threat agent", "add a second implementer", "split the work across more agents",
   "what else should the harness have", "do we need a code reviewer / critic", "register a
@@ -24,8 +24,8 @@ The locked baseline you are extending:
 | Role | Agent | Job |
 |---|---|---|
 | BACKEND | Claude Code (Bedrock native) | builds the AgentCore MCP server (the deliverable's API surface) |
-| VALIDATOR | Kiro (Token Vault / Identity) | runs the pytest acceptance gate: the autonomous "definition of done" |
-| FRONTEND BUILDER | Codex (GPT through Bedrock and Runtime IAM) | builds the chatbot UI on top of the backend |
+| VALIDATOR | Claude Code validator (Bedrock native, no API key) | runs the pytest acceptance gate: the autonomous "definition of done" |
+| FRONTEND BUILDER | opencode (Bedrock native, Runtime IAM) | builds the chatbot UI on top of the backend |
 
 These three map cleanly to a single agentic step fanned into three distinct JOBS, then
 composed in finalization. The orchestrator glue stays deterministic ("put the LLM in a box").
@@ -71,7 +71,7 @@ Before deciding, get the user to name the JOB. Ask (AskUserQuestion style; pick 
    safer, and map to `pr_review` → Haiku routing. Write roles need sandbox + least-privilege
    review (security by default).
 5. **Where does it sit in the blueprint?** Almost always inside Phase 4 (agent execution), feeding
-   Phase 5 (finalization). The VALIDATOR (Kiro) stays the final gate; a new role advises or
+   Phase 5 (finalization). The VALIDATOR (Claude Code validator) stays the final gate; a new role advises or
    produces an artifact; it does not replace the pytest acceptance gate.
 
 If the answers to (2) and (3) do not yield a distinct job with a distinct signal: do not add a
@@ -86,7 +86,7 @@ read-only → cheap; authoring → mid-tier; critical → opt-in Opus).
 
 | Candidate role | Add it WHEN (the distinct job) | Don't add it when | Read/Write | Suggested model |
 |---|---|---|---|---|
-| **REVIEWER / critic** | The diff ships but nobody adversarially critiques it before the gate; you want a read-only second pair of eyes that can block a merge. Different job from authoring. | "The backend has bugs": that is the author's job; tighten the acceptance gate (Kiro) first. | Read-only | **Haiku** (`pr_review` = fast, cheap, read-only) |
+| **REVIEWER / critic** | The diff ships but nobody adversarially critiques it before the gate; you want a read-only second pair of eyes that can block a merge. Different job from authoring. | "The backend has bugs": that is the author's job; tighten the acceptance gate (the Claude Code validator) first. | Read-only | **Haiku** (`pr_review` = fast, cheap, read-only) |
 | **DOCS writer** | The deliverable ships without README / CHANGELOG / API docs and that is a stated outcome gap. Authoring prose is a different job from authoring the API. | The backend's docstrings are thin; that is the backend author's job. | Write (docs only) | **Sonnet** (authoring, mid-tier) |
 | **SECURITY / threat agent** | You need an explicit threat pass (secrets, injection, IAM over-grant, SSRF) that authoring agents will not self-perform. Security-by-default makes this a real, distinct job for sensitive repos. | The repo is a throwaway sample with no secrets and no external surface. | Read-only (analysis; files findings, does not patch) | **Haiku** for triage, escalate to **Opus** only for critical/complex repos |
 | **Extra IMPLEMENTER (parallel sub-feature)** | The work decomposes into genuinely independent sub-features (e.g. two unrelated MCP tools) that can be built and gated independently. This is the ONE case where "more of the same job" is legitimate, because each sub-feature is its own job with its own slice of the gate. | The sub-features share state or one depends on the other; that is one job; do it sequentially or as orchestrator fan-out within the existing BACKEND role. | Write | **Sonnet** default; **Opus** for the complex/critical slice (Opus recognizes rabbit holes; mid-tier persists in unproductive loops) |
@@ -131,7 +131,7 @@ the documented pattern (`setup.sh` then `python deploy.py`); do not invent flags
 
 # 1) scaffold the new role from an existing agent of the same auth type:
 #    - Bedrock-native role (no API key)  -> copy claude-code/
-#    - Token Vault role (vendor key)      -> copy kiro/ or codex/
+#    - Token Vault role (vendor key, legacy restore path) -> copy kiro/ or codex/
 cd coding-agents
 cp -r claude-code reviewer            # example: a Bedrock-native read-only REVIEWER
 
@@ -147,19 +147,18 @@ cd coding-agents/reviewer
 python deploy.py                      # registers/updates the AgentCore Runtime (VPC, S3 Files, IAM)
 ```
 
-### Auth wiring by role type (only if the role needs a vendor key)
+### Auth wiring by role type
 
 ```bash
-# Bedrock-native role (Claude family): nothing extra; runtime IAM role has bedrock:InvokeModel.
-
-# Token Vault role using a Kiro-style key (fetched on-demand at session start, in-memory only):
-cd coding-agents/<agent>
-KIRO_API_KEY=ksk_xxx ./setup.sh       # or interactive ./setup.sh ; or --skip-identity
-python deploy.py
-
-# Bedrock GPT role (Codex): nothing extra; use the Runtime IAM role and the
-# amazon-bedrock provider in .codex/config.toml.
+# Bedrock-native role (Claude Code family, opencode): nothing extra;
+# runtime IAM role has bedrock:InvokeModel. This covers the backend, validator, and frontend.
 cd coding-agents/<agent> && ./setup.sh && python deploy.py
+
+# Vendor-key Token Vault role (legacy / hidden restore path only - not used in the active harness):
+# If re-enabling a role that requires a vendor API key fetched on-demand from Token Vault:
+cd coding-agents/<agent>
+VENDOR_API_KEY=<key> ./setup.sh       # or interactive ./setup.sh ; or --skip-identity
+python deploy.py
 ```
 
 ---

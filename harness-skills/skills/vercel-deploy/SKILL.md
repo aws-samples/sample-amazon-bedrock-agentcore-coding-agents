@@ -1,21 +1,21 @@
 ---
 name: vercel-deploy
 description: >-
-  Ship the Codex-built chatbot UI (the FRONTEND BUILDER's artifact in our 3-agent
+  Ship the opencode-built chatbot UI (the FRONTEND BUILDER's artifact in our 3-agent
   harness) to Vercel and wire it to the AgentCore Gateway MCP endpoint. Use when the
   user says "deploy the frontend", "deploy to Vercel", "ship the chatbot UI",
   "publish the UI", "put the chatbot online", "give me a live URL for the UI",
   "promote the frontend to production", or "vercel deploy". This is the deploy half
-  of the FRONTEND role; pairs with configure-codex-frontend (which builds the UI).
+  of the FRONTEND role; pairs with configure-opencode-frontend (which builds the UI).
   Role mapping in this harness is LOCKED: Claude Code = BACKEND (AgentCore MCP
-  server), Kiro = VALIDATOR (pytest acceptance gate), Codex = FRONTEND BUILDER
+  server), a second Claude Code = VALIDATOR (pytest acceptance gate), opencode = FRONTEND BUILDER
   (this chatbot UI). The UI is a thin MCP client: it calls tools/list + tools/call
   through the Gateway and NEVER holds AWS credentials.
 ---
 
-# vercel-deploy: ship the Codex chatbot UI to Vercel
+# vercel-deploy: ship the opencode chatbot UI to Vercel
 
-You are deploying the **FRONTEND** artifact of the 3-agent harness. Codex (FRONTEND
+You are deploying the **FRONTEND** artifact of the 3-agent harness. opencode (FRONTEND
 BUILDER) produced a chatbot UI that talks to the AgentCore Gateway MCP endpoint from
 Stage 2/3. Your job is to put that UI on a public URL, point it at the Gateway, and
 keep all secrets out of the bundle. This is autonomous, fire-and-forget plumbing: no
@@ -27,7 +27,7 @@ Hard invariants (do not violate):
 - Anything secret (Gateway auth tokens, API keys) lives in **Vercel env vars /
   Secrets**, never in the client bundle. `NEXT_PUBLIC_*` / `VITE_*` vars are shipped
   to the browser; only the Gateway **URL** (already public-facing) goes there.
-- This pairs with `configure-codex-frontend`. If the UI doesn't exist yet, run that
+- This pairs with `configure-opencode-frontend`. If the UI doesn't exist yet, run that
   skill first; this skill only deploys.
 
 ---
@@ -73,7 +73,7 @@ vercel login                      # interactive browser/email login
 export VERCEL_TOKEN="<your-vercel-token>"   # create at vercel.com/account/tokens
 ```
 
-Run from the chatbot UI directory Codex produced (e.g. the frontend project root that
+Run from the chatbot UI directory opencode produced (e.g. the frontend project root that
 contains `package.json`). Link it to a Vercel project once:
 
 ```bash
@@ -155,7 +155,7 @@ vercel --token "$VERCEL_TOKEN" --yes
 
 Open the printed preview URL and run the same smoke test as Step 4 against the live
 deployment. The preview is disposable and per-deploy, ideal for letting the VALIDATOR
-(Kiro) or a human eyeball the UI before promoting.
+(Claude Code validator) or a human eyeball the UI before promoting.
 
 ---
 
@@ -195,13 +195,13 @@ Confirm the live UI is actually driving the Gateway, not just rendering:
 
 - **BACKEND (Claude Code)** deploys the AgentCore MCP server; the **Gateway** fronts it
   with IAM/JWT auth and tool routing. That Gateway URL is the contract this UI consumes.
-- **VALIDATOR (Kiro)** runs the acceptance gate against the same endpoint; the UI and
+- **VALIDATOR (Claude Code validator)** runs the acceptance gate against the same endpoint; the UI and
   the gate point at one source of truth:
   ```bash
   MCP_ENDPOINT_URL="$GATEWAY_URL" pytest usecase-sample-to-mcp/grading/
   ```
-- **FRONTEND BUILDER (Codex)** built this chatbot UI; this skill ships it. Pairs with
-  `configure-codex-frontend`.
+- **FRONTEND BUILDER (opencode)** built this chatbot UI; this skill ships it. Pairs with
+  `configure-opencode-frontend`.
 - This is finalization plumbing, not a contest: there is no winner and no
   fastest/cheapest ranking. Submit, deploy, verify, walk away.
 
