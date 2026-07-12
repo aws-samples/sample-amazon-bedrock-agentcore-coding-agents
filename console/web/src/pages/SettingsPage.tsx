@@ -30,12 +30,14 @@ import {
 } from '../api';
 import { Plus, X } from 'lucide-react';
 import { AgentIcon } from '../components/AgentIcon';
-import { agentRole } from './agents/environments';
+import { agentInstanceLabel } from './agents/environments';
 
-// Friendly display name for a role id (Claude Code, Kiro CLI, opencode). The
-// orchestrator role has no agent card, so it keeps its id.
+// Friendly display name for a runtime instance id (Claude Code - Backend builder,
+// Claude Code - Validator (gate), OpenCode). The orchestrator role has no agent
+// card, so it keeps its id. agentInstanceLabel resolves BOTH claude-code and
+// claude-code-validator to distinct labels (the merged sidebar entry hosts both).
 function roleName(role: string): string {
-  return role === 'orchestrator' ? 'Orchestrator' : agentRole(role).label;
+  return role === 'orchestrator' ? 'Orchestrator' : agentInstanceLabel(role);
 }
 
 export function SettingsPage() {
@@ -438,7 +440,7 @@ function RuntimesCard() {
         </div>
         <CardDescription>
           Wire each agent's runtime ARN so the orchestrator can dispatch to it. The event
-          pre-provisions the opencode and validator runtimes (both Bedrock-native, no key), so
+          pre-provisions the OpenCode and validator runtimes (both Bedrock-native, no key), so
           you only paste their ARN; the backend Claude Code is the one you build and deploy by hand.
         </CardDescription>
       </CardHeader>

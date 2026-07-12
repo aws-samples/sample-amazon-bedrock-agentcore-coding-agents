@@ -3,8 +3,9 @@ import { useParams } from 'react-router-dom';
 import {
   Card, CardHeader, CardTitle, CardContent,
   Badge, Button, Input,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '@foxl/ui';
-import { Link2, Loader2, Maximize2, Minimize2, Plus, X } from 'lucide-react';
+import { ChevronDown, Link2, Loader2, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import { AgentIcon } from '../components/AgentIcon';
 import { Terminal, type TerminalHandle } from '../components/Terminal';
 import { SectionHeader } from '../shared';
@@ -18,7 +19,21 @@ import {
 
 export function AgentsPage() {
   const { env } = useParams();
-  const selected = agentRole(env);
+  const selectedRole = agentRole(env);
+
+  // A role can host >1 runtime instance under one sidebar entry (Claude Code =
+  // backend builder + validator). Pick WHICH instance this page is showing; the
+  // dropdown below switches it. Single-instance roles (OpenCode) just pin their one.
+  const [instanceId, setInstanceId] = useState<string>(selectedRole.instances[0]!.id);
+  useEffect(() => {
+    setInstanceId(selectedRole.instances[0]!.id);
+  }, [selectedRole.id]);
+  const selectedInstance =
+    selectedRole.instances.find((i) => i.id === instanceId) ?? selectedRole.instances[0]!;
+  const hasMultipleInstances = selectedRole.instances.length > 1;
+  // `selected` is the ACTIVE runtime instance: its id is the backend role key the
+  // /api/dev + wiring endpoints use, its label/blurb describe this instance.
+  const selected = selectedInstance;
 
   const [runtimes, setRuntimes] = useState<RuntimeStatus | null>(null);
   const [draft, setDraft] = useState('');
@@ -229,8 +244,11 @@ export function AgentsPage() {
     return (
       <div className="absolute inset-0 z-30 flex flex-col bg-background">
         <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-          <AgentIcon agentId={selected.id} size={16} />
-          <span className="text-sm font-medium">{selected.label}</span>
+          <AgentIcon agentId={selectedRole.id} size={16} />
+          <span className="text-sm font-medium">
+            {selectedRole.label}
+            {hasMultipleInstances && <span className="text-muted-foreground"> · {selectedInstance.label}</span>}
+          </span>
           <div className="ml-4 flex-1">{tabBar}</div>
           <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setFullscreen(false)}>
             <Minimize2 className="size-4" />
@@ -257,8 +275,45 @@ export function AgentsPage() {
       <Card>
         <CardHeader className="gap-1.5">
           <CardTitle className="flex items-center gap-2">
-            <AgentIcon agentId={selected.id} size={18} />
-            {selected.label}
+            <AgentIcon agentId={selectedRole.id} size={18} />
+            {selectedRole.label}
+            {/* One role, >1 runtime instance (Claude Code = backend + validator):
+                switch between them here. The two are DISTINCT runtimes (different
+                role ids + ARNs); the dropdown makes that legible instead of two
+                identical "Claude Code" sidebar rows. */}
+            {hasMultipleInstances && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="ml-1 h-7 gap-1.5 px-2 text-xs font-normal">
+                    {selectedInstance.label}
+                    <ChevronDown className="size-3.5 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-72">
+                  {selectedRole.instances.map((inst) => {
+                    const r = runtimes?.roles.find((x) => x.role === inst.id);
+                    return (
+                      <DropdownMenuItem
+                        key={inst.id}
+                        onSelect={() => setInstanceId(inst.id)}
+                        className="flex flex-col items-start gap-0.5 py-2"
+                      >
+                        <span className="flex items-center gap-1.5 text-sm font-medium">
+                          {inst.label}
+                          {r?.wired
+                            ? <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">connected</span>
+                            : <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">not wired</span>}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">{inst.blurb}</span>
+                        {r?.wired && r.arn && (
+                          <code className="mt-0.5 max-w-full truncate font-mono text-[10px] text-muted-foreground/70">{r.arn}</code>
+                        )}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             {isWired ? (
               <Badge variant="success" className="ml-2">connected</Badge>
             ) : (
