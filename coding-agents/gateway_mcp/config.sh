@@ -32,7 +32,22 @@ export GATEWAY_AUTH_TYPE="AWS_IAM"
 export GITHUB_APP_SECRET_ARN="${GITHUB_APP_SECRET_ARN:-}"
 
 # State file (tracks deployed resource IDs for teardown)
-export STATE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.deployed-state.json"
+export STATE_FILE="${STATE_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.deployed-state.json}"
+
+# AgentCore Runtime MCP endpoints use the URL-encoded full Runtime ARN in the
+# path. A runtime ID plus accountId query parameter is not equivalent: Gateway
+# rejects that route before the request reaches the MCP application.
+agentcore_runtime_mcp_endpoint() {
+  local runtime_arn="$1"
+  if [[ ! "$runtime_arn" =~ ^arn:aws[^:]*:bedrock-agentcore:[^:]+:[0-9]{12}:runtime/.+ ]]; then
+    echo "ERROR: invalid AgentCore Runtime ARN: ${runtime_arn}" >&2
+    return 1
+  fi
+  local encoded_arn
+  encoded_arn=$(jq -rn --arg value "$runtime_arn" '$value | @uri')
+  printf 'https://bedrock-agentcore.%s.amazonaws.com/runtimes/%s/invocations?qualifier=DEFAULT' \
+    "$AWS_REGION" "$encoded_arn"
+}
 
 # Helper: read a value from state file
 state_get() {

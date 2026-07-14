@@ -61,6 +61,7 @@ fi
 state_set "gateway_id" ""
 state_set "gateway_url" ""
 state_set "gateway_target_name" ""
+state_set "gateway_target_id" ""
 state_set "gateway_role_arn" ""
 state_set "gateway_role_name" ""
 echo "==> Gateway deleted."

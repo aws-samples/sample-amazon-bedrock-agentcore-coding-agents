@@ -29,6 +29,33 @@ if [[ -z "${GITHUB_APP_INSTALLATION_ID:-}" ]]; then
   exit 1
 fi
 
+if [[ ! "$GITHUB_APP_ID" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: GITHUB_APP_ID must contain digits only."
+  exit 1
+fi
+
+if [[ ! "$GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: GITHUB_APP_INSTALLATION_ID must contain digits only."
+  exit 1
+fi
+
+if ! head -n 1 "$GITHUB_APP_PRIVATE_KEY_FILE" | grep -Eq '^-----BEGIN (RSA )?PRIVATE KEY-----$' \
+  || ! tail -n 1 "$GITHUB_APP_PRIVATE_KEY_FILE" | grep -Eq '^-----END (RSA )?PRIVATE KEY-----$'; then
+  echo "ERROR: Private key is incomplete: expected matching BEGIN/END PRIVATE KEY lines." >&2
+  exit 1
+fi
+
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "ERROR: openssl is required to validate the GitHub App private key." >&2
+  exit 1
+fi
+if ! openssl pkey -in "$GITHUB_APP_PRIVATE_KEY_FILE" -check -noout >/dev/null 2>&1; then
+  echo "ERROR: Private key cannot be parsed. Re-download it and repeat the paste step." >&2
+  exit 1
+fi
+chmod 600 "$GITHUB_APP_PRIVATE_KEY_FILE"
+echo "Private key validated: $(wc -l < "$GITHUB_APP_PRIVATE_KEY_FILE" | tr -d ' ') lines"
+
 # Read the private key
 PRIVATE_KEY=$(cat "$GITHUB_APP_PRIVATE_KEY_FILE")
 

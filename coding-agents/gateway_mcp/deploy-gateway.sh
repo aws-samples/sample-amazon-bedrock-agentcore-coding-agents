@@ -60,6 +60,9 @@ GW_POLICY='{
 if aws iam get-role --role-name "$GW_ROLE_NAME" &>/dev/null; then
   echo "Gateway IAM role '${GW_ROLE_NAME}' already exists."
   GW_ROLE_ARN=$(aws iam get-role --role-name "$GW_ROLE_NAME" --query 'Role.Arn' --output text)
+  aws iam update-assume-role-policy \
+    --role-name "$GW_ROLE_NAME" \
+    --policy-document "$GW_TRUST_POLICY"
 else
   echo "Creating gateway IAM role '${GW_ROLE_NAME}'..."
   GW_ROLE_ARN=$(aws iam create-role \
@@ -67,14 +70,13 @@ else
     --assume-role-policy-document "$GW_TRUST_POLICY" \
     --query 'Role.Arn' --output text)
 
-  aws iam put-role-policy \
-    --role-name "$GW_ROLE_NAME" \
-    --policy-name "AgentCoreGatewayExecution" \
-    --policy-document "$GW_POLICY"
-
   echo "Waiting for role to propagate..."
   sleep 10
 fi
+aws iam put-role-policy \
+  --role-name "$GW_ROLE_NAME" \
+  --policy-name "AgentCoreGatewayExecution" \
+  --policy-document "$GW_POLICY"
 state_set "gateway_role_arn" "$GW_ROLE_ARN"
 state_set "gateway_role_name" "$GW_ROLE_NAME"
 echo "Gateway Role ARN: ${GW_ROLE_ARN}"
@@ -135,13 +137,17 @@ echo ""
 echo "--- Step 3: Create Gateway Target ---"
 TARGET_NAME="GitHubMCP"
 
-EXISTING_TARGET=$(aws bedrock-agentcore-control get-gateway-target \
+TARGET_ID=$(aws bedrock-agentcore-control list-gateway-targets \
   --gateway-identifier "$GATEWAY_ID" \
-  --name "$TARGET_NAME" \
-  --region "$AWS_REGION" 2>/dev/null || true)
+  --region "$AWS_REGION" \
+  --query "items[?name=='${TARGET_NAME}'].targetId | [0]" \
+  --output text 2>/dev/null || true)
+if [[ "$TARGET_ID" == "None" ]]; then
+  TARGET_ID=""
+fi
 
-RUNTIME_ID=$(state_get "runtime_id")
-RUNTIME_ENDPOINT="https://bedrock-agentcore.${AWS_REGION}.amazonaws.com/runtimes/${RUNTIME_ID}/invocations?qualifier=DEFAULT&accountId=${AWS_ACCOUNT_ID}"
+RUNTIME_ENDPOINT=$(agentcore_runtime_mcp_endpoint "$RUNTIME_ARN")
+echo "Runtime MCP endpoint: ${RUNTIME_ENDPOINT}"
 
 TARGET_CONFIG='{
   "mcp": {
@@ -164,26 +170,58 @@ CRED_CONFIG='[
   }
 ]'
 
-if [[ -n "$EXISTING_TARGET" ]]; then
-  echo "Gateway target '${TARGET_NAME}' already exists. Updating..."
-  aws bedrock-agentcore-control update-gateway-target \
+if [[ -n "$TARGET_ID" ]]; then
+  echo "Gateway target '${TARGET_NAME}' already exists (${TARGET_ID}). Updating..."
+  TARGET_RESPONSE=$(aws bedrock-agentcore-control update-gateway-target \
     --gateway-identifier "$GATEWAY_ID" \
+    --target-id "$TARGET_ID" \
     --name "$TARGET_NAME" \
     --region "$AWS_REGION" \
     --target-configuration "$TARGET_CONFIG" \
-    --credential-provider-configurations "$CRED_CONFIG"
+    --credential-provider-configurations "$CRED_CONFIG" \
+    --output json)
 else
   echo "Creating gateway target '${TARGET_NAME}'..."
-  aws bedrock-agentcore-control create-gateway-target \
+  TARGET_RESPONSE=$(aws bedrock-agentcore-control create-gateway-target \
     --gateway-identifier "$GATEWAY_ID" \
     --name "$TARGET_NAME" \
     --region "$AWS_REGION" \
     --description "GitHub MCP Server on AgentCore Runtime" \
     --target-configuration "$TARGET_CONFIG" \
-    --credential-provider-configurations "$CRED_CONFIG"
+    --credential-provider-configurations "$CRED_CONFIG" \
+    --output json)
+  TARGET_ID=$(echo "$TARGET_RESPONSE" | jq -r '.targetId')
 fi
 
 state_set "gateway_target_name" "$TARGET_NAME"
+state_set "gateway_target_id" "$TARGET_ID"
+
+echo "Waiting for gateway target '${TARGET_NAME}' to become READY..."
+TARGET_STATUS=""
+for _ in $(seq 1 60); do
+  TARGET_INFO=$(aws bedrock-agentcore-control get-gateway-target \
+    --gateway-identifier "$GATEWAY_ID" \
+    --target-id "$TARGET_ID" \
+    --region "$AWS_REGION" \
+    --output json)
+  TARGET_STATUS=$(echo "$TARGET_INFO" | jq -r '.status // empty')
+  if [[ "$TARGET_STATUS" == "READY" ]]; then
+    break
+  fi
+  if [[ "$TARGET_STATUS" == "FAILED" \
+    || "$TARGET_STATUS" == "UPDATE_UNSUCCESSFUL" \
+    || "$TARGET_STATUS" == "SYNCHRONIZE_UNSUCCESSFUL" ]]; then
+    echo "ERROR: Gateway target entered ${TARGET_STATUS}." >&2
+    echo "$TARGET_INFO" | jq . >&2
+    exit 1
+  fi
+  echo "  Status: ${TARGET_STATUS:-unknown}"
+  sleep 5
+done
+if [[ "$TARGET_STATUS" != "READY" ]]; then
+  echo "ERROR: Gateway target did not become READY." >&2
+  exit 1
+fi
 
 # Fetch final gateway URL if not set yet
 if [[ -z "$(state_get 'gateway_url')" ]]; then
@@ -199,5 +237,6 @@ fi
 echo ""
 echo "==> Gateway deployment complete."
 echo "    Gateway ID: ${GATEWAY_ID}"
+echo "    Target ID:  ${TARGET_ID}"
 echo "    Gateway URL: $(state_get 'gateway_url')"
 echo "    Auth: AWS IAM (SigV4)"

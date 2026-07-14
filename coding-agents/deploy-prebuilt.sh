@@ -53,9 +53,9 @@ if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; t
     echo "  No KIRO_API_KEY set; building kiro without its Token Vault identity"
     echo "  (--skip-identity). Add your ksk_ key on the wired Kiro instance in"
     echo "  console Settings after it deploys."
-    ( cd "${SCRIPT_DIR}/${AGENT}" && ./setup.sh --skip-identity )
+    ( cd "${SCRIPT_DIR}/${AGENT}" && bash ./setup.sh --skip-identity )
   else
-    ( cd "${SCRIPT_DIR}/${AGENT}" && ./setup.sh )
+    ( cd "${SCRIPT_DIR}/${AGENT}" && bash ./setup.sh )
   fi
 fi
 

@@ -124,28 +124,35 @@ GATEWAY_POLICY="$(jq -n --arg github "$GITHUB_RUNTIME_ARN" --arg cost "$RUNTIME_
 aws iam put-role-policy --role-name "$GATEWAY_ROLE_NAME" \
   --policy-name AgentCoreGatewayExecution --policy-document "$GATEWAY_POLICY"
 
-RUNTIME_ENDPOINT="https://bedrock-agentcore.${REGION}.amazonaws.com/runtimes/${RUNTIME_ID}/invocations?qualifier=DEFAULT&accountId=${ACCOUNT_ID}"
+ENCODED_RUNTIME_ARN="$(jq -rn --arg value "$RUNTIME_ARN" '$value | @uri')"
+RUNTIME_ENDPOINT="https://bedrock-agentcore.${REGION}.amazonaws.com/runtimes/${ENCODED_RUNTIME_ARN}/invocations?qualifier=DEFAULT"
 TARGET_CONFIG="$(jq -n --arg endpoint "$RUNTIME_ENDPOINT" \
   '{mcp:{mcpServer:{endpoint:$endpoint,listingMode:"DYNAMIC"}}}')"
 CREDENTIAL_CONFIG="$(jq -n --arg region "$REGION" \
   '[{credentialProviderType:"GATEWAY_IAM_ROLE",credentialProvider:{iamCredentialProvider:{service:"bedrock-agentcore",region:$region}}}]')"
 
-if aws bedrock-agentcore-control get-gateway-target --gateway-identifier "$GATEWAY_ID" \
-  --name CostAnalyzerMCP --region "$REGION" >/dev/null 2>&1; then
+TARGET_ID="$(aws bedrock-agentcore-control list-gateway-targets \
+  --gateway-identifier "$GATEWAY_ID" --region "$REGION" \
+  --query "items[?name=='CostAnalyzerMCP'].targetId | [0]" --output text 2>/dev/null || true)"
+if [[ -n "$TARGET_ID" && "$TARGET_ID" != "None" ]]; then
   aws bedrock-agentcore-control update-gateway-target --gateway-identifier "$GATEWAY_ID" \
-    --name CostAnalyzerMCP --region "$REGION" --target-configuration "$TARGET_CONFIG" \
+    --target-id "$TARGET_ID" --name CostAnalyzerMCP --region "$REGION" \
+    --target-configuration "$TARGET_CONFIG" \
     --credential-provider-configurations "$CREDENTIAL_CONFIG" >/dev/null
 else
-  aws bedrock-agentcore-control create-gateway-target --gateway-identifier "$GATEWAY_ID" \
+  TARGET_CREATED="$(aws bedrock-agentcore-control create-gateway-target --gateway-identifier "$GATEWAY_ID" \
     --name CostAnalyzerMCP --description "Graded cost analyzer MCP server" \
     --region "$REGION" --target-configuration "$TARGET_CONFIG" \
-    --credential-provider-configurations "$CREDENTIAL_CONFIG" >/dev/null
+    --credential-provider-configurations "$CREDENTIAL_CONFIG")"
+  TARGET_ID="$(jq -r .targetId <<<"$TARGET_CREATED")"
 fi
 
 jq -n --arg runtime_id "$RUNTIME_ID" --arg runtime_arn "$RUNTIME_ARN" \
   --arg gateway_id "$GATEWAY_ID" --arg gateway_url "$GATEWAY_URL" \
+  --arg gateway_target_id "$TARGET_ID" \
   '{runtime_id:$runtime_id,runtime_arn:$runtime_arn,gateway_id:$gateway_id,
-    gateway_url:$gateway_url,gateway_target_name:"CostAnalyzerMCP"}' > "$STATE_FILE"
+    gateway_url:$gateway_url,gateway_target_name:"CostAnalyzerMCP",
+    gateway_target_id:$gateway_target_id}' > "$STATE_FILE"
 
 echo "Runtime READY: $RUNTIME_ARN"
 echo "Gateway target: CostAnalyzerMCP"

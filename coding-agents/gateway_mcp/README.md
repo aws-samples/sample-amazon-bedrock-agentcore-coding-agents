@@ -100,15 +100,19 @@ This will:
 3. Create an IAM role with AgentCore + Secrets Manager permissions
 4. Create the AgentCore Runtime (MCP protocol)
 5. Create an IAM-authenticated AgentCore Gateway pointing to the runtime
+6. Wait for the target and verify `GitHubMCP___*` tools through the Gateway
+
+The command is safe to re-run. It updates the existing Gateway target by target
+ID and exits non-zero if the tool surface never becomes ready.
 
 ### Step 5: Test the runtime directly
 
 Test the runtime before testing through the gateway:
 
 ```bash
-RUNTIME_ID=$(jq -r '.runtime_id' .deployed-state.json)
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-RUNTIME_URL="https://bedrock-agentcore.${AWS_REGION}.amazonaws.com/runtimes/${RUNTIME_ID}/invocations?qualifier=DEFAULT&accountId=${ACCOUNT_ID}"
+RUNTIME_ARN=$(jq -r '.runtime_arn' .deployed-state.json)
+ENCODED_RUNTIME_ARN=$(jq -rn --arg value "$RUNTIME_ARN" '$value | @uri')
+RUNTIME_URL="https://bedrock-agentcore.${AWS_REGION}.amazonaws.com/runtimes/${ENCODED_RUNTIME_ARN}/invocations?qualifier=DEFAULT"
 
 # List available MCP tools
 awscurl --service bedrock-agentcore \
@@ -138,6 +142,9 @@ awscurl --service bedrock-agentcore \
 ### Step 6: Test through the gateway
 
 ```bash
+./verify-gateway.sh
+
+# Or inspect the raw response:
 GATEWAY_URL=$(jq -r '.gateway_url' .deployed-state.json)
 
 # List available MCP tools
