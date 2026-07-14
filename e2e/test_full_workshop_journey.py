@@ -699,9 +699,6 @@ def test_07_stage3_governance_reflects_the_real_journey(console, cookie):
     assert ident["github_actor"] == "credential-dependent"
     assert ident["static_credentials_on_agent"] is False
     assert ident["environment"] in ("local", "agentcore")
-    ATTENDEE["stage3_session"] = sid
-
-
 # ===========================================================================
 # 07b. STAGE 2 -> STAGE 3 CONTINUITY: the run ids the orchestrator produced in
 #   Stage 2 are the SAME ids the governance layer accounts for in Stage 3; proof
@@ -752,22 +749,21 @@ def test_07b_stage2_run_ids_flow_into_stage3_governance(console, cookie):
 
 
 # ===========================================================================
-# 08. CLEANUP: stop a Stage-2-derived session via the kill switch, delete the
-#   Stage 1 session, and confirm it is gone from the Stage 1 list.
+# 08. CLEANUP: stop the live Stage-1 preview process via the kill switch, delete
+#   its session, and confirm it is gone from the Stage 1 list.
 #   content/90-cleanup.
 # ===========================================================================
 def test_08_cleanup_stop_session_and_delete_stage1(console, cookie):
-    """Stop one Stage-2-derived session (honest StopRuntimeSession response), then
-    DELETE the Stage 1 session and assert it's no longer 'open' in /api/dev."""
-    # the kill switch on a Stage-2-derived session row (from the metrics ledger)
-    sid = ATTENDEE["stage3_session"]
-    _, stopped = _req(console, "POST", f"/api/metrics/sessions/{sid}/stop", {},
+    """Stop the real local Stage-1 preview process, then DELETE its session and
+    assert it is no longer open in /api/dev."""
+    s1 = ATTENDEE["stage1_session"]
+    _, stopped = _req(console, "POST", f"/api/metrics/sessions/{s1}/stop", {},
                       headers=cookie)
-    assert stopped["session_id"] == sid
+    assert stopped["session_id"] == s1
     assert stopped["stopped"] is True
+    assert stopped["mechanism"] == "local-process-signal"
 
     # DELETE the live Stage 1 session
-    s1 = ATTENDEE["stage1_session"]
     code, closed = _req(console, "DELETE", f"/api/dev/sessions/{s1}", headers=cookie)
     assert code == 200
     assert closed["status"] == "closed"

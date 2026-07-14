@@ -59,32 +59,13 @@ try:
 except Exception:  # noqa: BLE001
     _policy = None
 
-# Resolve a role's deployed runtime ARN (the same wirable surface the orchestrator
-# dispatches against). A row's runtime_arn is that ARN when the role is
-# deployed/wired, else None, never a fabricated local:runtime placeholder.
+# Runtime configuration still backs the fleet-status endpoints below. Session
+# records deliberately use the exact ARN and Runtime session ID written by the
+# run ledger, rather than re-resolving the fleet after the fact.
 try:
     import runtime_config as _runtime_config  # noqa: E402
 except Exception:  # noqa: BLE001
     _runtime_config = None
-
-
-def _real_runtime_arn(agent_id: str) -> Optional[str]:
-    """The arn:aws:bedrock-agentcore runtime ARN wired for this role, or None. A
-    session attributed to an agent shows the Runtime it would dispatch to; if none
-    is wired yet, the field is null.
-
-    Resolution is memoized per (request-scoped) cache build: the wired ARNs only
-    change when an attendee re-wires a role, so resolving the same handful of role
-    ids once per ledger snapshot (instead of once per session row, thousands of
-    times) is the same answer at a fraction of the cost."""
-    if _runtime_config is None:
-        return None
-    cached = _ARN_CACHE.get(agent_id, _MISS)
-    if cached is _MISS:
-        hit = _runtime_config.resolve(agent_id)
-        cached = hit[0] if hit else None
-        _ARN_CACHE[agent_id] = cached
-    return cached
 
 
 # ---------------------------------------------------------------------------
@@ -99,11 +80,6 @@ def _real_runtime_arn(agent_id: str) -> Optional[str]:
 # other and invalidates the cache, so the numbers stay live while a burst of reads
 # against an unchanged file is served from memory.
 # ---------------------------------------------------------------------------
-# Per-role ARN resolution memo (rebuilt with each new ledger snapshot). The
-# sentinel distinguishes "resolved to None" from "not yet resolved".
-_MISS = object()
-_ARN_CACHE: dict[str, Optional[str]] = {}
-
 # Parsed-rows cache, keyed on the ledger's (mtime_ns, size). We deliberately cache
 # only the heavy parse here (NOT the flattened session list) because flattening
 # evaluates a live `_pid_alive` probe for Stage-1 sessions, and we want that
@@ -142,11 +118,9 @@ def _read_ledger() -> list[dict[str, Any]]:
                     continue  # a torn concurrent write never breaks reads
     except OSError:
         pass  # no runs yet -> empty metrics, honestly
-    # New snapshot: refresh the parse cache and drop the ARN memo so it rebuilds
-    # against the current wiring.
+    # New snapshot: refresh the parsed ledger rows.
     _LEDGER_CACHE["sig"] = sig
     _LEDGER_CACHE["rows"] = rows
-    _ARN_CACHE.clear()
     return rows
 
 
@@ -164,7 +138,9 @@ def _sessions() -> list[dict[str, Any]]:
                 out.append({
                     "session_id": f"{row['run_id']}-{role['agent']}",
                     "invocation_number": row.get("iterations", 1),
-                    "runtime_arn": _real_runtime_arn(role["agent"]),
+                    "runtime_arn": role.get("runtime_arn"),
+                    "_runtime_session_id": role.get("runtime_session_id"),
+                    "_pid": None,
                     "assistant_type": role["agent"],
                     "user_id": row.get("user_id", "unknown"),
                     "user_email": row.get("user_email", ""),
@@ -181,7 +157,11 @@ def _sessions() -> list[dict[str, Any]]:
             out.append({
                 "session_id": row.get("session_id", "sess"),
                 "invocation_number": 1,
-                "runtime_arn": _real_runtime_arn(row.get("agent_id", "claude-code")),
+                # The Stage 1 preview is a local process even when the attendee
+                # also has a deployed Runtime configured for that agent.
+                "runtime_arn": row.get("runtime_arn"),
+                "_runtime_session_id": row.get("runtime_session_id"),
+                "_pid": row.get("pid"),
                 "assistant_type": row.get("agent_id", "claude-code"),
                 "user_id": row.get("user_id", "unknown"),
                 "user_email": row.get("user_email", ""),
@@ -555,30 +535,43 @@ def stop_session(session_id: str) -> Optional[dict[str, Any]]:
     if row is None:
         return None
 
-    result: dict[str, Any] = {"session_id": session_id, "stopped": True}
+    if session_id in _STOPPED:
+        return {"session_id": session_id, "stopped": True, "mechanism": "already-stopped"}
 
     runtime_arn = row.get("runtime_arn")
     if runtime_arn and str(runtime_arn).startswith("arn:aws:bedrock-agentcore:"):
         # Governed path: terminate the real Runtime session. The runtimeSessionId
-        # the SDK expects is the id the dispatch used; the orchestrator builds it as
-        # "<run_id>-<agent>", which is exactly our session_id, so pass it through.
+        # must be the exact ID recorded when the role was dispatched. A logical
+        # run/agent label is not a substitute, and re-resolving a current target
+        # can stop the wrong Runtime after a fleet change.
+        runtime_session_id = row.get("_runtime_session_id")
+        if not runtime_session_id:
+            return {"session_id": session_id, "stopped": False,
+                    "mechanism": "StopRuntimeSession",
+                    "error": "RUNTIME_SESSION_ID_UNAVAILABLE",
+                    "agent_runtime_arn": runtime_arn}
         try:
-            result.update(_stop_runtime_session(str(runtime_arn), session_id))
+            result = {"session_id": session_id, "stopped": True}
+            result.update(_stop_runtime_session(str(runtime_arn), str(runtime_session_id)))
         except Exception as exc:  # noqa: BLE001 (surface the real failure, never fake a stop)
             return {"session_id": session_id, "stopped": False,
                     "mechanism": "StopRuntimeSession", "error": str(exc),
                     "agent_runtime_arn": runtime_arn}
     else:
-        # Local stand-in: signal the recorded Stage-1 process if one is alive.
-        result["mechanism"] = "local-process-signal"
-        for raw in _read_ledger():
-            if raw.get("kind") == "stage1_conversion" and raw.get("session_id") == session_id:
-                pid = raw.get("pid")
-                if pid and _pid_alive(pid):
-                    try:
-                        os.kill(int(pid), 15)
-                    except OSError:
-                        pass
+        # Local stand-in: only report success after signalling the recorded,
+        # still-live Stage 1 preview process.
+        pid = row.get("_pid")
+        if not pid or not _pid_alive(pid):
+            return {"session_id": session_id, "stopped": False,
+                    "mechanism": "local-process-signal",
+                    "error": "LOCAL_SESSION_NOT_RUNNING"}
+        try:
+            os.kill(int(pid), 15)
+        except OSError as exc:
+            return {"session_id": session_id, "stopped": False,
+                    "mechanism": "local-process-signal", "error": str(exc)}
+        result = {"session_id": session_id, "stopped": True,
+                  "mechanism": "local-process-signal"}
 
     _STOPPED.add(session_id)
     return result

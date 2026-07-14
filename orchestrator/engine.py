@@ -468,6 +468,11 @@ class RoleResult:
     # deployed Runtime). Left "" where it carries no extra information (the
     # deterministic test fixture).
     engine: str = ""
+    # The exact Runtime target and session used by the shipped AgentCore path.
+    # Metrics persists these values so a later StopRuntimeSession never guesses
+    # from the currently configured fleet.
+    runtime_arn: str | None = None
+    runtime_session_id: str | None = None
     # liveness heartbeat: monotonic ts of this role's last observable progress
     # (a run.term() line). A role still "working" with a stale beat is WEDGED,
     # which the join-watchdog distinguishes from merely slow.
@@ -957,6 +962,8 @@ class Engine:
             model=llm.resolve(model),
             region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"),
             on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
+        role.runtime_arn = arn
+        role.runtime_session_id = result.get("session_id")
         # Persist the runtime-built artifact where the local path would, so the
         # gate/compose read it unchanged. The agent hardcoded the runtime-only
         # module path (/mnt/s3files/<run>-skill) into its `sys.path.insert`. That
@@ -1674,7 +1681,9 @@ class Engine:
                      "cost_usd": r.cost_usd, "estimated": r.estimated,
                      # harness mode: "cli" (real CLI ran) | "bedrock" (per-role
                      # fallback); "" otherwise. Stage 3 reads it for attribution.
-                     "engine": r.engine}
+                     "engine": r.engine,
+                     "runtime_arn": r.runtime_arn,
+                     "runtime_session_id": r.runtime_session_id}
                     for r in run.progress.values()
                 ],
             }
