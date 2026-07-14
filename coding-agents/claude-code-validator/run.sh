@@ -45,6 +45,7 @@ if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then
 else
   cd "$HOME"
 fi
+export CLAUDE_PROJECT_DIR="$PWD"
 
 # ── No first-run prompts (self-heal on a stale image) ─────────
 # --dangerously-skip-permissions still shows a one-time "Bypass Permissions mode?
@@ -65,6 +66,24 @@ cfg.setdefault("permissionMode", "dontAsk")
 cfg["hasCompletedOnboarding"] = True
 cfg["skipDangerousModePermissionPrompt"] = True
 json.dump(cfg, open(p, "w"), indent=2)
+
+project_path = os.environ["CLAUDE_PROJECT_DIR"]
+project_config_path = os.path.expanduser("~/.claude.json")
+try:
+    project_config = json.load(open(project_config_path))
+except Exception:
+    project_config = {}
+projects = project_config.setdefault("projects", {})
+if not isinstance(projects, dict):
+    projects = {}
+    project_config["projects"] = projects
+project = projects.setdefault(project_path, {})
+if not isinstance(project, dict):
+    project = {}
+    projects[project_path] = project
+project["hasTrustDialogAccepted"] = True
+project["hasCompletedProjectOnboarding"] = True
+json.dump(project_config, open(project_config_path, "w"), indent=2)
 PYSETTINGS
 
 # ── Configure MCP Gateway (needs GATEWAY_URL from runtime env) ──

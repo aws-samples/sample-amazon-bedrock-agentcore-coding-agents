@@ -23,10 +23,20 @@ def test_mounted_role_guidance_overrides_the_image_fallback():
     assert 'VALIDATOR_WORKDIR="/mnt/s3files/validator"' in validator
     assert 'if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then' in validator
     assert 'cd "$VALIDATOR_WORKDIR"' in validator
+    assert 'export CLAUDE_PROJECT_DIR="$PWD"' in validator
+    assert 'project["hasTrustDialogAccepted"] = True' in validator
 
     opencode = (ROOT / "coding-agents" / "opencode" / "run.sh").read_text()
     assert 'elif [ -f /mnt/s3files/AGENTS.md ]; then' in opencode
     assert 'RUN_DIR="/mnt/s3files"' in opencode
+
+
+def test_served_role_connectors_do_not_block_on_stdin_on_exit():
+    """Closing a Runtime TUI must not leave an executor thread blocking process exit."""
+    for role in ("claude-code", "claude-code-validator", "opencode"):
+        connector = (ROOT / "coding-agents" / role / "connect.py").read_text()
+        assert "loop.add_reader(stdin_fd, on_stdin_ready)" in connector
+        assert "run_in_executor(None, os.read" not in connector
 
 
 def test_runtime_mcp_endpoint_uses_encoded_full_arn(tmp_path):

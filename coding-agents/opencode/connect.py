@@ -63,14 +63,31 @@ async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
 
         loop = asyncio.get_event_loop()
         stdin_fd = sys.stdin.fileno()
+        input_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        def on_stdin_ready():
+            try:
+                data = os.read(stdin_fd, 4096)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                loop.remove_reader(stdin_fd)
+                input_queue.put_nowait(None)
+                return
+            if data:
+                input_queue.put_nowait(data)
+            else:
+                loop.remove_reader(stdin_fd)
+                input_queue.put_nowait(None)
 
         async def read_stdin():
             while True:
-                data = await loop.run_in_executor(None, os.read, stdin_fd, 4096)
-                if not data:
-                    break
+                data = await input_queue.get()
+                if data is None:
+                    return
                 await shell.send_bytes(data)
 
+        loop.add_reader(stdin_fd, on_stdin_ready)
         stdin_task = asyncio.create_task(read_stdin())
 
         try:
@@ -84,6 +101,7 @@ async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
                 elif frame.channel == ShellChannel.CLOSE:
                     break
         finally:
+            loop.remove_reader(stdin_fd)
             stdin_task.cancel()
             try:
                 await stdin_task
