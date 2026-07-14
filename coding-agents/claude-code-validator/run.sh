@@ -37,7 +37,14 @@ export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
 export CLAUDE_CODE_USE_BEDROCK=1
 export HOME="/home/agent"
 
-cd "$HOME"
+# The event pre-deploys this image before the attendee creates an S3 Files mount.
+# Once mounted, the staged acceptance contract is the project steering source.
+VALIDATOR_WORKDIR="/mnt/s3files/validator"
+if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then
+  cd "$VALIDATOR_WORKDIR"
+else
+  cd "$HOME"
+fi
 
 # ── No first-run prompts (self-heal on a stale image) ─────────
 # --dangerously-skip-permissions still shows a one-time "Bypass Permissions mode?

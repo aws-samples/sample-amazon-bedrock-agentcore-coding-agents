@@ -17,6 +17,14 @@ def test_validator_setup_is_executable():
     assert mode & stat.S_IXUSR
 
 
+def test_validator_prefers_the_staged_acceptance_contract():
+    """A mounted attendee contract must override the image's fallback CLAUDE.md."""
+    script = (ROOT / "coding-agents" / "claude-code-validator" / "run.sh").read_text()
+    assert 'VALIDATOR_WORKDIR="/mnt/s3files/validator"' in script
+    assert 'if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then' in script
+    assert 'cd "$VALIDATOR_WORKDIR"' in script
+
+
 def test_runtime_mcp_endpoint_uses_encoded_full_arn(tmp_path):
     runtime_arn = (
         "arn:aws:bedrock-agentcore:us-west-2:123456789012:"
@@ -130,6 +138,7 @@ def test_attendee_shell_scripts_parse():
         GATEWAY / "deploy-gateway.sh",
         GATEWAY / "deploy-all.sh",
         GATEWAY / "verify-gateway.sh",
+        ROOT / "coding-agents" / "claude-code-validator" / "run.sh",
         ROOT / "usecase-sample-to-mcp" / "deploy" / "deploy.sh",
     ]
     for script in scripts:
