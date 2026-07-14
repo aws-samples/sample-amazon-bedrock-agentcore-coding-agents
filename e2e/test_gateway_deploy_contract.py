@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -29,6 +30,46 @@ def test_mounted_role_guidance_overrides_the_image_fallback():
     opencode = (ROOT / "coding-agents" / "opencode" / "run.sh").read_text()
     assert 'elif [ -f /mnt/s3files/AGENTS.md ]; then' in opencode
     assert 'RUN_DIR="/mnt/s3files"' in opencode
+
+
+def test_opencode_config_writer_preserves_session_telemetry(tmp_path):
+    config_path = tmp_path / "opencode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "username": "attendee@workshop.aws",
+                "experimental": {"openTelemetry": True, "other": False},
+                "mcp": {"stale": {}},
+            }
+        )
+    )
+
+    subprocess.run(
+        [
+            "python3",
+            str(ROOT / "coding-agents" / "opencode" / "configure_opencode.py"),
+            "--config",
+            str(config_path),
+            "--region",
+            "us-west-2",
+            "--gateway-url",
+            "https://gateway.example/mcp",
+        ],
+        check=True,
+    )
+
+    config = json.loads(config_path.read_text())
+    assert config["username"] == "attendee@workshop.aws"
+    assert config["experimental"] == {"openTelemetry": True}
+    assert config["provider"]["amazon-bedrock"]["options"]["region"] == "us-west-2"
+    assert config["mcp"]["gateway"]["command"] == [
+        "node",
+        "/mnt/s3files/mcp/index.js",
+        "--gateway-url",
+        "https://gateway.example/mcp",
+        "--region",
+        "us-west-2",
+    ]
 
 
 def test_served_role_connectors_do_not_block_on_stdin_on_exit():

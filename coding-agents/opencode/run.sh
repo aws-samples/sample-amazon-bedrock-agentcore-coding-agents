@@ -44,36 +44,15 @@ echo "Using Bedrock in ${AWS_REGION} through the runtime IAM role"
 eval "$(aws configure export-credentials --format env 2>/dev/null)" 2>/dev/null || true
 
 # ── Regenerate the opencode config with the live region (+ MCP gateway) ──────
-# opencode reads ~/.config/opencode/opencode.json. Rewrite it at startup so the
-# region is always the live one, and add the MCP gateway block when GATEWAY_URL
-# is set (the same brokered-tools pattern the other harnesses use).
-MCP_BLOCK=""
+# opencode reads ~/.config/opencode/opencode.json. The writer replaces runtime
+# settings while retaining attendee-set username and OTel enablement so a
+# launcher invocation cannot silently disable the Lab 3 telemetry pipeline.
+CONFIGURE_ARGS=(--config "$CONFIG" --region "$AWS_REGION")
 if [ -n "${GATEWAY_URL:-}" ]; then
-  MCP_BLOCK=$(cat <<MCPEOF
-  "mcp": {
-    "gateway": {
-      "type": "local",
-      "command": ["node", "/mnt/s3files/mcp/index.js", "--gateway-url", "${GATEWAY_URL}", "--region", "${AWS_REGION}"]
-    }
-  },
-MCPEOF
-)
+  CONFIGURE_ARGS+=(--gateway-url "$GATEWAY_URL")
   echo "MCP gateway configured: ${GATEWAY_URL}"
 fi
-
-cat > "$CONFIG" <<EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-${MCP_BLOCK}
-  "provider": {
-    "amazon-bedrock": {
-      "options": { "region": "${AWS_REGION}" }
-    }
-  },
-  "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-  "small_model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"
-}
-EOF
+python3 /app/configure_opencode.py "${CONFIGURE_ARGS[@]}"
 
 # Preserve an explicit per-run cwd from the orchestrator. Interactive AgentCore
 # shells start at `/`, so prefer the staged project guidance on the shared mount

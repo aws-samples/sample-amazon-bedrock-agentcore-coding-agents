@@ -31,6 +31,7 @@ RUN mkdir -p /home/agent/.config/opencode && chown -R agent:agent /home/agent/.c
 COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 
 COPY --chown=agent:agent healthcheck.py /app/healthcheck.py
+COPY --chown=agent:agent configure_opencode.py /app/configure_opencode.py
 COPY run.sh /app/run.sh
 COPY entrypoint.sh /app/entrypoint.sh
 COPY otel-collector-config.yaml /app/otel-collector-config.yaml
