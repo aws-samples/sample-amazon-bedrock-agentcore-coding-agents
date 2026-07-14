@@ -33,6 +33,8 @@ from bedrock_agentcore.runtime.shell import ShellChannel, ShellSession
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REGION = os.environ.get("AWS_REGION", "us-west-2")
+SHELL_OPEN_ATTEMPTS = 6
+SHELL_OPEN_RETRY_SECONDS = 5
 
 
 def load_config() -> dict:
@@ -111,7 +113,6 @@ async def run(args):
     runtime_arn = config["runtime_arn"]
 
     session_id = args.session or str(uuid.uuid4())
-    shell_id = str(uuid.uuid4())
 
     client = AgentCoreRuntimeClient(region=REGION)
 
@@ -125,24 +126,45 @@ async def run(args):
 
     model_flag = f" --model {args.model}" if args.model else ""
 
-    async with client.open_shell(
-        runtime_arn=runtime_arn,
-        session_id=session_id,
-        shell_id=shell_id,
-    ) as shell:
-        if args.prompt:
-            safe_prompt = args.prompt.replace("'", "'\\''")
-            cmd = f"/app/run.sh{model_flag} '{safe_prompt}'; exit\n"
-            print(f"Running prompt: {args.prompt}\n", file=sys.stderr)
-            await stream_output(shell, cmd)
-        elif args.cmd:
-            cmd = f"{args.cmd}; exit\n"
-            print(f"Running command: {args.cmd}\n", file=sys.stderr)
-            await stream_output(shell, cmd)
-        else:
-            cmd = f"/app/run.sh{model_flag}\n"
-            print("Connected! Launching Claude Code...\n", file=sys.stderr)
-            await interactive_pty(shell, cmd)
+    for attempt in range(1, SHELL_OPEN_ATTEMPTS + 1):
+        opened = False
+        try:
+            async with client.open_shell(
+                runtime_arn=runtime_arn,
+                session_id=session_id,
+                shell_id=str(uuid.uuid4()),
+            ) as shell:
+                opened = True
+                if args.prompt:
+                    safe_prompt = args.prompt.replace("'", "'\\''")
+                    cmd = f"/app/run.sh{model_flag} '{safe_prompt}'; exit\n"
+                    print(f"Running prompt: {args.prompt}\n", file=sys.stderr)
+                    await stream_output(shell, cmd)
+                elif args.cmd:
+                    cmd = f"{args.cmd}; exit\n"
+                    print(f"Running command: {args.cmd}\n", file=sys.stderr)
+                    await stream_output(shell, cmd)
+                else:
+                    cmd = f"/app/run.sh{model_flag}\n"
+                    print("Connected! Launching Claude Code...\n", file=sys.stderr)
+                    await interactive_pty(shell, cmd)
+        except (TimeoutError, OSError) as error:
+            if opened:
+                raise
+            if attempt == SHELL_OPEN_ATTEMPTS:
+                raise RuntimeError(
+                    f"Runtime did not accept a command shell after "
+                    f"{SHELL_OPEN_ATTEMPTS} attempts."
+                ) from error
+            print(
+                f"Runtime is still warming (attempt {attempt}/"
+                f"{SHELL_OPEN_ATTEMPTS}); retrying in "
+                f"{SHELL_OPEN_RETRY_SECONDS}s.",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(SHELL_OPEN_RETRY_SECONDS)
+            continue
+        break
 
     print(f"\nTo reconnect: python connect.py --session {session_id}", file=sys.stderr)
 

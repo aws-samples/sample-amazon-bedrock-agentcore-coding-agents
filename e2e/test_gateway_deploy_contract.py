@@ -17,12 +17,16 @@ def test_validator_setup_is_executable():
     assert mode & stat.S_IXUSR
 
 
-def test_validator_prefers_the_staged_acceptance_contract():
-    """A mounted attendee contract must override the image's fallback CLAUDE.md."""
-    script = (ROOT / "coding-agents" / "claude-code-validator" / "run.sh").read_text()
-    assert 'VALIDATOR_WORKDIR="/mnt/s3files/validator"' in script
-    assert 'if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then' in script
-    assert 'cd "$VALIDATOR_WORKDIR"' in script
+def test_mounted_role_guidance_overrides_the_image_fallback():
+    """The files attendees stage must be the project guidance the CLI reads."""
+    validator = (ROOT / "coding-agents" / "claude-code-validator" / "run.sh").read_text()
+    assert 'VALIDATOR_WORKDIR="/mnt/s3files/validator"' in validator
+    assert 'if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then' in validator
+    assert 'cd "$VALIDATOR_WORKDIR"' in validator
+
+    opencode = (ROOT / "coding-agents" / "opencode" / "run.sh").read_text()
+    assert 'elif [ -f /mnt/s3files/AGENTS.md ]; then' in opencode
+    assert 'RUN_DIR="/mnt/s3files"' in opencode
 
 
 def test_runtime_mcp_endpoint_uses_encoded_full_arn(tmp_path):
@@ -139,6 +143,7 @@ def test_attendee_shell_scripts_parse():
         GATEWAY / "deploy-all.sh",
         GATEWAY / "verify-gateway.sh",
         ROOT / "coding-agents" / "claude-code-validator" / "run.sh",
+        ROOT / "coding-agents" / "opencode" / "run.sh",
         ROOT / "usecase-sample-to-mcp" / "deploy" / "deploy.sh",
     ]
     for script in scripts:

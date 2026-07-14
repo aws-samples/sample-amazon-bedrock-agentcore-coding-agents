@@ -75,13 +75,12 @@ ${MCP_BLOCK}
 }
 EOF
 
-# Preserve an explicit per-run cwd from the orchestrator. A direct interactive
-# shell starts in /app, so use the shared mount in that case.
+# Preserve an explicit per-run cwd from the orchestrator. Interactive AgentCore
+# shells start at `/`, so prefer the staged project guidance on the shared mount
+# instead of treating that shell root as the project directory.
 if [ -n "${WORKSHOP_AGENT_WORKDIR:-}" ]; then
   RUN_DIR="$WORKSHOP_AGENT_WORKDIR"
-elif [ "$PWD" != "/app" ]; then
-  RUN_DIR="$PWD"
-elif [ -d /mnt/s3files ]; then
+elif [ -f /mnt/s3files/AGENTS.md ]; then
   RUN_DIR="/mnt/s3files"
 else
   RUN_DIR="$HOME"

@@ -21,6 +21,7 @@ import os
 import sys
 import threading
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +50,40 @@ _AGENT_LAUNCH = {
     "opencode": "/app/run.sh\n",
     "kiro": "/app/run.sh\n",
 }
+
+_SHELL_OPEN_ATTEMPTS = 6
+_SHELL_OPEN_RETRY_DELAY_S = 5.0
+
+
+async def _open_shell_when_ready(client: Any, runtime_arn: str, session_id: str,
+                                 *, retry_delay_s: float = _SHELL_OPEN_RETRY_DELAY_S,
+                                 retry_notice: Any = None) -> tuple[AsyncExitStack, Any]:
+    """Open a command shell after an AgentCore Runtime has finished warming."""
+    for attempt in range(1, _SHELL_OPEN_ATTEMPTS + 1):
+        stack = AsyncExitStack()
+        try:
+            shell = await stack.enter_async_context(client.open_shell(
+                runtime_arn=runtime_arn,
+                session_id=session_id,
+                shell_id=str(uuid.uuid4()),
+            ))
+        except (TimeoutError, OSError) as error:
+            await stack.aclose()
+            if attempt == _SHELL_OPEN_ATTEMPTS:
+                raise RuntimeError(
+                    f"Runtime did not accept a command shell after "
+                    f"{_SHELL_OPEN_ATTEMPTS} attempts."
+                ) from error
+            if retry_notice:
+                retry_notice(
+                    f"Runtime is still warming (attempt {attempt}/"
+                    f"{_SHELL_OPEN_ATTEMPTS}); retrying in {retry_delay_s:g}s."
+                )
+            await asyncio.sleep(retry_delay_s)
+        else:
+            return stack, shell
+
+    raise AssertionError("command-shell retry loop exhausted unexpectedly")
 
 
 class RuntimeShellSession:
@@ -103,13 +138,15 @@ class RuntimeShellSession:
         from bedrock_agentcore.runtime.shell import ShellChannel
 
         client = AgentCoreRuntimeClient(region=REGION)
-        shell_id = str(uuid.uuid4())
-
-        async with client.open_shell(
-            runtime_arn=self.runtime_arn,
-            session_id=self.session_id,
-            shell_id=shell_id,
-        ) as shell:
+        stack, shell = await _open_shell_when_ready(
+            client,
+            self.runtime_arn,
+            self.session_id,
+            retry_notice=lambda message: self._emit(
+                f"\r\n\x1b[33m{message}\x1b[0m\r\n"
+            ),
+        )
+        async with stack:
             self._shell = shell
             self._size = (cols, rows)
 

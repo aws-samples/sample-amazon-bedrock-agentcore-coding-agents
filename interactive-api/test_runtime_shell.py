@@ -17,6 +17,7 @@ test starts unwired.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -63,6 +64,51 @@ def test_forged_instance_arn_is_rejected():
 def test_unwired_role_returns_none():
     assert runtime_shell.get_runtime_arn("opencode") is None
     assert runtime_shell.get_runtime_arn("opencode", _A1) is None
+
+
+class _WarmingShellClient:
+    """An AgentCore client whose shell becomes available after transient timeouts."""
+
+    def __init__(self, succeeds_on: int):
+        self.succeeds_on = succeeds_on
+        self.calls = []
+        self.closed = 0
+        self.shell = object()
+
+    def open_shell(self, **kwargs):
+        self.calls.append(kwargs)
+        client = self
+        attempt = len(self.calls)
+
+        class _Context:
+            async def __aenter__(self):
+                if attempt < client.succeeds_on:
+                    raise TimeoutError("runtime warming")
+                return client.shell
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                client.closed += 1
+
+        return _Context()
+
+
+def test_runtime_shell_retries_a_warming_runtime_before_failing():
+    """A first WebSocket timeout after READY is retried with a fresh shell id."""
+    client = _WarmingShellClient(succeeds_on=3)
+    notices = []
+
+    async def _open():
+        stack, shell = await runtime_shell._open_shell_when_ready(
+            client, _A1, "console-warm0000000000000000000000000000000000",
+            retry_delay_s=0, retry_notice=notices.append)
+        async with stack:
+            return shell
+
+    assert asyncio.run(_open()) is client.shell
+    assert len(client.calls) == 3
+    assert len({call["shell_id"] for call in client.calls}) == 3
+    assert len(notices) == 2
+    assert client.closed == 1
 
 
 def test_open_session_against_chosen_instance_records_that_arn():
