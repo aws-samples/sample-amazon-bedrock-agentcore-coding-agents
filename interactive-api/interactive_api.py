@@ -64,7 +64,7 @@ _REPO = os.path.dirname(_HERE)
 _ENGINES = os.path.dirname(_HERE)
 _USECASE = os.path.join(_ENGINES, "usecase-sample-to-mcp")
 _GRADING = os.path.join(_USECASE, "grading")
-_RUNS_DIR = os.path.join(_REPO, ".runs")
+_RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO, ".runs"))
 _STAGE1_DIR = os.path.join(_RUNS_DIR, "stage1")
 _LEDGER = os.path.join(_RUNS_DIR, "telemetry.jsonl")
 

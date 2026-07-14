@@ -67,7 +67,10 @@ async def _open_shell_when_ready(client: Any, runtime_arn: str, session_id: str,
                 session_id=session_id,
                 shell_id=str(uuid.uuid4()),
             ))
-        except (TimeoutError, OSError) as error:
+        # Python 3.10 keeps asyncio.TimeoutError distinct from the built-in
+        # TimeoutError. Workshop hosts still use that runtime, and websockets
+        # raises the asyncio variant when the opening handshake times out.
+        except (TimeoutError, asyncio.TimeoutError, OSError) as error:
             await stack.aclose()
             if attempt == _SHELL_OPEN_ATTEMPTS:
                 raise RuntimeError(

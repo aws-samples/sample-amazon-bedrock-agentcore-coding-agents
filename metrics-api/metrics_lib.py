@@ -43,7 +43,8 @@ ASSISTANT_TYPES = ("claude-code", "claude-code-validator", "opencode")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
-_LEDGER = os.path.join(_REPO, ".runs", "telemetry.jsonl")
+_RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO, ".runs"))
+_LEDGER = os.path.join(_RUNS_DIR, "telemetry.jsonl")
 
 # The governance rule set the console renders is the SAME set the harness
 # enforces (orchestrator/policy.py). We import it so /api/policies can never drift

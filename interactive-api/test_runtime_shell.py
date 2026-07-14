@@ -69,8 +69,9 @@ def test_unwired_role_returns_none():
 class _WarmingShellClient:
     """An AgentCore client whose shell becomes available after transient timeouts."""
 
-    def __init__(self, succeeds_on: int):
+    def __init__(self, succeeds_on: int, timeout_type=TimeoutError):
         self.succeeds_on = succeeds_on
+        self.timeout_type = timeout_type
         self.calls = []
         self.closed = 0
         self.shell = object()
@@ -83,7 +84,7 @@ class _WarmingShellClient:
         class _Context:
             async def __aenter__(self):
                 if attempt < client.succeeds_on:
-                    raise TimeoutError("runtime warming")
+                    raise client.timeout_type("runtime warming")
                 return client.shell
 
             async def __aexit__(self, exc_type, exc, traceback):
@@ -92,9 +93,14 @@ class _WarmingShellClient:
         return _Context()
 
 
-def test_runtime_shell_retries_a_warming_runtime_before_failing():
+@pytest.mark.parametrize(
+    "timeout_type",
+    [TimeoutError, asyncio.TimeoutError],
+    ids=["builtin-timeout", "asyncio-timeout"],
+)
+def test_runtime_shell_retries_a_warming_runtime_before_failing(timeout_type):
     """A first WebSocket timeout after READY is retried with a fresh shell id."""
-    client = _WarmingShellClient(succeeds_on=3)
+    client = _WarmingShellClient(succeeds_on=3, timeout_type=timeout_type)
     notices = []
 
     async def _open():
