@@ -74,6 +74,42 @@ _ROLE_ENV: dict[str, dict[str, str]] = {
     "kiro": {},
 }
 
+# Telemetry-enable env per role (Lab 3). Every agent image runs an OTel
+# collector sidecar on 127.0.0.1:4318 (started at boot by entrypoint.sh);
+# these vars make the agent CLI emit to it. Claude Code exports metrics and
+# log events over OTLP; opencode needs OTEL_BSP_SCHEDULE_DELAY=1 because a
+# short-lived CLI exits before the default 5s batch flush and its spans would
+# silently drop. Enabling emission is only half the story: WHO ran it comes
+# from identity.to_otel_env() (the Lab 3 seam) merged in _build_command.
+_ROLE_TELEMETRY_ENV: dict[str, dict[str, str]] = {
+    "claude-code": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+        "OTEL_METRIC_EXPORT_INTERVAL": "5000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "2000",
+    },
+    "claude-code-validator": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+        "OTEL_METRIC_EXPORT_INTERVAL": "5000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "2000",
+    },
+    # opencode's exporter is switched on in its config file
+    # (experimental.openTelemetry, written by configure_opencode.py); the env
+    # here is the endpoint + the short-lived-process flush fix.
+    "opencode": {
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+        "OTEL_BSP_SCHEDULE_DELAY": "1",
+    },
+    "kiro": {},
+}
+
 
 def _cli_invocation(agent_id: str, prompt_var: str, model: str, workdir: str) -> str:
     """The headless CLI command for one agent, run DIRECTLY (not via /app/run.sh,
@@ -138,7 +174,8 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
     # plain Bedrock there (no mantle/us-east-2 special case).
     cli_region = region
     env = {"AWS_REGION": cli_region, "AWS_DEFAULT_REGION": cli_region,
-           **_ROLE_ENV.get(agent_id, {})}
+           **_ROLE_ENV.get(agent_id, {}),
+           **_ROLE_TELEMETRY_ENV.get(agent_id, {})}
     if agent_id in ("claude-code", "claude-code-validator") and model:
         env["ANTHROPIC_MODEL"] = model
     # Propagate authenticated run attribution metadata into the runtime.
@@ -148,6 +185,11 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
         identity = get_current_identity()
         if identity is not None and not identity.is_anonymous():
             env.update(identity.to_env())
+            # Lab 3 seam: stamp the run's telemetry with the submitting user.
+            # to_otel_env() ships returning {} (the gap attendees find on
+            # page 1 and close on page 2); once implemented, every signal the
+            # agent emits carries user.id and the per-user cost view works.
+            env.update(identity.to_otel_env())
     except Exception:
         identity = None
     env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())

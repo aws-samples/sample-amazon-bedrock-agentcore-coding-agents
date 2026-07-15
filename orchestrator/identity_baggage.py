@@ -44,6 +44,27 @@ class UserIdentity:
             "AGENTCORE_USER_NAME": self.name,
         }
 
+    def to_otel_env(self) -> dict[str, str]:
+        """OpenTelemetry identity for the dispatched agent process.
+
+        Lab 3 seam: the dispatch already knows WHO submitted the run (this
+        object) and every agent image already runs a collector sidecar on
+        127.0.0.1:4318, but the two are not connected: nothing tells the agent
+        CLI to emit telemetry, and nothing stamps the run's telemetry with the
+        submitting user. This method is where the identity becomes an OTel
+        resource attribute. Attendees complete it in Lab 3; until then it
+        returns {} and dispatched runs land in CloudWatch UNTAGGED.
+
+        The finished mapping (the Lab 3 reference implementation):
+
+            ident = self.email or self.user_id
+            return {
+                "OTEL_RESOURCE_ATTRIBUTES": (
+                    f"user.id={ident},team.id=workshop"),
+            }
+        """
+        return {}
+
     def to_headers(self) -> dict[str, str]:
         return {
             "X-AgentCore-User-Id": self.user_id,

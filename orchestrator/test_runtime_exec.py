@@ -148,3 +148,69 @@ def test_fallback_disabled_fails_loud(monkeypatch):
             runtime_arn="arn:...:runtime/codex", agent_id="codex", prompt="build",
             run_subdir="run1", artifact_rel="chatbot.html", model="openai.gpt-5.5")
     assert calls == ["openai.gpt-5.5"]
+
+
+# --- Dispatch env contract (Lab 3 telemetry seam) ---------------------------
+# _build_command assembles the env prefix for every dispatched role. These
+# tests pin what ships: telemetry EMISSION is on for every role (the agent
+# CLIs export to the collector sidecar at 127.0.0.1:4318), but telemetry
+# IDENTITY is absent until the attendee implements to_otel_env() in Lab 3.
+
+def _cmd_for(agent_id, monkeypatch, identity=None):
+    import identity_baggage
+    if identity is not None:
+        identity_baggage.set_current_identity(identity)
+    else:
+        identity_baggage.set_current_identity(identity_baggage.ANONYMOUS)
+    monkeypatch.delenv("PERUSER_ROLE_ARN", raising=False)
+    return runtime_exec._build_command(
+        agent_id, "do the thing", "run_test_001", "deliverable/out.md",
+        "", "us-west-2", "cafe12345678")
+
+
+def test_dispatch_enables_claude_code_telemetry(monkeypatch):
+    cmd = _cmd_for("claude-code", monkeypatch)
+    assert "CLAUDE_CODE_ENABLE_TELEMETRY=1" in cmd
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318" in cmd
+    assert "OTEL_LOGS_EXPORTER=otlp" in cmd
+
+
+def test_dispatch_enables_validator_telemetry(monkeypatch):
+    cmd = _cmd_for("claude-code-validator", monkeypatch)
+    assert "CLAUDE_CODE_ENABLE_TELEMETRY=1" in cmd
+
+
+def test_dispatch_gives_opencode_endpoint_and_flush(monkeypatch):
+    cmd = _cmd_for("opencode", monkeypatch)
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318" in cmd
+    # Short-lived CLI: without an immediate flush the batch span processor
+    # dies with the process and the spans never leave the container.
+    assert "OTEL_BSP_SCHEDULE_DELAY=1" in cmd
+
+
+def test_dispatch_carries_run_ledger_identity(monkeypatch):
+    from identity_baggage import UserIdentity
+    ident = UserIdentity(user_id="sub-1", email="attendee@workshop.aws")
+    cmd = _cmd_for("claude-code", monkeypatch, ident)
+    assert "AGENTCORE_USER_EMAIL=attendee@workshop.aws" in cmd
+
+
+def test_dispatch_telemetry_identity_follows_the_seam(monkeypatch):
+    # Whatever to_otel_env() returns is what the dispatched process gets.
+    # Shipped state: {} -> no OTEL_RESOURCE_ATTRIBUTES in the command (the
+    # Lab 3 gap). After the attendee's fix: the stamp must appear verbatim.
+    from identity_baggage import UserIdentity
+    ident = UserIdentity(user_id="sub-1", email="attendee@workshop.aws")
+    cmd = _cmd_for("claude-code", monkeypatch, ident)
+    stamp = ident.to_otel_env().get("OTEL_RESOURCE_ATTRIBUTES")
+    if stamp is None:
+        assert "OTEL_RESOURCE_ATTRIBUTES" not in cmd
+    else:
+        assert "OTEL_RESOURCE_ATTRIBUTES=" in cmd
+        assert "user.id=" in cmd
+
+
+def test_anonymous_dispatch_never_stamps_identity(monkeypatch):
+    cmd = _cmd_for("claude-code", monkeypatch)
+    assert "AGENTCORE_USER_EMAIL" not in cmd
+    assert "OTEL_RESOURCE_ATTRIBUTES" not in cmd
