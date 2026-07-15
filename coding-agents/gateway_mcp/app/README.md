@@ -6,6 +6,11 @@ An MCP server deployed on Amazon Bedrock AgentCore that provides GitHub API acce
 
 Built with FastMCP, this server authenticates with GitHub using a GitHub App (private key stored in AWS Secrets Manager) and exposes tools over Streamable HTTP transport (MCP protocol version `2025-03-26`).
 
+AgentCore Runtime and Gateway provide the IAM-authenticated ingress. The server
+therefore disables FastMCP's application-level Host/Origin guard: AgentCore
+forwards a dynamic internal `Host`, and FastMCP 3.4.3 otherwise rejects it with
+HTTP 421 before MCP request handling.
+
 ## Local Development
 
 ```bash

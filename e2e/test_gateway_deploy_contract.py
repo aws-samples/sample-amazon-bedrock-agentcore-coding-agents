@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import stat
@@ -11,6 +12,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = ROOT / "coding-agents" / "gateway_mcp"
+
+
+def test_gateway_mcp_trusts_agentcore_ingress_host():
+    source = (GATEWAY / "app" / "main.py").read_text()
+    tree = ast.parse(source)
+    run_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "mcp"
+        and node.func.attr == "run"
+    ]
+    assert any(
+        keyword.arg == "host_origin_protection"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is False
+        for call in run_calls
+        for keyword in call.keywords
+    )
 
 
 def test_validator_setup_is_executable():
@@ -183,6 +205,70 @@ esac
 def test_full_deploy_fails_if_tools_are_not_discoverable():
     script = (GATEWAY / "deploy-all.sh").read_text()
     assert '"$SCRIPT_DIR/verify-gateway.sh"' in script
+
+
+def test_gateway_verify_fails_fast_with_runtime_421_guidance(tmp_path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        """{
+  "gateway_id": "github-mcp-gateway-abcdefghij",
+  "gateway_target_id": "AbCdEf1234",
+  "gateway_url": "https://example.gateway/mcp"
+}
+"""
+    )
+    command_log = tmp_path / "awscurl.log"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    fake_awscurl = fake_bin / "awscurl"
+    fake_awscurl.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf 'call\\n' >> "$AWSCURL_COMMAND_LOG"
+printf '%s\\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"McpException: Received error (421) from runtime"}}'
+"""
+    )
+    fake_awscurl.chmod(0o755)
+
+    fake_aws = fake_bin / "aws"
+    fake_aws.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "configure get region") echo "us-west-2" ;;
+  bedrock-agentcore-control\\ get-gateway-target\\ *)
+    printf '%s\\n' '{"status":"READY","targetConfiguration":{"mcp":{"mcpServer":{"endpoint":"https://runtime.example/invocations"}}}}' ;;
+  *) : ;;
+esac
+"""
+    )
+    fake_aws.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "AWS_ACCOUNT_ID": "123456789012",
+        "AWS_REGION": "us-west-2",
+        "AWSCURL_COMMAND_LOG": str(command_log),
+        "GATEWAY_VERIFY_ATTEMPTS": "36",
+        "GATEWAY_VERIFY_DELAY_SECONDS": "0",
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "STATE_FILE": str(state_file),
+    }
+    result = subprocess.run(
+        ["bash", str(GATEWAY / "verify-gateway.sh")],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert command_log.read_text().splitlines() == ["call"]
+    assert "Runtime returned HTTP 421" in result.stderr
+    assert "not caused by the console GitHub repository setting" in result.stderr
+    assert "Gateway target: AbCdEf1234 (READY)" in result.stderr
+    assert "Runtime endpoint: https://runtime.example/invocations" in result.stderr
+    assert "./deploy-runtime.sh" in result.stderr
 
 
 def test_attendee_shell_scripts_parse():

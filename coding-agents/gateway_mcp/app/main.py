@@ -403,4 +403,10 @@ def merge_pull_request(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", stateless_http=True)
+    # AgentCore is the authenticated ingress proxy and supplies an internal Host.
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        stateless_http=True,
+        host_origin_protection=False,
+    )

@@ -705,7 +705,7 @@ dependencies = [
 requires-dist = [
     { name = "aws-opentelemetry-distro", specifier = ">=0.10" },
     { name = "boto3", specifier = ">=1.34" },
-    { name = "fastmcp", specifier = ">=2.11" },
+    { name = "fastmcp", specifier = ">=3.4.3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },

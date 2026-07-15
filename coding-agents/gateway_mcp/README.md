@@ -173,6 +173,11 @@ awscurl --service bedrock-agentcore \
 
 ```
 
+If verification reports HTTP 421, the deployed Runtime image predates the
+FastMCP proxy fix. Pull the current source and run `deploy-runtime.sh`, then
+`deploy-gateway.sh`; running `verify-gateway.sh` alone cannot replace the image.
+The console repository setting does not participate in this health check.
+
 ## Teardown
 
 ```bash
