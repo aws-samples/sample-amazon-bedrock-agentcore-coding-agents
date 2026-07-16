@@ -55,7 +55,10 @@ export default defineConfig({
     // backend below, so the API is reachable from :5174 too.
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // Backend port is configurable (CONSOLE_PORT). VS Code Server often
+        // occupies :8080, so allow an override via VITE_API_TARGET and default
+        // to :8088 to stay clear of it.
+        target: process.env.VITE_API_TARGET || 'http://localhost:8088',
         changeOrigin: true,
       },
     },
