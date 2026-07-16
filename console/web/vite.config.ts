@@ -58,7 +58,7 @@ export default defineConfig({
         // Backend port is configurable (CONSOLE_PORT). VS Code Server often
         // occupies :8080, so allow an override via VITE_API_TARGET and default
         // to :8088 to stay clear of it.
-        target: process.env.VITE_API_TARGET || 'http://localhost:8088',
+        target: process.env.VITE_API_TARGET || 'http://localhost:8080',
         changeOrigin: true,
       },
     },
