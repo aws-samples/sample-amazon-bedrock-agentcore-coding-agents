@@ -197,20 +197,42 @@ def test_dispatch_carries_run_ledger_identity(monkeypatch):
 
 def test_dispatch_telemetry_identity_follows_the_seam(monkeypatch):
     # Whatever to_otel_env() returns is what the dispatched process gets.
-    # Shipped state: {} -> no OTEL_RESOURCE_ATTRIBUTES in the command (the
-    # Lab 3 gap). After the attendee's fix: the stamp must appear verbatim.
+    # Shipped state: {} -> no user.id in the resource attributes (the Lab 3
+    # gap); after the attendee's fix the user stamp must appear alongside the
+    # always-on run/agent correlation stamp.
     from identity_baggage import UserIdentity
     ident = UserIdentity(user_id="sub-1", email="attendee@workshop.aws")
     cmd = _cmd_for("claude-code", monkeypatch, ident)
     stamp = ident.to_otel_env().get("OTEL_RESOURCE_ATTRIBUTES")
     if stamp is None:
-        assert "OTEL_RESOURCE_ATTRIBUTES" not in cmd
+        assert "user.id=" not in cmd
     else:
-        assert "OTEL_RESOURCE_ATTRIBUTES=" in cmd
         assert "user.id=" in cmd
+
+
+def test_dispatch_always_stamps_task_correlation(monkeypatch):
+    # run.id + agent.id ride every dispatch, identity or not: one Logs
+    # Insights query groups a task's cost across the fleet by run.id even
+    # though the CLIs cannot join a shared trace tree.
+    for agent_id in ("claude-code", "claude-code-validator", "opencode"):
+        cmd = _cmd_for(agent_id, monkeypatch)
+        assert "run.id=run_test_001" in cmd
+        assert f"agent.id={agent_id}" in cmd
+
+
+def test_correlation_merges_with_identity_stamp(monkeypatch):
+    # The correlation stamp must EXTEND the seam's resource attributes, never
+    # clobber them: post-fix, one OTEL_RESOURCE_ATTRIBUTES value carries both.
+    from identity_baggage import UserIdentity
+    ident = UserIdentity(user_id="sub-1", email="attendee@workshop.aws")
+    stamp = ident.to_otel_env().get("OTEL_RESOURCE_ATTRIBUTES")
+    cmd = _cmd_for("claude-code", monkeypatch, ident)
+    assert cmd.count("OTEL_RESOURCE_ATTRIBUTES=") == 1
+    if stamp is not None:
+        assert "user.id=" in cmd and "run.id=" in cmd
 
 
 def test_anonymous_dispatch_never_stamps_identity(monkeypatch):
     cmd = _cmd_for("claude-code", monkeypatch)
     assert "AGENTCORE_USER_EMAIL" not in cmd
-    assert "OTEL_RESOURCE_ATTRIBUTES" not in cmd
+    assert "user.id=" not in cmd
