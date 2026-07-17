@@ -17,7 +17,10 @@ RUN curl -fsSL -o /tmp/otelcol.tar.gz \
 # opencode CLI: the frontend builder. It runs against Amazon Bedrock through the
 # runtime role's AWS credential chain (no API key, no OpenAI/mantle path), so it
 # is not affected by the GPT-5.x allowlisting that gates the Codex path.
-RUN npm install -g opencode-ai typescript ts-node
+# Pinned: 1.18.x dropped the AI-SDK ai.streamText usage spans that Lab 3's
+# per-user token query in aws/spans depends on. 1.17.20 is the last release
+# that exports token usage over OTel traces.
+RUN npm install -g opencode-ai@1.17.20 typescript ts-node
 
 RUN useradd -m -d /home/agent -u 1000 agent
 

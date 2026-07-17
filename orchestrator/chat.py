@@ -124,13 +124,26 @@ def _wired_roles() -> set[str]:
         return set()
 
 
+# The workflow each explicit dispatch_* tool submits under. An explicit agent
+# choice must never die on NO_ROUTE: the orchestrator model rewrites the task
+# text in its own words, which need not contain a router keyword, and admission
+# still routes that text for the usecase. Pinning the single-role workflow here
+# keeps "explicit agent selection (router consulted for usecase only)" true.
+_ROLE_WORKFLOW = {
+    _BACKEND: "patch/backend-v1",
+    _FRONTEND: "patch/frontend-v1",
+    _VALIDATOR: "review/pr-v1",
+}
+
+
 def _kick(agent_id: str | None, task: str) -> str:
     """Submit a run (single-role when agent_id is set, else routed) WITHOUT
     blocking, and return its id immediately. The chat keeps streaming; the
     console polls the run for live status. The 'a run started' UI signal is NOT
     raised here; it is read off the tool RESULT by an AfterToolCallEvent hook,
     so it works regardless of which thread strands runs the tool on."""
-    run = ENGINE.submit(task, agents=[agent_id] if agent_id else None)
+    run = ENGINE.submit(task, agents=[agent_id] if agent_id else None,
+                        workflow_ref=_ROLE_WORKFLOW.get(agent_id) if agent_id else None)
     return run.run_id
 
 
