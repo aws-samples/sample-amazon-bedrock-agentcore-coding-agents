@@ -93,7 +93,8 @@ class RuntimeShellSession:
     """A live WebSocket shell to a deployed AgentCore Runtime."""
 
     def __init__(self, session_id: str, agent_id: str, runtime_arn: str,
-                 opened_by: str = "user"):
+                 opened_by: str = "user",
+                 launch_env: dict[str, str] | None = None):
         self.session_id = session_id
         self.agent_id = agent_id
         self.runtime_arn = runtime_arn
@@ -101,6 +102,9 @@ class RuntimeShellSession:
         # dispatch). Display-only; both kinds are the SAME live session and both
         # the human and the engine can read/type into it (server fan-out).
         self.opened_by = opened_by
+        # Per-run env exported before the CLI launch so the agent inherits
+        # telemetry-enable, identity stamp, and run.id/agent.id correlation.
+        self._launch_env = launch_env
         # True while an engine dispatch is driving this PTY, so a concurrent
         # dispatch opens its own session instead of interleaving two prompts
         # into one TUI input box.
@@ -164,8 +168,15 @@ class RuntimeShellSession:
             cols, rows = self._size
             await shell.resize(cols, rows)
 
-            # Auto-launch the agent CLI at the measured width.
-            launch_cmd = _AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n")
+            # Auto-launch the agent CLI at the measured width. When a dispatch
+            # provided launch_env (telemetry + identity + correlation), export it
+            # inline so the CLI inherits the full attribution env from birth.
+            base_cmd = _AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n").rstrip("\n")
+            if self._launch_env:
+                exports = " ".join(f"{k}={v}" for k, v in self._launch_env.items())
+                launch_cmd = f"export {exports}; {base_cmd}\n"
+            else:
+                launch_cmd = base_cmd + "\n"
             await shell.send(launch_cmd)
 
             async for frame in shell:
@@ -345,9 +356,13 @@ def get_runtime_arn(agent_id: str, instance_arn: str | None = None) -> str | Non
 
 def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
                          instance_arn: str | None = None,
-                         opened_by: str = "user") -> dict:
+                         opened_by: str = "user",
+                         launch_env: dict[str, str] | None = None) -> dict:
     """Open a real runtime shell session. Fails loud if no ARN wired (or if a
-    requested instance is not one of the role's wired instances)."""
+    requested instance is not one of the role's wired instances).
+
+    When ``launch_env`` is provided, the env vars are exported on the same line
+    as the CLI launch, so the agent process inherits them from birth."""
     arn = get_runtime_arn(agent_id, instance_arn)
     if not arn:
         if instance_arn:
@@ -365,7 +380,8 @@ def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
             "an interactive shell. Wire a deployed ARN (agentcore deploy) to open a terminal.")}
 
     session_id = f"console-{uuid.uuid4().hex}{uuid.uuid4().hex[:4]}"
-    session = RuntimeShellSession(session_id, agent_id, arn, opened_by=opened_by)
+    session = RuntimeShellSession(session_id, agent_id, arn, opened_by=opened_by,
+                                  launch_env=launch_env)
     session.start(cols, rows)
 
     with _sessions_lock:
@@ -426,23 +442,29 @@ def list_sessions(agent_id: str | None = None) -> dict:
 
 
 def ensure_dispatch_session(agent_id: str,
-                            instance_arn: str | None = None
+                            instance_arn: str | None = None,
+                            launch_env: dict[str, str] | None = None
                             ) -> RuntimeShellSession | None:
-    """The live PTY a run dispatch should drive: reuse the agent's newest live,
-    non-busy session (the one the human is already watching), else open a fresh
-    one as the orchestrator. Returns None when no session can exist here (role
-    unwired, or the target is a local ``agentcore dev`` HTTP seam, which serves
-    /invocations and cannot host a PTY) so the caller can fall back to the
-    headless one-shot dispatch.
+    """The live PTY a run dispatch should drive.
+
+    When ``launch_env`` is provided, a human's existing session is never reused
+    (its CLI was launched without this run's identity/correlation env). A fresh
+    PTY is opened with the env exported before the CLI launch, so the agent
+    inherits telemetry-enable + identity + run.id from birth.
+
+    Without ``launch_env`` the old behavior is preserved: reuse the newest live,
+    non-busy session.
 
     ``busy`` sessions are skipped, never shared: two concurrent dispatches
     typing into one TUI input box would interleave their prompts."""
-    s = find_session_for_agent(agent_id)
-    if s is not None and not s.busy:
-        return s
+    if not launch_env:
+        s = find_session_for_agent(agent_id)
+        if s is not None and not s.busy:
+            return s
     out = open_runtime_session(agent_id, cols=120, rows=32,
                                instance_arn=instance_arn,
-                               opened_by="orchestrator")
+                               opened_by="orchestrator",
+                               launch_env=launch_env)
     if "error" in out:
         return None
     return get_session(out["session_id"])
