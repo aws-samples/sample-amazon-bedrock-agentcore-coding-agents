@@ -55,9 +55,13 @@ class UserIdentity:
         resource attribute. Attendees complete it in Lab 3; until then it
         returns {} and dispatched runs land in CloudWatch UNTAGGED.
 
-        The finished mapping (the Lab 3 reference implementation):
+        The finished mapping (the Lab 3 reference implementation). The
+        anonymous guard matters: a run with no signed-in user must stay
+        unstamped, never stamped as "user.id=" with an empty value:
 
             ident = self.email or self.user_id
+            if not ident:
+                return {}
             return {
                 "OTEL_RESOURCE_ATTRIBUTES": (
                     f"user.id={ident},team.id=workshop"),
