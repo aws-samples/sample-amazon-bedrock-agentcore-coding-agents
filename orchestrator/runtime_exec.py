@@ -152,6 +152,27 @@ def _client(region: str):
     return AgentCoreRuntimeClient(region=region)
 
 
+def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
+    """The telemetry + identity + correlation env for a dispatched build.
+
+    Used by both the headless one-shot (_build_command) and the live-PTY launch
+    so every path emits attributed telemetry through the collector sidecar.
+    """
+    env = dict(_ROLE_TELEMETRY_ENV.get(agent_id, {}))
+    try:
+        from identity_baggage import get_current_identity
+        identity = get_current_identity()
+        if identity is not None and not identity.is_anonymous():
+            env.update(identity.to_otel_env())
+    except Exception:
+        pass
+    _corr = f"run.id={run_subdir},agent.id={agent_id}"
+    _existing_res = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    env["OTEL_RESOURCE_ATTRIBUTES"] = (
+        f"{_existing_res},{_corr}" if _existing_res else _corr)
+    return env
+
+
 def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: str,
                    model: str, region: str, nonce: str) -> str:
     """The one shell line dispatched into the runtime.
@@ -532,18 +553,26 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
     return artifact
 
 
-def _live_session_for(agent_id: str, runtime_arn: str) -> Any | None:
+def _live_session_for(agent_id: str, runtime_arn: str,
+                      launch_env: dict[str, str] | None = None) -> Any | None:
     """The live console PTY this dispatch should drive, if the console is hosting
     one for the SAME runtime this role is wired to. Import is lazy and optional:
     runtime_shell lives in interactive-api (the console); a coordinator deployed
-    without the console has no live-PTY surface and uses the headless shell."""
+    without the console has no live-PTY surface and uses the headless shell.
+
+    When ``launch_env`` is provided, ensure_dispatch_session opens a FRESH PTY
+    that exports those vars before launching the CLI, so the agent inherits the
+    telemetry-enable + identity + correlation env from birth. A human's already-
+    open terminal (launched without this run's env) is never reused for a build.
+    """
     try:
         import runtime_shell  # noqa: PLC0415 (console-only surface)
     except Exception:
         return None
     try:
         s = runtime_shell.ensure_dispatch_session(agent_id,
-                                                  instance_arn=runtime_arn)
+                                                  instance_arn=runtime_arn,
+                                                  launch_env=launch_env)
     except Exception:
         return None
     # Only drive a session on the SAME runtime the router picked; a session on a
@@ -596,7 +625,14 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
 
     _arn_parts0 = runtime_arn.split(":")
     _live_region = _arn_parts0[3] if len(_arn_parts0) > 3 and _arn_parts0[3] else region
-    live = _live_session_for(agent_id, runtime_arn)
+    # A live-PTY CLI inherits its env at LAUNCH, so the run's telemetry env
+    # (enable + identity + run.id/agent.id) must be in the session's launch
+    # command; typing a turn into an already-running TUI can inject nothing.
+    # dispatch_env() builds the same mapping the headless path uses, and the
+    # session layer opens a fresh PTY launched with it (a human's own terminal,
+    # launched without this run's identity, is never reused for a build).
+    live = _live_session_for(agent_id, runtime_arn,
+                             launch_env=dispatch_env(agent_id, run_subdir))
     if live is not None:
         return _run_in_live_pty(live, agent_id, prompt, run_subdir, artifact_rel,
                                 _live_region, on_line, timeout_s)
