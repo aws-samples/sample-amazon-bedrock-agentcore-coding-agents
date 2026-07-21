@@ -70,13 +70,13 @@ _DEFAULT_TARGET = "GitHubMCP"
 # A fresh "Use this template" repo defaults to ``main``; overridable in config.
 _DEFAULT_BASE = "main"
 
-# The canonical workshop TEMPLATE repository. Attendees click "Use this template"
-# on it to get an ISOLATED per-attendee working repo (no fork, no shared
-# credential). Override with WORKSHOP_REPO. Switch to the aws-samples template
-# once that repo is published.
+# The canonical workshop TEMPLATE repository: the public code repo itself is a
+# GitHub template. Attendees click "Use this template" on it to get an ISOLATED
+# per-attendee working repo (no fork, no shared credential). Override with
+# WORKSHOP_REPO.
 WORKSHOP_REPO = os.environ.get(
     "WORKSHOP_REPO",
-    "didhd/agentcore-coding-agents-starter")
+    "aws-samples/sample-amazon-bedrock-agentcore-coding-agents")
 
 # git subprocess hardening: pin config to /dev/null so a planted ~/.gitconfig
 # (e.g. a malicious credential helper) is never read, and never prompt.

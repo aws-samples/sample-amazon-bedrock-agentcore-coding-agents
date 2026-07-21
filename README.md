@@ -15,6 +15,13 @@ repository directly into the box home, so the customer-reproducible path is exac
 `git clone` of this URL (which yields `~/sample-amazon-bedrock-agentcore-coding-agents`)
 followed by the CLI steps the workshop teaches.
 
+This repository is also a GitHub **template**. In Module 1 of the workshop you click
+**Use this template -> Create a new repository** to get your own isolated copy (no
+fork, no shared credentials): the sample module it ships
+(`usecase-sample-to-mcp/cost_analyzer.py`) is the raw material the coding agents
+transform, and the Module 2 pull request the orchestrator opens lands on that
+per-attendee repository through the GitHub App gateway.
+
 ## Layout
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
@@ -26,7 +33,7 @@ followed by the CLI steps the workshop teaches.
 - `orchestrator-agent/` the deployable Strands agent bundle
 - `console/` the React + FastAPI console (Agents / Fleets / Governance)
 - `interactive-api/` `metrics-api/` the Stage 1 interactive + Stage 3 metrics engines
-- `usecase-sample-to-mcp/` the use case: a plain Python module (`cost_analyzer.py`) plus the `pytest` grading contract
+- `usecase-sample-to-mcp/` the use case: a plain Python module (`cost_analyzer.py`, the input the agents transform; also the grading reference) plus the `pytest` grading contract
 - `harness-skills/` agent skills used to configure the harnesses
 - `e2e/` the end-to-end workshop journey + integration suite
 

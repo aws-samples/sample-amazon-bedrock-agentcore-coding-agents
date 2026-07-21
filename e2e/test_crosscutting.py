@@ -22,7 +22,8 @@ from e2e.conftest import req, expect_status, login
 
 # The workshop template repo the GitHub status must surface (owner/name shape).
 # Attendees create their own repo from this template; there is no fork/PAT.
-STARTER_HINT = "agentcore-coding-agents-starter"
+# The public code repo itself is the template.
+STARTER_HINT = "sample-amazon-bedrock-agentcore-coding-agents"
 
 
 # ---------------------------------------------------------------------------
