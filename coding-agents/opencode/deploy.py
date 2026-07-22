@@ -88,8 +88,10 @@ def require_deploy_prereqs():
         print("Error: ECR_URI not found. Run ./setup.sh first.")
         sys.exit(1)
     if not GATEWAY_URL:
-        print("Warning: GATEWAY_URL not found. Deploy will continue without gateway support.")
-        print("  Either export GATEWAY_URL or deploy the gateway first.")
+        # Lab 1 attaches the shared mount BEFORE the Lab 2 gateway exists, so a
+        # missing GATEWAY_URL is the expected state there, not an error.
+        print("Note: no GATEWAY_URL set; deploying without gateway support.")
+        print("  This is expected in Lab 1. The Lab 2 gateway deploy wires it later.")
 
 
 def create_execution_role() -> str:

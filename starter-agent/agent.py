@@ -32,7 +32,11 @@ import boto3
 
 # (3) Pinned single-region inference profile. The fix is global cross-region
 # inference (global.anthropic...), which routes around regional load.
-MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# WORKSHOP_MODEL is honored so accounts without access to the default model
+# (Marketplace subscription gaps) can point the lab at any enabled Claude
+# model without editing this file. The default matches the models the
+# workshop already requires (Sonnet 4.6 is enabled for opencode/validator).
+MODEL_ID = os.environ.get("WORKSHOP_MODEL", "us.anthropic.claude-sonnet-4-6")
 REGION = "us-west-2"
 
 # (5b) Too short to ever reach the prompt-caching minimum token threshold -

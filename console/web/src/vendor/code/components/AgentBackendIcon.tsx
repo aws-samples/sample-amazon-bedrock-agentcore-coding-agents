@@ -57,9 +57,9 @@ export const AGENT_BACKENDS: Record<AgentBackend, AgentMeta> = {
     description: 'Nous Research Hermes CLI on Amazon Bedrock.',
   },
   opencode: {
-    label: 'OpenCode',
+    label: 'opencode',
     icon: opencodeIcon,
-    description: 'OpenCode CLI (opencode.ai) on Amazon Bedrock (claude-sonnet-4-6).',
+    description: 'opencode CLI (opencode.ai) on Amazon Bedrock (claude-sonnet-4-6).',
   },
 };
 

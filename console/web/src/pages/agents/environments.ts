@@ -42,7 +42,7 @@ export const AGENT_ROLES: AgentRole[] = [
   },
   {
     id: 'opencode',
-    label: 'OpenCode',
+    label: 'opencode',
     blurb: 'Frontend role: runtime pre-provisioned on Bedrock; stage AGENTS.md and wire the runtime ARN.',
     instances: [
       { id: 'opencode',              label: 'Frontend builder',  blurb: 'Frontend role: runtime pre-provisioned on Bedrock; stage AGENTS.md and wire the runtime ARN.' },
