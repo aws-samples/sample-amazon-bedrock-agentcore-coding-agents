@@ -103,6 +103,14 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
         "WORKSHOP_RUNS_DIR": "/tmp/workshop-runs",
         "WORKSHOP_RUNTIME_BUCKET": f"coding-agents-{account_id}-{region}",
     }
+    # The engine resolves each role's dispatch model from ITS OWN process env
+    # (WORKSHOP_MODEL_<ROLE> then WORKSHOP_MODEL, engine._role_model), so an
+    # own-account model override exported at deploy time must ride into the
+    # coordinator runtime or accounts without Opus access dispatch a model
+    # they cannot invoke.
+    for var, value in os.environ.items():
+        if var == "WORKSHOP_MODEL" or var.startswith("WORKSHOP_MODEL_"):
+            env[var] = value
     runtime["executionRoleArn"] = execution_role
     runtime["envVars"] = [{"name": name, "value": value} for name, value in sorted(env.items())]
 
