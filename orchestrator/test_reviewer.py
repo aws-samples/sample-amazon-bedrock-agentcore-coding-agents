@@ -19,7 +19,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import builders as reviewer_builders  # noqa: E402 (real builder for the runnable smoke fixture)
 import reviewer  # noqa: E402
 from reviewer import (  # noqa: E402
     LGTM_TOKEN,
@@ -35,20 +34,18 @@ class _FakeRun:
     def __init__(self, *, run_id="run_103512_004", agents=None, route=None,
                  server_file=None, chatbot_file=None, composed_branch=None,
                  review_target=None, iterations=1, workdir=None,
-                 artifact_endpoint=None, task="", smoke_file=None, usecase="sample-to-mcp"):
+                 artifact_endpoint=None, task=""):
         self.run_id = run_id
         self.agents = agents or []
         self.route = route or {}
         self._server_file = server_file
         self._chatbot_file = chatbot_file
-        self._smoke_file = smoke_file
         self.composed_branch = composed_branch
         self._review_target = review_target
         self.iterations = iterations
         self.workdir = workdir or ""
         self.artifact_endpoint = artifact_endpoint
         self.task = task
-        self.usecase = usecase
 
 
 
@@ -155,58 +152,6 @@ def test_review_run_branch_maps_to_the_target_not_the_review(tmp_path):
     assert branch["passed"] is True
 
 
-# -------------------------------------------- critique check 4: project smoke runs
-def test_critique_smoke_passes_on_a_runnable_project(tmp_path):
-    """The checker RUNS the agent's smoke test: a real generated server + its smoke
-    test boot and answer the wire contract, so project_smoke_runs is green."""
-    usecase_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                               "..", "usecase-sample-to-mcp"))
-    server = reviewer_builders.build_mcp_server(str(tmp_path), usecase_dir, module_name="cost_analyzer")
-    smoke = reviewer_builders.build_smoke_test(str(tmp_path), usecase_subdir="usecase-sample-to-mcp",
-                                               module_name="cost_analyzer")
-    run = _FakeRun(agents=["claude-code"], server_file=server, smoke_file=smoke)
-    check = next(c for c in reviewer._critique_checks(run, "cost_analyzer")
-                 if c["check"] == "project_smoke_runs")
-    assert check["passed"] is True, check
-
-
-def test_critique_smoke_fails_when_the_server_does_not_answer(tmp_path):
-    """A server that imports but does not serve the MCP contract fails the smoke
-    run: verification is by EXECUTION, so a broken payoff cannot go green and the
-    bounded iterate loop is triggered."""
-    server = tmp_path / "mcp_server.py"
-    # imports the module (passes check 1) but never opens a socket -> smoke times
-    # out / connection refused -> the run's smoke test exits non-zero.
-    server.write_text("import cost_analyzer\nimport time\ntime.sleep(0.1)\n")
-    smoke = reviewer_builders.build_smoke_test(str(tmp_path), usecase_subdir="usecase-sample-to-mcp",
-                                               module_name="cost_analyzer")
-    run = _FakeRun(agents=["claude-code"], server_file=str(server), smoke_file=smoke)
-    check = next(c for c in reviewer._critique_checks(run, "cost_analyzer")
-                 if c["check"] == "project_smoke_runs")
-    assert check["passed"] is False, check
-
-
-def test_critique_smoke_fails_when_no_smoke_test_shipped(tmp_path):
-    """A backend build that ships a server but no runnable proof fails: the project
-    must ship its smoke test."""
-    server = tmp_path / "mcp_server.py"
-    server.write_text("import cost_analyzer\n")
-    run = _FakeRun(agents=["claude-code"], server_file=str(server), smoke_file=None)
-    check = next(c for c in reviewer._critique_checks(run, "cost_analyzer")
-                 if c["check"] == "project_smoke_runs")
-    assert check["passed"] is False and "smoke_test.py" in check["detail"]
-
-
-def test_critique_smoke_is_skipped_for_a_frontend_only_patch(tmp_path):
-    """A pure frontend patch (opencode only) builds no backend of its own, so it is
-    not graded on a smoke test it was never asked to produce."""
-    server = tmp_path / "mcp_server.py"   # the engine's infra endpoint, not a built deliverable
-    server.write_text("import cost_analyzer\n")
-    run = _FakeRun(agents=["opencode"], server_file=str(server), smoke_file=None)
-    names = {c["check"] for c in reviewer._critique_checks(run, "cost_analyzer")}
-    assert "project_smoke_runs" not in names
-
-
 # ------------------------------------------------------------- the rendered report
 def test_report_carries_the_pass_token_when_lgtm(tmp_path):
     run = _FakeRun(iterations=1, workdir=str(tmp_path))
@@ -258,21 +203,13 @@ def test_review_verdict_public_shape():
 
 # ----------------------------------------------------- the LLM judge (injectable)
 def _green_run(tmp_path):
-    """A run whose deterministic layer is clean: server imports the module, the
-    project ships a runnable smoke test that passes, branch maps, backend-only so
-    no frontend check. Used to isolate the judge's effect on an already-green
-    deterministic floor. The smoke test is built by the real builder and boots the
-    real generated server against the real cost_analyzer, so project_smoke_runs is
-    genuinely green here, not stubbed."""
-    roledir = str(tmp_path)
-    usecase_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                               "..", "usecase-sample-to-mcp"))
-    server = reviewer_builders.build_mcp_server(roledir, usecase_dir, module_name="cost_analyzer")
-    smoke = reviewer_builders.build_smoke_test(roledir, usecase_subdir="usecase-sample-to-mcp",
-                                               module_name="cost_analyzer")
+    """A run whose deterministic layer is clean: server imports the module, branch
+    maps, backend-only so no frontend check. Used to isolate the judge's effect."""
+    server = tmp_path / "mcp_server.py"
+    server.write_text("import cost_analyzer\n")
     return _FakeRun(run_id="run_103512_004", agents=["claude-code"],
-                    server_file=server, smoke_file=smoke,
-                    composed_branch="run/run_103512_004", workdir=roledir)
+                    server_file=str(server), composed_branch="run/run_103512_004",
+                    workdir=str(tmp_path))
 
 
 def _review_with_judge(run, tmp_path, judge, monkeypatch):

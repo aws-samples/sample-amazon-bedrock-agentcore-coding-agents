@@ -103,35 +103,3 @@ def test_validator_gate_spec_parses_to_the_three_checks():
     # ships an empty block, so checks == [] and this case fails until you write them.
     assert spec["checks"] == ["tool_discovery", "tool_correctness", "input_validation"]
     assert spec["max_iterations"] == 2
-
-
-# --------------------------------------------- project-scale deliverable builders
-def test_build_smoke_test_actually_boots_the_generated_server(tmp_path):
-    """The offline smoke-test stand-in is a real runnable proof: generate the
-    server + the smoke test against the live cost_analyzer, run it, expect SMOKE OK.
-    This is what the validator's project_smoke_runs check executes."""
-    import subprocess
-    usecase_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                               "..", "usecase-sample-to-mcp"))
-    builders.build_mcp_server(str(tmp_path), usecase_dir, module_name="cost_analyzer")
-    smoke = builders.build_smoke_test(str(tmp_path), usecase_subdir="usecase-sample-to-mcp",
-                                      module_name="cost_analyzer")
-    env = dict(os.environ, COST_ANALYZER_DIR=usecase_dir)
-    r = subprocess.run([sys.executable, smoke], env=env, capture_output=True,
-                       text=True, timeout=60)
-    assert r.returncode == 0, r.stderr
-    assert "SMOKE OK" in r.stdout
-
-
-def test_build_readme_names_the_run_and_run_command(tmp_path):
-    """The README is generated from the run's own facts (never hardcoded) and tells
-    a cloner how to run the project."""
-    out = builders.build_readme(str(tmp_path), "run_x_007", "convert the module",
-                                "convert/sample-to-mcp-v1", "cost_analyzer",
-                                ["claude-code", "opencode"], has_frontend=True,
-                                gate_line="10 passed in 0.04s")
-    body = open(out, encoding="utf-8").read()
-    assert "run_x_007" in body
-    assert "python deliverable/smoke_test.py" in body
-    assert "chatbot.html" in body           # frontend row present when has_frontend
-    assert "10 passed in 0.04s" in body

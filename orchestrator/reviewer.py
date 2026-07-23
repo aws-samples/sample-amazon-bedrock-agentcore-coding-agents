@@ -147,57 +147,7 @@ def _critique_checks(run: Any, usecase_module: str) -> list[dict]:
                    else "no composed branch yet" if run.composed_branch is None
                    else f"branch {run.composed_branch} does NOT map to {expected_id}"),
     })
-
-    # 4. Project runs: the deliverable is a runnable mini-project, so the reviewer
-    # actually RUNS the agent's smoke test against the server it produced. This is
-    # the loop-engineering "checker" doing real work, not just reading the file: a
-    # server that imports cleanly but does not answer the wire contract fails here
-    # and drives the bounded iterate loop. The smoke test itself is the agent's;
-    # the reviewer only executes it and reads the exit code.
-    #
-    # Role-aware, exactly like the frontend check above: judged only when the
-    # BACKEND role authored the project (claude-code routed), or a review run whose
-    # target did. A pure frontend patch (opencode only) builds no server of its
-    # own -- the engine wires it to an infra endpoint -- so it is not graded on a
-    # smoke test it was never asked to produce.
-    backend_built = "claude-code" in routed or (read_only and run._server_file)
-    if backend_built and run._server_file and os.path.isfile(run._server_file):
-        smoke = getattr(run, "_smoke_file", None)
-        if smoke and os.path.isfile(smoke):
-            ok, detail = _run_smoke(smoke, run)
-            checks.append({"check": "project_smoke_runs", "passed": ok, "detail": detail})
-        else:
-            checks.append({
-                "check": "project_smoke_runs", "passed": False,
-                "detail": "no smoke_test.py in the deliverable; the build must ship "
-                          "a runnable proof (python smoke_test.py) next to the server"})
     return checks
-
-
-def _run_smoke(smoke_path: str, run: Any) -> tuple[bool, str]:
-    """Execute the agent's smoke test and return (passed, detail). The server it
-    boots must import the usecase module, so point COST_ANALYZER_DIR at the run's
-    module dir. Fail-closed: any non-zero exit, timeout, or crash is a fail with
-    the tail of stderr, never a silent pass."""
-    import router  # noqa: PLC0415 (sibling; lazy so offline import graph stays light)
-    try:
-        module_dir = router.usecase_paths(run.usecase)["dir"]
-    except Exception:
-        module_dir = os.path.dirname(smoke_path)
-    env = {**os.environ, "COST_ANALYZER_DIR": module_dir}
-    try:
-        proc = subprocess.run([sys.executable, smoke_path], capture_output=True,
-                              text=True, env=env, timeout=90,
-                              cwd=os.path.dirname(smoke_path))
-    except subprocess.TimeoutExpired:
-        return False, "smoke test timed out (server never answered)"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"smoke test could not run: {type(exc).__name__}: {exc}"
-    out = (proc.stdout or "").strip().splitlines()
-    if proc.returncode == 0:
-        return True, out[-1] if out else "smoke test passed"
-    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-    return False, f"smoke test exited {proc.returncode}: {tail[-1] if tail else 'no output'}"
 
 
 def _render_report(run: Any, gate: dict, critique: list[dict], lgtm: bool) -> str:

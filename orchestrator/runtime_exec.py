@@ -534,15 +534,12 @@ def _run_in_live_pty(session: Any, agent_id: str, prompt: str, run_subdir: str,
 
 
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
-                                artifact_rel: str, region: str,
-                                attempts: int = 6) -> str:
+                                artifact_rel: str, region: str) -> str:
     """Read /mnt/s3files/<run>/<artifact> over a fresh one-shot command shell,
     sentinel-delimited, retrying for S3Files write-back lag. Returns "" when the
-    file never appears (the caller decides how loud to fail). ``attempts`` bounds
-    the retry budget: a REQUIRED artifact retries generously (write-back lag), an
-    OPTIONAL one uses fewer tries so a legitimately-absent file returns quickly."""
+    file never appears (the caller decides how loud to fail)."""
     artifact = ""
-    for attempt in range(attempts):
+    for attempt in range(6):
         read_nonce = uuid.uuid4().hex[:12]
         read_cmd = _build_read_command(run_subdir, artifact_rel, read_nonce)
         read_sid = "rexrd-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
@@ -554,17 +551,6 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
             break
         time.sleep(2.0 * (attempt + 1))
     return artifact
-
-
-def read_runtime_artifact(runtime_arn: str, run_subdir: str, artifact_rel: str,
-                          region: str = "us-west-2", attempts: int = 2) -> str:
-    """Public read-back for an OPTIONAL project-scale artifact (README, smoke
-    test) the agent wrote next to its required output. Same sentinel-delimited
-    one-shot read as the required path, but a short retry budget by default so a
-    file the agent chose not to write returns "" quickly instead of stalling the
-    run. Returns the file text, or "" if it never appears."""
-    return _read_artifact_from_runtime(runtime_arn, run_subdir, artifact_rel,
-                                       region, attempts=attempts)
 
 
 def _live_session_for(agent_id: str, runtime_arn: str,

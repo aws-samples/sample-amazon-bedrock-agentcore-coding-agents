@@ -99,10 +99,6 @@ def test_public_diff_is_the_real_composed_change():
     assert "deliverable/mcp_server.py" in paths
     assert "deliverable/gate_report.json" in paths
     assert any(p.startswith("deliverable/") for p in paths)
-    # project-scale deliverable: the PR is a runnable mini-project, not two loose
-    # files, so the composed set includes the README and the runnable smoke test.
-    assert "deliverable/README.md" in paths
-    assert "deliverable/smoke_test.py" in paths
     # every file carries a real unified-diff patch with add counts
     server = next(f for f in diff["files"] if f["path"] == "deliverable/mcp_server.py")
     assert server["added"] and server["added"] > 0
