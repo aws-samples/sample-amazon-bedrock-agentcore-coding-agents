@@ -85,7 +85,9 @@ dispatch_* tool. It returns a run id immediately and the build runs in the \
 background. State that it started and which agent owns it.
 - Full build that must be composed and graded: call run_build(task). It dispatches \
 the routed roles, composes their work, and runs the pytest acceptance gate plus a \
-separate review pass.
+separate review pass. Pass the user's request text VERBATIM as task: the router \
+keys on the user's own wording, and a paraphrase can flip the route to the wrong \
+workflow or the wrong sample use case.
 Call route_task(task) first if unsure which agents a task needs; it is advisory.
 
 ## Drive a live terminal directly (when the agent's terminal is open)
@@ -192,7 +194,32 @@ def build_tools() -> list:
         """Start a FULL build: the router picks the roles, their work composes into
         one deliverable, and a separate reviewer runs the pytest gate + LLM judge.
         Returns immediately with a run id; the build runs in the background and the
-        console shows its live status."""
+        console shows its live status. Pass the user's request text VERBATIM as
+        task: the router keys on the user's own wording, and a paraphrase can
+        change which workflow (or which sample use case) gets built."""
+        # Pre-route so a mis-phrased task is refused HERE, as a retryable tool
+        # error the model can correct, instead of minting a permanently failed
+        # run (a dead NO_RUN_TO_REVIEW/NO_ROUTE run is the attendee's first
+        # visible result). The router is pure, so the engine's own routing of
+        # an admitted task reaches the same verdict.
+        try:
+            route = _router.route(task)
+        except _router.RouteError as exc:
+            return json.dumps({
+                "error": str(exc),
+                "hint": "No run was started. Retry run_build with the user's "
+                        "request text verbatim (do not paraphrase it); their "
+                        "wording names the target.",
+            })
+        if route.read_only:
+            return json.dumps({
+                "error": f"REVIEW_NOT_A_BUILD:{route.workflow_ref}",
+                "hint": "No run was started. This wording routes to the "
+                        "read-only review workflow, which builds nothing. For "
+                        "a build, retry run_build with the user's request text "
+                        "verbatim; to review an existing run, use "
+                        "dispatch_validator.",
+            })
         return json.dumps({"run_id": _kick(None, task), "kind": "build", "status": "started"})
 
     @tool

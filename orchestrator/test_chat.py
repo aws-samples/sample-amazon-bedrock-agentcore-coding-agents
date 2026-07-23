@@ -164,6 +164,43 @@ def test_route_task_is_advisory_and_starts_nothing():
     assert len(chat.ENGINE.list()) == before  # no run created
 
 
+def test_run_build_starts_a_buildable_route(tmp_path, monkeypatch):
+    _wire_all(tmp_path, monkeypatch)
+    out = json.loads(_call("run_build", task="convert the cost analyzer module to an MCP server"))
+    assert out["status"] == "started" and out["run_id"].startswith("run_")
+    assert chat.ENGINE.get(out["run_id"]) is not None
+
+
+def test_run_build_refuses_a_read_only_route_without_minting_a_run(tmp_path, monkeypatch):
+    """Live-found on the event-2 box: the orchestrator model paraphrased the
+    attendee's build request into review-flavored wording, the router matched the
+    read-only review workflow, and the engine minted a permanently failed
+    NO_RUN_TO_REVIEW run as the attendee's first visible result. run_build must
+    refuse that route as a retryable tool error instead, so the model can retry
+    with the user's verbatim text."""
+    _wire_all(tmp_path, monkeypatch)
+    before = len(chat.ENGINE.list())
+    out = json.loads(_call("run_build", task="review the pull request from the last run"))
+    assert out["error"].startswith("REVIEW_NOT_A_BUILD:")
+    assert "verbatim" in out["hint"]
+    assert len(chat.ENGINE.list()) == before  # no dead run created
+
+
+def test_run_build_surfaces_no_route_as_a_retryable_error(tmp_path, monkeypatch):
+    """A task the router cannot classify must come back as a tool error with a
+    retry hint, never as a run that is born failed (NO_ROUTE)."""
+    _wire_all(tmp_path, monkeypatch)
+    before = len(chat.ENGINE.list())
+    out = json.loads(_call("run_build", task="the grading contract is green"))
+    assert "NO_ROUTE" in out["error"]
+    assert "verbatim" in out["hint"]
+    assert len(chat.ENGINE.list()) == before
+
+
+def test_system_prompt_tells_the_model_to_pass_the_task_verbatim():
+    assert "VERBATIM" in chat.SYSTEM_PROMPT
+
+
 # --------------------------------------------------- the dynamic model catalog
 def test_available_models_comes_from_the_real_bedrock_catalog():
     cat = chat.available_models()
