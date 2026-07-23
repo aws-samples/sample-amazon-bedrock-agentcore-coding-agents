@@ -42,3 +42,4 @@ orchestrator-agent/uv.lock
 # Local agent tooling, Claude Code skills installed per-developer, not shipped
 .claude/
 skills-lock.json
+coding-agents/claude-code/skills/

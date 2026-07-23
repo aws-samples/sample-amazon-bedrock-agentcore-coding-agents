@@ -22,6 +22,9 @@ RUN userdel -r node && \
     git config --global user.email "agentcore@example.com"
 
 COPY --chown=agent:agent CLAUDE.md /home/agent/CLAUDE.md
+# The backend-engineering harness skill, staged into the build context by setup.sh.
+# The agent reads it from ~/skills and builds from principles (not a file spec).
+COPY --chown=agent:agent skills/ /home/agent/skills/
 COPY --chown=agent:agent healthcheck.py /app/healthcheck.py
 COPY run.sh /app/run.sh
 COPY entrypoint.sh /app/entrypoint.sh

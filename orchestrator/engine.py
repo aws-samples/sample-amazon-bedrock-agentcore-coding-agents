@@ -513,6 +513,12 @@ class Run:
     _server_proc: subprocess.Popen | None = None
     _server_file: str | None = None        # the GENERATED mcp_server.py for this run
     _chatbot_file: str | None = None       # the GENERATED chatbot.html for this run
+    # Loop-engineering: the validator AUTHORS its own acceptance test against the
+    # live endpoint each run (Compartment-2 generate-verify), rather than running a
+    # pinned contract. The engine runs THIS file and reads its real exit code, so
+    # the fail-loud spine holds (real pytest, never a fabricated pass). Null on the
+    # fixture/offline path, which keeps the shipped grading contract as its floor.
+    _acceptance_test_file: str | None = None
     _explicit_agents: bool = False
     _workflow_ref_req: str | None = None
     _review_target: str | None = None      # run_id under review (review/pr-v1 only)
@@ -1049,14 +1055,18 @@ class Engine:
         module_dir = runtime_stage.skill_path(run.run_id)
         prompt = (
             "You are the backend implementer role in a multi-agent build. Read "
-            "CLAUDE.md in this directory for your role and its ```harness:build``` "
-            f"block.\n\nWrite the complete `mcp_server.py` for the `{uc['module']}` "
-            f"module (on disk at {module_dir}) and SAVE IT to ./mcp_server.py in this "
-            "directory. Hard requirements:\n"
+            "CLAUDE.md in this directory for your role, and read the "
+            "`skills/backend-engineering/SKILL.md` harness installed in this "
+            "directory and apply it. Decide the shape of your solution from the "
+            f"task; the task here is to expose the `{uc['module']}` module (on disk "
+            f"at {module_dir}) as a remote MCP server, so a caller can list and "
+            "call its tools over the wire.\n\n"
+            "Write the server as `./mcp_server.py` in this directory. The wire "
+            "contract the rest of the system depends on (keep it exact):\n"
             f"- Python stdlib only. `sys.path.insert(0, {module_dir!r})` then "
             f"`import {uc['module']}` and call it LIVE; never copy its data or logic.\n"
-            "- Honor the harness:build block: server name/version, and expose only "
-            "the listed tools (or all of them when `expose: all`).\n"
+            f"- Expose every tool the module publishes (`{uc['module']}.list_tools()`); "
+            "do not drop or invent tools.\n"
             "- JSON-RPC 2.0 over HTTP POST: `initialize` (protocolVersion, serverInfo, "
             "capabilities.tools), `tools/list` (the exposed specs from "
             f"`{uc['module']}.list_tools()`), `tools/call` (dispatch and return "
@@ -1080,16 +1090,18 @@ class Engine:
         model = self._role_model(run, "opencode", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
         prompt = (
             "You are the frontend builder role in a multi-agent build. Read "
-            "AGENTS.md in this directory for your role and its ```harness:ui``` "
-            f"block.\n\nThe deployed MCP endpoint is {endpoint} . Write the complete "
-            "`chatbot.html` and SAVE IT to ./chatbot.html in this directory. Hard "
-            "requirements:\n"
-            "- A THIN client: every answer comes from a JSON-RPC `tools/call` POST to "
-            'the endpoint via fetch(); the literal strings "tools/call" and "fetch(" '
-            "must appear; no pricing or business logic in the page.\n"
-            "- Honor the harness:ui block: page title, the surfaced tool, the input "
-            "field/label, and one clickable prefill chip per example.\n"
-            "- Render the JSON-RPC result (or error) into a <pre> block.\n"
+            "AGENTS.md in this directory for your role, and read the "
+            "`skills/frontend-design/SKILL.md` harness installed in this directory "
+            "and apply it. Decide the shape of the UI from the task; the task here "
+            "is a small chatbot-style page for the deployed MCP server.\n\n"
+            f"The deployed MCP endpoint is {endpoint} . Write the UI as "
+            "`./chatbot.html` in this directory. The rules the rest of the system "
+            "depends on (keep them exact):\n"
+            "- A THIN client (the skill's top rule): every answer comes from a "
+            'JSON-RPC `tools/call` POST to the endpoint via fetch(); the literal '
+            'strings "tools/call" and "fetch(" must appear; no pricing or business '
+            "logic in the page.\n"
+            "- Render the JSON-RPC result (or error) for the user to read.\n"
             "- Single self-contained file: inline CSS/JS, no external assets.\n"
             "Write ONLY the file.")
         result = self._runtime_cli(run, "opencode", role, prompt, model, "chatbot.html")
@@ -1098,24 +1110,49 @@ class Engine:
         run.term("opencode", "echo 'CLI wrote chatbot.html'")
         return chatbot_file
 
-    def _cli_validator_report(self, run: Run, pytest_tail: str,
-                              role: RoleResult) -> None:
+    def _cli_validator_authors_test(self, run: Run, endpoint: str,
+                                    role: RoleResult) -> str:
         """The validator's Claude Code CLI (running INSIDE its deployed Runtime)
-        writes validation_report.md from the pytest output. pytest stays the only
-        acceptance authority (no LLM judge)."""
+        AUTHORS an acceptance test for THIS deliverable against the live endpoint,
+        and the engine reads that file back to run it.
+
+        This is the loop-engineering checker doing real work (Compartment-2
+        generate-verify): the validator decides what "acceptable" means for the
+        task and encodes it as a runnable pytest, instead of running a contract
+        pinned in the repo. The engine runs the authored file and reads its real
+        exit code, so the fail-loud spine is unchanged: a red test can never be a
+        pass, and nothing is fabricated. Maker (backend) != checker (validator):
+        the validator never edits the server, only probes it."""
         model = self._role_model(run, _VALIDATOR_AGENT, "us.anthropic.claude-opus-4-6-v1")
+        feedback = ""
+        if run.iterations > 1 and run.review:
+            failed = [c for c in (run.review.get("gate") or {}).get("checks", [])
+                      if not c.get("passed")]
+            if failed:
+                feedback = ("\n\nA previous round failed these checks; make sure your "
+                            "test still covers them:\n"
+                            + "\n".join(f"- {c['check']}: {c['detail']}" for c in failed))
         prompt = (
             "You are the validator role in a multi-agent build. Read your steering "
-            "in CLAUDE.md for your role.\n\nThe deterministic grading contract "
-            "just ran (pytest):\n" + pytest_tail + "\n\nWrite a validation report of "
-            "at most 5 short lines (what the contract covers, what passed, what to "
-            "watch post-deploy) and SAVE IT to ./validation_report.md in this "
-            "directory. Plain text only. You do NOT decide pass/fail; pytest did.")
+            "in CLAUDE.md for your role, then AUTHOR the acceptance test for this "
+            "deliverable and save it as `./acceptance_test.py` in this directory.\n\n"
+            f"The backend's MCP server is live at {endpoint} (JSON-RPC 2.0 over HTTP "
+            "POST). Write a self-contained pytest file (standard library + pytest "
+            "only) that decides whether this server is acceptable, by probing the "
+            "LIVE endpoint over the wire. At minimum it must verify: the server "
+            "answers `tools/list` and every tool the module publishes is present "
+            "(discovery); a real `tools/call` returns the correct structured result "
+            "for a known input (correctness); and an invalid input is rejected with "
+            "a JSON-RPC error rather than a wrong answer (validation). Read the "
+            f"endpoint URL from the `MCP_ENDPOINT_URL` env var (default {endpoint!r}). "
+            "You do NOT edit the server; you only test it. Write ONLY the file; do "
+            "not run it." + feedback)
         result = self._runtime_cli(run, _VALIDATOR_AGENT, role, prompt, model,
-                                   "validation_report.md")
-        report_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "validation_report.md")
-        self._read_artifact(report_path, "validation_report.md", result)
-        run.term(_VALIDATOR_AGENT, "cat validation_report.md")
+                                   "acceptance_test.py")
+        test_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "acceptance_test.py")
+        self._read_artifact(test_path, "acceptance_test.py", result)
+        run.term(_VALIDATOR_AGENT, "echo 'validator authored acceptance_test.py'")
+        return test_path
 
     def _write_validator_report(self, run: Run, role: RoleResult,
                                 pytest_tail: str) -> None:
@@ -1280,17 +1317,31 @@ class Engine:
 
         def validator(role: RoleResult) -> None:
             install_harness(_VALIDATOR_AGENT)
-            # Prove the contract pre-deploy by running pytest in the terminal.
-            out = run.term(_VALIDATOR_AGENT, f"{sys.executable} -m pytest "
-                                   f"{json.dumps(uc['grading'])} -q --no-header")
-            grade, InProcessClient, _ = reviewer.load_grading(uc["grading"])
-            verdict = grade(InProcessClient())
-            self._write_validator_report(
-                run, role, out[-1500:] if out else "(no pytest output)")
-            role.note = (f"proved the contract pre-deploy: "
-                         f"{sum(c['passed'] for c in verdict['checks'])}/{len(verdict['checks'])} checks green")
-            run.log(f"validator: in-process contract {'green' if verdict['passed'] else 'RED'} "
-                    f"({out.splitlines()[-1] if out else ''})")
+            # Loop-engineering checker: the validator AUTHORS the acceptance test
+            # for this deliverable (shipped path), rather than running a pinned
+            # contract. The engine runs the authored file in finalization and reads
+            # its real exit code. On the fixture/offline path there is no runtime to
+            # author from, so the shipped grading contract stands in as the floor
+            # and the deterministic report is written; either way pytest decides,
+            # the validator never fabricates a pass.
+            backend_ready.wait(timeout=300)
+            if self.executor.name == "agentcore":
+                url = endpoint.get("url", "")
+                run._acceptance_test_file = self._cli_validator_authors_test(run, url, role)
+                role.note = "authored acceptance_test.py against the live endpoint"
+                run.log("validator: authored acceptance_test.py for this deliverable")
+            else:
+                # Fixture/offline: keep the shipped grading contract as the floor.
+                out = run.term(_VALIDATOR_AGENT, f"{sys.executable} -m pytest "
+                                       f"{json.dumps(uc['grading'])} -q --no-header")
+                grade, InProcessClient, _ = reviewer.load_grading(uc["grading"])
+                verdict = grade(InProcessClient())
+                self._write_validator_report(
+                    run, role, out[-1500:] if out else "(no pytest output)")
+                role.note = (f"proved the contract pre-deploy: "
+                             f"{sum(c['passed'] for c in verdict['checks'])}/{len(verdict['checks'])} checks green")
+                run.log(f"validator: in-process contract {'green' if verdict['passed'] else 'RED'} "
+                        f"({out.splitlines()[-1] if out else ''})")
 
         def frontend(role: RoleResult) -> None:
             # The backend role dispatches its CLI into a deployed Runtime, which can
@@ -1451,6 +1502,10 @@ class Engine:
         run._review_target = target.run_id
         run._server_file = target._server_file
         run._chatbot_file = target._chatbot_file
+        # Re-run the SAME acceptance test the target's validator authored, against
+        # the re-served artifact (verification by execution on the artifact under
+        # review, not a fresh contract).
+        run._acceptance_test_file = getattr(target, "_acceptance_test_file", None)
         run.composed_branch = target.composed_branch
         role = run.progress.get(_VALIDATOR_AGENT)
         if role:

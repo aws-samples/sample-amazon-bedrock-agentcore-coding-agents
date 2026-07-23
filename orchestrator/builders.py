@@ -67,9 +67,17 @@ def harness_file(agent: str, usecase: str = "sample-to-mcp") -> str:
 
 # --------------------------------------------------------------------------- spec parsing
 def _fenced_block(text: str, tag: str) -> str:
-    """Return the body of a ```<tag> ... ``` fenced block, or "" if absent."""
+    """Return the body of the FIRST ```<tag> ... ``` fenced block, or "" if absent."""
     m = re.search(r"```" + re.escape(tag) + r"\s*\n(.*?)```", text, re.DOTALL)
     return m.group(1) if m else ""
+
+
+def _fenced_blocks(text: str, tag: str) -> list[str]:
+    """Return the bodies of ALL ```<tag> ... ``` fenced blocks, in order. Used for
+    ``harness:setup``: a role's steering may ship a default setup block (e.g. the
+    skill it installs) AND an attendee may add their own; both must apply, so the
+    parser reads every block rather than only the first."""
+    return re.findall(r"```" + re.escape(tag) + r"\s*\n(.*?)```", text, re.DOTALL)
 
 
 def _read(path: str) -> str:
@@ -123,7 +131,9 @@ def parse_setup_spec(steering_path: str) -> dict[str, Any]:
     Returns ``{"mcp": [{name,url}], "skills": [paths], "install": [commands]}``,
     all empty when the block is absent (the defaults need no setup).
     """
-    body = _fenced_block(_read(steering_path), "harness:setup")
+    # Merge EVERY harness:setup block: the shipped default (the role's skill) plus
+    # any the attendee adds. Concatenate their bodies and parse as one.
+    body = "\n".join(_fenced_blocks(_read(steering_path), "harness:setup"))
     spec: dict[str, Any] = {"mcp": [], "skills": [], "install": []}
     section = None
     pending_mcp: dict[str, str] | None = None

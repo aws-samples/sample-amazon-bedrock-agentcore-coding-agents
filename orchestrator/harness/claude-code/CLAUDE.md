@@ -16,24 +16,41 @@ You have a `gateway` MCP server connected that provides GitHub tools (prefixed
 `mcp__gateway__GitHubMCP___`). Use them to branch, commit, and open the PR. Do not call HTTP
 by hand.
 
+## How to build
+
+Apply the `backend-engineering` skill (installed for you below) to the task. It is
+a harness of principles, not a template: you decide the files and the structure.
+The rule that always holds, and the reason this role exists, is wrap-don't-reimplement:
+import the module live and expose its tools over the wire; never copy its data or
+formulas into your server. Read the skill and follow it.
+
 ## Rules
 
 - NEVER approve, merge, or close a PR. Submit for human review only.
 - Branch naming: `fix/issue-N`. Add the label `agent:claude-code` to everything you touch.
-- Preserve `TOOL_SPECS` names and `inputSchema` verbatim; the validator's gate checks them.
+- Preserve `TOOL_SPECS` names and `inputSchema` verbatim; the validator tests them.
 
-## Build spec (read by the harness when it composes the backend)
+## Extend the harness
 
-The orchestrator reads the block below to build the server deterministically. Editing it
-changes the server the harness produces; that is the steering seam for this role.
+The block below installs the backend-engineering harness into your working copy
+before you build, the way a developer adds a skill to their own setup. Add your own
+skills, MCP servers, or install steps here to extend the role.
+
+```harness:setup
+skills:
+  - ../../../harness-skills/skills/backend-engineering
+```
+
+::::note
+The `harness:build` block below configures the workshop's OFFLINE test double
+(the deterministic builder used when no runtime is deployed), so the local test
+suite can exercise the gate/compose/PR path without a live agent. The DEPLOYED
+agent does not read it; it builds from the skill above and the task. Keep
+`expose: all` so the offline stand-in exposes the full tool surface.
 
 ```harness:build
 server_name: cost-analyzer-mcp
 server_version: 1.0.0
 expose: all
 ```
-
-- `server_name` / `server_version` become the MCP server's `serverInfo`.
-- `expose: all` wraps every tool in `cost_analyzer.TOOL_SPECS`. A comma-separated list
-  (e.g. `expose: estimate_ec2_monthly_cost, recommend_instance`) restricts the surface, but
-  the acceptance gate requires all five, so keep `all` for the workshop task.
+::::

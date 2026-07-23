@@ -242,33 +242,55 @@ def review(run: Any, grading_dir: str, usecase_module: str,
     which is FAIL-OPEN so a missing model never changes the deterministic verdict.
     """
     verdict = ReviewVerdict(round=round_no)
-
-    # The deterministic pytest acceptance gate, over the wire.
     endpoint = run.artifact_endpoint or ""
     env = {**os.environ, "MCP_ENDPOINT_URL": endpoint}
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", grading_dir, "-q", "--no-header"],
-        capture_output=True, text=True, env=env, timeout=90,
-    )
-    grade, _, RemoteMCPClient = load_grading(grading_dir)
-    try:
-        graded = grade(RemoteMCPClient(endpoint))
-    except Exception as exc:
-        graded = {"passed": False,
-                  "checks": [{"check": "endpoint_reachable", "passed": False,
-                              "detail": f"{type(exc).__name__}: {exc}"}]}
-    tail = (proc.stdout or proc.stderr).strip().splitlines()
-    checks = list(graded["checks"])
-    if proc.returncode != 0 and graded["passed"]:
-        # The two gate halves diverged (pytest failed at collection/import while
-        # the in-process grade is green). Surface WHY the gate is red so the
-        # displayed checks can never contradict the verdict.
-        checks.append({"check": "pytest_run", "passed": False,
-                       "detail": f"pytest exited {proc.returncode}: "
-                                 f"{tail[-1] if tail else 'no output'}"})
-    verdict.gate = {"passed": proc.returncode == 0 and graded["passed"],
-                    "checks": checks,
-                    "pytest": tail[-1] if tail else ""}
+
+    authored = getattr(run, "_acceptance_test_file", None)
+    if authored and os.path.isfile(authored):
+        # Loop-engineering path: the validator AUTHORED the acceptance test for
+        # this deliverable. Run THAT file over the wire and read its real exit
+        # code. It is the acceptance authority; the pinned repo contract is not
+        # consulted here. Fail-loud is unchanged: pytest's real exit decides, a
+        # red test can never be a pass, nothing is fabricated.
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", authored, "-q", "--no-header"],
+            capture_output=True, text=True, env=env, timeout=90,
+        )
+        tail = (proc.stdout or proc.stderr).strip().splitlines()
+        verdict.gate = {
+            "passed": proc.returncode == 0,
+            "checks": [{"check": "acceptance_test_authored", "passed": proc.returncode == 0,
+                        "detail": ("validator-authored acceptance_test.py passed against "
+                                   "the live endpoint" if proc.returncode == 0 else
+                                   f"validator-authored acceptance_test.py failed: "
+                                   f"{tail[-1] if tail else 'no output'}")}],
+            "pytest": tail[-1] if tail else ""}
+    else:
+        # Fixture/offline floor: no runtime to author from, so the shipped grading
+        # contract stands in as the deterministic acceptance gate, over the wire.
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", grading_dir, "-q", "--no-header"],
+            capture_output=True, text=True, env=env, timeout=90,
+        )
+        grade, _, RemoteMCPClient = load_grading(grading_dir)
+        try:
+            graded = grade(RemoteMCPClient(endpoint))
+        except Exception as exc:
+            graded = {"passed": False,
+                      "checks": [{"check": "endpoint_reachable", "passed": False,
+                                  "detail": f"{type(exc).__name__}: {exc}"}]}
+        tail = (proc.stdout or proc.stderr).strip().splitlines()
+        checks = list(graded["checks"])
+        if proc.returncode != 0 and graded["passed"]:
+            # The two gate halves diverged (pytest failed at collection/import while
+            # the in-process grade is green). Surface WHY the gate is red so the
+            # displayed checks can never contradict the verdict.
+            checks.append({"check": "pytest_run", "passed": False,
+                           "detail": f"pytest exited {proc.returncode}: "
+                                     f"{tail[-1] if tail else 'no output'}"})
+        verdict.gate = {"passed": proc.returncode == 0 and graded["passed"],
+                        "checks": checks,
+                        "pytest": tail[-1] if tail else ""}
 
     verdict.critique = _critique_checks(run, usecase_module)
 

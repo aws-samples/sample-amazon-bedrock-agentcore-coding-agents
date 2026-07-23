@@ -16,17 +16,37 @@ paired with `~/.config/opencode/opencode.json` for model and runtime settings.
 You have a `gateway` MCP server connected that provides GitHub tools. Use them directly to
 branch, commit, and open the PR.
 
+## How to build the UI
+
+Apply the `frontend-design` skill (installed for you below) to the task. It is a
+harness of principles, not a template: you decide the files, the structure, and the
+interactions. The rule that always holds, and the reason this role exists, is the
+thin-client rule: every value the user sees comes from a `tools/call` to the MCP
+endpoint; the page holds no pricing logic and no copy of the tool registry. Read the
+skill and follow it.
+
 ## Rules
 
 - NEVER approve, merge, or close a PR. Submit for human review only.
 - Branch naming: `fix/issue-N`. Add the label `agent:opencode` to everything you touch.
 - The UI must call the MCP endpoint for every answer. No local pricing math, ever.
 
-## UI spec (read by the harness when it builds the chatbot)
+## Extend the harness
 
-The orchestrator reads the block below to build `chatbot.html` deterministically. Editing it
-changes the UI the harness produces; that is the steering seam for this role. Change the
-title or the example chips here and the generated chatbot reflects it on the next run.
+The block below installs the frontend-design harness into your working copy before
+you build, the way a developer adds a skill to their own setup. Add your own skills,
+MCP servers, or install steps here to extend the role.
+
+```harness:setup
+skills:
+  - ../../../harness-skills/skills/frontend-design
+```
+
+::::note
+The `harness:ui` block below configures the workshop's OFFLINE test double (the
+deterministic builder used when no runtime is deployed), so the local test suite can
+exercise the compose/PR path without a live agent. The DEPLOYED agent does not read
+it; it builds from the skill above and the task.
 
 ```harness:ui
 title: Cost Analyzer Chat
@@ -38,8 +58,4 @@ examples:
   - t3.micro
   - r5.xlarge
 ```
-
-- `title` is the page heading and `<title>`.
-- `tool` is the MCP tool the Estimate button calls; `input_field` is the argument it fills
-  from the text box; `input_label` is the placeholder.
-- `examples` become one-click chips that prefill the box.
+::::
