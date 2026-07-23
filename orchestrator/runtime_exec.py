@@ -537,9 +537,14 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
                                 artifact_rel: str, region: str) -> str:
     """Read /mnt/s3files/<run>/<artifact> over a fresh one-shot command shell,
     sentinel-delimited, retrying for S3Files write-back lag. Returns "" when the
-    file never appears (the caller decides how loud to fail)."""
+    file never appears (the caller decides how loud to fail).
+
+    STABILITY: write-back settles per file, so a first non-empty read can be a
+    PARTIAL file (a truncated artifact that still parses as text). Two
+    consecutive reads must agree before the content is accepted."""
     artifact = ""
-    for attempt in range(6):
+    prev: str | None = None
+    for attempt in range(8):
         read_nonce = uuid.uuid4().hex[:12]
         read_cmd = _build_read_command(run_subdir, artifact_rel, read_nonce)
         read_sid = "rexrd-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
@@ -547,10 +552,12 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
                                       60.0, read_sid))
         artifact = _slice(rr["raw"], f"{_ART_BEGIN}-{read_nonce}",
                           f"{_ART_END}-{read_nonce}")
+        if artifact and prev == artifact:
+            return artifact             # two agreeing reads: settled
         if artifact:
-            break
+            prev = artifact             # changed since last read: keep polling
         time.sleep(2.0 * (attempt + 1))
-    return artifact
+    return prev or artifact
 
 
 def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
@@ -559,12 +566,17 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
     runtime as {relative_path: bytes}, via one tar|base64 pass between the same
     sentinels the single-file read uses. Lets a role deliver a multi-file
     project (a real ui/ tree, not one hardcoded page) over the identical
-    fail-loud shell channel. Returns {} when the tree never appears."""
+    fail-loud shell channel. Returns {} when the tree never appears.
+
+    STABILITY: S3Files write-back settles per file, so a tar taken mid-settle
+    can carry PARTIAL contents (a truncated app.js) yet still succeed. Two
+    consecutive reads must agree byte-for-byte before the tree is accepted."""
     import base64  # noqa: PLC0415
     import io  # noqa: PLC0415
     import tarfile  # noqa: PLC0415
     path = f"/mnt/s3files/{run_subdir}"
-    for attempt in range(6):
+    prev: dict[str, bytes] | None = None
+    for attempt in range(8):
         nonce = uuid.uuid4().hex[:12]
         cmd = (
             f"B2={_ART_BEGIN}-{nonce}; E2={_ART_END}-{nonce}; "
@@ -591,12 +603,14 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
                         f = tf.extractfile(m)
                         if f is not None:
                             out[rel] = f.read()
+                if out and prev == out:
+                    return out          # two agreeing reads: settled
                 if out:
-                    return out
+                    prev = out          # changed since last read: keep polling
             except Exception:  # noqa: BLE001 (corrupt slice -> retry)
                 pass
         time.sleep(2.0 * (attempt + 1))
-    return {}
+    return prev or {}
 
 
 def _live_session_for(agent_id: str, runtime_arn: str,
