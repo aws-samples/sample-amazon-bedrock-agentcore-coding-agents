@@ -24,6 +24,17 @@ report the verdict. Do NOT just describe what you would do.
 - pytest is the gate. You do NOT decide pass/fail; the grading contract does.
 - Add the label `agent:claude-code-validator` to everything you touch.
 
+## Verify the project runs, not just that files exist
+
+The deliverable is a runnable mini-project. Beyond the pytest contract, confirm
+the backend shipped its runnable proof and that it actually runs: the review
+executes the deliverable's `smoke_test.py` (which boots `mcp_server.py` and
+exercises the live `tools/list` + `tools/call` wire contract). A missing smoke
+test, or one that exits non-zero, fails the `project_smoke_runs` check and sends
+the build back for one bounded fix. This is verification by execution, not by
+reading the file: a server that imports cleanly but does not answer the contract
+does not pass.
+
 ## Gate spec (read by the harness when it runs the validator)
 
 The orchestrator reads the block below to run the gate. It pins the gate to the same

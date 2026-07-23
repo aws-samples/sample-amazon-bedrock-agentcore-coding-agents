@@ -392,3 +392,173 @@ async function ask(){{
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     return out
+
+
+# --------------------------------------------------------------- project docs
+# The deliverable is a runnable mini-project, not two loose files: the backend
+# role also authors a README (how to run it) and a smoke test (proof it runs).
+# On the shipped path the agent writes these (its dispatch prompt requires them);
+# here the deterministic builders are the offline stand-in, exactly like
+# build_mcp_server / build_chatbot. The SHAPE is pinned (a required-output set the
+# validator can check); the CONTENT is authored, never a hardcoded answer.
+
+# The smoke test is a self-contained, dependency-free runnable: it boots the
+# co-located mcp_server.py on an ephemeral port, then exercises the live
+# tools/list + tools/call wire contract and asserts the server actually answers.
+# It locates the usecase module the same portable way the server does
+# (COST_ANALYZER_DIR, else a repo-relative search), so it runs from a fresh clone
+# of the attendee's template-derived repo with no arguments.
+_SMOKE_TEMPLATE = '''#!/usr/bin/env python3
+"""Smoke test for the generated MCP server: boot it, call it, prove it answers.
+
+Run it straight from a clone of this repo:
+
+    python deliverable/smoke_test.py
+
+It starts ``mcp_server.py`` (next to this file) on a free loopback port, sends a
+``tools/list`` and one ``tools/call``, and exits non-zero if the live server does
+not answer the MCP wire contract. Standard library only; no network, no AWS.
+"""
+import json, os, subprocess, sys, time, urllib.request
+from http.client import RemoteDisconnected
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SERVER = os.path.join(HERE, "mcp_server.py")
+
+
+def _find_module_dir():
+    # The server imports {module_name}; help it resolve from a fresh clone by
+    # pointing COST_ANALYZER_DIR at the usecase dir if we can find it. When the
+    # env is already set (the workshop host), respect it.
+    if os.environ.get("COST_ANALYZER_DIR"):
+        return os.environ["COST_ANALYZER_DIR"]
+    here = HERE
+    for _ in range(6):  # walk up to the repo root looking for the usecase package
+        cand = os.path.join(here, {usecase_subdir!r})
+        if os.path.isfile(os.path.join(cand, {module_name!r} + ".py")):
+            return cand
+        here = os.path.dirname(here)
+    return HERE  # fall back to the deliverable dir (server may hardcode its path)
+
+
+def _rpc(url, method, params):
+    body = json.dumps({{"jsonrpc": "2.0", "id": 1, "method": method,
+                       "params": params}}).encode()
+    req = urllib.request.Request(url, data=body,
+                                 headers={{"Content-Type": "application/json"}})
+    return json.loads(urllib.request.urlopen(req, timeout=5).read())
+
+
+def main():
+    port = 0
+    import socket
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    url = "http://127.0.0.1:%d" % port
+    env = dict(os.environ, COST_ANALYZER_DIR=_find_module_dir())
+    proc = subprocess.Popen([sys.executable, SERVER, "--port", str(port)],
+                            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        for _ in range(40):  # wait for the server to bind
+            try:
+                _rpc(url, "tools/list", {{}}); break
+            except (urllib.error.URLError, RemoteDisconnected, ConnectionError):
+                if proc.poll() is not None:
+                    sys.stderr.write(proc.stderr.read().decode()); return 1
+                time.sleep(0.25)
+        else:
+            sys.stderr.write("server never became ready\\n"); return 1
+        tools = _rpc(url, "tools/list", {{}})["result"]["tools"]
+        assert tools, "tools/list returned no tools"
+        names = [t["name"] for t in tools]
+        print("tools/list ok: %d tools (%s)" % (len(names), ", ".join(names)))
+        call = _rpc(url, "tools/call",
+                    {{"name": names[0], "arguments": {sample_args!r}}})
+        assert "result" in call or "error" in call, "tools/call returned neither result nor error"
+        print("tools/call ok: %s -> %s"
+              % (names[0], json.dumps(call.get("result", call.get("error")))[:120]))
+        print("SMOKE OK")
+        return 0
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def build_smoke_test(workdir: str, usecase_subdir: str = "usecase-sample-to-mcp",
+                     module_name: str = "cost_analyzer",
+                     sample_args: dict | None = None) -> str:
+    """Generate ``smoke_test.py`` (the offline stand-in for the agent's own).
+
+    The test is a runnable proof: it boots the co-located ``mcp_server.py`` and
+    exercises the live MCP contract. ``sample_args`` seeds the one tools/call; a
+    safe default works for the cost-analyzer's first tool. Returns the path.
+    """
+    if sample_args is None:
+        sample_args = {"instance_type": "m5.large", "count": 2}
+    os.makedirs(workdir, exist_ok=True)
+    out = os.path.join(workdir, "smoke_test.py")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(_SMOKE_TEMPLATE.format(usecase_subdir=usecase_subdir,
+                                       module_name=module_name,
+                                       sample_args=sample_args))
+    return out
+
+
+def build_readme(workdir: str, run_id: str, task: str, workflow_ref: str,
+                 module_name: str, roles: list[str], has_frontend: bool,
+                 gate_line: str = "") -> str:
+    """Generate ``README.md`` (the offline stand-in for the agent's own).
+
+    Describes the composed deliverable and how to run it. All values come from the
+    run's own facts (never a hardcoded answer); the shape is what the validator
+    checks. Returns the path.
+    """
+    files = ["- `mcp_server.py` - the MCP server wrapping the "
+             f"`{module_name}` module (stdlib only, JSON-RPC over HTTP).",
+             "- `smoke_test.py` - boots the server and proves the live "
+             "tools/list + tools/call contract answers.",
+             "- `gate_report.json` / `critique.md` - the acceptance gate result "
+             "and the reviewer's verdict."]
+    if has_frontend:
+        files.insert(1, "- `chatbot.html` - a thin UI that calls the server; "
+                     "no pricing logic of its own.")
+    body = [
+        f"# {module_name} MCP deliverable",
+        "",
+        f"Generated by the coding-agent team for run `{run_id}` "
+        f"(workflow `{workflow_ref}`, roles: {', '.join(roles)}).",
+        "",
+        "## Task",
+        "",
+        f"> {task}",
+        "",
+        "## What is here",
+        "",
+        *files,
+        "",
+        "## Run it from a clone",
+        "",
+        "```bash",
+        "python deliverable/smoke_test.py",
+        "```",
+        "",
+        "The smoke test starts the server on a free loopback port, calls it over "
+        "the MCP wire contract, and prints `SMOKE OK` on success. It finds the "
+        f"`{module_name}` module from this repo automatically, or set "
+        "`COST_ANALYZER_DIR` to its directory.",
+        "",
+    ]
+    if gate_line:
+        body += ["## Acceptance gate", "", f"```\n{gate_line}\n```", ""]
+    os.makedirs(workdir, exist_ok=True)
+    out = os.path.join(workdir, "README.md")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("\n".join(body))
+    return out

@@ -245,12 +245,16 @@ def test_stage2_builds_the_deliverable_from_the_harness():
         gen_src = open(run._server_file, encoding="utf-8").read()
         assert "Generated MCP server" in gen_src and "import cost_analyzer" in gen_src
 
-        # the composed deliverable really exists on disk: server + report + UI
+        # the composed deliverable really exists on disk: server + report + UI +
+        # the project-scale docs (README + a runnable smoke test), so the PR is a
+        # runnable mini-project, not two loose files.
         deliver = _deliverable_dir()
         chatbot = os.path.join(deliver, "chatbot.html")
         assert os.path.isfile(os.path.join(deliver, "mcp_server.py"))
         assert os.path.isfile(os.path.join(deliver, "gate_report.json"))
         assert os.path.isfile(chatbot)
+        assert os.path.isfile(os.path.join(deliver, "README.md"))
+        assert os.path.isfile(os.path.join(deliver, "smoke_test.py"))
         html = open(chatbot, encoding="utf-8").read()
 
         # the produced UI was BUILT FROM the opencode AGENTS.md UI spec: its title and

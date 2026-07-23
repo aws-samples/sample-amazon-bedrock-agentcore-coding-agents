@@ -22,6 +22,24 @@ by hand.
 - Branch naming: `fix/issue-N`. Add the label `agent:claude-code` to everything you touch.
 - Preserve `TOOL_SPECS` names and `inputSchema` verbatim; the validator's gate checks them.
 
+## Ship a runnable mini-project, not one loose file
+
+The deliverable is a project a reviewer can clone and run, so alongside
+`mcp_server.py` write these two files in the same directory:
+
+- `smoke_test.py`: standard library only, runnable as `python smoke_test.py`
+  with no arguments. Boot `mcp_server.py` on a free `127.0.0.1` port, wait for
+  it, send a real `tools/list` and one `tools/call`, assert the live server
+  answers the MCP contract, print `SMOKE OK`, and exit non-zero on any failure.
+  Resolve the module import through `COST_ANALYZER_DIR` so it runs from a fresh
+  clone. This is the proof the server actually runs; the validator executes it.
+- `README.md`: what the deliverable is, the file list, and the exact
+  `python smoke_test.py` command to run it from a clone.
+
+The validator runs your `smoke_test.py`; a server that imports cleanly but does
+not answer the wire contract fails the `project_smoke_runs` check and comes back
+for one bounded fix.
+
 ## Build spec (read by the harness when it composes the backend)
 
 The orchestrator reads the block below to build the server deterministically. Editing it

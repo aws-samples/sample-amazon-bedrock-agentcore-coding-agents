@@ -513,6 +513,13 @@ class Run:
     _server_proc: subprocess.Popen | None = None
     _server_file: str | None = None        # the GENERATED mcp_server.py for this run
     _chatbot_file: str | None = None       # the GENERATED chatbot.html for this run
+    # Project-scale deliverable: the backend role also authors a README (how to
+    # run it) and a smoke test (proof it runs) so the PR is a runnable mini
+    # project, not two loose files. Best-effort on the shipped path (a missing one
+    # is caught by the reviewer, which drives the bounded iterate loop), always
+    # present on the fixture path.
+    _readme_file: str | None = None        # the GENERATED README.md for this run
+    _smoke_file: str | None = None         # the GENERATED smoke_test.py for this run
     _explicit_agents: bool = False
     _workflow_ref_req: str | None = None
     _review_target: str | None = None      # run_id under review (review/pr-v1 only)
@@ -1065,13 +1072,58 @@ class Engine:
             "dispatch -> -32602.\n"
             "- GET returns HTTP 200 with a small JSON liveness body.\n"
             "- `argparse`: `--port` (int, default env MCP_PORT or 9000) and `--host` "
-            "(default 127.0.0.1); serve with ThreadingHTTPServer.\n"
-            "Write ONLY the file; do not run the server." + feedback)
+            "(default 127.0.0.1); serve with ThreadingHTTPServer.\n\n"
+            "Then make it a runnable mini-project by writing TWO more files in this "
+            "same directory, so a reviewer can clone the repo and run it:\n"
+            "- `smoke_test.py`: stdlib only, runnable as `python smoke_test.py` with "
+            "NO arguments. It must boot ./mcp_server.py on a free 127.0.0.1 port "
+            "(subprocess), wait for it, send a real `tools/list` and one `tools/call` "
+            "over HTTP, assert the live server answers the MCP contract, print "
+            "`SMOKE OK`, and exit non-zero on any failure. Resolve the module import "
+            f"by setting COST_ANALYZER_DIR (default it to {module_dir!r}).\n"
+            "- `README.md`: what the deliverable is, the file list, and the exact "
+            "`python smoke_test.py` command to run it from a clone.\n"
+            "Write those three files; do not run the server yourself." + feedback)
         result = self._runtime_cli(run, "claude-code", role, prompt, model, "mcp_server.py")
-        server_file = os.path.join(run.roledir("claude-code"), "mcp_server.py")
+        roledir = run.roledir("claude-code")
+        server_file = os.path.join(roledir, "mcp_server.py")
         self._read_artifact(server_file, "mcp_server.py", result)
-        run.term("claude-code", "echo 'CLI wrote mcp_server.py'")
+        # README + smoke_test are project-scale extras: read them back best-effort
+        # from the SAME runtime the build dispatched to (role.runtime_arn, set by
+        # _runtime_cli). The required, fail-loud artifact is the server; a missing
+        # extra is left null, and the reviewer's smoke-runs check catches it so the
+        # bounded iterate loop asks for it. All fleet instances share one
+        # /mnt/s3files access point, so any would serve the read, but using the
+        # dispatch ARN keeps it exact and avoids spinning the fleet cursor.
+        self._readback_extra(run, "claude-code", role.runtime_arn, "smoke_test.py", "_smoke_file")
+        self._readback_extra(run, "claude-code", role.runtime_arn, "README.md", "_readme_file")
+        run.term("claude-code", "echo 'CLI wrote mcp_server.py + README.md + smoke_test.py'")
         return server_file
+
+    def _readback_extra(self, run: Run, agent_id: str, runtime_arn: str | None,
+                        artifact_rel: str, attr: str) -> None:
+        """Read one OPTIONAL project-scale artifact back from the runtime the build
+        dispatched to, into the role's local workdir, and record its path on the
+        run. Best-effort: a missing extra (or no ARN) leaves the attribute null
+        (the reviewer catches it), never raises. On the fixture path there is no
+        runtime, so this is a no-op and the deterministic builder writes the file."""
+        if getattr(self.executor, "name", "") != "agentcore" or not runtime_arn:
+            return
+        try:
+            import runtime_exec  # noqa: PLC0415
+            text = runtime_exec.read_runtime_artifact(
+                runtime_arn=runtime_arn, run_subdir=run.run_id, artifact_rel=artifact_rel,
+                region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"))
+        except Exception as exc:
+            run.log(f"optional artifact {artifact_rel} read-back skipped: {exc}", "warn")
+            return
+        if not text:
+            return
+        dest = os.path.join(run.roledir(agent_id), artifact_rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(text)
+        setattr(run, attr, dest)
 
     def _cli_frontend_page(self, run: Run, endpoint: str, role: RoleResult) -> str:
         """The opencode CLI (running INSIDE its deployed Runtime) writes
@@ -1238,10 +1290,22 @@ class Engine:
             if self.executor.name == "agentcore":
                 server_file = self._cli_backend_server(run, uc, role)
             elif self.executor.name == "fixture":
+                roledir = run.roledir("claude-code")
                 server_file = builders.build_mcp_server(
-                    run.roledir("claude-code"), uc["dir"],
+                    roledir, uc["dir"],
                     claude_md_path=builders.harness_file("claude-code", run.usecase),
                     module_name=uc["module"])
+                # The fixture stand-in for the agent's project-scale extras, so the
+                # reviewer's smoke-runs check has a file to execute offline exactly
+                # as it would on the shipped path.
+                uc_meta = router.USECASES.get(run.usecase, {})
+                run._smoke_file = builders.build_smoke_test(
+                    roledir, usecase_subdir=uc_meta.get("subdir", ""),
+                    module_name=uc["module"])
+                run._readme_file = builders.build_readme(
+                    roledir, run.run_id, run.task,
+                    (run.route or {}).get("workflow_ref", "run"), uc["module"],
+                    [run.roles[a] for a in run.agents], "opencode" in run.agents)
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
             run._server_file = server_file
@@ -1451,6 +1515,10 @@ class Engine:
         run._review_target = target.run_id
         run._server_file = target._server_file
         run._chatbot_file = target._chatbot_file
+        # Inherit the target's runnable proof so the review re-runs THE SAME smoke
+        # test the build shipped (verification by execution, on the artifact under
+        # review, not a fresh one).
+        run._smoke_file = target._smoke_file
         run.composed_branch = target.composed_branch
         role = run.progress.get(_VALIDATOR_AGENT)
         if role:
@@ -1647,6 +1715,28 @@ class Engine:
             else:
                 builders.build_chatbot(deliver, run.artifact_endpoint or "",
                                        agents_md_path=builders.harness_file("opencode", run.usecase))
+        # project-scale docs: the smoke test (proof the server runs) and the README
+        # (how to run it), so the PR is a runnable mini-project. The agent authors
+        # them on the shipped path (read back in _cli_backend_server); when one is
+        # missing there, or on the fixture path, the deterministic builder writes
+        # it so the deliverable shape is always complete. Only when a backend
+        # server exists (a pure frontend patch has nothing to boot).
+        uc_meta = router.USECASES.get(run.usecase, {})
+        if run._server_file and os.path.isfile(run._server_file):
+            if run._smoke_file and os.path.isfile(run._smoke_file):
+                shutil.copy(run._smoke_file, os.path.join(deliver, "smoke_test.py"))
+            else:
+                builders.build_smoke_test(deliver,
+                                          usecase_subdir=uc_meta.get("subdir", ""),
+                                          module_name=uc["module"])
+            if run._readme_file and os.path.isfile(run._readme_file):
+                shutil.copy(run._readme_file, os.path.join(deliver, "README.md"))
+            else:
+                builders.build_readme(
+                    deliver, run.run_id, run.task,
+                    (run.route or {}).get("workflow_ref", "run"), uc["module"],
+                    [run.roles[a] for a in run.agents], "opencode" in run.agents,
+                    gate_line=(run.gate or {}).get("pytest", ""))
         subprocess.run(["git", "-C", repo, "add", "-A"], check=True, timeout=20, env=git_env)
         subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty",
                         "-m", f"{run.run_id}: {(run.route or {}).get('workflow_ref', 'run')}, "
