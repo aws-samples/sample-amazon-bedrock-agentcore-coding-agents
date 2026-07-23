@@ -90,6 +90,16 @@ keys on the user's own wording, and a paraphrase can flip the route to the wrong
 workflow or the wrong sample use case.
 Call route_task(task) first if unsure which agents a task needs; it is advisory.
 
+## If a build fails or reaches needs_human, RESUBMIT the same build, do not improvise
+When a run reaches `failed` or `needs_human` before opening a PR (for example a
+transient `ROLE_TOTAL_FAILURE`, where a role's turn produced no artifact), the
+correct recovery is to call run_build again with the SAME task text. Do NOT try to
+"finish it yourself" by dispatching individual roles, hand-composing files, or
+running review/pr-v1: those paths do not compose the deliverable or open the PR the
+way run_build does, and a review workflow with no PR to review just fails
+`NO_RUN_TO_REVIEW`. One clean resubmit is the whole recovery. Tell the user the run
+did not complete and that you are resubmitting the same build.
+
 ## Drive a live terminal directly (when the agent's terminal is open)
 When the user is watching an agent's interactive terminal and wants you to drive it \
 turn by turn, use agent_send(agent_id, message) to type into that same terminal \

@@ -958,12 +958,37 @@ class Engine:
             with run._lock:
                 role.last_beat = time.monotonic()
 
-        result = runtime_exec.run_in_runtime(
-            runtime_arn=arn, agent_id=agent_id, prompt=prompt,
-            run_subdir=run.run_id, artifact_rel=artifact_rel,
-            model=llm.resolve(model),
-            region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"),
-            on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
+        # A single coding-agent CLI turn is occasionally flaky: it can end without
+        # writing (or writing an empty) artifact even though the runtime is healthy
+        # (a stopped-early TUI, a mid-settle read). That surfaces as a
+        # RoleExecutionError which, on the last routed role, escalates the WHOLE run
+        # to needs_human. So retry the dispatch ONCE, in-role, on a fresh shell,
+        # before letting the failure bubble: a second clean turn is far cheaper than
+        # a human resubmit, and this is still fail-loud (a second empty artifact
+        # raises exactly as before, no fabrication). The engine's separate
+        # review-loop re-implement pass is a DIFFERENT lever (a red gate on real
+        # output); this catches the turn that produced no output at all.
+        _last_exc: Exception | None = None
+        result = None
+        for _attempt in range(2):
+            collected.clear()
+            try:
+                result = runtime_exec.run_in_runtime(
+                    runtime_arn=arn, agent_id=agent_id, prompt=prompt,
+                    run_subdir=run.run_id, artifact_rel=artifact_rel,
+                    model=llm.resolve(model),
+                    region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"),
+                    on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
+                break
+            except runtime_exec.RoleExecutionError as exc:
+                _last_exc = exc
+                if _attempt == 0:
+                    run.log(f"{agent_id}: dispatch produced no artifact "
+                            "-> one bounded re-dispatch on a fresh shell", "warn")
+                    run.term(agent_id, "echo 're-dispatching (empty artifact on the "
+                                       "first turn); a fresh shell gets one more try'")
+        if result is None:
+            raise _last_exc  # both turns produced no artifact: fail loud, unchanged
         role.runtime_arn = arn
         role.runtime_session_id = result.get("session_id")
         # Persist the runtime-built artifact where the local path would, so the
