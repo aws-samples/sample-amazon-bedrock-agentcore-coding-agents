@@ -1056,8 +1056,9 @@ class Engine:
         prompt = (
             "You are the backend implementer role in a multi-agent build. Read "
             "CLAUDE.md in this directory for your role, and read the "
-            "`skills/backend-engineering/SKILL.md` harness installed in this "
-            "directory and apply it. Decide the shape of your solution from the "
+            f"`{module_dir}/skills/backend-engineering/SKILL.md` harness staged "
+            "for this run (also baked at ~/skills/backend-engineering/SKILL.md) "
+            "and apply it. Decide the shape of your solution from the "
             f"task; the task here is to expose the `{uc['module']}` module (on disk "
             f"at {module_dir}) as a remote MCP server, so a caller can list and "
             "call its tools over the wire.\n\n"
@@ -1092,18 +1093,23 @@ class Engine:
         chatbot.html from AGENTS.md, wired to the live endpoint; the engine reads
         THAT file back."""
         model = self._role_model(run, "opencode", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
+        import runtime_stage  # noqa: PLC0415 (lazy; the wirable mount root)
+        skills_dir = runtime_stage.skill_path(run.run_id)
         prompt = (
             "You are the frontend builder role in a multi-agent build. Read "
             "AGENTS.md in this directory for your role, and read the "
-            "`skills/frontend-design/SKILL.md` harness installed in this directory "
-            "and apply it. Decide the shape of the UI from the task; the task here "
-            "is a small chatbot-style page for the deployed MCP server.\n\n"
+            f"`{skills_dir}/skills/frontend-design/SKILL.md` harness staged for "
+            "this run and apply it. Decide the shape of the UI from the task; the "
+            "task here is a small chatbot-style page for the deployed MCP server.\n\n"
             f"The user's request for this run: {run.task}\n"
             "Where that request asks for specific UI work (a restyle, a layout "
             "change, wording), realize it in the page you write; if it names an "
             "existing page on the shared mount, read that file and carry its "
-            "content forward instead of starting generic. The rules below stay "
-            "exact either way.\n\n"
+            "content forward instead of starting generic. Whatever the request, "
+            "your final page MUST be saved as `./chatbot.html` in THIS directory; "
+            "editing only the named file elsewhere fails the run, because "
+            "`./chatbot.html` is the artifact the system reads back. The rules "
+            "below stay exact either way.\n\n"
             f"The deployed MCP endpoint is {endpoint} . Write the UI as "
             "`./chatbot.html` in this directory. The rules the rest of the system "
             "depends on (keep them exact):\n"
@@ -1114,9 +1120,36 @@ class Engine:
             "- Render the JSON-RPC result (or error) for the user to read.\n"
             "- Single self-contained file: inline CSS/JS, no external assets.\n"
             "Write ONLY the file.")
-        result = self._runtime_cli(run, "opencode", role, prompt, model, "chatbot.html")
+        turn_started = time.time()
         chatbot_file = os.path.join(run.roledir("opencode"), "chatbot.html")
-        self._read_artifact(chatbot_file, "chatbot.html", result)
+        try:
+            result = self._runtime_cli(run, "opencode", role, prompt, model,
+                                       "chatbot.html")
+            self._read_artifact(chatbot_file, "chatbot.html", result)
+        except Exception:  # noqa: BLE001 (ROLE_EXECUTION_ERROR from either step)
+            # A patch-shaped task often names an existing page on the shared
+            # mount, and the CLI may honor the user's literal intent by editing
+            # THAT file in place instead of also writing ./chatbot.html. If the
+            # named page really was modified during this turn (mtime check, so
+            # nothing stale or fabricated is ever accepted), the edit IS the
+            # deliverable: adopt it as the artifact. Anything else re-raises.
+            import re  # noqa: PLC0415 (single fallback path)
+            import runtime_stage  # noqa: PLC0415 (wirable mount root)
+            named = re.findall(r"(/mnt/s3files/[\w./-]+\.html)", run.task)
+            adopted = None
+            for p in named:
+                local = p.replace("/mnt/s3files", runtime_stage.mnt_root(), 1)
+                if (os.path.isfile(local) and os.path.getsize(local) > 0
+                        and os.path.getmtime(local) >= turn_started - 5):
+                    adopted = local
+                    break
+            if not adopted:
+                raise
+            shutil.copyfile(adopted, chatbot_file)
+            run.term("opencode", f"echo 'adopted in-place edit of {named[0]} "
+                                 "as chatbot.html (modified this turn)'")
+            run.log(f"frontend-builder: CLI edited the task-named page in place "
+                    f"({named[0]}); adopted it as the chatbot.html artifact")
         run.term("opencode", "echo 'CLI wrote chatbot.html'")
         return chatbot_file
 
@@ -1260,13 +1293,26 @@ class Engine:
                 run.term(agent_id, f"mkdir -p .mcp && printf '%s\\n' "
                                    f"{json.dumps(json.dumps(m))} >> .mcp/servers.jsonl "
                                    f"&& echo 'mcp server {m.get('name', '?')} registered'")
+            skill_dirs = []
             for skill_path in setup["skills"]:
                 full = os.path.join(os.path.dirname(src), skill_path)
                 if os.path.isdir(full):
                     run.term(agent_id, f"mkdir -p skills && cp -R {json.dumps(full)} skills/ "
                                        f"&& ls skills/")
+                    skill_dirs.append(full)
                 else:
                     run.term(agent_id, f"echo 'skill path not found: {skill_path}' && false")
+            # Runtime dispatch builds in /mnt/s3files/<run_id>, not this local
+            # workdir, so the skill must ALSO land there for the dispatched CLI
+            # to read the skills/<name>/SKILL.md its prompt names.
+            if skill_dirs and getattr(self.executor, "name", "") == "agentcore":
+                import runtime_stage  # noqa: PLC0415 (lazy, agentcore path only)
+                try:
+                    runtime_stage.stage_skills(run.run_id, skill_dirs)
+                    run.term(agent_id, "echo 'skills staged to the runtime workspace'")
+                except Exception as exc:  # noqa: BLE001 (skill is guidance, not the gate)
+                    run.log(f"skill staging to runtime failed ({exc}); the role "
+                            "falls back to its baked-in/steering guidance", "warn")
             for cmd in setup["install"]:
                 run.term(agent_id, cmd)
 

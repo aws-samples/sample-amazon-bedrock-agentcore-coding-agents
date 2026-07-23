@@ -117,6 +117,39 @@ def stage_usecase(run_id: str, uc: dict[str, str], region: str | None = None) ->
     return skill_path(run_id)
 
 
+def stage_skills(run_id: str, skill_dirs: list[str],
+                 region: str | None = None) -> int:
+    """Upload each harness skill dir to ``<run_id>-skill/skills/<name>``, the
+    run's READ-ONLY inputs prefix, so the dispatched CLI can read the SKILL.md
+    its prompt names. The backend image also bakes its skill at ~/skills, but
+    opencode's image does not, so without this staging the frontend prompt
+    references a file that does not exist in its container.
+
+    Deliberately NOT ``<run_id>/skills``: S3 read-through materializes uploaded
+    prefixes root-owned, and pre-creating the agent's WRITABLE ``<run_id>/``
+    workspace that way makes the artifact write fail for uid 1000. The
+    ``-skill`` prefix is already the immutable-inputs side of that split."""
+    if not skill_dirs:
+        return 0
+    if os.environ.get("WORKSHOP_S3FILES_DIR"):
+        n = 0
+        for d in skill_dirs:
+            dest = os.path.join(skill_path(run_id), "skills", os.path.basename(d))
+            shutil.copytree(d, dest, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            n += 1
+        return n
+    region = region or _s3_region()
+    account_id = _account_id(region)
+    bucket = _bucket(region, account_id)
+    s3 = _client(region)
+    n = 0
+    for d in skill_dirs:
+        key = f"{_MOUNT_PREFIX}/{run_id}-skill/skills/{os.path.basename(d)}"
+        n += _upload_tree(s3, bucket, d, key)
+    return n
+
+
 def unstage_usecase(run_id: str, region: str | None = None) -> dict[str, Any]:
     """Delete a run's staged prefix (cleanup / return-to-clean-state)."""
     # Local mount seam: remove the local <mount>/<run_id>* dirs, no S3.
