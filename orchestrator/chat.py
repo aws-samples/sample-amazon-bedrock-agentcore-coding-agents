@@ -84,7 +84,7 @@ Dispatch only when the ask is unambiguous.
 dispatch_* tool. It returns a run id immediately and the build runs in the \
 background. State that it started and which agent owns it.
 - Full build that must be composed and graded: call run_build(task). It dispatches \
-the routed roles, composes their work, and runs the pytest acceptance gate plus a \
+the routed roles, composes their work, and runs the validator-authored acceptance gate plus a \
 separate review pass. Pass the user's request text VERBATIM as task: the router \
 keys on the user's own wording, and a paraphrase can flip the route to the wrong \
 workflow or the wrong sample use case.
@@ -192,7 +192,7 @@ def build_tools() -> list:
     @tool
     def run_build(task: str) -> str:
         """Start a FULL build: the router picks the roles, their work composes into
-        one deliverable, and a separate reviewer runs the pytest gate + LLM judge.
+        one deliverable, the validator-authored acceptance test gates it, and the reviewer posts its assessment on the PR.
         Returns immediately with a run id; the build runs in the background and the
         console shows its live status. Pass the user's request text VERBATIM as
         task: the router keys on the user's own wording, and a paraphrase can

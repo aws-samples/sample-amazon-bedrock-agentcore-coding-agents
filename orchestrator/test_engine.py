@@ -95,9 +95,10 @@ def test_public_diff_is_the_real_composed_change():
     assert diff["commit"] == run.composed_commit
     assert diff["branch"] == f"run/{run.run_id}"
     paths = {f["path"] for f in diff["files"]}
-    # the real deliverable the gate graded + the reviewer's artifacts, all under deliverable/
+    # the real deliverable the gate graded, all under deliverable/ (the review
+    # verdict is a PR comment now, not a committed file)
     assert "deliverable/mcp_server.py" in paths
-    assert "deliverable/gate_report.json" in paths
+    assert "deliverable/ui/index.html" in paths
     assert any(p.startswith("deliverable/") for p in paths)
     # every file carries a real unified-diff patch with add counts
     server = next(f for f in diff["files"] if f["path"] == "deliverable/mcp_server.py")
@@ -162,8 +163,9 @@ def test_terminals_record_real_role_shell_work():
     assert any("mcp_server.py" in line["cmd"] for line in backend)    # artifact probe
     assert all(line["exit"] == 0 for line in backend)
     validator = run.terminals["claude-code-validator"]
-    assert any("pytest" in line["cmd"] for line in validator)         # the real gate
-    assert any("passed" in line["output"] for line in validator)
+    # offline floor: the grading contract graded in-process, echoed to the lane
+    assert any("grading contract" in line["cmd"] for line in validator)
+    assert any("checks green" in line["output"] for line in validator)
     engine.shutdown()
 
 
@@ -229,7 +231,7 @@ def test_bounded_iteration_retries_then_passes():
     assert run.iterations == 2 <= MAX_ITERATIONS
     assert run.status == "passed"
     warns = [e for e in run.events if e["level"] == "warn"]
-    assert any("review requested changes" in e["message"] for e in warns)
+    assert any("changes requested" in e["message"] for e in warns)
     engine.shutdown()
 
 

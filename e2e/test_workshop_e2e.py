@@ -245,11 +245,12 @@ def test_stage2_builds_the_deliverable_from_the_harness():
         gen_src = open(run._server_file, encoding="utf-8").read()
         assert "Generated MCP server" in gen_src and "import cost_analyzer" in gen_src
 
-        # the composed deliverable really exists on disk: server + report + UI
+        # the composed deliverable really exists on disk: backend server + the
+        # frontend ui/ project. The review verdict is a PR comment, NOT a committed
+        # file, so there is no critique.md / gate_report.json in the deliverable.
         deliver = _deliverable_dir()
-        chatbot = os.path.join(deliver, "chatbot.html")
+        chatbot = os.path.join(deliver, "ui", "index.html")
         assert os.path.isfile(os.path.join(deliver, "mcp_server.py"))
-        assert os.path.isfile(os.path.join(deliver, "gate_report.json"))
         assert os.path.isfile(chatbot)
         html = open(chatbot, encoding="utf-8").read()
 
@@ -292,7 +293,7 @@ def test_module_edit_flows_into_the_produced_ui():
                 "Re-run after adding a new instance type to the module",
                 ["claude-code", "claude-code-validator", "opencode"]))
             assert run.status == "passed"
-            html = open(os.path.join(_deliverable_dir(), "chatbot.html"), encoding="utf-8").read()
+            html = open(os.path.join(_deliverable_dir(), "ui", "index.html"), encoding="utf-8").read()
             answer = _replay_chatbot_button(html, NEW_TYPE)
             priced = json.loads(answer["result"]["content"][0]["text"])
             # the NEW type the attendee added is now priced by the UI's own call
@@ -316,7 +317,7 @@ def test_skill_seam_negative_control():
         run = _wait_terminal(eng.submit(
             "Baseline run, module unedited", ["claude-code", "claude-code-validator", "opencode"]))
         assert run.status == "passed"
-        html = open(os.path.join(_deliverable_dir(), "chatbot.html"), encoding="utf-8").read()
+        html = open(os.path.join(_deliverable_dir(), "ui", "index.html"), encoding="utf-8").read()
         answer = _replay_chatbot_button(html, "x9.workshop")
         # the unknown type is rejected: the seam is real, not hard-coded. And it's
         # rejected the RIGHT way; a proper JSON-RPC error object with a code, not a
@@ -359,7 +360,7 @@ def test_steering_edit_changes_the_produced_ui():
                 "restyled per the edited AGENTS.md",
                 ["claude-code", "claude-code-validator", "opencode"]))
             assert run.status == "passed"
-            html = open(os.path.join(_deliverable_dir(), "chatbot.html"), encoding="utf-8").read()
+            html = open(os.path.join(_deliverable_dir(), "ui", "index.html"), encoding="utf-8").read()
             # the produced UI carries the NEW title and the NEW example chip
             assert f"<title>{NEW_TITLE}</title>" in html
             assert f">{NEW_CHIP}</button>" in html

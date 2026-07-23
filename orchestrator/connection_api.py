@@ -12,7 +12,7 @@ What happens on POST /api/runs:
   - the backend role boots the reference MCP server as a live subprocess,
   - the validator role proves the grading contract in-process,
   - the frontend role does a live tools/list round-trip,
-  - finalization runs the pytest acceptance gate over the wire against the
+  - finalization runs the validator-authored acceptance gate over the wire against the
     booted endpoint, with bounded iteration (2) then needs_human.
 
 There is no race and no winner: the three agents are roles composed into one
@@ -379,7 +379,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Connection API (embedded engine) on http://localhost:{PORT}")
     print("POST /api/runs runs the REAL blueprint: live MCP server subprocess + "
-          "real pytest acceptance gate. GET /api/runs/{id}/events for the journal.")
+          "real acceptance gate. GET /api/runs/{id}/events for the journal.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

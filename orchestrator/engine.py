@@ -16,11 +16,13 @@ Three design decisions define this engine:
     Strands coordinator clarify an ambiguous request and choose dispatch tools.
     ``router.py`` provides the versioned registry and advisory route ladder used
     by ``run_build``. Only selected roles are dispatched.
-  * **A separate review orchestrator** (``reviewer.py``). The build side never
-    approves its own work: finalization hands the artifacts to the reviewer, which
-    runs the pytest acceptance gate plus mechanical critique checks and answers
-    with the exact pass token (``LGTM: no changes needed``) or a bounded
-    re-implement pass.
+  * **A separate reviewer whose verdict lands on the PR** (``reviewer.py``). The build
+    side never approves its own work: finalization runs the validator-authored
+    acceptance test (a real execution, real exit code), opens or updates the pull
+    request, and the judge posts an Assessment comment ON that PR: approve
+    (closing with the exact pass token ``LGTM: no changes needed``) or request
+    changes, which loops the routed roles through one bounded re-implement pass
+    that updates the same PR.
   * **A real PR at the end** (``github.py``). When the attendee connects GitHub,
     the composed run branch is pushed to their fork and the PR opens with the
     critique report. Without credentials the PR field carries a typed error and
@@ -28,7 +30,7 @@ Three design decisions define this engine:
 
 Every role works in its own container directory and leaves a TERMINAL TRANSCRIPT:
 ``/bin/sh`` commands with their output (installing its harness by writing the
-steering file, probing the module, booting the server, running pytest), plus, on
+steering file, probing the module, booting the server, running the gate), plus, on
 the dispatched role, the live CLI session that ran INSIDE the deployed Runtime,
 read back over the command shell. The console streams these transcripts into
 per-role xterm panes: what you watch is what ran.
@@ -356,7 +358,7 @@ STRANDED_AFTER_S = 600
 PERMANENT_FAIL_REASONS = {
     "EMPTY_TASK", "NO_ROUTE", "UNKNOWN_AGENT", "UNKNOWN_WORKFLOW", "UNKNOWN_USECASE",
     "HARNESS_MISSING", "GRADING_CONTRACT_MISSING", "SKILL_IMPORT_FAILED",
-    "PYTEST_UNAVAILABLE", "NO_RUN_TO_REVIEW", "BACKEND_HARNESS_MISSING",
+    "NO_RUN_TO_REVIEW", "BACKEND_HARNESS_MISSING",
     "FRONTEND_HARNESS_MISSING",
 }
 
@@ -512,11 +514,12 @@ class Run:
     artifact_endpoint: str | None = None
     _server_proc: subprocess.Popen | None = None
     _server_file: str | None = None        # the GENERATED mcp_server.py for this run
-    _chatbot_file: str | None = None       # the GENERATED chatbot.html for this run
+    _chatbot_file: str | None = None       # the GENERATED ui entry point (ui/index.html)
+    _ui_dir: str | None = None             # the GENERATED ui/ project dir (multi-file)
     # Loop-engineering: the validator AUTHORS its own acceptance test against the
     # live endpoint each run (Compartment-2 generate-verify), rather than running a
     # pinned contract. The engine runs THIS file and reads its real exit code, so
-    # the fail-loud spine holds (real pytest, never a fabricated pass). Null on the
+    # the fail-loud spine holds (real execution, never a fabricated pass). Null on the
     # fixture/offline path, which keeps the shipped grading contract as its floor.
     _acceptance_test_file: str | None = None
     _explicit_agents: bool = False
@@ -673,7 +676,7 @@ class Engine:
         # dispatches each role to its DEPLOYED Runtime and fails loud on a missing
         # wired ARN. Deterministic offline tests inject the test-only
         # FixtureExecutor by constructor (builders, no model, no live AWS). The
-        # verdict path (boot + pytest gate + reviewer + compose + PR) is identical
+        # verdict path (boot + acceptance gate + reviewer + compose + PR) is identical
         # regardless of which executor produced the artifact.
         self.executor = executor_obj if executor_obj is not None else executor.from_env()
         self._runs: dict[str, Run] = {}
@@ -865,7 +868,6 @@ class Engine:
         checks: list[tuple[str, Any]] = [
             ("GRADING_CONTRACT_MISSING", lambda: os.path.isdir(uc["grading"])),
             ("SKILL_IMPORT_FAILED", lambda: self._check_skill_imports(uc)),
-            ("PYTEST_UNAVAILABLE", self._check_pytest),
         ]
         for agent_id in run.agents:
             checks.append((f"HARNESS_MISSING:{agent_id}",
@@ -896,19 +898,13 @@ class Engine:
                 run.status, run.fail_reason = "failed", reason
                 run.log(f"pre-flight failed fast: {reason}", "error")
                 return False
-        run.log("pre-flight green: contract, module import, pytest, harness all ready")
+        run.log("pre-flight green: contract, module import, harness all ready")
         return True
 
     @staticmethod
     def _check_skill_imports(uc: dict[str, str]) -> bool:
         r = subprocess.run([sys.executable, "-c", f"import {uc['module']}"],
                            cwd=uc["dir"], capture_output=True, timeout=20)
-        return r.returncode == 0
-
-    @staticmethod
-    def _check_pytest() -> bool:
-        r = subprocess.run([sys.executable, "-m", "pytest", "--version"],
-                           capture_output=True, timeout=20)
         return r.returncode == 0
 
     def _review_target(self, run: Run) -> Run | None:
@@ -1043,10 +1039,13 @@ class Engine:
         mcp_server.py from CLAUDE.md; the engine reads THAT file back."""
         feedback = ""
         if run.iterations > 1 and run.review:
-            failed = [c for c in (run.review.get("gate") or {}).get("checks", [])
+            failed = [c["detail"] for c in (run.review.get("gate") or {}).get("checks", [])
                       if not c.get("passed")]
-            feedback = ("\n\nPrevious round's review REQUESTED CHANGES. Failed checks:\n"
-                        + "\n".join(f"- {c['check']}: {c['detail']}" for c in failed))
+            failed += list(run.review.get("reasons") or [])
+            if failed:
+                feedback = ("\n\nPrevious round's review REQUESTED CHANGES on the "
+                            "pull request. Address each point:\n"
+                            + "\n".join(f"- {d}" for d in failed))
         model = self._role_model(run, "claude-code", "claude-opus-4-6")
         # On the runtime the module is staged read-only at <run_id>-skill/; the agent
         # builds in its own writable <run_id>/ workdir (set as cwd by runtime_exec).
@@ -1099,40 +1098,42 @@ class Engine:
             "You are the frontend builder role in a multi-agent build. Read "
             "AGENTS.md in this directory for your role, and read the "
             f"`{skills_dir}/skills/frontend-design/SKILL.md` harness staged for "
-            "this run and apply it. Decide the shape of the UI from the task; the "
-            "task here is a small chatbot-style page for the deployed MCP server.\n\n"
+            "this run and apply it. Decide the shape of the UI from the task and "
+            "the skill: you own the structure, files, styling, and interactions "
+            "of a REAL small frontend project.\n\n"
             f"The user's request for this run: {run.task}\n"
             "Where that request asks for specific UI work (a restyle, a layout "
-            "change, wording), realize it in the page you write; if it names an "
-            "existing page on the shared mount, read that file and carry its "
-            "content forward instead of starting generic. Whatever the request, "
-            "your final page MUST be saved as `./chatbot.html` in THIS directory; "
-            "editing only the named file elsewhere fails the run, because "
-            "`./chatbot.html` is the artifact the system reads back. The rules "
-            "below stay exact either way.\n\n"
-            f"The deployed MCP endpoint is {endpoint} . Write the UI as "
-            "`./chatbot.html` in this directory. The rules the rest of the system "
-            "depends on (keep them exact):\n"
+            "change, wording), realize it; if it names an existing page on the "
+            "shared mount, read that file and carry its content forward instead "
+            "of starting generic.\n\n"
+            f"The deployed MCP endpoint is {endpoint} . Build the UI as a project "
+            "under `./ui/` in THIS directory: `./ui/index.html` is the entry "
+            "point, and you may add any supporting files you judge right "
+            "(stylesheets, scripts, assets), all under `./ui/`. The wire contract "
+            "the rest of the system depends on (keep it exact):\n"
             "- A THIN client (the skill's top rule): every answer comes from a "
             'JSON-RPC `tools/call` POST to the endpoint via fetch(); the literal '
-            'strings "tools/call" and "fetch(" must appear; no pricing or business '
-            "logic in the page.\n"
+            'strings "tools/call" and "fetch(" must appear in the project; no '
+            "pricing or business logic anywhere in it.\n"
             "- Render the JSON-RPC result (or error) for the user to read.\n"
-            "- Single self-contained file: inline CSS/JS, no external assets.\n"
-            "Write ONLY the file.")
+            "- Static files only (no build step, no external CDN assets): the "
+            "project must work served as-is.\n"
+            "Write ONLY files under ./ui/.")
         turn_started = time.time()
-        chatbot_file = os.path.join(run.roledir("opencode"), "chatbot.html")
+        ui_dir = os.path.join(run.roledir("opencode"), "ui")
+        chatbot_file = os.path.join(ui_dir, "index.html")
         try:
             result = self._runtime_cli(run, "opencode", role, prompt, model,
-                                       "chatbot.html")
-            self._read_artifact(chatbot_file, "chatbot.html", result)
+                                       "ui/index.html")
+            self._read_artifact(chatbot_file, "ui/index.html", result)
+            self._read_ui_tree(run)
         except Exception:  # noqa: BLE001 (ROLE_EXECUTION_ERROR from either step)
             # A patch-shaped task often names an existing page on the shared
             # mount, and the CLI may honor the user's literal intent by editing
-            # THAT file in place instead of also writing ./chatbot.html. If the
+            # THAT file in place instead of writing the ./ui/ project. If the
             # named page really was modified during this turn (mtime check, so
             # nothing stale or fabricated is ever accepted), the edit IS the
-            # deliverable: adopt it as the artifact. Anything else re-raises.
+            # deliverable: adopt it as the entry point. Anything else re-raises.
             import re  # noqa: PLC0415 (single fallback path)
             import runtime_stage  # noqa: PLC0415 (wirable mount root)
             named = re.findall(r"(/mnt/s3files/[\w./-]+\.html)", run.task)
@@ -1145,13 +1146,54 @@ class Engine:
                     break
             if not adopted:
                 raise
+            os.makedirs(ui_dir, exist_ok=True)
             shutil.copyfile(adopted, chatbot_file)
             run.term("opencode", f"echo 'adopted in-place edit of {named[0]} "
-                                 "as chatbot.html (modified this turn)'")
+                                 "as ui/index.html (modified this turn)'")
             run.log(f"frontend-builder: CLI edited the task-named page in place "
-                    f"({named[0]}); adopted it as the chatbot.html artifact")
-        run.term("opencode", "echo 'CLI wrote chatbot.html'")
+                    f"({named[0]}); adopted it as the ui/ entry point")
+        run._ui_dir = ui_dir
+        run.term("opencode", "echo 'CLI wrote the ui/ project'")
         return chatbot_file
+
+    def _read_ui_tree(self, run: Run) -> None:
+        """Pull the frontend's WHOLE ./ui/ tree back from the runtime workspace
+        (index.html came back via the standard artifact read; supporting files
+        need the directory read). Local-mount and fixture paths already share
+        the filesystem, so only the deployed-runtime path needs the transfer.
+        Best-effort: index.html alone is a valid (single-file) project."""
+        ui_dir = os.path.join(run.roledir("opencode"), "ui")
+        if self.executor.name != "agentcore":
+            return
+        import runtime_config  # noqa: PLC0415
+        import runtime_exec  # noqa: PLC0415
+        if os.environ.get("WORKSHOP_S3FILES_DIR"):
+            # Local mount seam: the runtime workspace IS a local dir; copy it.
+            import runtime_stage  # noqa: PLC0415
+            src = os.path.join(runtime_stage.mnt_root(), run.run_id, "ui")
+            if os.path.isdir(src):
+                shutil.copytree(src, ui_dir, dirs_exist_ok=True)
+            return
+        hit = runtime_config.pick("opencode")
+        if not hit:
+            return
+        try:
+            tree = runtime_exec.read_tree_from_runtime(
+                hit[0], run.run_id, "ui",
+                region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"))
+        except Exception as exc:  # noqa: BLE001 (supporting files are best-effort)
+            run.log(f"ui tree read-back skipped: {exc}", "warn")
+            return
+        for rel, data in tree.items():
+            dest = os.path.join(ui_dir, rel)
+            if os.path.commonpath([os.path.abspath(dest), os.path.abspath(ui_dir)]) != os.path.abspath(ui_dir):
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(data)
+        if tree:
+            run.log(f"frontend-builder: ui/ project read back "
+                    f"({len(tree)} files)")
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
                                     role: RoleResult) -> str:
@@ -1161,7 +1203,7 @@ class Engine:
 
         This is the loop-engineering checker doing real work (Compartment-2
         generate-verify): the validator decides what "acceptable" means for the
-        task and encodes it as a runnable pytest, instead of running a contract
+        task and encodes it as a runnable executable, instead of running a contract
         pinned in the repo. The engine runs the authored file and reads its real
         exit code, so the fail-loud spine is unchanged: a red test can never be a
         pass, and nothing is fabricated. Maker (backend) != checker (validator):
@@ -1169,22 +1211,26 @@ class Engine:
         model = self._role_model(run, _VALIDATOR_AGENT, "us.anthropic.claude-opus-4-6-v1")
         feedback = ""
         if run.iterations > 1 and run.review:
-            failed = [c for c in (run.review.get("gate") or {}).get("checks", [])
+            failed = [c["detail"] for c in (run.review.get("gate") or {}).get("checks", [])
                       if not c.get("passed")]
+            failed += list(run.review.get("reasons") or [])
             if failed:
-                feedback = ("\n\nA previous round failed these checks; make sure your "
-                            "test still covers them:\n"
-                            + "\n".join(f"- {c['check']}: {c['detail']}" for c in failed))
+                feedback = ("\n\nA previous round requested changes; make sure your "
+                            "test covers each point:\n"
+                            + "\n".join(f"- {d}" for d in failed))
         prompt = (
             "You are the validator role in a multi-agent build. Read your steering "
             "in CLAUDE.md for your role, then AUTHOR the acceptance test for this "
-            "deliverable and save it as `./acceptance_test.py` in this directory.\n\n"
+            "deliverable and save it as `./acceptance_test` in this directory: ONE "
+            "self-contained EXECUTABLE file, starting with a shebang line, in "
+            "whatever language you judge fits the deliverable (anything installed "
+            "in this container works). Exit 0 to accept, nonzero to reject, and "
+            "print one line per check so a human can read what you verified.\n\n"
             f"The user's request for this run: {run.task}\n"
             "If that request names specific behavior, cover it with a check where "
             "the live endpoint can prove it.\n\n"
-            f"The backend's MCP server is live at {endpoint} (JSON-RPC 2.0 over HTTP "
-            "POST). Write a self-contained pytest file (standard library + pytest "
-            "only) that decides whether this server is acceptable, by probing the "
+            f"The deliverable's server is live at {endpoint} (JSON-RPC 2.0 over HTTP "
+            "POST). Your executable decides whether it is acceptable by probing the "
             "LIVE endpoint over the wire. At minimum it must verify: the server "
             "answers `tools/list` and every tool the module publishes is present "
             "(discovery); a real `tools/call` returns the correct structured result "
@@ -1194,33 +1240,25 @@ class Engine:
             "You do NOT edit the server; you only test it. Write ONLY the file; do "
             "not run it." + feedback)
         result = self._runtime_cli(run, _VALIDATOR_AGENT, role, prompt, model,
-                                   "acceptance_test.py")
-        test_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "acceptance_test.py")
-        self._read_artifact(test_path, "acceptance_test.py", result)
-        run.term(_VALIDATOR_AGENT, "echo 'validator authored acceptance_test.py'")
+                                   "acceptance_test")
+        test_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "acceptance_test")
+        self._read_artifact(test_path, "acceptance_test", result)
+        run.term(_VALIDATOR_AGENT, "echo 'validator authored the acceptance_test executable'")
         return test_path
 
     def _write_validator_report(self, run: Run, role: RoleResult,
-                                pytest_tail: str) -> None:
-        """Produce validation_report.md; the PRODUCE step varies by executor.
-
-        Shipped (AgentCoreExecutor): the validator's Claude Code CLI runs INSIDE
-        its deployed Runtime and writes the report (engine._runtime_cli via
-        _cli_validator_report). Tests (FixtureExecutor): a deterministic report
-        from the pytest tail, no model, offline. No other producer exists; a
-        real-only shipped path fails loud. pytest stays the ONLY acceptance
-        authority in every path; the validator never judges pass/fail."""
+                                grade_tail: str) -> None:
+        """FIXTURE-ONLY role artifact: a deterministic note that the offline
+        grading floor ran (the shipped path's validator AUTHORS
+        acceptance_test.py instead; verdicts live on the PR, not in files)."""
         report_path = os.path.join(run.roledir(_VALIDATOR_AGENT), "validation_report.md")
-        if self.executor.name == "agentcore":
-            self._cli_validator_report(run, pytest_tail, role)
-            return
         if self.executor.name == "fixture":
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write("validation report: the grading contract ran; "
-                        "see the pytest output above.\n")
+                        "see the grading output above.\n")
             run.add_event(_VALIDATOR_AGENT, {"kind": "text",
                                    "text": "[validator] wrote validation_report.md "
-                                           "(deterministic, from the pytest output)"})
+                                           "(deterministic, from the grading output)"})
             return
         raise RuntimeError(_NO_PRODUCER_ERROR)
 
@@ -1249,7 +1287,7 @@ class Engine:
     # reads it back; the test FixtureExecutor runs the closure in-process and the
     # PRODUCE step builds the artifact deterministically. Either way every visible
     # step is a real shell command captured into the role's terminal, and the
-    # verdict path (boot + pytest gate + reviewer + compose + PR) is identical.
+    # verdict path (boot + acceptance gate + reviewer + compose + PR) is identical.
     def _execute(self, run: Run) -> bool:
         run.phase, run.status = "agent_execution", "running"
         budget = AGENT_EXECUTION_TIMEOUT_S
@@ -1381,22 +1419,24 @@ class Engine:
             # contract. The engine runs the authored file in finalization and reads
             # its real exit code. On the fixture/offline path there is no runtime to
             # author from, so the shipped grading contract stands in as the floor
-            # and the deterministic report is written; either way pytest decides,
-            # the validator never fabricates a pass.
+            # and the deterministic report is written; either way a real
+            # execution decides, the validator never fabricates a pass.
             backend_ready.wait(timeout=300)
             if self.executor.name == "agentcore":
                 url = endpoint.get("url", "")
                 run._acceptance_test_file = self._cli_validator_authors_test(run, url, role)
-                role.note = "authored acceptance_test.py against the live endpoint"
-                run.log("validator: authored acceptance_test.py for this deliverable")
+                role.note = "authored the acceptance test against the live endpoint"
+                run.log("validator: authored the acceptance test for this deliverable")
             else:
                 # Fixture/offline: keep the shipped grading contract as the floor.
-                out = run.term(_VALIDATOR_AGENT, f"{sys.executable} -m pytest "
-                                       f"{json.dumps(uc['grading'])} -q --no-header")
                 grade, InProcessClient, _ = reviewer.load_grading(uc["grading"])
                 verdict = grade(InProcessClient())
+                n_green = sum(c['passed'] for c in verdict['checks'])
+                out = run.term(_VALIDATOR_AGENT,
+                               f"echo 'grading contract: {n_green}/{len(verdict['checks'])} "
+                               "checks green (in-process floor)'")
                 self._write_validator_report(
-                    run, role, out[-1500:] if out else "(no pytest output)")
+                    run, role, out[-1500:] if out else "(no output)")
                 role.note = (f"proved the contract pre-deploy: "
                              f"{sum(c['passed'] for c in verdict['checks'])}/{len(verdict['checks'])} checks green")
                 run.log(f"validator: in-process contract {'green' if verdict['passed'] else 'RED'} "
@@ -1412,19 +1452,24 @@ class Engine:
             url = endpoint.get("url", "")
             # PRODUCE step: varies by executor. Shipped (AgentCoreExecutor): the
             # opencode CLI runs INSIDE its deployed Runtime; _cli_frontend_page
-            # dispatches there (engine._runtime_cli) and writes chatbot.html back.
-            # Tests (FixtureExecutor): the deterministic builder produces it from
-            # AGENTS.md, no model, offline. No other producer; real-only fails loud.
+            # dispatches there (engine._runtime_cli) and reads the ui/ project
+            # back. Tests (FixtureExecutor): the deterministic builder produces a
+            # one-file ui/ from AGENTS.md, no model, offline. No other producer;
+            # real-only fails loud.
             if self.executor.name == "agentcore":
                 chatbot_file = self._cli_frontend_page(run, url, role)
             elif self.executor.name == "fixture":
+                ui_out = os.path.join(run.roledir("opencode"), "ui")
+                os.makedirs(ui_out, exist_ok=True)
                 chatbot_file = builders.build_chatbot(
-                    run.roledir("opencode"), url,
-                    agents_md_path=builders.harness_file("opencode", run.usecase))
+                    ui_out, url,
+                    agents_md_path=builders.harness_file("opencode", run.usecase),
+                    filename="index.html")
+                run._ui_dir = ui_out
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
             run._chatbot_file = chatbot_file
-            run.term("opencode", "ls -la chatbot.html && grep -o '<title>[^<]*' chatbot.html")
+            run.term("opencode", "ls -la ui/ && grep -o '<title>[^<]*' ui/index.html")
             ui = builders.parse_ui_spec(builders.harness_file("opencode", run.usecase))
             try:
                 _, _, RemoteMCPClient = reviewer.load_grading(uc["grading"])
@@ -1435,9 +1480,9 @@ class Engine:
                     ".encode(), headers={'Content-Type':'application/json'}); "
                     "r=json.loads(urllib.request.urlopen(req, timeout=3).read()); "
                     "print([t['name'] for t in r['result']['tools']])"))
-                role.note = (f"built chatbot UI '{ui['title']}' from AGENTS.md; "
+                role.note = (f"built the ui/ project '{ui['title']}'; "
                              f"live tools/list returned {len(tools)} tools")
-                run.log(f"frontend-builder: generated chatbot.html from harness, "
+                run.log(f"frontend-builder: generated the ui/ project, "
                         f"tools/list round-trip OK ({len(tools)} tools)")
             except Exception as exc:
                 role.note = f"built chatbot UI '{ui['title']}'; endpoint not answering yet ({type(exc).__name__})"
@@ -1561,6 +1606,7 @@ class Engine:
         run._review_target = target.run_id
         run._server_file = target._server_file
         run._chatbot_file = target._chatbot_file
+        run._ui_dir = getattr(target, "_ui_dir", None)
         # Re-run the SAME acceptance test the target's validator authored, against
         # the re-served artifact (verification by execution on the artifact under
         # review, not a fresh contract).
@@ -1592,8 +1638,10 @@ class Engine:
         if _VALIDATOR_AGENT in run.agents:
             run.term(_VALIDATOR_AGENT, f"echo 'reviewing {target.run_id} (branch "
                              f"{target.composed_branch or 'n/a'}) at {url}'")
-            run.term(_VALIDATOR_AGENT, f"MCP_ENDPOINT_URL={url} {sys.executable} -m pytest "
-                             f"{json.dumps(uc['grading'])} -q --no-header")
+            authored = getattr(run, "_acceptance_test_file", None)
+            if authored:
+                run.term(_VALIDATOR_AGENT,
+                         f"MCP_ENDPOINT_URL={url} {json.dumps(authored)}")
         if role:
             role.state = "done"
             role.latency_ms = int((time.monotonic() - t0) * 1000)
@@ -1604,75 +1652,122 @@ class Engine:
     # Phase 5, deterministic, but a SEPARATE PEN: the review orchestrator owns
     # the verdict (gate + critique + LGTM token); the build engine only reacts.
     def _finalize(self, run: Run) -> bool:
-        """Returns True when the run reached a terminal state, False to iterate."""
+        """Returns True when the run reached a terminal state, False to iterate.
+
+        The verify-iterate loop, on the pull request itself:
+
+          1. GATE: the validator-authored acceptance test executes for real
+             and its exit code decides. Red gate -> no PR work; loop or hand to a human.
+          2. PR: on a green gate the deliverable is composed and the pull
+             request opens (round 1) or its branch is UPDATED in place (a
+             re-implement round pushes new commits to the same PR).
+          3. ASSESSMENT: the judge (separate pen; LLM, fail-open) reviews the
+             deliverable and its verdict is posted DIRECTLY on the PR as an
+             Assessment comment. Approve ends the run (auto policy may then
+             squash-merge). Request-changes loops the routed roles with the
+             judge's reasons as feedback, bounded by MAX_REVIEW_ROUNDS.
+        """
         run.phase = "finalization"
         uc = router.usecase_paths(run.usecase)
-        run.log(f"review orchestrator: gate + critique against "
-                f"{run.artifact_endpoint} (round {run.iterations})")
-        verdict = reviewer.review(run, uc["grading"], uc["module"], run.iterations)
-        run.review = verdict.public()
-        run.gate = verdict.gate
-        # Surface the verdict in the validator's terminal, but ONLY when that role
-        # was actually dispatched. The review orchestrator is a separate pen; on a
-        # single-role run (patch/backend-v1) fabricating a validator pane would
-        # violate "only routed roles run". The run log carries the verdict either way.
-        if _VALIDATOR_AGENT in run.agents:
-            run.term(_VALIDATOR_AGENT, f"cat {json.dumps(os.path.join(run.workdir, 'critique.md'))}")
-        if verdict.lgtm:
-            if not (run.route and run.route.get("read_only")):
-                try:
-                    self._compose_commit(run)
-                    run.log(f"review APPROVED ({verdict.gate['pytest']}) -> composed commit "
-                            f"{(run.composed_commit or '')[:10]} on {run.composed_branch}")
-                except Exception as exc:
-                    run.log(f"compose commit skipped: {exc}", "warn")
-                # The final goal: a REAL PR on the attendee's GitHub. The ladder
-                # in github.py decides; locally pr_url stays null, never fake.
-                run.pr = github.open_pr(run, verdict.report)
+        run.log(f"gate: acceptance test against {run.artifact_endpoint} "
+                f"(round {run.iterations})")
+        gate = reviewer.run_gate(run, uc["grading"])
+        run.gate = gate
+
+        read_only = bool(run.route and run.route.get("read_only"))
+        verdict = None
+        if gate.get("passed") and not read_only:
+            # Green gate: land the work on the PR FIRST, then review it there,
+            # exactly like a human team (code up for review before the verdict).
+            try:
+                self._compose_commit(run)
+                run.log(f"gate green ({gate.get('summary','')}) -> composed commit "
+                        f"{(run.composed_commit or '')[:10]} on {run.composed_branch}")
+            except Exception as exc:
+                run.log(f"compose commit skipped: {exc}", "warn")
+            if run.pr_url:
+                # A re-implement round: same PR, updated branch.
+                update = github.update_pr(run)
+                if update.get("error"):
+                    run.log(f"PR update failed: {update['error']}", "warn")
+                else:
+                    run.log(f"PR branch updated in place: {run.pr_url} "
+                            f"(round {run.iterations})")
+            else:
+                run.pr = github.open_pr(
+                    run, f"Automated build for: {run.task}\n\n"
+                         f"Acceptance gate: {gate.get('summary', '')}. The reviewer's "
+                         "assessment follows as a PR comment.")
                 if run.pr.get("pr_url"):
                     run.pr_url = run.pr["pr_url"]
                     run.log(f"PR opened for real: {run.pr_url} (credential source: "
                             f"{run.pr.get('source')})")
-                    # The fully-autonomous tail (opt-in, fail-closed default
-                    # human_review): on merge_policy=="auto" the SEPARATE review
-                    # pen already APPROVED (verdict.lgtm), so post that verdict as a
-                    # GitHub APPROVE review (the bot-assessment) and squash-merge the
-                    # PR into its integration branch. github enforces "never the
-                    # default branch", and the reviewer remains the sole approver.
-                    if github.merge_policy() == "auto":
-                        review = github.post_review(run, verdict.report)
-                        run.pr["review"] = review
-                        merged = github.merge_pr(run)
-                        run.pr["merge"] = merged
-                        run.merge_state = ("merged" if merged.get("merged")
-                                           else f"skipped:{merged['skipped']}" if merged.get("skipped")
-                                           else f"error:{merged.get('error', 'unknown')}")
-                        run.log(f"auto-merge: review={review.get('reviewed', review.get('skipped', review.get('error')))}, "
-                                f"merge={run.merge_state}")
-                    else:
-                        run.merge_state = "human_review"
-                        run.log("merge_policy=human_review: PR left open for a human to merge")
                 elif run.pr.get("error"):
                     run.log(f"PR open failed: {run.pr['error']}", "warn")
                 else:
                     run.log(f"PR skipped: {run.pr.get('skipped', 'local mode')}")
+
+            # The judge reviews the deliverable ON the PR (separate pen).
+            verdict = reviewer.assess(run, gate, run.iterations)
+            run.review = verdict.public()
+            if run.pr_url:
+                posted = github.post_review(run, verdict.assessment)
+                run.pr["review"] = posted
+                run.log("assessment posted on the PR: "
+                        f"{verdict.state} ({posted.get('review_url') or posted.get('skipped') or posted.get('error')})")
+        elif gate.get("passed") and read_only:
+            # Read-only review workflow: assess the TARGET run's deliverable and
+            # post the assessment on ITS pull request; never compose a new one.
+            verdict = reviewer.assess(run, gate, run.iterations)
+            run.review = verdict.public()
+            target = self._runs.get(run._review_target) if run._review_target else None
+            if target is not None and getattr(target, "pr_url", None):
+                run.pr = dict(getattr(target, "pr", None) or {})
+                posted = github.post_review(run, verdict.assessment)
+                run.log(f"review assessment posted on {target.run_id}'s PR: "
+                        f"{posted.get('review_url') or posted.get('skipped') or posted.get('error')}")
             else:
-                run.log(f"review APPROVED for {run._review_target} (read-only workflow; "
-                        "no compose, no PR)")
+                run.log(f"review APPROVED for {run._review_target} "
+                        "(no PR to comment on; verdict recorded on the run)")
+        else:
+            run.review = {"state": "changes_requested", "lgtm": False,
+                          "round": run.iterations, "gate": gate,
+                          "reasons": [c["detail"] for c in gate.get("checks", [])
+                                      if not c.get("passed")][:5]}
+
+        if verdict is not None and verdict.lgtm:
+            if run.pr_url and github.merge_policy() == "auto":
+                # The fully-autonomous tail (opt-in, fail-closed default
+                # human_review): the judge already approved ON the PR, so
+                # squash-merge into the integration branch. github enforces
+                # "never the default branch"; the judge stays the sole approver.
+                merged = github.merge_pr(run)
+                run.pr["merge"] = merged
+                run.merge_state = ("merged" if merged.get("merged")
+                                   else f"skipped:{merged['skipped']}" if merged.get("skipped")
+                                   else f"error:{merged.get('error', 'unknown')}")
+                run.log(f"auto-merge: {run.merge_state}")
+            elif run.pr_url:
+                run.merge_state = "human_review"
+                run.log("merge_policy=human_review: PR left open for a human to merge")
             # status flips terminal ONLY after compose+journal are written, so a
             # poller that sees "passed" always sees the full result (no race).
             run.status = "passed"
             self._ledger(run)
             return True
+
+        # Not approved: loop (bounded) or hand to a human. The judge's reasons
+        # ride into the next round as feedback (run.review["reasons"]).
         if run.iterations >= MAX_ITERATIONS:
             run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
-            run.log(f"review still requests changes after {run.iterations} rounds "
-                    "-> needs_human", "warn")
+            run.log(f"changes still requested after {run.iterations} rounds "
+                    "-> needs_human (the PR stays open with the assessment)", "warn")
             self._stop_server(run)
             self._ledger(run)
             return True
-        run.log(f"review requested changes ({verdict.gate['pytest']}) -> one bounded "
-                "re-implement pass", "warn")
+        why = (gate.get("summary") or "assessment requested changes")
+        run.log(f"changes requested ({why}) -> one bounded re-implement pass "
+                "updating the same PR", "warn")
         self._stop_server(run)
         return False
 
@@ -1742,30 +1837,36 @@ class Engine:
         # just graded (built this run from CLAUDE.md, not a checked-in reference file).
         if run._server_file and os.path.isfile(run._server_file):
             shutil.copy(run._server_file, os.path.join(deliver, "mcp_server.py"))
-        # reviewer artifacts: the structured gate report + the critique report
-        # (the verdict travels with the deliverable: the PR-body pattern).
-        with open(os.path.join(deliver, "gate_report.json"), "w", encoding="utf-8") as f:
-            json.dump({"run_id": run.run_id, "endpoint": run.artifact_endpoint,
-                       "iterations": run.iterations, "gate": run.gate,
-                       "review": run.review, "workflow_ref": (run.route or {}).get("workflow_ref")},
-                      f, indent=2)
-        critique_src = os.path.join(run.workdir, "critique.md")
-        if os.path.isfile(critique_src):
-            shutil.copy(critique_src, os.path.join(deliver, "critique.md"))
+        # the validator's authored acceptance test SHIPS WITH the deliverable, so
+        # the PR reviewer (human or bot) can rerun the exact gate that passed.
+        # The review verdict itself is NOT a committed file: it is posted on the
+        # pull request as an Assessment comment, where reviews belong.
+        authored = getattr(run, "_acceptance_test_file", None)
+        if authored and os.path.isfile(authored):
+            shutil.copy(authored, os.path.join(deliver, "acceptance_test"))
         # frontend artifact: the chatbot page generated from AGENTS.md (by the
         # model in bedrock mode, by the builder locally), wired to the live MCP
         # endpoint, only when the frontend role was routed.
         if "opencode" in run.agents:
-            if run._chatbot_file and os.path.isfile(run._chatbot_file):
-                shutil.copy(run._chatbot_file, os.path.join(deliver, "chatbot.html"))
+            ui_dir = getattr(run, "_ui_dir", None)
+            if ui_dir and os.path.isdir(ui_dir):
+                shutil.copytree(ui_dir, os.path.join(deliver, "ui"),
+                                dirs_exist_ok=True)
+            elif run._chatbot_file and os.path.isfile(run._chatbot_file):
+                os.makedirs(os.path.join(deliver, "ui"), exist_ok=True)
+                shutil.copy(run._chatbot_file,
+                            os.path.join(deliver, "ui", "index.html"))
             else:
-                builders.build_chatbot(deliver, run.artifact_endpoint or "",
-                                       agents_md_path=builders.harness_file("opencode", run.usecase))
+                ui_out = os.path.join(deliver, "ui")
+                os.makedirs(ui_out, exist_ok=True)
+                builders.build_chatbot(ui_out, run.artifact_endpoint or "",
+                                       agents_md_path=builders.harness_file("opencode", run.usecase),
+                                       filename="index.html")
         subprocess.run(["git", "-C", repo, "add", "-A"], check=True, timeout=20, env=git_env)
         subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty",
                         "-m", f"{run.run_id}: {(run.route or {}).get('workflow_ref', 'run')}, "
                               f"compose {' + '.join(run.roles[a] for a in run.agents)}\n\n"
-                              f"task: {run.task}\nreview: approved ({run.gate.get('pytest','')})"],
+                              f"task: {run.task}\ngate: {run.gate.get('summary','')}"],
                        check=True, timeout=20, env=git_env)
         sha = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
                              capture_output=True, text=True, timeout=20).stdout.strip()

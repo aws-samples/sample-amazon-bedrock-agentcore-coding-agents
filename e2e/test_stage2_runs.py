@@ -261,8 +261,9 @@ def test_terminal_run_lands_in_final_blueprint_phase(console, cookie):
 
 
 def test_passed_run_gate_is_green(console, cookie):
-    """The acceptance gate is pytest, not an LLM: a passed convert run's result
-    reports gate.passed True with at least one check."""
+    """The acceptance gate is a real execution (the in-process grading floor on the
+    fixture path), not an LLM: a passed convert run's result reports gate.passed True
+    with at least one check."""
     run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
@@ -273,8 +274,10 @@ def test_passed_run_gate_is_green(console, cookie):
 
 
 def test_reviewer_emits_exactly_the_lgtm_token(console, cookie):
-    """The SEPARATE review orchestrator approves only with the exact pass token:
-    the committed critique carries `LGTM: no changes needed` verbatim."""
+    """The SEPARATE reviewer approves only with the exact pass token: the approving
+    assessment the engine posts on the PR closes with `LGTM: no changes needed`
+    verbatim. The verdict is a PR comment (carried on run.review["assessment"]),
+    NOT a committed critique file."""
     run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
     rid = run["run_id"]
     final = poll_terminal(console, cookie, rid)
@@ -282,10 +285,9 @@ def test_reviewer_emits_exactly_the_lgtm_token(console, cookie):
     res = _result(console, cookie, rid)
     assert res["review"]["lgtm"] is True, res["review"]
     assert res["review"]["state"] == "approved", res["review"]
-    # the EXACT token, surfaced in the validator's terminal critique.md cat.
-    terms = _terminals(console, cookie, rid)
-    critique = "".join(e["output"] for e in terms.get("claude-code-validator", []))
-    assert LGTM_TOKEN in critique, "the exact LGTM pass token must appear in the critique"
+    # the EXACT token closes the approving assessment carried on the run's review.
+    assert LGTM_TOKEN in res["review"]["assessment"], \
+        "the exact LGTM pass token must close the approving assessment"
 
 
 def test_composed_from_carries_roles_not_a_winner(console, cookie):
@@ -414,9 +416,10 @@ def test_review_run_composes_no_new_deliverable(console, cookie):
 # Full-stack: three distinct role artifacts compose into one deliverable.
 # --------------------------------------------------------------------------- #
 def test_fullstack_lands_three_distinct_role_artifacts(console, cookie):
-    """The full-stack build composes three DISTINCT role artifacts into the
-    deliverable: mcp_server.py (backend), chatbot.html (frontend), critique.md
-    (reviewer), proving collaboration, not a single winner."""
+    """The full-stack build composes DISTINCT role artifacts into the
+    deliverable: mcp_server.py (backend) and the ui/ project (frontend). The
+    validator's verdict is posted on the PR as an Assessment comment, never a
+    committed critique file. This proves collaboration, not a single winner."""
     run = submit(console, cookie,
                      "Build the full-stack Critter Lab app: backend and frontend")
     rid = run["run_id"]

@@ -18,7 +18,7 @@ lives only in test-support code; no env flag selects a fake on the shipped binar
 
 The engine selects its executor at startup from ``WORKSHOP_EXECUTOR`` (default /
 ``""`` / ``agentcore`` -> ``AgentCoreExecutor``; unknown values fail loud). Picking
-the seam never alters the verdict path: pytest is still the only acceptance
+the seam never alters the verdict path: the executed gate is still the only acceptance
 authority, and the reviewer still runs in its separate pen.
 """
 

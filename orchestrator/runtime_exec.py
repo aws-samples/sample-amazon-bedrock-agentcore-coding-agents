@@ -553,6 +553,52 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
     return artifact
 
 
+def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
+                           region: str = "us-west-2") -> dict[str, bytes]:
+    """Read a whole DIRECTORY (/mnt/s3files/<run>/<tree_rel>) back from the
+    runtime as {relative_path: bytes}, via one tar|base64 pass between the same
+    sentinels the single-file read uses. Lets a role deliver a multi-file
+    project (a real ui/ tree, not one hardcoded page) over the identical
+    fail-loud shell channel. Returns {} when the tree never appears."""
+    import base64  # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import tarfile  # noqa: PLC0415
+    path = f"/mnt/s3files/{run_subdir}"
+    for attempt in range(6):
+        nonce = uuid.uuid4().hex[:12]
+        cmd = (
+            f"B2={_ART_BEGIN}-{nonce}; E2={_ART_END}-{nonce}; "
+            f'echo "$B2"; '
+            f"tar -C {shlex.quote(path)} -cf - {shlex.quote(tree_rel)} 2>/dev/null "
+            f"| base64; "
+            f"printf '\\n'; "
+            f'echo "$E2"; exit 0\n'
+        )
+        sid = "rextr-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+        rr = asyncio.run(_drive_shell(runtime_arn, cmd, region, None, 90.0, sid))
+        blob = _slice(rr["raw"], f"{_ART_BEGIN}-{nonce}", f"{_ART_END}-{nonce}")
+        if blob.strip():
+            try:
+                raw = base64.b64decode("".join(blob.split()))
+                out: dict[str, bytes] = {}
+                with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
+                    for m in tf.getmembers():
+                        if not m.isfile():
+                            continue
+                        rel = os.path.relpath(m.name, tree_rel)
+                        if rel.startswith(".."):
+                            continue  # never escape the tree
+                        f = tf.extractfile(m)
+                        if f is not None:
+                            out[rel] = f.read()
+                if out:
+                    return out
+            except Exception:  # noqa: BLE001 (corrupt slice -> retry)
+                pass
+        time.sleep(2.0 * (attempt + 1))
+    return {}
+
+
 def _live_session_for(agent_id: str, runtime_arn: str,
                       launch_env: dict[str, str] | None = None) -> Any | None:
     """The live console PTY this dispatch should drive, if the console is hosting

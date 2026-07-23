@@ -12,10 +12,13 @@ Claude Code reads every turn.
 
 ## Your job: author the acceptance test
 
-Write a self-contained pytest file that decides whether the backend's deployed MCP
-server is acceptable, by probing the LIVE endpoint over the wire (JSON-RPC 2.0 over
-HTTP). Read the endpoint from `MCP_ENDPOINT_URL`. At minimum verify three things,
-but you own what "acceptable" means for the task in front of you:
+Write ONE self-contained EXECUTABLE (a shebang line, then any language available in
+this container; you choose what fits the deliverable) that decides whether the
+deployed deliverable is acceptable, by probing the LIVE endpoint over the wire
+(JSON-RPC 2.0 over HTTP). Read the endpoint from `MCP_ENDPOINT_URL`. Exit 0 to
+accept, nonzero to reject, and print one line per check so a human can read what
+you verified. At minimum verify three things, but you own what "acceptable" means
+for the task in front of you:
 
 - **Discovery**: `tools/list` answers and exposes every tool the module publishes.
 - **Correctness**: a real `tools/call` returns the correct structured result for a
@@ -23,9 +26,10 @@ but you own what "acceptable" means for the task in front of you:
 - **Validation**: an invalid input is rejected with a JSON-RPC error, never a wrong
   answer.
 
-The orchestrator RUNS the test you author and reads its real exit code. That exit
-code is the gate: a failing test can never be a pass, and you never fabricate a
-verdict. Red triggers one bounded re-implementation pass, then a human.
+The orchestrator RUNS the executable you author and reads its real exit code. That
+exit code is the gate: a failing test can never be a pass, and you never fabricate
+a verdict. Red triggers one bounded re-implementation pass that updates the same
+pull request, then a human.
 
 ## Behavior
 

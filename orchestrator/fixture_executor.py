@@ -11,7 +11,7 @@ a model call. ``FixtureExecutor`` is injected into the engine by constructor
 (``Engine(executor_obj=FixtureExecutor())``): it runs the engine's role closures
 in-process, and the closures branch on ``self.executor.name == "fixture"`` to route
 their PRODUCE step to the deterministic builders. The verdict path (boot the
-artifact as a subprocess, probe liveness, run the pytest acceptance gate, the
+artifact as a subprocess, probe liveness, run the acceptance gate, the
 reviewer's separate pen, the PR ladder) is identical regardless of which executor
 produced the artifact, so a test exercises the gate/reviewer/compose/PR chain
 against a deterministically built artifact, with no LLM and no live AWS.

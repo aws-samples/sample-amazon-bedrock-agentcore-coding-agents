@@ -360,7 +360,8 @@ def build_mcp_server(workdir: str, usecase_dir: str,
 
 # --------------------------------------------------------------------------- frontend build
 def build_chatbot(workdir: str, endpoint: str,
-                  agents_md_path: str | None = None) -> str:
+                  agents_md_path: str | None = None,
+                  filename: str = "chatbot.html") -> str:
     """Generate ``chatbot.html`` into ``workdir`` from the frontend AGENTS.md UI spec.
 
     The title, surfaced tool, input field/label, and example chips all come from the
@@ -398,7 +399,7 @@ async function ask(){{
 </script></body></html>
 """
     os.makedirs(workdir, exist_ok=True)
-    out = os.path.join(workdir, "chatbot.html")
+    out = os.path.join(workdir, filename)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     return out

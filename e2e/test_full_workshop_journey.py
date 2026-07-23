@@ -200,19 +200,24 @@ def _result(console, cookie, rid: str) -> dict:
 
 
 def _git_files_on(branch: str) -> set[str]:
-    """The composed deliverable file set on a run's branch.
+    """The composed deliverable file set on a run's branch, as paths RELATIVE to
+    `deliverable/`.
 
     The result payload exposes the compose via `composed_branch`/`composed_commit`
     (the local stand-in for the PR); the merged artifacts live on that branch
     in `.runs/composed/deliverable/`. Reading the git tree shows that compose
-    merged ALL routed roles' work, not just one winner's.
+    merged ALL routed roles' work, not just one winner's. Paths keep their
+    structure under `deliverable/` (so the frontend's `ui/` project reads as
+    `ui/index.html`, not a flattened `index.html`).
     """
     proc = subprocess.run(
         ["git", "-C", _COMPOSED, "ls-tree", "-r", "--name-only", branch],
         capture_output=True, text=True, timeout=20)
     if proc.returncode != 0:
         return set()
-    return {os.path.basename(p) for p in proc.stdout.split()}
+    prefix = "deliverable/"
+    return {p[len(prefix):] if p.startswith(prefix) else p
+            for p in proc.stdout.split()}
 
 
 def _git_show_on(branch: str, filename: str) -> str:
@@ -406,7 +411,7 @@ def test_05_stage1_scaffold_harness_and_deploy_upload(console, cookie):
 def test_06a_stage2_convert_routes_runs_gates_and_composes_all_three(console, cookie):
     """Submit the default convert task and assert the full orchestration contract:
     correct route, exactly the three roles dispatched, autonomous phase advance,
-    pytest gate green, LGTM (with the exact token in the critique), one iteration,
+    acceptance gate green, LGTM (with the exact token in the assessment), one iteration,
     three role terminals each with output, zero tokens/cost (local honest zero),
     and a composed deliverable that contains EVERY routed role's artifact."""
     task = ("Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server "
@@ -425,19 +430,17 @@ def test_06a_stage2_convert_routes_runs_gates_and_composes_all_three(console, co
     assert run["status"] == "passed", run
 
     res = _result(console, cookie, rid)
-    # gate: the pytest acceptance gate is green with a non-empty named check list
+    # gate: the acceptance gate is green with a non-empty named check list
     assert res["gate"]["passed"] is True
     gate_checks = {c["check"] for c in res["gate"]["checks"]}
     assert gate_checks >= {"tool_discovery", "tool_correctness", "input_validation"}, gate_checks
     assert all(c["passed"] for c in res["gate"]["checks"])
-    # review: LGTM, and the EXACT token lives in the committed critique report
+    # review: LGTM, and the EXACT token lives in the assessment the engine posts
+    # on the PR (a comment, not a committed file; offline it stays on the run)
     assert res["review"]["lgtm"] is True
     assert res["review"]["state"] == "approved"
-    critique_path = os.path.join(_WORK, rid, "critique.md")
-    assert os.path.isfile(critique_path), critique_path
-    with open(critique_path, encoding="utf-8") as f:
-        critique = f.read()
-    assert LGTM_TOKEN in critique, "the exact LGTM pass token must appear in the critique"
+    assert LGTM_TOKEN in res["review"]["assessment"], \
+        "the exact LGTM pass token must close the approving assessment"
     # bounded iteration: a clean run lands in exactly one pass
     assert res["iterations"] == 1
     # composed_from carries the roles (no winner) in dispatch order
@@ -463,14 +466,13 @@ def test_06a_stage2_convert_routes_runs_gates_and_composes_all_three(console, co
         assert p["cost_usd"] == 0, f"{agent} cost must be zero in local mode"
 
     # COLLABORATION: the composed deliverable contains EVERY role's artifact, not
-    # one winner's. backend -> mcp_server.py, frontend -> chatbot.html,
-    # reviewer -> critique.md + gate_report.json. (Reading the git tree on the
-    # run branch shows compose merged all roles' work.)
+    # one winner's. backend -> mcp_server.py, frontend -> ui/ project. The review
+    # verdict is a PR comment, never a committed file. (Reading the git tree on
+    # the run branch shows compose merged all roles' work.)
     delivered = _git_files_on(res["composed_branch"])
     assert "mcp_server.py" in delivered, f"backend artifact missing from compose: {delivered}"
-    assert "chatbot.html" in delivered, f"frontend artifact missing from compose: {delivered}"
-    assert "critique.md" in delivered, f"reviewer critique missing from compose: {delivered}"
-    assert "gate_report.json" in delivered, f"validator gate report missing: {delivered}"
+    assert any(f.startswith("ui/") for f in delivered), \
+        f"frontend ui/ project missing from compose: {delivered}"
 
 
 # 6f. ANTI-RACE: every dispatched role reached `done` (none "won" while the
@@ -484,26 +486,23 @@ def test_06f_stage2_anti_race_all_roles_done_distinct_artifacts(console, cookie)
     assert {"claude-code", "claude-code-validator", "opencode"} <= set(progress)
     for agent, p in progress.items():
         assert p["state"] == "done", f"{agent} did not finish done (race/winner?): {p}"
-    # distinct artifact paths: backend, frontend, reviewer each land their own file
+    # distinct artifact paths: backend and frontend each land their own files
     branch = f"run/{rid}"
     delivered = _git_files_on(full.get("route", {}) and branch)
-    distinct = {"mcp_server.py", "chatbot.html", "critique.md"}
-    assert distinct <= delivered, f"roles did not contribute distinct artifacts: {delivered}"
+    assert "mcp_server.py" in delivered, f"backend artifact missing: {delivered}"
+    assert any(f.startswith("ui/") for f in delivered), \
+        f"frontend ui/ project missing: {delivered}"
 
-    # NOT just three filenames, read the CONTENT off the branch and assert each is
+    # NOT just filenames, read the CONTENT off the branch and assert each is
     # the role's own output, so compose is shown to have merged actual work:
     #   backend  -> the generated MCP server imports the module live (no copied logic)
-    #   frontend -> the chatbot is UI markup wired to the endpoint via fetch()
-    #   reviewer -> the critique carries the EXACT LGTM pass token
+    #   frontend -> the ui entry point is markup wired to the endpoint via fetch()
     server_src = _git_show_on(branch, "mcp_server.py")
     assert "import cost_analyzer" in server_src, \
         "composed mcp_server.py does not import the module (compose merged a stub?)"
-    chatbot_src = _git_show_on(branch, "chatbot.html")
+    chatbot_src = _git_show_on(branch, "ui/index.html")
     assert "<!DOCTYPE html>" in chatbot_src and "tools/call" in chatbot_src \
-        and "fetch(" in chatbot_src, "composed chatbot.html is not real wired UI markup"
-    critique_src = _git_show_on(branch, "critique.md")
-    assert LGTM_TOKEN in critique_src, \
-        "composed critique.md is missing the exact LGTM pass token"
+        and "fetch(" in chatbot_src, "composed ui/index.html is not real wired UI markup"
 
 
 # 6b. DISTRIBUTION: a backend patch dispatches ONLY claude-code as a ROLE;

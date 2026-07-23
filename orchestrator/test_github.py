@@ -410,7 +410,11 @@ def test_engine_opens_pr_automatically_after_lgtm(monkeypatch, tmp_path):
         assert captured.get("called") is True, "engine did not call github.open_pr after LGTM"
         assert run.pr_url == pr_url
         assert (run.pr or {}).get("pr_url") == pr_url
-        assert "LGTM: no changes needed" in captured["report"]
+        # The PR body is now the build summary; the reviewer's verdict (with
+        # the exact LGTM token) is posted ON the PR as an Assessment comment.
+        assert "Acceptance gate" in captured["report"]
+        assert (run.review or {}).get("lgtm") is True
+        assert "LGTM: no changes needed" in (run.review or {}).get("assessment", "")
     finally:
         eng.shutdown()
 

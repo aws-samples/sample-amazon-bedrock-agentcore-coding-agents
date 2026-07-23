@@ -324,8 +324,8 @@ def test_18_stage2_submit_the_convert_task_routes_all_three(console, cookie):
 
 
 def test_19_stage2_run_reaches_passed_with_lgtm(console, cookie):
-    """The run advances autonomously to a terminal status: 'passed', the pytest gate
-    green, the review approved with the EXACT LGTM token, and a real-or-null pr_url
+    """The run advances autonomously to a terminal status: 'passed', the acceptance
+    gate green, the review approved with the EXACT LGTM token, and a real-or-null pr_url
     (null here; no GitHub credential on the local ladder)."""
     rid = STATE["run"]
     run = poll_terminal(console, cookie, rid)

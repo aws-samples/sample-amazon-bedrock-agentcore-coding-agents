@@ -3,7 +3,7 @@
 The workshop's final goal is a pull request on the attendee's own GitHub. In this
 model the ONLY GitHub credential is a **GitHub App installation**, held inside the
 GitHub MCP Runtime that fronts an IAM-authenticated AgentCore Gateway. The
-orchestrator is still the finalization actor (compose -> pytest floor -> reviewer
+orchestrator is still the finalization actor (compose -> acceptance gate -> reviewer
 LGTM -> one PR -> optional auto-merge, all in engine.py), but instead of pushing a
 run branch with a fine-grained token it calls the Gateway's GitHub MCP tools over
 SigV4:
@@ -475,6 +475,36 @@ def open_pr(run: Any, report_md: str) -> dict[str, Any]:
         return {"error": f"gateway create_pull_request returned no url: {pr!r}"}
     return {"pr_url": pr["url"], "number": pr.get("number"), "base": base,
             "default_branch": default_branch, "source": cfg["source"]}
+
+
+def update_pr(run: Any) -> dict[str, Any]:
+    """Push the freshly-composed deliverable files onto the run's EXISTING PR
+    branch (the re-implement round of the review loop). ``put_file`` is
+    create-or-update (it passes the blob sha when the file exists), so each
+    changed file lands as a new commit on the same branch and the open pull
+    request updates in place. Returns {updated, files} | {error}."""
+    cfg = _gateway_config()
+    if not cfg:
+        return {"error": "no gateway wired"}
+    branch = run.composed_branch
+    if not branch or not os.path.isdir(os.path.join(_COMPOSED, ".git")):
+        return {"error": "no composed branch to publish"}
+    owner, _, repo_name = cfg["repo"].partition("/")
+    files = _composed_files(branch)
+    if not files:
+        return {"error": "composed branch has no files to publish"}
+    for path in files:
+        content = _read_composed(branch, path)
+        if content is None:
+            continue
+        try:
+            _tool(cfg, "put_file", {"owner": owner, "repo": repo_name, "branch": branch,
+                                    "path": path, "content": content,
+                                    "message": f"{run.run_id}: re-implement round "
+                                               f"{getattr(run, 'iterations', '?')}: {path}"})
+        except GatewayError as exc:
+            return {"error": f"gateway put_file failed for {path}: {exc}"}
+    return {"updated": True, "files": files}
 
 
 def post_review(run: Any, body_md: str) -> dict[str, Any]:

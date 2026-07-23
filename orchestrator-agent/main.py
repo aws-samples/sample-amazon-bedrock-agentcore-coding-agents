@@ -15,9 +15,9 @@ directly, so the MODEL decides who runs, not a fixed fan-out.
                             (advisory: it suggests which agents a task needs).
   * ``dispatch_backend``  : run Claude Code (backend MCP server) on its Runtime.
   * ``dispatch_frontend`` : run opencode (chatbot UI) on its Runtime.
-  * ``dispatch_validator``: run Kiro (the gate spec) on its Runtime.
+  * ``dispatch_validator``: run the validator (a second Claude Code) on its Runtime.
   * ``run_build``         : the composed pipeline; dispatch the routed roles,
-                            compose, and run the pytest gate + LLM-judge review.
+                            compose, run the authored acceptance gate, and post the PR assessment.
   * ``run_status``        : read back a run's verdict, gate checks, and PR URL.
 
 The model decides the sequence: clarify if the ask is ambiguous, then either
@@ -25,7 +25,7 @@ dispatch individual agents as tools (subagents-as-tool) or call ``run_build`` fo
 the full composed pipeline. The tools do the real work by calling the same
 in-process engine the console drives: each ``dispatch_*`` submits a single-role
 run to that role's DEPLOYED Runtime. A build boots an MCP-server subprocess and
-grades it with pytest.
+grades it with the acceptance contract.
 
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs

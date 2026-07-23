@@ -110,7 +110,7 @@ def stage_usecase(run_id: str, uc: dict[str, str], region: str | None = None) ->
     skill_key = f"{_MOUNT_PREFIX}/{run_id}-skill"
     module_file = os.path.join(uc["dir"], uc["module"] + ".py")
     s3.upload_file(module_file, bucket, f"{skill_key}/{uc['module']}.py")
-    # the grading contract dir: the validator runs pytest against it.
+    # the grading contract dir: the offline floor grades against it.
     _upload_tree(s3, bucket, uc["grading"], f"{skill_key}/grading")
     # Return the in-runtime input path; the agent's output dir is the separate
     # /mnt/s3files/<run_id> prefix created at dispatch.

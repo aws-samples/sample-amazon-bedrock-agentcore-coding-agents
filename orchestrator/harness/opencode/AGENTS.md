@@ -19,11 +19,13 @@ branch, commit, and open the PR.
 ## How to build the UI
 
 Apply the `frontend-design` skill (installed for you below) to the task. It is a
-harness of principles, not a template: you decide the files, the structure, and the
-interactions. The rule that always holds, and the reason this role exists, is the
-thin-client rule: every value the user sees comes from a `tools/call` to the MCP
-endpoint; the page holds no pricing logic and no copy of the tool registry. Read the
-skill and follow it.
+harness of principles, not a template: you decide the files, the structure, the
+styling, and the interactions of a real small frontend project (an `ui/` tree with
+an `index.html` entry point plus whatever supporting files the design needs). The
+rule that always holds, and the reason this role exists, is the thin-client rule:
+every value the user sees comes from a `tools/call` to the MCP endpoint; the
+project holds no pricing logic and no copy of the tool registry. Read the skill
+and follow it.
 
 ## Rules
 
