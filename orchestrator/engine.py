@@ -1031,8 +1031,48 @@ class Engine:
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
                         with open(dest, "wb") as f:
                             f.write(data)
-        n = sum(len(files) for _, _, files in os.walk(dest_root))
+        n = self._authored_count(run, agent_id)
         run.log(f"{agent_id}: work tree read back ({n} files)")
+        return n
+
+    def _harness_installed_paths(self, agent_id: str) -> set[str]:
+        """Role-relative paths that the HARNESS put in the workspace, not the role.
+
+        ``install_harness`` copies the steering file and any ``harness:setup``
+        skills into the role's own working directory before the CLI runs, so the
+        directory is never empty by the time the role finishes. Counting those as
+        "work" made the empty-tree guard unreachable, which is the one thing that
+        must never happen: a role that wrote nothing would then reach a green gate
+        and an empty commit, and the repository has no builder to fall back on.
+        """
+        paths = {harness_config.steering_filename(agent_id), ".mcp/servers.jsonl"}
+        try:
+            src = harness_config.harness_file(agent_id)
+            setup = harness_config.parse_setup_spec(src)
+        except Exception:  # noqa: BLE001 (no steering: nothing to exclude)
+            return paths
+        for skill_path in setup.get("skills", []):
+            full = os.path.join(os.path.dirname(src), skill_path)
+            base = os.path.basename(full.rstrip(os.sep))
+            if not os.path.isdir(full):
+                continue
+            for dirpath, _dirs, files in os.walk(full):
+                for f in files:
+                    inner = os.path.relpath(os.path.join(dirpath, f), full)
+                    paths.add(os.path.join("skills", base, inner))
+        return paths
+
+    def _authored_count(self, run: Run, agent_id: str) -> int:
+        """Files in the role's tree that the ROLE wrote (harness files excluded)."""
+        root = run.roledir(agent_id)
+        installed = self._harness_installed_paths(agent_id)
+        n = 0
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                if rel.replace(os.sep, "/") not in {
+                        p.replace(os.sep, "/") for p in installed}:
+                    n += 1
         return n
 
     def _require_work(self, run: Run, agent_id: str, result: dict[str, Any]) -> int:
@@ -1043,17 +1083,35 @@ class Engine:
         signal, and a CLI that exits 0 having written nothing would otherwise sail
         through to an empty commit. A role that produced no files is a role failure,
         with the CLI output tail attached so the terminal shows why.
+
+        The count EXCLUDES the steering and skills that ``install_harness`` staged
+        into the same directory. Counting them made this guard dead code: every
+        role's directory already held at least the steering file, so ``n == 0``
+        could not happen and a silent no-op role passed as a builder.
         """
         tail = "\n".join(result.get("lines", []))[-600:]
         if result.get("exit") not in (0, None):
             raise RuntimeError(
                 f"ROLE_EXECUTION_ERROR: {agent_id} exited {result['exit']}; "
                 f"tail:\n{tail}")
+        return self._require_tree_nonempty(run, agent_id, tail)
+
+    def _require_tree_nonempty(self, run: Run, agent_id: str,
+                               tail: str = "") -> int:
+        """Read the tree back and RAISE if the role authored nothing.
+
+        Separate from ``_require_work`` so the BUILDER CLOSURES can enforce it
+        directly. They used to call ``_read_work_tree``, which only counts, so the
+        guard depended on whichever producer happened to run underneath; that left
+        the enforcement dependent on the execution seam rather than on the rule.
+        Emptiness is a role failure regardless of how the role was executed.
+        """
         n = self._read_work_tree(run, agent_id)
         if n == 0:
+            suffix = f"; tail:\n{tail}" if tail else ""
             raise RuntimeError(
                 f"ROLE_EXECUTION_ERROR: {agent_id} finished but wrote no files, so "
-                f"there is nothing to review or run; tail:\n{tail}")
+                f"there is nothing to review or run{suffix}")
         return n
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
@@ -1235,7 +1293,9 @@ class Engine:
                 self.executor.produce(run, role.agent, role)
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
-            n = self._read_work_tree(run, role.agent)
+            # RAISES on an empty tree, whatever produced it: a builder that wrote
+            # nothing is a role failure, never a builder that "built" something.
+            n = self._require_tree_nonempty(run, role.agent)
             role.note = f"built the backend side of this request ({n} files)"
             run.log(f"backend: wrote {n} files; the validator's check decides whether "
                     "they answer the request")
@@ -1278,7 +1338,7 @@ class Engine:
                 self.executor.produce(run, role.agent, role)
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
-            n = self._read_work_tree(run, role.agent)
+            n = self._require_tree_nonempty(run, role.agent)
             role.note = f"built the interface this request asked for ({n} files)"
             run.log(f"frontend: wrote {n} files; the validator's check decides whether "
                     "they answer the request")
@@ -1441,8 +1501,16 @@ class Engine:
                                        f"{target.composed_branch or 'n/a'})'")
             authored = getattr(run, "_acceptance_test_file", None)
             if authored:
+                # SHOW the check, do not run it here. `reviewer.run_gate` below is
+                # the one execution whose exit code is the verdict, and it is
+                # hardened for a check that starts a service (temp-file sink,
+                # own process group, group teardown). `run.term` reads through a
+                # PIPE with a 60s cap, so running the check here would inherit
+                # that pipe into any service the check starts and block until the
+                # cap: a passing check displayed as a timeout, and 60s added to
+                # every review run for a terminal line nobody needs.
                 run.term(_validator_agent(),
-                         f"WORKSHOP_WORK_DIR={target.workdir} {json.dumps(authored)}")
+                         f"head -1 {json.dumps(authored)} && wc -l {json.dumps(authored)}")
         if role:
             role.state = "done"
             role.latency_ms = int((time.monotonic() - t0) * 1000)

@@ -297,27 +297,59 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
             "assessment": str(parsed.get("assessment") or "").strip()}
 
 
+_MAX_JUDGE_FILES = 40
+
+
 def _artifact_files(run: Any) -> list[tuple[str, str]]:
-    """(label, path) for every reviewable artifact the run produced."""
+    """(label, path) for every reviewable artifact the run produced.
+
+    READS THE TREE, names nothing. This used to look for `_server_file`,
+    `_ui_dir`, and `_chatbot_file`, attributes from the deleted fixed-shape design
+    that nothing has set since; the engine never assigned them, so the judge only
+    ever saw the authored check and reviewed a pull request whose deliverable it
+    had not read. It also labelled one of them `mcp_server.py`, a filename this
+    design abolished.
+
+    So walk each role's own directory, exactly as compose does: whatever the roles
+    wrote IS the deliverable, and the reviewer must see it to review it.
+    """
     files: list[tuple[str, str]] = []
-    server = getattr(run, "_server_file", None)
-    if server:
-        files.append(("backend server (mcp_server.py)", server))
     authored = getattr(run, "_acceptance_test_file", None)
     if authored:
-        files.append(("validator-authored acceptance_test.py", authored))
-    ui_dir = getattr(run, "_ui_dir", None)
-    if ui_dir and os.path.isdir(ui_dir):
-        for dp, dns, fns in os.walk(ui_dir):
-            dns[:] = sorted(d for d in dns if not d.startswith("."))
-            for fn in sorted(fns):
-                full = os.path.join(dp, fn)
-                rel = os.path.relpath(full, ui_dir)
-                files.append((f"ui/{rel}", full))
-    else:
-        page = getattr(run, "_chatbot_file", None)
-        if page:
-            files.append(("ui page", page))
+        files.append(("the validator's authored acceptance check", authored))
+
+    seen = {os.path.abspath(authored)} if authored else set()
+    for agent_id in (getattr(run, "agents", None) or []):
+        try:
+            root = run.roledir(agent_id)
+        except Exception:  # noqa: BLE001 (a run without a workdir has no files)
+            continue
+        if not os.path.isdir(root):
+            continue
+        # The harness (steering + installed skills) is OUR text, not the agent's
+        # work. Showing it to the judge spends prompt on instructions it already
+        # has and invites it to review the workshop instead of the deliverable.
+        skip = {"CLAUDE.md", "AGENTS.md"}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames
+                                 if not d.startswith(".") and d != "__pycache__"
+                                 and not (dirpath == root and d == "skills"))
+            for fn in sorted(filenames):
+                if dirpath == root and fn in skip:
+                    continue
+                full = os.path.join(dirpath, fn)
+                if os.path.abspath(full) in seen:
+                    continue
+                seen.add(os.path.abspath(full))
+                rel = os.path.relpath(full, root)
+                files.append((f"{agent_id}/{rel}", full))
+                if len(files) >= _MAX_JUDGE_FILES:
+                    # Bounded so one enormous tree cannot blow the prompt. Say so
+                    # rather than truncating silently: the judge is fail-open, and
+                    # a partial read must not look like a complete one.
+                    files.append((f"NOTE: only the first {_MAX_JUDGE_FILES} files "
+                                  "of the deliverable are shown", ""))
+                    return files
     return files
 
 
