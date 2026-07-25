@@ -58,7 +58,7 @@ BLUEPRINT_PHASES = [
 ALL_THREE = {"claude-code", "claude-code-validator", "opencode"}
 
 
-def submit(console, cookie, task=None, workflow_ref=None, attempts: int = 60) -> dict:
+def submit(console, cookie, task=None, preset=None, agents=None, attempts: int = 60) -> dict:
     """Submit a run that actually gets a slot, retrying on the concurrency cap.
 
     The suite shares ONE engine with a concurrency cap (max_concurrent=3), and
@@ -74,8 +74,13 @@ def submit(console, cookie, task=None, workflow_ref=None, attempts: int = 60) ->
     status that is NOT the concurrency reject (a legitimate fail-loud the caller
     wants to assert on).
     """
+    # Roles are never guessed: a submit with neither preset nor agents fails loud by
+    # design. These tests are about the run LIFECYCLE, not about routing, so default to
+    # the full roster and let test_stage2_presets.py own the routing contract.
+    if preset is None and agents is None:
+        agents = sorted(ALL_THREE)
     for _ in range(attempts):
-        run = submit_run(console, cookie, task=task, workflow_ref=workflow_ref)
+        run = submit_run(console, cookie, task=task, preset=preset, agents=agents)
         rid = run["run_id"]
         for _ in range(60):
             _, r = req(console, "GET", f"/api/orchestrator/runs/{rid}", headers=cookie)
@@ -105,124 +110,6 @@ def _detail(console, cookie, rid: str) -> dict:
 def _terminals(console, cookie, rid: str) -> dict:
     _, terms = req(console, "GET", f"/api/orchestrator/runs/{rid}/terminals", headers=cookie)
     return terms["terminals"]
-
-
-# --------------------------------------------------------------------------- #
-# Workflow registry + roster (what the chat surface renders before a submit).
-# --------------------------------------------------------------------------- #
-def test_workflows_registry_lists_all_five_refs(console, cookie):
-    """Attendee opens the workflow picker: GET /workflows returns the five
-    versioned descriptors the router can route to."""
-    _, body = req(console, "GET", "/api/orchestrator/workflows", headers=cookie)
-    refs = {w["workflow_ref"] for w in body["workflows"]}
-    assert refs == {"convert/sample-to-mcp-v1", "build/fullstack-v1",
-                    "patch/backend-v1", "patch/frontend-v1", "review/pr-v1"}, refs
-    for w in body["workflows"]:
-        assert set(w) >= {"workflow_ref", "version", "agents", "usecase",
-                          "read_only", "description"}, w
-        assert isinstance(w["agents"], list) and w["agents"]
-
-
-def test_review_workflow_is_the_only_read_only_one(console, cookie):
-    """The registry marks exactly review/pr-v1 read_only: the workflow that must
-    never produce a new artifact."""
-    _, body = req(console, "GET", "/api/orchestrator/workflows", headers=cookie)
-    read_only = {w["workflow_ref"] for w in body["workflows"] if w["read_only"]}
-    assert read_only == {"review/pr-v1"}, read_only
-
-
-def test_orchestrator_exposes_its_three_roles(console, cookie):
-    """The chat surface shows the orchestrator's three composed roles (not a
-    competition roster); GET /api/orchestrator/agents lists exactly the three."""
-    _, body = req(console, "GET", "/api/orchestrator/agents", headers=cookie)
-    ids = {a["id"] for a in body["agents"]}
-    assert ids == set(SUPPORTED_AGENTS), ids
-
-
-# --------------------------------------------------------------------------- #
-# Submit + route (the router's verdict attaches on the worker).
-# --------------------------------------------------------------------------- #
-def test_submit_convert_returns_queued_run(console, cookie):
-    """Attendee submits a convert task: POST /runs accepts it and returns a run
-    record carrying its id, task, and an initial (non-terminal) status/phase."""
-    run = submit(console, cookie,
-                     "Convert the cost_analyzer module to a remote MCP server")
-    assert run["run_id"].startswith("run_"), run
-    assert run["task"], run
-    assert run["status"] in ("queued", "running"), run
-    assert run["phase"] in BLUEPRINT_PHASES, run
-
-
-def test_convert_routes_to_full_workflow_all_three_roles(console, cookie):
-    """A convert task routes to convert/sample-to-mcp-v1 with all three roles:
-    the COMPLEX path of the router's complexity check."""
-    run = submit(console, cookie,
-                     "Convert the cost_analyzer module into an MCP server with a UI")
-    route = poll_route(console, cookie, run["run_id"])
-    assert route["workflow_ref"] == "convert/sample-to-mcp-v1", route
-    assert set(route["agents"]) == ALL_THREE, route
-    assert route["usecase"] == "sample-to-mcp", route
-    assert route["read_only"] is False, route
-
-
-def test_explicit_workflow_ref_is_honored(console, cookie):
-    """Attendee picks a workflow explicitly: workflow_ref drives the route past
-    the intent ladder (validated against the registry)."""
-    run = submit(console, cookie, task="anything", workflow_ref="patch/frontend-v1")
-    route = poll_route(console, cookie, run["run_id"])
-    assert route["workflow_ref"] == "patch/frontend-v1", route
-    assert route["agents"] == ["opencode"], route
-
-
-def test_unknown_workflow_ref_fails_loud(console, cookie):
-    """An unknown explicit workflow_ref fails loud (a terminal failure with the
-    UNKNOWN_WORKFLOW reason); never a silent guess."""
-    run = submit(console, cookie, task="do something", workflow_ref="bogus/ref-v9")
-    final = poll_terminal(console, cookie, run["run_id"])
-    assert final["status"] in TERMINAL_STATUSES, final
-    res = _result(console, cookie, run["run_id"])
-    assert "UNKNOWN_WORKFLOW" in (res.get("fail_reason") or ""), res
-
-
-def test_use_opencode_intent_routes_frontend_only(console, cookie):
-    """Explicit agent intent 'use opencode' routes to patch/frontend-v1; opencode is
-    the only dispatched role."""
-    run = submit(console, cookie, "use opencode to restyle the chatbot header")
-    route = poll_route(console, cookie, run["run_id"])
-    assert route["workflow_ref"] == "patch/frontend-v1", route
-    assert route["agents"] == ["opencode"], route
-
-
-def test_use_kiro_intent_routes_review_only(console, cookie):
-    """Explicit agent intent 'use kiro' routes to review/pr-v1: the validator
-    role only, read-only."""
-    run = submit(console, cookie, "use kiro to validate the contract")
-    route = poll_route(console, cookie, run["run_id"])
-    assert route["workflow_ref"] == "review/pr-v1", route
-    assert route["agents"] == ["claude-code-validator"], route
-    assert route["read_only"] is True, route
-
-
-def test_patch_intent_routes_backend_only(console, cookie):
-    """A patch-sized request routes to patch/backend-v1: the SIMPLE path, backend
-    role only, no frontend dispatched."""
-    run = submit(console, cookie, "fix the server version string to v2")
-    route = poll_route(console, cookie, run["run_id"])
-    assert route["workflow_ref"] == "patch/backend-v1", route
-    assert route["agents"] == ["claude-code"], route
-
-
-def test_fullstack_intent_routes_critter_all_three(console, cookie):
-    """Full-stack / Critter phrasing routes to build/fullstack-v1: the critter
-    usecase, all three roles."""
-    run = submit(console, cookie,
-                     "Build the full-stack Critter Lab app: backend and frontend")
-    route = poll_route(console, cookie, run["run_id"])
-    assert route["workflow_ref"] == "build/fullstack-v1", route
-    assert set(route["agents"]) == ALL_THREE, route
-    assert route["usecase"] == "critter-lab", route
-
-
 # --------------------------------------------------------------------------- #
 # Lifecycle: poll to terminal "passed", phase progression, gate, LGTM, compose.
 # --------------------------------------------------------------------------- #
@@ -230,7 +117,7 @@ def test_convert_reaches_passed_terminal(console, cookie):
     """The headline action: a submitted convert task is fire-and-forget and polls
     to terminal status 'passed' (the deterministic pytest gate is green)."""
     run = submit(console, cookie,
-                     "Convert cost_analyzer to a remote MCP server with tests + UI")
+                     "Build a remote MCP server with tests + UI")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
     assert final["phase"] == "finalization", final
@@ -244,7 +131,7 @@ def test_run_detail_carries_route_and_phase(console, cookie):
     poll_route(console, cookie, rid)
     full = _detail(console, cookie, rid)
     assert full["run_id"] == rid, full
-    assert full["route"] and full["route"]["workflow_ref"], full
+    assert full["route"] and full["route"]["preset"], full
     assert full["phase"] in BLUEPRINT_PHASES, full
     assert "roles" in full and "agents" in full, full
 
@@ -252,7 +139,7 @@ def test_run_detail_carries_route_and_phase(console, cookie):
 def test_terminal_run_lands_in_final_blueprint_phase(console, cookie):
     """A run that reaches a terminal status has progressed through the blueprint to
     its final phase: admission/hydration/pre-flight/execution/finalization."""
-    run = submit(console, cookie, "Convert cost_analyzer to an MCP server")
+    run = submit(console, cookie, "Build an MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     # a passed convert finalizes; any terminal phase is one of the five real ones.
     assert final["phase"] in BLUEPRINT_PHASES, final
@@ -264,7 +151,7 @@ def test_passed_run_gate_is_green(console, cookie):
     """The acceptance gate is a real execution (the in-process grading floor on the
     fixture path), not an LLM: a passed convert run's result reports gate.passed True
     with at least one check."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
     res = _result(console, cookie, run["run_id"])
@@ -278,7 +165,7 @@ def test_reviewer_emits_exactly_the_lgtm_token(console, cookie):
     assessment the engine posts on the PR closes with `LGTM: no changes needed`
     verbatim. The verdict is a PR comment (carried on run.review["assessment"]),
     NOT a committed critique file."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     rid = run["run_id"]
     final = poll_terminal(console, cookie, rid)
     assert final["status"] == "passed", final
@@ -293,11 +180,14 @@ def test_reviewer_emits_exactly_the_lgtm_token(console, cookie):
 def test_composed_from_carries_roles_not_a_winner(console, cookie):
     """NO race / NO winner: the result composes the dispatched roles into ONE
     deliverable; composed_from is the role list, never a single winner."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
     res = _result(console, cookie, run["run_id"])
-    assert res["composed_from"] == ["backend-mcp", "validator", "frontend-builder"], res
+    # The registry's order (builders, then checker), not a pinned roster literal.
+    import roles as _roles
+    assert res["composed_from"] == [
+        _roles.get(a).role_name for a in _roles.roster_ids()], res
     # a passed build composes a real local git branch + commit (the PR's stand-in).
     assert res["composed_branch"] and res["composed_branch"].startswith("run/"), res
     assert res["composed_commit"], res
@@ -306,7 +196,7 @@ def test_composed_from_carries_roles_not_a_winner(console, cookie):
 def test_passed_run_bounded_to_one_iteration(console, cookie):
     """A clean convert passes on the first build round: bounded iteration means
     iterations == 1 (no re-implement pass needed)."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
     res = _result(console, cookie, run["run_id"])
@@ -320,7 +210,7 @@ def test_pr_url_is_null_without_github_credentials(console, cookie):
     """pr_url is real-or-null, never fake: with no GitHub credential connected (the
     test server's honest state) the run composes the branch locally, the PR step
     fails loud (a typed error, no fake URL), and pr_url is null."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
     res = _result(console, cookie, run["run_id"])
@@ -342,7 +232,7 @@ def test_github_status_reports_disconnected(console, cookie):
 def test_convert_has_a_pane_for_each_of_three_roles(console, cookie):
     """The full convert routes all three roles, so the chat surface gets exactly
     three per-role terminal panes, each with transcript output."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     rid = run["run_id"]
     poll_terminal(console, cookie, rid)
     terms = _terminals(console, cookie, rid)
@@ -350,36 +240,42 @@ def test_convert_has_a_pane_for_each_of_three_roles(console, cookie):
     assert all(terms[a] for a in terms), terms
 
 
-def test_backend_patch_has_no_kiro_or_opencode_pane(console, cookie):
-    """Routed-roles-only: a backend patch dispatches just claude-code, so there is
-    NO kiro and NO opencode terminal pane (the review verdict lives in the run log)."""
-    run = submit(console, cookie, "fix the server version string to v2")
+def test_backend_run_gives_the_frontend_no_pane(console, cookie):
+    """Routed-roles-only: a backend-plus-checker run gives the frontend NO pane."""
+    run = submit(console, cookie, "fix the version string",
+                 agents=["claude-code", "claude-code-validator"])
     rid = run["run_id"]
     route = poll_route(console, cookie, rid)
-    assert route["agents"] == ["claude-code"], route
+    assert route["agents"] == ["claude-code", "claude-code-validator"], route
     poll_terminal(console, cookie, rid)
     terms = _terminals(console, cookie, rid)
     assert "claude-code" in terms, list(terms)
-    assert "claude-code-validator" not in terms, f"review pane fabricated on a backend patch: {list(terms)}"
+    # The checker is routed on every build, so its pane is REAL here. What must never
+    # appear is a pane for a role the router did NOT dispatch (the frontend).
     assert "opencode" not in terms, f"frontend ran on a backend patch: {list(terms)}"
 
 
 def test_backend_patch_progress_is_single_role_no_cancel(console, cookie):
     """A routed single-role run has NO competitor to cancel: progress holds only
     the dispatched role and no row is in a 'cancelled' (race-artifact) state."""
-    run = submit(console, cookie, "fix the version string in mcp_server.py")
+    run = submit(console, cookie, "fix the version string",
+                 agents=["claude-code", "claude-code-validator"])
     rid = run["run_id"]
     poll_terminal(console, cookie, rid)
     full = _detail(console, cookie, rid)
-    assert full["roles"] == {"claude-code": "backend-mcp"}, full["roles"]
-    assert {p["agent"] for p in full["progress"]} == {"claude-code"}, full["progress"]
+    import roles as _roles
+    assert full["roles"] == {a: _roles.get(a).role_name
+                             for a in ("claude-code", "claude-code-validator")}, full["roles"]
+    assert {p["agent"] for p in full["progress"]} == {
+        "claude-code", "claude-code-validator"}, full["progress"]
     assert not any(p["state"] == "cancelled" for p in full["progress"]), full["progress"]
 
 
 def test_frontend_patch_dispatches_only_opencode(console, cookie):
     """A frontend restyle dispatches ONLY opencode: opencode has a pane, claude-code (a
     backend role) does not; the engine's infra endpoint is not a dispatched role."""
-    run = submit(console, cookie, "use opencode to restyle the chatbot header")
+    run = submit(console, cookie, "restyle the header",
+                 agents=["opencode", "claude-code-validator"])
     rid = run["run_id"]
     poll_terminal(console, cookie, rid)
     terms = _terminals(console, cookie, rid)
@@ -391,16 +287,16 @@ def test_frontend_patch_dispatches_only_opencode(console, cookie):
 # Read-only review: composes nothing new.
 # --------------------------------------------------------------------------- #
 def test_review_run_composes_no_new_deliverable(console, cookie):
-    """Read-only review/pr-v1 produces NO new deliverable: it needs a prior passed
-    build to review, then composed_commit stays null and pr_url is null."""
+    """A read-only review produces NO new deliverable: it needs a prior passed build
+    to review, then composed_commit stays null and pr_url is null."""
     # seed a build the review can target.
-    seed = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    seed = submit(console, cookie, "build any small thing")
     assert poll_terminal(console, cookie, seed["run_id"])["status"] == "passed"
 
-    run = submit(console, cookie, "use kiro to review the last run")
+    run = submit(console, cookie, preset="review-a-run")
     rid = run["run_id"]
     route = poll_route(console, cookie, rid)
-    assert route["workflow_ref"] == "review/pr-v1" and route["read_only"] is True, route
+    assert route["preset"] == "review-a-run" and route["read_only"] is True, route
     final = poll_terminal(console, cookie, rid)
     assert final["status"] in TERMINAL_STATUSES, final
     if final["status"] == "passed":
@@ -428,16 +324,20 @@ def test_fullstack_lands_three_distinct_role_artifacts(console, cookie):
     if final["status"] != "passed":
         return  # a non-passed full-stack run does not compose; nothing to assert here
     res = _result(console, cookie, rid)
-    assert res["composed_from"] == ["backend-mcp", "validator", "frontend-builder"], res
+    # The registry's order (builders, then checker), not a pinned roster literal.
+    import roles as _roles
+    assert res["composed_from"] == [
+        _roles.get(a).role_name for a in _roles.roster_ids()], res
     # the three role panes each ran (the three artifacts trace to three roles).
     terms = _terminals(console, cookie, rid)
     assert set(terms) == ALL_THREE, list(terms)
     # the deliverable composed a real commit on a per-run branch.
     assert res["composed_branch"] == f"run/{rid}", res
     assert res["composed_commit"], res
-    # the gate references the critter contract (card_renders is unique to it).
-    gate_checks = {c["check"] for c in res["gate"]["checks"]}
-    assert "card_renders" in gate_checks, gate_checks
+    # the gate ran the validator's authored check and reported a real result.
+    # No check ID is asserted: the validator names its own checks per task.
+    assert res["gate"]["checks"], res["gate"]
+    assert res["gate"].get("summary"), res["gate"]
 
 
 # --------------------------------------------------------------------------- #
@@ -446,7 +346,7 @@ def test_fullstack_lands_three_distinct_role_artifacts(console, cookie):
 def test_local_mode_reports_honest_zero_usage(console, cookie):
     """Local engine mode invokes no model: every role's progress reports zero
     tokens and zero cost (honest zero, never an inferred figure)."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     rid = run["run_id"]
     poll_terminal(console, cookie, rid)
     full = _detail(console, cookie, rid)
@@ -462,7 +362,7 @@ def test_local_mode_reports_honest_zero_usage(console, cookie):
 def test_runs_list_contains_submitted_run(console, cookie):
     """GET /runs (the run-history rail) lists the run an attendee just submitted,
     as a structured record with id/task/status."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     rid = run["run_id"]
     poll_terminal(console, cookie, rid)
     _, body = req(console, "GET", "/api/orchestrator/runs", headers=cookie)
@@ -477,7 +377,7 @@ def test_runs_list_contains_submitted_run(console, cookie):
 def test_result_before_terminal_is_409(console, cookie):
     """The result endpoint is gated: GET /runs/{id}/result on a still-running run
     returns 409 with the live status/phase (a poller never reads a half-result)."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     rid = run["run_id"]
     # the result is only well-formed once terminal; while running it must 409.
     # (best-effort: if the local run finishes instantly we still assert the shape.)
@@ -504,7 +404,8 @@ def test_unknown_run_id_is_404(console, cookie):
 def test_empty_task_fails_admission_loud(console, cookie):
     """An empty task is rejected at admission as a terminal failure with the
     EMPTY_TASK reason: fail-closed, never a silent default build."""
-    run = submit(console, cookie, task="   ")
+    run = submit(console, cookie, task="   ",
+                 agents=["claude-code", "claude-code-validator"])
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] in TERMINAL_STATUSES, final
     res = _result(console, cookie, run["run_id"])
@@ -554,7 +455,7 @@ def test_run_surfaces_merge_state_human_review_without_credential(console, cooki
     """A finished run reports merge_state. With no GitHub credential the PR is
     skipped, so the run settles on the safe human_review end-state, never a fake
     auto-merge."""
-    run = submit(console, cookie, "Convert cost_analyzer to a remote MCP server")
+    run = submit(console, cookie, "Build a remote MCP server")
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "passed", final
     res = _result(console, cookie, run["run_id"])

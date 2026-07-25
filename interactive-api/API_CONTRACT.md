@@ -1,18 +1,18 @@
 # Interactive API: FROZEN CONTRACT (Stage 1, Connect layer)
 
 > Stage 1 backend (Aravind). The connection API for the **Interactive** stage: deploy ONE
-> coding agent on Runtime, open an interactive shell into its live microVM, run commands, and
-> do a single module-to-MCP conversion by hand. Same contract-first discipline as Stage 2
-> (`../orchestrator/API_CONTRACT.md`): the console (Build) builds against this, the local
-> implementation (`interactive_api.py`, workspaces, subprocesses) returns it today, the
-> AgentCore wiring (`connect.py` / `InvokeAgentRuntimeCommandShell` over a SigV4 WebSocket
-> PTY) returns it later, unchanged.
+> coding agent on Runtime, open an interactive shell into its live microVM, and run commands.
+> Same contract-first discipline as Stage 2 (`../orchestrator/API_CONTRACT.md`): the console
+> (Build) builds against this, the local implementation (`interactive_api.py`, workspaces,
+> subprocesses) returns it today, the AgentCore wiring (`connect.py` /
+> `InvokeAgentRuntimeCommandShell` over a SigV4 WebSocket PTY) returns it later, unchanged.
 
 Base URL (local engine): `http://localhost:8091`. JSON bodies. CORS open.
 
 Grounded in the reference harness `coding-agents/claude-code/` (`deploy.py`, `connect.py`, `run.sh`).
-The teaching arc this API serves: **deploy → open shell → run a command → convert one module →
-verify `tools/list`.** One agent, by hand. No orchestration (that's Stage 2).
+The teaching arc this API serves: **deploy → open shell → run commands in the agent's environment.**
+One agent, by hand. No orchestration (that's Stage 2). The S3 Files mount starts empty; the
+attendee types any request into the agent's live terminal.
 
 ---
 
@@ -40,21 +40,8 @@ verify `tools/list`.** One agent, by hand. No orchestration (that's Stage 2).
   "workspace": "/mnt/s3files",         // persistent (S3 Files @ /mnt/s3files)
   "cwd": "/mnt/s3files",
   "history": [                       // most-recent-last command/output pairs
-    {"input": "ls /mnt/s3files", "output": "README.md  cost_analyzer.py"}
+    {"input": "ls /mnt/s3files", "output": "README.md  my-notes.md"}
   ]
-}
-```
-
-### ConversionResult (the Stage 1 payoff: one module function -> one MCP tool, by hand)
-```json
-{
-  "session_id": "sess_0001",
-  "sample_file": "/mnt/s3files/sample/cost_analyzer.py",
-  "server_file": "/mnt/s3files/mcp_server.py",
-  "tool": "estimate_ec2_monthly_cost",
-  "tools_list": [ { "name": "...", "description": "...", "inputSchema": {} } ],
-  "sample_call": {"args": {"instance_type": "m5.large", "count": 2}, "result": {"monthly_cost": 140.16, "currency": "USD"}},
-  "verified": true                   // tools/list shows the tool AND the sample call returns the fixture value
 }
 ```
 
@@ -91,11 +78,6 @@ State persists across inputs (env, cwd, files in `/mnt/s3files`); that's the Run
 ### `GET /api/sessions/{session_id}`  (session state + recent output buffer)
 Returns a **Session** (with `history`).
 
-### `POST /api/sessions/{session_id}/convert-skill`  (the by-hand module-to-MCP conversion)
-The Stage 1 payoff. Request (optional): `{"tool":"estimate_ec2_monthly_cost"}` (defaults to it).
-Inside the shell, the agent wraps ONE `cost_analyzer` function as a minimal FastMCP tool and
-proves it discoverable. Response `200` → a **ConversionResult**.
-
 ### `GET /api/sessions/{session_id}/tools`  (tools/list of the agent's MCP server)
 Response `200 {"tools":[ ... ]}` (empty until a conversion has run).
 
@@ -128,12 +110,10 @@ Response `200 {"session_id":"...","status":"closed"}`.
 deploy agent -> deploying -> ready          (deploy.py finishes; endpoint READY)
 open session -> booting -> open             (connect.py attaches; healthcheck :8080 green)
 run input(s) -> output, state persists      (interactive shell while the agent runs)
-convert-skill -> ConversionResult           (one function -> one MCP tool, tools/list verified)
 close session -> closed                     (microVM stops; /mnt/s3files survives)
 ```
 
 ## Rules the real implementation must keep (so the console never breaks)
 1. Don't change a field name or status enum without editing THIS file + telling the group.
-2. A session can only open on a `ready` agent. `convert-skill` only succeeds on an `open` session.
-3. Pricing in any `result` is the illustrative `cost_analyzer` fixture (e.g. `140.16`), NOT live AWS pricing.
-4. This stage is **one agent, by hand**: no fan-out, no grading, no PR. That's Stage 2.
+2. A session can only open on a `ready` agent.
+3. This stage is **one agent, by hand**: no fan-out, no grading, no PR. That's Stage 2.

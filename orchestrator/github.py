@@ -377,9 +377,9 @@ def _composed_files(branch: str) -> list[str]:
     """The repo-relative paths the compose commit introduced on ``branch``.
 
     The compose base is an empty scratch repo, so the branch's commit contains
-    exactly the deliverable files (deliverable/mcp_server.py, deliverable/
-    critique.md, deliverable/gate_report.json, and deliverable/chatbot.html when a
-    frontend role ran)."""
+    exactly this run's deliverable: each routed role's own tree under its own
+    directory, at the paths the AGENTS chose, plus the validator's authored check at
+    the root. Nothing here knows those names in advance."""
     r = subprocess.run(
         ["git", "-C", _COMPOSED, "show", "--pretty=format:", "--name-only", branch],
         capture_output=True, text=True, timeout=20, env=_git_env())

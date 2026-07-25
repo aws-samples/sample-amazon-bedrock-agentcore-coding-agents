@@ -1,6 +1,6 @@
 """Stage the build engine into this directory so the container is self-contained.
 
-`main.py` dispatches to the engine in `orchestrator/` (router, engine, reviewer,
+`main.py` dispatches to the engine in `orchestrator/` (presets, engine, reviewer,
 …). In the repo that code is one level up (`../orchestrator`); the container build
 uses THIS directory as its context, so before `agentcore dev` or `agentcore deploy` we copy those modules in as
 a co-located `orchestrator/` package. `main.py` already resolves either layout, so
@@ -26,9 +26,9 @@ _DST = os.path.join(_HERE, "orchestrator")
 # The shipped engine produces artifacts by dispatching each role to its deployed
 # Runtime (runtime_exec/runtime_stage), so those ship; there is no in-process
 # CLI/Strands producer to bundle.
-_MODULES = ("engine.py", "router.py", "reviewer.py", "llm.py", "chat.py",
+_MODULES = ("engine.py", "presets.py", "reviewer.py", "llm.py", "chat.py",
             "runtime_exec.py", "runtime_stage.py", "runtime_config.py",
-            "github.py", "builders.py", "executor.py", "policy.py",
+            "github.py", "harness_config.py", "executor.py", "policy.py",
             "identity_baggage.py", "peruser.py")
 
 
@@ -52,19 +52,9 @@ def stage() -> list[str]:
         shutil.rmtree(harness_dst, ignore_errors=True)
         shutil.copytree(harness_src, harness_dst)
         copied.append("harness/")
-    # The usecase module packages + their grading contracts (router resolves these
-    # off WORKSHOP_REPO_ROOT). Stage them under the bundle so a deployed runtime
-    # is self-contained; main.py points WORKSHOP_REPO_ROOT at the bundle.
-    # usecase packages are siblings of this orchestrator-agent directory in the
-    # single repository tree, like ../orchestrator above.
-    for uc in ("usecase-sample-to-mcp", "usecase-critter-lab"):
-        uc_src = os.path.abspath(os.path.join(_HERE, "..", uc))
-        if os.path.isdir(uc_src):
-            uc_dst = os.path.join(_HERE, uc)
-            shutil.rmtree(uc_dst, ignore_errors=True)
-            shutil.copytree(uc_src, uc_dst,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
-            copied.append(f"{uc}/")
+    # Nothing else ships. There is no sample module and no grading contract to bundle:
+    # the request is whatever the attendee types, and the acceptance check is authored
+    # per run by the validator role inside its own container.
     return copied
 
 

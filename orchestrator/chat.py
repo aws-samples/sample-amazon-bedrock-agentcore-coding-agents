@@ -24,7 +24,8 @@ from typing import Any, Iterator
 
 import engine as _engine          # the in-process build engine
 import policy as _policy          # the guardrail exec_command is screened against
-import router as _router          # the deterministic route ladder (advisory here)
+import presets as _presets        # role selection (never task classification)
+import roles as _roles            # the ONE declarative roster (configurable)
 
 # One engine instance backs every conversation in this process. REAL-ONLY: it
 # dispatches each routed role to its DEPLOYED AgentCore Runtime; a role with no
@@ -41,22 +42,17 @@ def use_engine(engine: Any) -> None:
     global ENGINE
     ENGINE = engine
 
-# Roles the dispatch_* tools target, by agent id. The validator is a second
-# Claude Code (steered by the acceptance contract) since Kiro was retired.
-_BACKEND, _FRONTEND, _VALIDATOR = "claude-code", "opencode", "claude-code-validator"
-
 SYSTEM_PROMPT = """\
 You are the orchestrator for a multi-agent coding harness, a chatbot the user \
 talks to. Hold a normal conversation: answer questions, explain what you can do, \
 and only build when the user actually asks you to.
 
-## Your agents (deployed on their own AgentCore Runtimes, called AS TOOLS)
-- dispatch_backend, Claude Code: the backend MCP server (wraps the module).
-- dispatch_frontend, opencode: the chatbot UI on top of that server.
-- dispatch_validator, Claude Code (validator): runs the acceptance gate that \
-defines "done".
-Each type is a FLEET, not one agent; you dispatch to a TYPE and the runtime picks \
-an instance. You never address one instance.
+## Your agents
+They are listed below under "Your roster", generated from the roles this \
+deployment actually serves and wires. Each is a coding agent deployed on its own \
+AgentCore Runtime and called AS A TOOL. Each type is a FLEET, not one agent; you \
+dispatch to a TYPE and the runtime picks an instance. You never address one \
+instance, and you never assume a role that is not in your tool list exists.
 
 ## Converse first: do not dispatch on a greeting or a question
 If the user greets you, asks what you do, or asks a question, reply in words. Do \
@@ -83,20 +79,22 @@ Dispatch only when the ask is unambiguous.
 - Focused single-role job (rebuild the UI, patch the backend): call the matching \
 dispatch_* tool. It returns a run id immediately and the build runs in the \
 background. State that it started and which agent owns it.
-- Full build that must be composed and graded: call run_build(task). It dispatches \
-the routed roles, composes their work, and runs the validator-authored acceptance gate plus a \
-separate review pass. Pass the user's request text VERBATIM as task: the router \
-keys on the user's own wording, and a paraphrase can flip the route to the wrong \
-workflow or the wrong sample use case.
-Call route_task(task) first if unsure which agents a task needs; it is advisory.
+- Full build that must be composed and graded: call run_build(task). Every role on \
+your roster works, their output composes into one deliverable, the checker's \
+authored check gates it, and a separate review pass posts an assessment on the pull \
+request. Pass the user's request text VERBATIM as task. It can be ANY request: \
+nothing classifies it and nothing maps it to a sample, so there is no wording to \
+get right.
+If the user has no idea yet, call list_presets() and offer one; those are example \
+starting points, not a limit on what can be built.
 
 ## If a build fails or reaches needs_human, RESUBMIT the same build, do not improvise
 When a run reaches `failed` or `needs_human` before opening a PR (for example a
 transient `ROLE_TOTAL_FAILURE`, where a role's turn produced no artifact), the
 correct recovery is to call run_build again with the SAME task text. Do NOT try to
 "finish it yourself" by dispatching individual roles, hand-composing files, or
-running review/pr-v1: those paths do not compose the deliverable or open the PR the
-way run_build does, and a review workflow with no PR to review just fails
+dispatching the validator alone: those paths do not compose the deliverable or open
+the PR the way run_build does, and a review with no PR to review just fails
 `NO_RUN_TO_REVIEW`. One clean resubmit is the whole recovery. Tell the user the run
 did not complete and that you are resubmitting the same build.
 
@@ -105,8 +103,8 @@ When the user is watching an agent's interactive terminal and wants you to drive
 turn by turn, use agent_send(agent_id, message) to type into that same terminal \
 (the user sees your message as an "[orchestrator]" line), agent_read(agent_id) to \
 see what the agent printed, and agent_status(agent_id) to check a terminal is open. \
-agent_id is 'claude-code', 'opencode', or 'claude-code-validator'. This talks to the \
-SAME live session the user is watching, so keep turns purposeful; it is for interactive \
+agent_id is one of the role ids in your roster below. This talks to the SAME live \
+session the user is watching, so keep turns purposeful; it is for interactive \
 guidance, not for kicking a background build (use dispatch_*/run_build for that).
 
 ## Voice
@@ -117,16 +115,20 @@ reported it, and never fabricate a result or a PR URL.
 """
 
 
-# The dispatch/build tools (by name): the ones whose firing means "a run started"
-# and should reveal the run panel in the UI. route_task/run_status start nothing.
-_DISPATCH_TOOLS = {"dispatch_backend", "dispatch_frontend", "dispatch_validator", "run_build"}
+def _dispatch_tool_names() -> set[str]:
+    """The tools whose firing means "a run started" and should reveal the run panel
+    in the UI: one per served role, plus run_build. Derived from the roster, so a
+    roster change cannot leave a dispatch tool unrecognized here (which would have
+    silently stopped the UI from ever showing that role's run).
+    list_presets/run_status start nothing and are deliberately absent."""
+    return {r.dispatch_tool for r in _roles.roster()} | {"run_build"}
 
 
 def _wired_roles() -> set[str]:
     """The set of roles with a wired runtime ARN (from runtime_config). The
     dispatch tools are generated from this, so the orchestrator only offers
     agents that actually exist. Empty set if nothing is wired (or on any error),
-    which yields a converse-only agent (route_task + run_status), never a tool
+    which yields a converse-only agent (list_presets + run_status), never a tool
     that would fail loud the moment the model called it."""
     try:
         import runtime_config
@@ -136,26 +138,30 @@ def _wired_roles() -> set[str]:
         return set()
 
 
-# The workflow each explicit dispatch_* tool submits under. An explicit agent
-# choice must never die on NO_ROUTE: the orchestrator model rewrites the task
-# text in its own words, which need not contain a router keyword, and admission
-# still routes that text for the usecase. Pinning the single-role workflow here
-# keeps "explicit agent selection (router consulted for usecase only)" true.
-_ROLE_WORKFLOW = {
-    _BACKEND: "patch/backend-v1",
-    _FRONTEND: "patch/frontend-v1",
-    _VALIDATOR: "review/pr-v1",
-}
-
-
-def _kick(agent_id: str | None, task: str) -> str:
-    """Submit a run (single-role when agent_id is set, else routed) WITHOUT
-    blocking, and return its id immediately. The chat keeps streaming; the
+def _kick(agent_id: str | None, task: str, preset: str | None = None) -> str:
+    """Submit a run (focused on one builder when agent_id is set, else routed)
+    WITHOUT blocking, and return its id immediately. The chat keeps streaming; the
     console polls the run for live status. The 'a run started' UI signal is NOT
     raised here; it is read off the tool RESULT by an AfterToolCallEvent hook,
-    so it works regardless of which thread strands runs the tool on."""
-    run = ENGINE.submit(task, agents=[agent_id] if agent_id else None,
-                        workflow_ref=_ROLE_WORKFLOW.get(agent_id) if agent_id else None)
+    so it works regardless of which thread strands runs the tool on.
+
+    The CHECKER always rides along with a builder. Validation is agentic only, so a
+    builder dispatched alone would produce work with no authored acceptance check,
+    and with no check the gate is red by design. Focusing a run means choosing which
+    BUILDER works, never dropping the verification."""
+    agents = None
+    checkers = list(_roles.checker_ids())
+    if agent_id:
+        # A focused run: the named role, plus the checker unless the named role IS
+        # the checker. Expressed in kinds, so it holds for any roster.
+        agents = ([agent_id] if agent_id in checkers
+                  else [agent_id] + checkers)
+    elif not preset:
+        # A full build with no roles named: every served role works. The request is
+        # the user's, so there is nothing to classify; the roles are simply all of
+        # them, however many this deployment serves.
+        agents = list(_roles.roster_ids())
+    run = ENGINE.submit(task, agents=agents, preset=preset)
     return run.run_id
 
 
@@ -169,68 +175,53 @@ def build_tools() -> list:
     from strands import tool  # local import: strands is an agent-runtime dep
 
     @tool
-    def route_task(task: str) -> str:
-        """Advisory: classify a task against the workflow registry without running
-        anything. Returns the routed workflow_ref, the agents it would dispatch,
-        and why. Use it to decide which dispatch_* tool fits; it starts nothing."""
-        try:
-            return json.dumps(_router.route(task).public())
-        except _router.RouteError as exc:
-            return json.dumps({"error": str(exc)})
+    def list_presets() -> str:
+        """The starting points an attendee can begin from: id, title, the roles each
+        uses, and its request text. They are EXAMPLES, not a menu of what is
+        supported: any request at all can be built with run_build. Starts nothing."""
+        return json.dumps({"presets": _presets.public_presets()})
+
+    def _make_dispatch(role: _roles.Role):
+        """Build ONE role's dispatch tool from its registry entry.
+
+        Generated rather than hand-written so the tool list is exactly the roster:
+        adding, hiding, or swapping a role changes which tools exist with no edit
+        here, and a role can never be missing its tool (or have a stale one).
+        """
+        def dispatch(task: str) -> str:
+            return json.dumps({"run_id": _kick(role.id, task), "agent": role.id,
+                               "kind": role.capability, "status": "started"})
+        dispatch.__name__ = role.dispatch_tool
+        dispatch.__qualname__ = role.dispatch_tool
+        # The docstring IS the tool description the model reads, so it carries this
+        # role's real job from the registry.
+        focus = ("the acceptance check only, and it never edits the work"
+                 if role.kind == _roles.CHECKER else f"the {role.capability} only")
+        dispatch.__doc__ = (
+            f"Start the {role.capability.upper()} role ({role.label}) on its deployed "
+            f"Runtime: {focus}. {role.description} Returns immediately with a run id; "
+            f"the work runs in the background.")
+        return tool(dispatch)
 
     @tool
-    def dispatch_backend(task: str) -> str:
-        """Start the BACKEND builder (Claude Code) on its deployed Runtime, backend
-        only. Returns immediately with a run id; the build runs in the background."""
-        return json.dumps({"run_id": _kick(_BACKEND, task),
-                           "agent": _BACKEND, "kind": "backend", "status": "started"})
+    def run_build(task: str, preset: str = "") -> str:
+        """Start a FULL build of ANY request. Every role on the roster works, their
+        output composes into one deliverable, the checker's authored check gates it,
+        and the reviewer posts its assessment on the pull request. Returns immediately
+        with a run id; the build runs in the background.
 
-    @tool
-    def dispatch_frontend(task: str) -> str:
-        """Start the FRONTEND builder (opencode) on its deployed Runtime, the chatbot
-        UI only. Returns immediately with a run id; the build runs in background."""
-        return json.dumps({"run_id": _kick(_FRONTEND, task),
-                           "agent": _FRONTEND, "kind": "frontend", "status": "started"})
-
-    @tool
-    def dispatch_validator(task: str) -> str:
-        """Start the VALIDATOR (Claude Code) on its deployed Runtime, the acceptance
-        gate only. Returns immediately with a run id; the build runs in the background."""
-        return json.dumps({"run_id": _kick(_VALIDATOR, task),
-                           "agent": _VALIDATOR, "kind": "validator", "status": "started"})
-
-    @tool
-    def run_build(task: str) -> str:
-        """Start a FULL build: the router picks the roles, their work composes into
-        one deliverable, the validator-authored acceptance test gates it, and the reviewer posts its assessment on the PR.
-        Returns immediately with a run id; the build runs in the background and the
-        console shows its live status. Pass the user's request text VERBATIM as
-        task: the router keys on the user's own wording, and a paraphrase can
-        change which workflow (or which sample use case) gets built."""
-        # Pre-route so a mis-phrased task is refused HERE, as a retryable tool
-        # error the model can correct, instead of minting a permanently failed
-        # run (a dead NO_RUN_TO_REVIEW/NO_ROUTE run is the attendee's first
-        # visible result). The router is pure, so the engine's own routing of
-        # an admitted task reaches the same verdict.
-        try:
-            route = _router.route(task)
-        except _router.RouteError as exc:
+        Pass the user's request text VERBATIM as task. It can be anything at all:
+        nothing here classifies it or maps it to a sample, so there is no wording to
+        get right. Optionally pass a `preset` id (see list_presets) to start from one
+        of the example requests instead."""
+        if not task.strip() and not preset:
             return json.dumps({
-                "error": str(exc),
-                "hint": "No run was started. Retry run_build with the user's "
-                        "request text verbatim (do not paraphrase it); their "
-                        "wording names the target.",
+                "error": "EMPTY_TASK",
+                "hint": "No run was started. Ask the user what they want built, in "
+                        "their own words, or offer a starting point from list_presets.",
             })
-        if route.read_only:
-            return json.dumps({
-                "error": f"REVIEW_NOT_A_BUILD:{route.workflow_ref}",
-                "hint": "No run was started. This wording routes to the "
-                        "read-only review workflow, which builds nothing. For "
-                        "a build, retry run_build with the user's request text "
-                        "verbatim; to review an existing run, use "
-                        "dispatch_validator.",
-            })
-        return json.dumps({"run_id": _kick(None, task), "kind": "build", "status": "started"})
+        return json.dumps({"run_id": _kick(None, task, preset=preset or None),
+                           "kind": "build", "status": "started"})
 
     @tool
     def run_status(run_id: str) -> str:
@@ -291,7 +282,7 @@ def build_tools() -> list:
 
     # --- Workspace inspection: the Claude-Code-style toolset -----------------
     # The orchestrator can READ its own workspace and run a bounded command,
-    # so it can answer "what does cost_analyzer expose?" or check a file BEFORE
+    # so it can answer "what is already in this workspace?" or check a file BEFORE
     # deciding whether (and how) to dispatch, instead of spinning up a microVM
     # just to look. All four resolve paths under the workspace root
     # (WORKSHOP_REPO_ROOT, the clone on the box) and refuse to escape it; exec_command
@@ -316,7 +307,7 @@ def build_tools() -> list:
     @tool
     def read_file(path: str) -> str:
         """Read a text file from the workspace (path relative to the repo root,
-        e.g. 'usecase-sample-to-mcp/cost_analyzer.py'). Returns the file's text,
+        e.g. 'orchestrator/engine.py'). Returns the file's text,
         capped at 60 KB. Use it to inspect the module or a harness file before
         dispatching. Refuses paths outside the workspace."""
         full = _resolve_in_ws(path)
@@ -388,24 +379,19 @@ def build_tools() -> list:
         err = (proc.stderr or "")[-4_000:]
         return json.dumps({"exit": proc.returncode, "stdout": out, "stderr": err})
 
-    # The dispatch tools are added ONLY for roles that are actually WIRED, so the
-    # orchestrator's real tool list is generated from Settings, not a fixed 3. An
-    # unwired role gets no dispatch tool (the model can't pick an agent that does
-    # not exist); wiring it in Settings adds its tool on the next agent build.
-    dispatch_by_role = {
-        _BACKEND: dispatch_backend,
-        _FRONTEND: dispatch_frontend,
-        _VALIDATOR: dispatch_validator,
-    }
+    # The dispatch tools are generated from the ROSTER and added ONLY for roles that
+    # are actually WIRED, so the orchestrator's real tool list is (registry x
+    # Settings), never a fixed count. An unwired role gets no dispatch tool (the
+    # model cannot pick an agent that does not exist); wiring it in Settings adds its
+    # tool on the next agent build.
     wired = _wired_roles()
     # Workspace inspection is always available (it reads the orchestrator's own
     # repo, no wired role needed), so the orchestrator can look before it leaps.
-    tools = [route_task, read_file, list_files, grep_workspace, exec_command]
-    for role, fn in dispatch_by_role.items():
-        if role in wired:
-            tools.append(fn)
+    tools = [list_presets, read_file, list_files, grep_workspace, exec_command]
+    dispatchable = [r for r in _roles.roster() if r.id in wired]
+    tools += [_make_dispatch(r) for r in dispatchable]
     # run_build is useful only when at least one role can be dispatched.
-    if any(role in wired for role in dispatch_by_role):
+    if dispatchable:
         tools.append(run_build)
     tools.append(run_status)
     # Interactive terminal control is added only when runtime_shell is importable
@@ -450,64 +436,38 @@ def available_models() -> dict[str, Any]:
     return {"models": models, "default": DEFAULT_MODEL_ID}
 
 
-def suggestions() -> dict[str, Any]:
-    """Opening prompts for the empty chat, derived from the workflow registry
-    (router.WORKFLOWS), so the chips reflect what the orchestrator can do. Kept
-    SHORT and actionable (the chips must not clip): a concise imperative per
-    workflow, capped at 3. The full registry descriptions are too long for a chip,
-    so each known workflow maps to a brief opener; unknown ones fall back to a
-    trimmed description."""
-    _SHORT = {
-        "convert/sample-to-mcp-v1": "Convert the cost analyzer module to MCP + UI",
-        "build/fullstack-v1": "Build the Critter Lab full-stack app",
-        "patch/backend-v1": "Patch the backend MCP server",
-        "patch/frontend-v1": "Rebuild the chatbot UI",
-        "review/pr-v1": "Review an existing run branch",
-    }
-    items: list[str] = []
-    seen: set[str] = set()
-    for wf in _router.public_workflows():
-        ref = wf.get("workflow_ref", "")
-        if ref in seen:
-            continue
-        seen.add(ref)
-        opener = _SHORT.get(ref)
-        if not opener:
-            desc = (wf.get("description") or "").strip().rstrip(".")
-            opener = (desc[0].upper() + desc[1:]) if desc else ref
-            if len(opener) > 48:
-                opener = opener[:46].rstrip() + "..."
-        items.append(opener)
-    return {"suggestions": items[:3]}
+# How many opener chips the empty chat offers. Wirable, because it is presentation:
+# the console renders whatever this returns and caps at the same number.
+MAX_SUGGESTIONS = int(os.environ.get("WORKSHOP_MAX_SUGGESTIONS", "3"))
 
 
-# Which dispatch tool owns each wired role, for the dynamic agent-description block.
-_ROLE_TO_TOOL = {
-    "claude-code": "dispatch_backend",
-    "opencode": "dispatch_frontend",
-    "claude-code-validator": "dispatch_validator",
-}
+def suggestions() -> dict[str, list[str]]:
+    """Opening prompts for the empty chat: the preset titles, from ONE source
+    (presets.PRESETS), so the chips cannot drift from what the tools offer. They are
+    starting points; the attendee can type anything instead."""
+    items = [p["title"] for p in _presets.public_presets() if not p["read_only"]]
+    return {"suggestions": items[:MAX_SUGGESTIONS]}
 
 
-def _dynamic_agent_section() -> str:
-    """Build a system-prompt section from the WIRED role descriptions (set in
-    Settings), so the orchestrator describes its dispatch targets dynamically.
-    Empty string when nothing is described, leaving the static roster as-is."""
+def _roster_section() -> str:
+    """The "Your roster" block: one line per SERVED role, naming its dispatch tool,
+    its role id, and what it does. Generated from the registry, and from the
+    operator's per-role description (set in Settings) when there is one, so the
+    prompt describes the team this deployment actually runs instead of a hardcoded
+    trio the roster may have moved on from."""
     try:
         import runtime_config
         descs = runtime_config.describe_map()
     except Exception:
         descs = {}
-    lines = []
-    for role, tool in _ROLE_TO_TOOL.items():
-        d = descs.get(role)
-        if d:
-            lines.append(f"- {tool} ({role}): {d}")
+    lines = [f"- {r.dispatch_tool} ({r.id}, {r.label}): {descs.get(r.id) or r.description}"
+             for r in _roles.roster()]
     if not lines:
         return ""
-    return ("\n\n## Wired agent descriptions (operator-provided, authoritative)\n"
-            "These describe what each currently-wired agent does. Prefer them when "
-            "deciding which agent a task needs:\n" + "\n".join(lines))
+    return ("\n\n## Your roster (the roles this deployment serves)\n"
+            "Each line is a dispatch tool, the role id behind it, and what that role "
+            "does. An operator-provided description is authoritative. Only these "
+            "roles exist:\n" + "\n".join(lines))
 
 
 def build_agent(model_id: str | None = None, messages: list | None = None):
@@ -515,12 +475,12 @@ def build_agent(model_id: str | None = None, messages: list | None = None):
     OWN model (the chatbot's brain, the message-bar choice), ``messages`` seeds
     prior conversation turns for multi-turn memory.
 
-    The system prompt is the static base plus any WIRED role descriptions, so the
-    set of dispatch targets is described dynamically from Settings, not hardcoded."""
+    The system prompt is the static base plus the generated roster section, so the
+    set of dispatch targets is described from the registry + Settings, not hardcoded."""
     from strands import Agent
     from strands.models import BedrockModel
     model = BedrockModel(model_id=model_id or DEFAULT_MODEL_ID)
-    system_prompt = SYSTEM_PROMPT + _dynamic_agent_section()
+    system_prompt = SYSTEM_PROMPT + _roster_section()
     kwargs: dict[str, Any] = {"model": model, "system_prompt": system_prompt,
                               "tools": build_tools()}
     if messages:
@@ -532,7 +492,7 @@ def _extract_run(tool_name: str, result: Any) -> dict | None:
     """If ``tool_name`` is a dispatch/build tool, pull {run_id, kind} out of its
     JSON result. Reading the RESULT (not a side-channel) is thread-safe: strands
     may run the tool on any thread, but the event delivers the result to us."""
-    if tool_name not in _DISPATCH_TOOLS:
+    if tool_name not in _dispatch_tool_names():
         return None
     # The tool result is a strands ToolResult; the text we returned is in its
     # content blocks. Find the first JSON object that carries a run_id.

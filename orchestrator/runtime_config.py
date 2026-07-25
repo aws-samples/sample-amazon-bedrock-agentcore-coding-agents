@@ -33,6 +33,8 @@ import re
 import threading
 from typing import Any
 
+import roles as _roles
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
 
@@ -46,37 +48,27 @@ def _settings_path() -> str:
         "WORKSHOP_RUNTIME_CONFIG",
         os.path.join(_REPO, ".runs", "runtime.local.json"))
 
-# The roles the orchestrator can dispatch (the harness roster) plus the
-# orchestrator itself, each independently wirable. The frontend role is
-# ``opencode`` (Bedrock Claude Sonnet 4.6): it replaced ``codex`` because the
-# GPT-5.x the Codex path needs is allowlist-gated. The codex harness stays in the
-# repo (coding-agents/codex/) but is NOT in this roster, so it never appears as a
-# wireable agent in the console or as a dispatch target.
+# Everything independently wirable: the orchestrator plus every role this
+# deployment SERVES. Both come from the registry (``roles.py``), which is the one
+# place the roster is declared and is configurable at runtime via WORKSHOP_ROLES.
+# A registered-but-hidden role (codex, kiro) is off this list by default, so it
+# never appears as a wireable agent or a dispatch target, and naming it in
+# WORKSHOP_ROLES restores it with no code change.
 #
-# The validator role is ``claude-code-validator`` (Claude Code, Bedrock-native):
-# it replaced ``kiro`` because the Kiro CLI needs a per-user paid subscription +
-# a ``ksk_`` API key that cannot be provisioned for a public workshop. It runs
-# the SAME Claude Code container as the backend, steered by an acceptance-contract
-# ``CLAUDE.md`` instead of ``.kiro/steering``, so it needs no key and no Token
-# Vault. The kiro harness stays in the repo (coding-agents/kiro/) but is NOT in
-# this roster, so like codex it never appears as a wireable agent or a dispatch
-# target; ``kiro_config.py`` / the ``use kiro`` router alias remain for restore.
-ROLES = ("orchestrator", "claude-code", "claude-code-validator", "opencode")
+# Read through the functions rather than a module-level tuple, because the roster
+# is env-configurable and a snapshot taken at import time would ignore a test's (or
+# an operator's) setting.
+def roles() -> tuple[str, ...]:
+    """The wirable ids: the orchestrator, then each served role in dispatch order."""
+    return _roles.wirable_ids()
 
-# A default one-line "what this agent does" per role, so a freshly wired (or
-# auto-discovered) instance carries a meaningful description instead of an empty
-# field. An explicit per-instance description the attendee sets always wins; this
-# only fills the blank. Matches the role each harness plays in the workshop.
-_DEFAULT_DESCRIPTION = {
-    "orchestrator": "Coordinates the build: routes a request to the right roles, "
-                    "composes their work, runs the acceptance gate, and opens the PR.",
-    "claude-code": "Backend builder (Claude Code): wraps the module as a remote MCP "
-                   "server that serves the tools over JSON-RPC.",
-    "claude-code-validator": "Validator (Claude Code): owns the acceptance contract "
-                             "that defines when a build is done, and runs the gate.",
-    "opencode": "Frontend builder (opencode): builds the thin chatbot UI on top of "
-                "the MCP server, on Amazon Bedrock.",
-}
+
+def _default_descriptions() -> dict[str, str]:
+    """A default one-line "what this agent does" per role, so a freshly wired (or
+    auto-discovered) instance carries a meaningful description instead of an empty
+    field. An explicit per-instance description the attendee sets always wins; this
+    only fills the blank."""
+    return _roles.descriptions()
 
 # A loose AgentCore runtime ARN / id check: an arn:aws:bedrock-agentcore:... , a
 # bare runtime id, OR a local dev endpoint URI (http(s)://…, what `agentcore dev`
@@ -162,16 +154,17 @@ def _coding_agents_dir() -> str:
 
 # Only a role that maps to a real harness directory can be auto-discovered; the
 # orchestrator itself is not a dispatch target and has no coding-agents/ dir.
-_HARNESS_DIRS = {"claude-code": "claude-code",
-                 "claude-code-validator": "claude-code-validator",
-                 "opencode": "opencode"}
+def _harness_dirs() -> dict[str, str]:
+    """role id -> its ``coding-agents/<dir>``, from the registry. The orchestrator
+    is absent on purpose: it is not a dispatch target and has no harness dir."""
+    return _roles.harness_dirs()
 
 
 def _discover_deployed(role: str) -> list[str]:
     """The deployed ARN from ``coding-agents/<role>/runtime_config.json``, or []
     when the harness has not been deployed (no file / no valid ARN). Never raises:
     a missing or malformed file just means "not deployed yet"."""
-    sub = _HARNESS_DIRS.get(role)
+    sub = _harness_dirs().get(role)
     if not sub:
         return []
     path = os.path.join(_coding_agents_dir(), sub, "runtime_config.json")
@@ -245,7 +238,7 @@ def describe_map() -> dict[str, str]:
     """role -> a representative description (first instance's), for the chatbot's
     dynamic agent section. Only roles with a description appear."""
     out: dict[str, str] = {}
-    for role in ROLES:
+    for role in roles():
         d = describe(role)
         if d:
             out[role] = d
@@ -257,8 +250,8 @@ def save_description(role: str, arn: str, description: str) -> dict[str, Any]:
     Persists alongside the ARNs. The role is validated; the ARN must be wired to
     it (so a description always attaches to a real instance)."""
     role, arn = role.strip(), arn.strip()
-    if role not in ROLES:
-        return {"error": f"unknown role {role!r} (expected one of {', '.join(ROLES)})"}
+    if role not in roles():
+        return {"error": f"unknown role {role!r} (expected one of {', '.join(roles())})"}
     wired_arns = [a for a, _ in instances(role)]
     if arn not in wired_arns:
         return {"error": f"ARN not wired to {role}"}
@@ -321,7 +314,7 @@ def resolve_map() -> dict[str, str]:
     back-compatible single-instance map the AgentCoreExecutor's runtime_arns
     mapping and older callers use; ``fleet_map`` is the full per-role list."""
     out: dict[str, str] = {}
-    for role in ROLES:
+    for role in roles():
         hit = resolve(role)
         if hit:
             out[role] = hit[0]
@@ -331,7 +324,7 @@ def resolve_map() -> dict[str, str]:
 def fleet_map() -> dict[str, list[str]]:
     """Every role with at least one wired ARN -> the full list of its instances."""
     out: dict[str, list[str]] = {}
-    for role in ROLES:
+    for role in roles():
         hits = [arn for arn, _ in instances(role)]
         if hits:
             out[role] = hits
@@ -343,8 +336,8 @@ def save_runtime(role: str, arn: str) -> dict[str, Any]:
     (the Settings pane / terminal writes this). Validates shape and persists to the
     gitignored 0600 file. Use ``add_runtime`` to grow a fleet instead of replacing."""
     role, arn = role.strip(), arn.strip()
-    if role not in ROLES:
-        return {"error": f"unknown role {role!r} (expected one of {', '.join(ROLES)})"}
+    if role not in roles():
+        return {"error": f"unknown role {role!r} (expected one of {', '.join(roles())})"}
     if not _ARN_RE.match(arn):
         return {"error": "value must be an AgentCore runtime ARN or id"}
     runtimes = _load_file()
@@ -360,8 +353,8 @@ def add_runtime(role: str, arn: str) -> dict[str, Any]:
     Claude Code. Validates shape, de-dups (adding the same ARN twice is a no-op),
     and persists. Identical to ``save_runtime`` for the first instance of a role."""
     role, arn = role.strip(), arn.strip()
-    if role not in ROLES:
-        return {"error": f"unknown role {role!r} (expected one of {', '.join(ROLES)})"}
+    if role not in roles():
+        return {"error": f"unknown role {role!r} (expected one of {', '.join(roles())})"}
     if not _ARN_RE.match(arn):
         return {"error": "value must be an AgentCore runtime ARN or id"}
     runtimes = _load_file()
@@ -378,8 +371,8 @@ def remove_runtime(role: str, arn: str) -> dict[str, Any]:
     it was the role's last instance the role becomes unwired. Removing an ARN that
     is not wired is a no-op. The role's description is preserved."""
     role, arn = role.strip(), arn.strip()
-    if role not in ROLES:
-        return {"error": f"unknown role {role!r} (expected one of {', '.join(ROLES)})"}
+    if role not in roles():
+        return {"error": f"unknown role {role!r} (expected one of {', '.join(roles())})"}
     runtimes = _load_file()
     fleet = [a for a in runtimes.get(role, []) if a != arn]
     if fleet:
@@ -423,18 +416,18 @@ def status() -> dict[str, Any]:
     real path; a role with no wired ARN fails loud at dispatch time, not here."""
     executor = os.environ.get("WORKSHOP_EXECUTOR", "agentcore").strip().lower() or "agentcore"
     descs = _load_descriptions()
-    roles: list[dict[str, Any]] = []
-    for role in ROLES:
+    rows: list[dict[str, Any]] = []
+    for role in roles():
         hits = instances(role)
         # Each instance carries its OWN description (keyed by ARN); legacy
         # role-keyed descriptions still surface on the first instance, and a role
         # default fills the blank so the card is never description-less.
-        default_desc = _DEFAULT_DESCRIPTION.get(role, "")
+        default_desc = _default_descriptions().get(role, "")
         inst_list = [{"arn": arn, "source": src,
                       "description": descs.get(arn) or default_desc} for arn, src in hits]
         if inst_list and inst_list[0]["description"] == default_desc and descs.get(role):
             inst_list[0]["description"] = descs[role]
-        roles.append({
+        rows.append({
             "role": role,
             "wired": bool(hits),
             "source": hits[0][1] if hits else None,
@@ -444,5 +437,5 @@ def status() -> dict[str, Any]:
             # role-level representative (first instance's), for back-compat.
             "description": inst_list[0]["description"] if inst_list else "",
         })
-    return {"executor": executor, "roles": roles,
+    return {"executor": executor, "roles": rows,
             "remote_dispatch": executor == "agentcore"}

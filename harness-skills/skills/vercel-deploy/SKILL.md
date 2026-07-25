@@ -7,10 +7,10 @@ description: >-
   "publish the UI", "put the chatbot online", "give me a live URL for the UI",
   "promote the frontend to production", or "vercel deploy". This is the deploy half
   of the FRONTEND role; pairs with configure-opencode-frontend (which builds the UI).
-  Role mapping in this harness is LOCKED: Claude Code = BACKEND (AgentCore MCP
-  server), a second Claude Code = VALIDATOR (pytest acceptance gate), opencode = FRONTEND BUILDER
-  (this chatbot UI). The UI is a thin MCP client: it calls tools/list + tools/call
-  through the Gateway and NEVER holds AWS credentials.
+  The roles in this harness are: Claude Code = BACKEND builder, a second Claude Code =
+  VALIDATOR (it authors an executable acceptance check whose real exit code is the
+  gate), opencode = FRONTEND builder (the interface this skill deploys). The interface
+  resolves its service address at runtime and NEVER holds AWS credentials.
 ---
 
 # vercel-deploy: ship the opencode chatbot UI to Vercel
@@ -195,11 +195,9 @@ Confirm the live UI is actually driving the Gateway, not just rendering:
 
 - **BACKEND (Claude Code)** deploys the AgentCore MCP server; the **Gateway** fronts it
   with IAM/JWT auth and tool routing. That Gateway URL is the contract this UI consumes.
-- **VALIDATOR (Claude Code validator)** runs the acceptance gate against the same endpoint; the UI and
-  the gate point at one source of truth:
-  ```bash
-  MCP_ENDPOINT_URL="$GATEWAY_URL" pytest usecase-sample-to-mcp/grading/
-  ```
+- **VALIDATOR (Claude Code validator)** authors and runs an acceptance check against the
+  same endpoint as the UI; the validator and the UI point at one source of truth (the
+  Gateway URL).
 - **FRONTEND BUILDER (opencode)** built this chatbot UI; this skill ships it. Pairs with
   `configure-opencode-frontend`.
 - This is finalization plumbing, not a contest: there is no winner and no

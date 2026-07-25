@@ -27,11 +27,9 @@ interface ProgressEntry {
 }
 
 interface RouteInfo {
-  workflow_ref: string;
-  version?: string;
+  preset: string;          // the starting point, or "custom" when roles were named
   rule: string;
   agents: string[];
-  usecase?: string;
   read_only?: boolean;
 }
 
@@ -84,7 +82,7 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">{route.rule}</div>
             <div className="flex flex-wrap items-center gap-1.5">
-              <code className="font-mono text-xs">{route.workflow_ref}</code>
+              <code className="font-mono text-xs">{route.preset}</code>
               {route.agents.map((a) => (
                 <Badge key={a} variant="secondary" className="flex items-center gap-1 px-1.5 py-0.5">
                   <AgentIcon agentId={a} size={12} />

@@ -7,7 +7,7 @@ content pages, in content order, against a real `console/server.py` process
 If a step here breaks, a page in content/ is telling attendees to do something
 that doesn't work.
 
-Local engine mode (deterministic, no LLM); the same pytest gate the workshop
+Local engine mode (offline test double, no LLM); the same machinery the workshop
 grades with. Run: python3 -m pytest e2e/test_attendee_flow.py -q
 """
 
@@ -25,7 +25,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from e2e.conftest import seed_skill
+from e2e.conftest import seed_file
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The TEST entrypoint (same app, deterministic FixtureExecutor-backed Stage-2
@@ -135,84 +135,16 @@ def test_getting_started_workbench_opens_on_stage1(console, cookie):
     assert b'/assets/' in html
 
 
-def test_stage1_shell_convert_and_verify(console, cookie):
-    """Stage 1 pages 1-3: set up the agent, open a session on an EMPTY workspace,
-    CREATE the input module in the editor (New File → paste cost_analyzer.py),
-    convert it, run the live verify: the exact card flow."""
-    _, agents = _req(console, "GET", "/api/dev/agents", headers=cookie)
-    assert any(a["agent_id"] == "claude-code" for a in agents["agents"])
-
-    code, sess = _req(console, "POST", "/api/dev/sessions",
-                      {"agent_id": "claude-code"}, headers=cookie)
-    # the session-create contract: 201 Created, an open session on the S3 Files mount
-    assert code == 201
-    assert sess["status"] == "open"
-    assert sess["session_id"]
-    sid = sess["session_id"]
-    assert sess["workspace"] == "/mnt/s3files"
-
-    # content 2-open-a-shell: the workspace starts EMPTY; nothing is pre-seeded.
-    _, out = _req(console, "POST", f"/api/dev/sessions/{sid}/input",
-                  {"input": "ls /mnt/s3files"}, headers=cookie)
-    assert "cost_analyzer.py" not in out["output"]
-
-    # content 3-convert-by-hand, step 1: the participant creates the input module
-    # themselves in the editor (New File → paste cost_analyzer.py → Save). We do it
-    # the same way (real file-write API), under sample/, so the rest of the flow has it.
-    seed_skill(console, cookie, sid)
-    _, out = _req(console, "POST", f"/api/dev/sessions/{sid}/input",
-                  {"input": "ls /mnt/s3files/sample"}, headers=cookie)
-    assert "cost_analyzer.py" in out["output"]
-
-    # the editor: free-named file write -> read -> rename -> delete (explorer ops)
-    _, w = _req(console, "POST", f"/api/dev/sessions/{sid}/file",
-                {"path": "notes/my-plan.md", "content": "convert the module"},
-                headers=cookie)
-    assert "error" not in w
-    # a write returns the FRESH tree so the explorer can re-render the new file
-    assert "tree" in w and isinstance(w["tree"], list)
-    assert any(n["path"] == "/mnt/s3files/notes/my-plan.md" for n in w["tree"])
-    _, mv = _req(console, "POST", f"/api/dev/sessions/{sid}/file",
-                 {"path": "notes/my-plan.md", "op": "rename", "to": "notes/plan.md"},
-                 headers=cookie)
-    # tree paths are virtual (/mnt/s3files/...), exactly what the explorer shows
-    assert mv.get("ok")
-    assert any(n["path"] == "/mnt/s3files/notes/plan.md" for n in mv["tree"])
-    assert not any(n["path"].endswith("my-plan.md") for n in mv["tree"])
-    _, rm = _req(console, "POST", f"/api/dev/sessions/{sid}/file",
-                 {"path": "notes/plan.md", "op": "delete"}, headers=cookie)
-    assert rm.get("ok")
-    # delete returns the fresh tree, and the deleted file is gone from it
-    assert "tree" in rm and isinstance(rm["tree"], list)
-    assert not any(n["path"] == "/mnt/s3files/notes/plan.md" for n in rm["tree"])
-
-    # content 3-convert-a-skill-by-hand: convert + verify over the wire. The
-    # converted server's own sample call returns the EXACT 140.16 fixture
-    # (m5.large x2); not a stub; and the verify card's 4 named checks are all green.
-    _, conv = _req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                   {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-    assert conv["verified"] is True
-    assert conv["server_file"] == "/mnt/s3files/mcp_server.py"
-    assert conv["sample_call"]["result"]["monthly_cost"] == 140.16
-    _, ver = _req(console, "POST", f"/api/dev/sessions/{sid}/verify", {},
-                  headers=cookie)
-    assert ver["passed"] is True
-    checks = {c["check"]: c["passed"] for c in ver["checks"]}
-    assert checks == {"server_live": True, "tools_list": True,
-                      "tool_call": True, "input_validation": True}, checks
-    assert ver["sample"]["monthly_cost"] == 140.16
-    _req(console, "DELETE", f"/api/dev/sessions/{sid}", headers=cookie)
-
-
 def test_stage2_submit_watch_and_review(console, cookie):
     """Stage 2 run page: type the default task, submit, watch the phases, read
     the role terminals, and meet the review orchestrator's LGTM."""
+    # ANY request works; the roles are what must be chosen.
     _, run = _req(console, "POST", "/api/orchestrator/runs",
-                  {"task": "Convert /mnt/s3files/sample/cost_analyzer.py to a "
-                           "remote MCP server with tests + a chatbot UI"},
+                  {"task": "build a small thing and prove it works",
+                   "agents": ["claude-code", "opencode", "claude-code-validator"]},
                   headers=cookie)
     rid = run["run_id"]
-    assert run["route"]["workflow_ref"] == "convert/sample-to-mcp-v1"
+    assert run["route"]["preset"] == "custom"
 
     for _ in range(120):                          # local mode: well under 2 min
         _, r = _req(console, "GET", f"/api/orchestrator/runs/{rid}", headers=cookie)
@@ -224,7 +156,12 @@ def test_stage2_submit_watch_and_review(console, cookie):
     _, res = _req(console, "GET", f"/api/orchestrator/runs/{rid}/result", headers=cookie)
     assert res["gate"]["passed"] is True
     assert res["review"]["lgtm"] is True          # "LGTM: no changes needed"
-    assert res["composed_from"] == ["backend-mcp", "validator", "frontend-builder"]
+    # Builders first, checker last, read from the registry rather than pinned as a
+    # roster literal: the ORDER is the invariant, while who is on the team is the
+    # roster's business (and is configurable).
+    import roles as _roles
+    assert res["composed_from"] == [
+        _roles.get(a).role_name for a in _roles.roster_ids()]
 
     _, terms = _req(console, "GET", f"/api/orchestrator/runs/{rid}/terminals",
                     headers=cookie)

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!-- Hand-written FIXTURE, not generated and not a reference solution. It exists only
+     to pin the three browser regressions a live traverse actually hit. -->
+<html><head><meta charset="utf-8"><title>Fixture client</title></head>
+<body>
+<p>endpoint: <code id="ep"></code></p>
+<input id="q"/><button onclick="ask()">Ask</button><pre id="out"></pre>
+<script>
+const MCP_ENDPOINT = new URLSearchParams(location.search).get("endpoint")
+  || window.MCP_ENDPOINT
+  || location.origin;
+document.getElementById("ep").textContent = MCP_ENDPOINT;
+async function ask(){
+  const body={jsonrpc:"2.0",method:"tools/call",id:1,
+    params:{name:"echo",arguments:{value:document.getElementById("q").value}}};
+  try{
+    const r=await fetch(MCP_ENDPOINT,{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j=await r.json();
+    document.getElementById("out").textContent=JSON.stringify(j.result??j.error);
+  }catch(e){ document.getElementById("out").textContent="failed: "+e; }
+}
+</script></body></html>

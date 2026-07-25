@@ -28,9 +28,6 @@ dist/
 # local dev evidence / scratch
 .runs/
 
-# Agent deliverable written by Module 1 verification (canonical copy is the harness reference)
-usecase-sample-to-mcp/mcp_server.py
-
 # orchestrator-agent CodeZip build inputs staged by stage_engine.py (not source):
 # the co-located engine package, the staged usecase Skills, and the CLI project dirs.
 orchestrator-agent/orchestrator/

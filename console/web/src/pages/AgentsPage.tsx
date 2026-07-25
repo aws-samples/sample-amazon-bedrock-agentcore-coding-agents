@@ -10,7 +10,7 @@ import { AgentIcon } from '../components/AgentIcon';
 import { Terminal, type TerminalHandle } from '../components/Terminal';
 import { SectionHeader } from '../shared';
 import { getRuntimes, wireRuntime, clearRuntime, type RuntimeStatus } from '../api';
-import { agentRole } from './agents/environments';
+import { onAgentRoles, type AgentRole } from './agents/environments';
 import {
   getSessions, openSession, subscribeOutput, sendInput, resizeTerminal, getBuffer, closeSession,
   syncServerSessions,
@@ -19,21 +19,27 @@ import {
 
 export function AgentsPage() {
   const { env } = useParams();
-  const selectedRole = agentRole(env);
+  // The roster is fetched (it is the deployment's own configurable team), so it is
+  // briefly unknown on first paint. Track it in state and render a loading state
+  // below until it lands, rather than inventing a role to show.
+  const [roles, setRoles] = useState<AgentRole[]>([]);
+  useEffect(() => onAgentRoles(setRoles), []);
+  const selectedRole = roles.find((r) => r.id === env) ?? roles[0];
 
   // A role can host >1 runtime instance under one sidebar entry (Claude Code =
   // backend builder + validator). Pick WHICH instance this page is showing; the
-  // dropdown below switches it. Single-instance roles (OpenCode) just pin their one.
-  const [instanceId, setInstanceId] = useState<string>(selectedRole.instances[0]!.id);
+  // dropdown below switches it. Single-instance roles just pin their one.
+  const [instanceId, setInstanceId] = useState<string>('');
   useEffect(() => {
-    setInstanceId(selectedRole.instances[0]!.id);
-  }, [selectedRole.id]);
+    if (selectedRole) setInstanceId(selectedRole.instances[0]!.id);
+  }, [selectedRole?.id]);
   const selectedInstance =
-    selectedRole.instances.find((i) => i.id === instanceId) ?? selectedRole.instances[0]!;
-  const hasMultipleInstances = selectedRole.instances.length > 1;
+    selectedRole?.instances.find((i) => i.id === instanceId) ?? selectedRole?.instances[0];
+  const hasMultipleInstances = (selectedRole?.instances.length ?? 0) > 1;
   // `selected` is the ACTIVE runtime instance: its id is the backend role key the
-  // /api/dev + wiring endpoints use, its label/blurb describe this instance.
-  const selected = selectedInstance;
+  // /api/dev + wiring endpoints use, its label/blurb describe this instance. Empty
+  // id while the roster loads; every effect below keys off it and no-ops until then.
+  const selected = selectedInstance ?? { id: '', label: '', blurb: '' };
 
   const [runtimes, setRuntimes] = useState<RuntimeStatus | null>(null);
   const [draft, setDraft] = useState('');
@@ -238,6 +244,17 @@ export function AgentsPage() {
     } catch { /* keep current state */ } finally {
       setWiring(false);
     }
+  }
+
+  // The roster has not arrived yet (or the orchestrator is unreachable). Say so
+  // instead of rendering an agent card for a role we cannot name: every id, label,
+  // and wiring key on this page belongs to a real served role.
+  if (!selectedRole || !selectedInstance) {
+    return (
+      <div className="flex h-full items-center justify-center p-8 text-center">
+        <p className="text-sm text-muted-foreground">Loading the agent roster…</p>
+      </div>
+    );
   }
 
   if (fullscreen && isWired && activeTab) {

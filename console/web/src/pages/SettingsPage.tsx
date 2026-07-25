@@ -30,7 +30,7 @@ import {
 } from '../api';
 import { Plus, X } from 'lucide-react';
 import { AgentIcon } from '../components/AgentIcon';
-import { agentInstanceLabel } from './agents/environments';
+import { agentInstanceLabel, onAgentRoles } from './agents/environments';
 
 // Friendly display name for a runtime instance id (Claude Code - Backend builder,
 // Claude Code - Validator (gate), OpenCode). The orchestrator role has no agent
@@ -321,6 +321,9 @@ function RuntimesCard() {
   // description shows as one line; clicking it (or "+ Add description") opens the
   // input. So no empty "What this agent does" field clutters the card.
   const [descOpen, setDescOpen] = useState<string | null>(null);
+  // Bumped when the served roster arrives, so the role cards re-render with their
+  // friendly labels (roleName reads the roster synchronously once it is cached).
+  const [, setRosterVersion] = useState(0);
 
   const applyStatus = (s: RuntimeStatus) => {
     setStatus(s);
@@ -338,6 +341,10 @@ function RuntimesCard() {
   useEffect(() => {
     getRuntimes().then(applyStatus).catch(() => {}).finally(() => setLoading(false));
     getKiroStatus().then(setKiro).catch(() => {});
+    // The roster gives each wired role its friendly label. Subscribing (rather than
+    // just fetching) re-renders the cards once it lands, so a role shows its name
+    // instead of its raw id.
+    return onAgentRoles(() => setRosterVersion((n) => n + 1));
   }, []);
 
   // Attach (or replace) the Kiro API key on the already-wired Kiro runtime. This

@@ -10,13 +10,14 @@ import { AgentEventFeed } from './AgentEventFeed';
 import { WorkingDots } from './Motion';
 import type { AgentEvent } from '../api';
 
-// What the orchestrator routed the task to: the REAL workflow ref + the rule
-// that picked it + the agents it dispatches. Mirrors the engine's RunRoute.
+// The REAL routing verdict: the starting point it resolved from ("custom" when the
+// roles were named directly), the rule that picked it, and the agents it dispatches.
+// Mirrors the engine's RunRoute. Routing picks ROLES only, so nothing here describes
+// the work itself.
 interface RouteInfo {
-  workflow_ref: string;
+  preset: string;
   rule: string;
   agents: string[];
-  usecase?: string;
 }
 
 // One role's REAL execution record off the run (engine `public_progress`): which
@@ -91,7 +92,7 @@ function RouteRow({ route }: { route: RouteInfo }) {
         <ChevronRight className={cn('size-3 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
         <Route className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="font-mono font-medium">route_task</span>
-        <span className="truncate font-mono text-[11px] text-muted-foreground">{route.workflow_ref}</span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">{route.preset}</span>
         <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
           <CheckCircle2 className="size-3" /> routed
         </span>

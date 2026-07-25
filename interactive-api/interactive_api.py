@@ -12,17 +12,12 @@ Everything observable is real work on this machine:
     the agent to `ready` ONLY when that ARN exists; otherwise it stays
     `deploying`. No `local:runtime` placeholder is ever written.
   - POST /api/sessions        creates a workspace directory on disk
-    (.runs/stage1/<session>/workspace; the participant seeds cost_analyzer.py under
-    sample/) and the session opens when the directory exists. `/mnt/s3files` in the UI
+    (.runs/stage1/<session>/workspace) and the session opens when the directory
+    exists. `/mnt/s3files` in the UI
     maps to that dir (the same path the S3 Files mount uses on a Runtime).
   - POST /api/sessions/{id}/input  executes the command with /bin/sh in the session's
     cwd (10s timeout, output capped). `cd` is tracked. State persists across
     inputs because the files persist on disk.
-  - POST /api/sessions/{id}/convert-skill  writes a single-tool MCP server file
-    into the workspace, boots it as a subprocess on a free port, and verifies it the
-    same way Stage 2's acceptance gate does: a `tools/list` + a `tools/call`
-    over the wire (the sample result comes from the live server, not a fixture).
-    `verified` is true only if the wire calls succeed.
   - Every session/conversion appends to the shared telemetry ledger
     (`.runs/telemetry.jsonl`) with the OS user used for local attribution.
 
@@ -56,14 +51,10 @@ PORT = 8091
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
 
-# The usecase module + coding-agents harness are SIBLINGS of this api dir in BOTH
-# layout: interactive-api and usecase-sample-to-mcp are root siblings;
-# the shipped package flattens to interactive-api + usecase-sample-to-mcp.
-# So their parent is this dir's parent (_ENGINES), never a hardcoded "solution"
-# level that is absent on the attendee box. (Same invariant as console/server.py.)
+# The coding-agents harness is a SIBLING of this api dir, so its parent is this dir's
+# parent (_ENGINES), never a hardcoded "solution" level that is absent on the attendee
+# box. (Same invariant as console/server.py.)
 _ENGINES = os.path.dirname(_HERE)
-_USECASE = os.path.join(_ENGINES, "usecase-sample-to-mcp")
-_GRADING = os.path.join(_USECASE, "grading")
 _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO, ".runs"))
 _STAGE1_DIR = os.path.join(_RUNS_DIR, "stage1")
 _LEDGER = os.path.join(_RUNS_DIR, "telemetry.jsonl")
@@ -117,26 +108,33 @@ _OUTPUT_CAP = 8000  # chars per command output
 _MAX_PTY_INPUT = 64 * 1024  # bytes per PTY write; bounds a keystroke-flood DoS
 _MAX_AGENT_FIELD = 2000     # chars per editable agent name/purpose (right-click Edit)
 
-# Stage 1 features Claude Code; the others are listed for parity with Stage 2's catalog.
+# The Stage 1 agent shelf, projected from the role REGISTRY
+# (``orchestrator/roles.py``), which is the one place the roster is declared. Before
+# this the shelf kept its own copy of the team, so a roster change had to be made
+# here too and a missed edit showed the attendee an agent that could not be
+# dispatched (or hid one that could).
+#
 # `name`/`purpose` are the attendee-editable display fields (right-click Edit on the
-# shelf). `name` defaults to `label`; `purpose` describes the role this deployed agent
-# plays as a subagent of the orchestrator.
+# shelf). `name` defaults to the role's label, disambiguated when two instances share
+# one CLI (two Claude Code roles); `purpose` is the role's own description and says
+# what it plays as a subagent of the orchestrator.
+sys.path.insert(0, os.path.join(_ENGINES, "orchestrator"))
+import roles as _roles  # noqa: E402
+
+
+def _shelf_name(role: "_roles.Role") -> str:
+    """The display name. When several served roles run the SAME CLI, the label alone
+    would show two identical rows nobody could tell apart, so the job is appended."""
+    same_cli = [r for r in _roles.roster() if r.label == role.label]
+    return f"{role.label} ({role.role_name})" if len(same_cli) > 1 else role.label
+
+
 AGENTS = [
-    {"agent_id": "claude-code", "label": "Claude Code",
-     "name": "Claude Code", "purpose": "Implements backend code and multi-file edits.",
-     "model": _CLAUDE_MODEL, "credential": "bedrock-native",
-     "status": "not_deployed", "runtime_arn": None, "endpoint": None},
-    # The validator is a SECOND Claude Code, steered by an acceptance-contract
-    # CLAUDE.md, since Kiro was retired from the roster (its kiro entry is kept in
-    # the codebase but off every roster, like codex).
-    {"agent_id": "claude-code-validator", "label": "Claude Code",
-     "name": "Claude Code (validator)", "purpose": "Runs the acceptance gate that defines done.",
-     "model": _CLAUDE_MODEL, "credential": "bedrock-native",
-     "status": "not_deployed", "runtime_arn": None, "endpoint": None},
-    {"agent_id": "opencode", "label": "opencode",
-     "name": "opencode", "purpose": "Builds the chatbot UI and frontend.",
-     "model": _OPENCODE_MODEL, "credential": "runtime-iam",
-     "status": "not_deployed", "runtime_arn": None, "endpoint": None},
+    {"agent_id": r.id, "label": r.label,
+     "name": _shelf_name(r), "purpose": r.description,
+     "model": r.default_model, "credential": r.credential,
+     "status": "not_deployed", "runtime_arn": None, "endpoint": None}
+    for r in _roles.roster()
 ]
 _AGENTS = {a["agent_id"]: a for a in AGENTS}
 
@@ -248,7 +246,7 @@ def _coding_agents_dir() -> str:
     if root:
         return os.path.join(root, "coding-agents")
     # No override: the harness is a sibling of this API directory.
-    # in the dev repo, coding-agents on the attendee box. (Same as _USECASE.)
+    # in the dev repo, coding-agents on the attendee box.
     return os.path.join(_ENGINES, "coding-agents")
 
 
@@ -943,10 +941,10 @@ def _new_session(agent_id: str) -> dict:
         dev_home = None
         vlabel = "/mnt/s3files"
     dev = agent_id == "dev"
-    # Nothing is auto-seeded into either HOME or the mount. The attendee clones the
-    # repo at HOME, then creates the mount and copies cost_analyzer.py there. The
-    # display label follows the current root: ~ at HOME and /mnt/s3files after the
-    # Open Folder switch. Role scratch jails always use the runtime mount label.
+    # Nothing is auto-seeded into either HOME or the mount: there is no sample to seed,
+    # because the request is whatever the attendee types. The display label follows the
+    # current root: ~ at HOME and /mnt/s3files after the Open Folder switch. Role
+    # scratch jails always use the runtime mount label.
     display = vlabel
     session = {
         "session_id": session_id,
@@ -1291,52 +1289,46 @@ def _lang_for(ext: str) -> str:
 
 # The harness files, by agent, in each agent's native format. "Set up harness" copies
 # these into the workspace; the file IS the configuration (no abstract "install").
+#
+# These are read from the REAL shipped steering (orchestrator/harness/<role>/) rather
+# than written out here, so what an attendee scaffolds in Lab 1 is byte-identical to
+# what the orchestrator dispatches with in Lab 2. Inventing a second copy here is how
+# the two drifted before, and a steering file that describes a task nobody asked for is
+# exactly the predetermined-answer problem this workshop removed: the shipped files
+# describe the ROLE, never the deliverable.
+def _steering_filename(agent_id: str) -> str:
+    """The filename this role's CLI reads from its cwd, from the role registry (the
+    one place it is declared). A role not on the roster falls back to CLAUDE.md,
+    which is the shape every Claude Code variant reads."""
+    try:
+        return _roles.get(agent_id).steering_file
+    except _roles.UnknownRole:
+        return "CLAUDE.md"
+
+
 def _harness_files(agent_id: str) -> dict[str, str]:
-    common_rules = (
-        "## Rules\n\n"
-        "- NEVER approve, merge, or close a PR. Submit for human review only.\n"
-        "- Branch naming: `fix/issue-N`.\n"
-        "- Preserve `cost_analyzer.TOOL_SPECS` names and `inputSchema` verbatim.\n")
-    if agent_id == "kiro":
-        return {".kiro/steering/validator.md":
-                "---\ninclusion: always\n---\n\n# Kiro: VALIDATOR role\n\n"
-                "Run the deterministic grading contract in `grading/` against the deployed\n"
-                "MCP endpoint and decide \"done\". No LLM judge; green opens the PR.\n\n"
-                + common_rules +
-                "\n## Gate spec\n\n```harness:gate\ncontract: grading/\n"
-                "checks:\n  - tool_discovery\n  - tool_correctness\n  - input_validation\n"
-                "max_iterations: 2\n```\n"}
+    """{relative path: content} for one role, read from the shipped steering."""
+    name = _steering_filename(agent_id)
+    src = os.path.join(_ENGINES, "orchestrator", "harness", agent_id, name)
+    files: dict[str, str] = {}
+    try:
+        with open(src, encoding="utf-8") as f:
+            files[name] = f.read()
+    except OSError:
+        # Fail visibly IN THE WORKSPACE rather than silently scaffolding a fiction:
+        # the attendee sees why, and Lab 1 cannot appear to succeed on a missing file.
+        files[name] = (f"# {agent_id}\n\nThe shipped steering for this role was not "
+                       f"found at {src}. Nothing was scaffolded.\n")
     if agent_id == "opencode":
-        return {"AGENTS.md":
-                "# opencode: FRONTEND BUILDER role\n\n"
-                "Build a thin chatbot UI that calls the deployed MCP endpoint for every\n"
-                "answer. No local pricing math.\n\n" + common_rules +
-                "\n## UI spec\n\n```harness:ui\ntitle: Cost Analyzer Chat\n"
-                "tool: estimate_ec2_monthly_cost\ninput_label: instance type, e.g. m5.large\n"
-                "input_field: instance_type\nexamples:\n  - m5.large\n  - t3.micro\n"
-                "  - r5.xlarge\n```\n",
-                ".config/opencode/opencode.json":
-                "{\n"
-                "  \"$schema\": \"https://opencode.ai/config.json\",\n"
-                "  \"provider\": { \"amazon-bedrock\": { \"options\": "
-                f"{{ \"region\": \"{_OPENCODE_REGION}\" }} }} }},\n"
-                f"  \"model\": \"{_OPENCODE_MODEL}\",\n"
-                "  \"small_model\": \"amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0\"\n"
-                "}\n"}
-    # default: claude-code (backend): CLAUDE.md + a SKILL.md
-    return {"CLAUDE.md":
-            "# Claude Code: BACKEND role\n\n"
-            "Wrap the `cost_analyzer` module as a remote MCP server: every function in\n"
-            "`cost_analyzer.TOOL_SPECS` exposed over `tools/list` + `tools/call`, each\n"
-            "returning its handler's dict unchanged. Bedrock-native, no API key.\n\n"
-            + common_rules +
-            "\n## Build spec\n\n```harness:build\nserver_name: cost-analyzer-mcp\n"
-            "server_version: 1.0.0\nexpose: all\n```\n",
-            "skills/configure-backend/SKILL.md":
-            "---\nname: configure-backend\ndescription: Wrap cost_analyzer as a FastMCP "
-            "server behind the Gateway. Use to set up the backend role.\n---\n\n"
-            "# Configure the backend MCP server\n\nDone = `tools/list` returns the five "
-            "tools and `tools/call` returns the contract values (m5.large x2 = 140.16).\n"}
+        files[".config/opencode/opencode.json"] = (
+            "{\n"
+            '  "$schema": "https://opencode.ai/config.json",\n'
+            '  "provider": { "amazon-bedrock": { "options": '
+            f'{{ "region": "{_OPENCODE_REGION}" }} }} }},\n'
+            f'  "model": "{_OPENCODE_MODEL}",\n'
+            '  "small_model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"\n'
+            "}\n")
+    return files
 
 
 def _scaffold_harness(session: dict, agent_id: str) -> dict:
@@ -1406,229 +1398,13 @@ def _deploy_upload(session: dict) -> dict:
         "file_count": len(manifest),
         "manifest": sorted(manifest),
         "harness_agent": harness.get("agent_id"),
-        "entrypoint": "mcp_server.py" if "mcp_server.py" in manifest else None,
     }
-
-
-_SINGLE_TOOL_SERVER = '''"""Single-tool MCP server, written by hand in Stage 1.
-
-Wraps ONE cost_analyzer function ({tool}) behind MCP's JSON-RPC wire shape
-(tools/list + tools/call). This is the smallest possible module-to-MCP conversion;
-Stage 2's backend role does all five tools the same way.
-"""
-import json, os, sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-# cost_analyzer.py lives under the sample/ dir on the shared mount; import it from there
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "sample"))
-sys.path.insert(0, _HERE)
-import cost_analyzer
-
-TOOL = "{tool}"
-SPEC = next(t for t in cost_analyzer.list_tools() if t["name"] == TOOL)
-
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def _send(self, code, body):
-        b = json.dumps(body).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(b)))
-        self.end_headers()
-        self.wfile.write(b)
-    def do_GET(self):
-        self._send(200, {{"status": "ok", "server": "stage1-" + TOOL}})
-    def do_POST(self):
-        n = int(self.headers.get("Content-Length", 0) or 0)
-        req = json.loads(self.rfile.read(n) or b"{{}}")
-        m, i, p = req.get("method"), req.get("id"), req.get("params") or {{}}
-        if m == "tools/list":
-            return self._send(200, {{"jsonrpc": "2.0", "id": i, "result": {{"tools": [SPEC]}}}})
-        if m == "tools/call" and p.get("name") == TOOL:
-            try:
-                out = cost_analyzer.dispatch(TOOL, p.get("arguments") or {{}})
-            except Exception as e:
-                return self._send(200, {{"jsonrpc": "2.0", "id": i,
-                                         "error": {{"code": -32602, "message": str(e)}}}})
-            return self._send(200, {{"jsonrpc": "2.0", "id": i, "result": {{
-                "content": [{{"type": "text", "text": json.dumps(out)}}], "isError": False}}}})
-        self._send(200, {{"jsonrpc": "2.0", "id": i,
-                          "error": {{"code": -32601, "message": "method not found"}}}})
-
-if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9100
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
-'''
-
-
-def _make_conversion(session: dict, tool: str) -> dict:
-    """The Stage 1 payoff: write the server, boot it, verify over the wire."""
-    sys.path.insert(0, _GRADING)
-    from adapters import RemoteMCPClient  # noqa: PLC0415
-
-    server_file = os.path.join(session["_root"], "mcp_server.py")
-    with open(server_file, "w", encoding="utf-8") as f:
-        f.write(_SINGLE_TOOL_SERVER.format(tool=tool))
-
-    # stop any previous conversion's server before booting the new one
-    _stop_server(session)
-    port = _free_port()
-    proc = subprocess.Popen([sys.executable, server_file, str(port)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    endpoint = f"http://127.0.0.1:{port}"
-    import urllib.request
-    alive = False
-    for _ in range(50):
-        try:
-            with urllib.request.urlopen(endpoint, timeout=1) as resp:
-                alive = resp.status == 200
-                break
-        except OSError:
-            time.sleep(0.1)
-
-    tools_list: list[dict] = []
-    sample: dict = {"args": {"instance_type": "m5.large", "count": 2}}
-    verified = False
-    if alive:
-        client = RemoteMCPClient(endpoint)
-        try:
-            tools_list = client.list_tools()
-            result = client.call_tool(tool, sample["args"])
-            sample["result"] = result
-            verified = any(t.get("name") == tool for t in tools_list) and "monthly_cost" in result
-        except Exception as exc:
-            sample["error"] = f"{type(exc).__name__}: {exc}"
-    session["_server"] = {"proc": proc, "pid": proc.pid, "port": port, "endpoint": endpoint}
-    session["_tools"] = tools_list
-    _ledger_append({
-        "kind": "stage1_conversion", "session_id": session["session_id"],
-        "agent_id": session["agent_id"], "user_id": _OS_USER,
-        "started_at": _now_iso(), "tool": tool, "verified": verified,
-        "endpoint": endpoint, "pid": proc.pid,
-        "latency_ms": int((time.monotonic() - session["_t0"]) * 1000),
-    })
-    return {
-        "session_id": session["session_id"],
-        "sample_file": "/mnt/s3files/sample/cost_analyzer.py",
-        "server_file": "/mnt/s3files/mcp_server.py",
-        "tool": tool,
-        "endpoint": endpoint,
-        "tools_list": tools_list,
-        "sample_call": sample,
-        "verified": verified,
-    }
-
-
-def _verify_run(session: dict) -> dict:
-    """Run the agent's output and report whether it works.
-
-    The converted MCP server is a live subprocess; this exercises it over the wire
-    the way a client (or the acceptance gate) would, and reports per-check pass/fail:
-      * server_live      : the endpoint answers a GET liveness probe
-      * tools_list       : tools/list returns the converted tool
-      * tool_call        : a tools/call returns a structured result (monthly_cost)
-      * input_validation : an unknown instance type is rejected, not mispriced
-    Every check is an HTTP round-trip to the running server. On AgentCore this maps
-    to invoking the deployed Runtime/Gateway endpoint with the same calls.
-    """
-    srv = session.get("_server")
-    if not srv or not srv.get("endpoint"):
-        # No engine-booted server. If the AGENT (or the attendee) wrote an
-        # mcp_server.py into the workspace (the path the workshop actually
-        # teaches), boot THAT file and verify it. The check exercises whatever
-        # the agent produced, not a canned artifact.
-        server_file = os.path.join(session["_root"], "mcp_server.py")
-        if not os.path.isfile(server_file):
-            return {"ran": False,
-                    "error": "no mcp_server.py in the workspace yet; ask your "
-                             "agent to write it (see the prompt above)",
-                    "checks": []}
-        _stop_server(session)
-        port = _free_port()
-        proc = subprocess.Popen([sys.executable, server_file, str(port)],
-                                cwd=session["_root"],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        endpoint = f"http://127.0.0.1:{port}"
-        import urllib.request as _ur  # noqa: PLC0415
-        for _ in range(50):
-            try:
-                with _ur.urlopen(endpoint, timeout=1) as resp:
-                    if resp.status == 200:
-                        break
-            except OSError:
-                time.sleep(0.1)
-        session["_server"] = {"proc": proc, "pid": proc.pid, "port": port, "endpoint": endpoint}
-        srv = session["_server"]
-    endpoint = srv["endpoint"]
-    tool = (session.get("_tools") or [{}])[0].get("name") or "estimate_ec2_monthly_cost"
-    sys.path.insert(0, _GRADING)
-    import urllib.request  # noqa: PLC0415
-    from adapters import RemoteMCPClient, MCPRemoteError  # noqa: PLC0415
-
-    checks = []
-
-    def add(cid, ok, detail):
-        checks.append({"check": cid, "passed": bool(ok), "detail": detail})
-
-    # 1) liveness
-    t0 = time.monotonic()
-    live = False
-    try:
-        with urllib.request.urlopen(endpoint, timeout=3) as r:
-            live = (r.status == 200)
-        add("server_live", live, f"GET {endpoint} -> 200" if live else "no 200 from endpoint")
-    except OSError as exc:
-        add("server_live", False, f"{type(exc).__name__}: {exc}")
-
-    client = RemoteMCPClient(endpoint)
-    # 2) tools/list
-    listed = []
-    try:
-        listed = client.list_tools()
-        ok = any(t.get("name") == tool for t in listed)
-        add("tools_list", ok, f"{len(listed)} tool(s); {tool} present" if ok
-            else f"{tool} not in tools/list")
-    except Exception as exc:
-        add("tools_list", False, f"{type(exc).__name__}: {exc}")
-
-    # 3) a tools/call returns a structured price
-    sample = {}
-    try:
-        sample = client.call_tool(tool, {"instance_type": "m5.large", "count": 2})
-        ok = isinstance(sample, dict) and "monthly_cost" in sample
-        add("tool_call", ok,
-            f"{tool}(m5.large x2) -> monthly_cost={sample.get('monthly_cost')}" if ok
-            else f"result missing monthly_cost: {sorted(sample) if isinstance(sample, dict) else sample}")
-    except Exception as exc:
-        add("tool_call", False, f"{type(exc).__name__}: {exc}")
-
-    # 4) bad input must be rejected (only meaningful for the EC2 tool)
-    try:
-        client.call_tool(tool, {"instance_type": "not-a-real-type"})
-        add("input_validation", False, "unknown instance type was NOT rejected")
-    except MCPRemoteError:
-        add("input_validation", True, "unknown instance type correctly rejected")
-    except Exception as exc:
-        # the tool may not take instance_type; treat a clean error as a pass-ish note
-        add("input_validation", True, f"rejected ({type(exc).__name__})")
-
-    passed = all(c["passed"] for c in checks)
-    elapsed = int((time.monotonic() - t0) * 1000)
-    _ledger_append({
-        "kind": "stage1_verify", "session_id": session["session_id"],
-        "agent_id": session["agent_id"], "user_id": _OS_USER, "started_at": _now_iso(),
-        "tool": tool, "passed": passed, "latency_ms": elapsed,
-        "checks": [{"check": c["check"], "passed": c["passed"]} for c in checks],
-    })
-    return {"ran": True, "passed": passed, "endpoint": endpoint, "tool": tool,
-            "latency_ms": elapsed, "sample": sample, "checks": checks}
 
 
 def _stop_server(session: dict) -> None:
-    """Stop a session's preview MCP server for good. terminate -> wait -> kill so a
+    """Stop any long-lived process a session started, for good. terminate -> wait -> kill so a
     server that ignores SIGTERM (the old SIGTERM-only path) can never linger as an
-    orphan. An mcp_server.py process never exits on its own, so a half-killed one
+    orphan. A served process never exits on its own, so a half-killed one
     would survive forever and pile up (the orphan storm that wedged the console)."""
     srv = session.get("_server")
     if srv:
@@ -1665,7 +1441,7 @@ def _kill_proc(proc) -> None:
 
 
 # Reap every session's preview server when the host process exits cleanly (a
-# console restart / --reload SIGTERM), so an mcp_server.py is never orphaned to
+# console restart / --reload SIGTERM), so a served process is never orphaned to
 # launchd. A SIGKILL'd host can't run this, but the engine's run-dir prune + a
 # fresh start still bounds the damage.
 @atexit.register
@@ -1872,13 +1648,6 @@ def dispatch(method: str, path: str, body: dict | None) -> tuple[int, dict]:
                                               cols=size.get("cols", 0))
                     out = _pty_io(session, body or {})
                     return (409, out) if "error" in out else (200, out)
-                if action == "convert-skill":
-                    if body is None:
-                        return 400, {"error": "invalid JSON body"}
-                    if session["status"] != "open":
-                        return 409, {"error": "session not open", "status": session["status"]}
-                    tool = body.get("tool") or "estimate_ec2_monthly_cost"
-                    return 200, _make_conversion(session, tool)
                 if action == "file":
                     # The file explorer's editor + context menu. An optional
                     # "op" selects delete/rename; without it the original
@@ -1887,7 +1656,7 @@ def dispatch(method: str, path: str, body: dict | None) -> tuple[int, dict]:
                     if body is None:
                         return 400, {"error": "invalid JSON body"}
                     # A closed session's workspace is gone; file ops on it must be
-                    # rejected the same way input/pty/verify are; never a 200 that
+                    # rejected the same way input/pty are; never a 200 that
                     # pretends the workspace still lives. (Same guard as every other
                     # action below.)
                     if session["status"] != "open":
@@ -1914,10 +1683,6 @@ def dispatch(method: str, path: str, body: dict | None) -> tuple[int, dict]:
                     if session["status"] != "open":
                         return 409, {"error": "session not open", "status": session["status"]}
                     return 200, _deploy_upload(session)
-                if action == "verify":
-                    if session["status"] != "open":
-                        return 409, {"error": "session not open", "status": session["status"]}
-                    return 200, _verify_run(session)
                 if action == "open-folder":
                     # VS Code "Open Folder": re-root a Development session at a new
                     # directory (or close to a no-folder state). Dev sessions only.
@@ -2027,8 +1792,8 @@ def main() -> None:
     os.makedirs(_STAGE1_DIR, exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Interactive API (real local engine) on http://localhost:{PORT}")
-    print(f"Workspaces under {_STAGE1_DIR}: shell commands, files, and the converted "
-          f"MCP server are all real. Ledger: {_LEDGER}")
+    print(f"Workspaces under {_STAGE1_DIR}: shell commands and files are all real. "
+          f"Ledger: {_LEDGER}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

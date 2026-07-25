@@ -28,11 +28,8 @@ from fixture_executor import FixtureExecutor  # noqa: E402
 
 ALL_AGENTS = ["claude-code", "claude-code-validator", "opencode"]
 
-# A task the router actually classifies (convert intent). The router is now
-# task-agnostic: a filler like "task" matches no intent and fails loud, so tests
-# that only need a VALID task (they exercise phases/iteration/admission, not
-# routing) use this.
-CONVERT_TASK = "convert the cost analyzer module to an MCP server and chatbot UI"
+# Any sentence at all is a valid request now; nothing classifies it.
+CONVERT_TASK = "build a small thing and prove it works"
 
 
 def _engine(**kw) -> Engine:
@@ -51,38 +48,50 @@ def _wait_terminal(run, timeout_s: float = 60.0):
     return run
 
 
-def test_happy_path_passes_real_gate():
+def test_happy_path_runs_the_real_gate_and_composes():
+    """The MACHINERY, end to end: every routed role produced files, the validator's
+    authored check ran as a real subprocess and its real exit code decided, and the
+    result composed into a real commit.
+
+    What this deliberately does NOT assert is what the agents produced or what a
+    reviewer thought of it. Offline there is no agent and no answer to check, so an
+    assertion about content would only be testing the test double, and an assertion
+    about the LLM verdict would make the suite depend on a live judge's opinion.
+    """
     engine = _engine()
     run = _wait_terminal(engine.submit("Convert the module to an MCP server", ALL_AGENTS))
     result = public_result(run)
-    assert result["status"] == "passed"
+    # the gate is one real execution whose exit code decided
     assert result["gate"]["passed"] is True
-    # the gate's three checks all ran against the live endpoint
-    assert {c["check"] for c in result["gate"]["checks"]} == {
-        "tool_discovery", "tool_correctness", "input_validation"}
-    assert all(c["passed"] for c in result["gate"]["checks"])
-    # locally there is no GitHub MCP Gateway wired: pr_url stays null and the PR
-    # step FAILS LOUD (a typed error, never a silent local-commit substitute).
-    # The composed branch still exists locally; it is just not published.
-    assert result["pr_url"] is None
-    assert result["pr"] and result["pr"].get("error", "").startswith("PR_NO_GATEWAY")
+    assert result["gate"]["checks"] and all(c["passed"] for c in result["gate"]["checks"])
+    assert result["gate"]["summary"]
+    # every routed role left work behind, and it composed into one real commit
     assert result["composed_branch"] == f"run/{run.run_id}"
     assert result["composed_commit"] and len(result["composed_commit"]) == 40
-    assert result["composed_from"] == ["backend-mcp", "validator", "frontend-builder"]
-    assert result["iterations"] == 1
-    assert result["artifact_endpoint"].startswith("http://127.0.0.1:")
-    # the separate review orchestrator approved with the exact pass token
-    assert result["review"]["state"] == "approved" and result["review"]["lgtm"] is True
-    # local mode invokes no model: usage is zero, never inferred
+    # builders first, checker last: the order the join and the run view expect
+    # Builders first, checker last, read from the registry rather than pinned as a
+    # literal roster: the ORDER is the invariant the join and the run view depend on,
+    # while which roles exist is the roster's business (and is configurable).
+    import roles as _roles
+    assert result["composed_from"] == [
+        _roles.get(a).role_name for a in _roles.roster_ids()]
+    assert result["composed_from"][-1] == _roles.get(_roles.checker_ids()[0]).role_name
+    # locally there is no GitHub MCP Gateway wired: pr_url stays null and the PR step
+    # FAILS LOUD (a typed error, never a silent local-commit substitute).
+    assert result["pr_url"] is None
+    assert result["pr"] and result["pr"].get("error", "").startswith("PR_NO_GATEWAY")
+    # local mode invokes no model for the roles: usage is zero, never inferred
     for r in run.progress.values():
         assert r.estimated is False and r.tokens == 0 and r.latency_ms >= 0
     engine.shutdown()
 
 
-def test_public_diff_is_the_real_composed_change():
-    """The session Changes tab reads a REAL per-file unified diff from this run's
-    own commit in the composed repo, not a reconstruction. A pre-compose run has
-    no commit yet, so files is empty with an honest reason."""
+def test_public_diff_carries_whatever_the_roles_wrote():
+    """The Changes tab reads a REAL per-file unified diff from this run's own commit.
+
+    The engine names no paths, so this asserts the SHAPE (every routed role's work is
+    present, at the paths the role chose, with a real patch) rather than a filename
+    the repository would have had to dictate."""
     engine = _engine()
 
     pending = engine.submit("Convert the module to an MCP server", ALL_AGENTS)
@@ -95,56 +104,69 @@ def test_public_diff_is_the_real_composed_change():
     assert diff["commit"] == run.composed_commit
     assert diff["branch"] == f"run/{run.run_id}"
     paths = {f["path"] for f in diff["files"]}
-    # the real deliverable the gate graded, all under deliverable/ (the review
-    # verdict is a PR comment now, not a committed file)
-    assert "deliverable/mcp_server.py" in paths
-    assert "deliverable/ui/index.html" in paths
-    assert any(p.startswith("deliverable/") for p in paths)
+    assert paths, "the commit carried no files"
+    # each routed role's own work is in the commit, under its own directory
+    for agent_id in run.agents:
+        assert any(p.startswith(f"{agent_id}/") for p in paths), (
+            f"{agent_id} contributed nothing to the commit; paths={sorted(paths)}")
     # every file carries a real unified-diff patch with add counts
-    server = next(f for f in diff["files"] if f["path"] == "deliverable/mcp_server.py")
-    assert server["added"] and server["added"] > 0
-    assert "@@" in server["patch"] and "def " in server["patch"]
+    for f in diff["files"]:
+        assert f["added"] > 0 and "@@" in f["patch"]
     engine.shutdown()
 
 
-def test_router_dispatches_only_the_routed_roles():
-    """The router (registry + explicit-intent rule + complexity check) decides
-    the dispatch list: agents omitted on submit, never a fixed fan-out."""
+def test_routing_selects_roles_and_nothing_else():
+    """Routing picks ROLES. The request text is the attendee's and is never
+    classified, so the same arbitrary sentence runs with whatever roles are named."""
     engine = _engine()
-    # explicit agent intent: "use codex" -> frontend role only
-    fe = _wait_terminal(engine.submit("use codex to refresh the chatbot examples"))
-    assert fe.route["workflow_ref"] == "patch/frontend-v1"
-    assert fe.agents == ["opencode"] and fe.status == "passed"
-    # patch-sized request -> backend only (complexity check: SIMPLE)
-    be = _wait_terminal(engine.submit("fix the server version string"))
-    assert be.route["workflow_ref"] == "patch/backend-v1"
-    assert be.agents == ["claude-code"] and be.status == "passed"
-    # full-stack intent -> Critter Lab usecase, all three roles
-    fs = _wait_terminal(engine.submit("Build the full-stack Critter Lab app"))
-    assert fs.route["workflow_ref"] == "build/fullstack-v1"
-    assert fs.usecase == "critter-lab" and fs.agents == ALL_AGENTS
-    assert fs.status == "passed"
+    ODD = "write me a haiku about tuesday and serve it somehow"
+    # explicit roles: exactly those roles work (plus nothing else)
+    fe = _wait_terminal(engine.submit(ODD, ["opencode", "claude-code-validator"]),
+                        timeout_s=120)
+    assert fe.agents == ["opencode", "claude-code-validator"]
+    assert fe.route["preset"] == "custom" and fe.status == "passed"
+    # a preset supplies its own request text and role set
+    cli = _wait_terminal(engine.submit("", preset="cli-tool"), timeout_s=120)
+    assert cli.agents == ["claude-code", "claude-code-validator"]
+    assert cli.route["preset"] == "cli-tool" and cli.task, "preset supplied no task"
+    assert cli.status == "passed"
     engine.shutdown()
 
 
-def test_unknown_workflow_ref_fails_loud():
-    """The fail-closed rule: an unknown workflow_ref is rejected, not guessed."""
+def test_routing_fails_loud_rather_than_guessing():
+    """Never invent a task or a role set: an unknown preset, an unknown role, and
+    "neither given" all fail closed."""
     engine = _engine()
-    run = _wait_terminal(engine.submit("task", workflow_ref="no/such-workflow-v9"),
+    bad = _wait_terminal(engine.submit("anything at all", preset="no/such-preset"),
                          timeout_s=10)
-    assert run.status == "failed"
-    assert run.fail_reason == "UNKNOWN_WORKFLOW:no/such-workflow-v9"
+    assert bad.status == "failed" and bad.fail_reason == "UNKNOWN_PRESET:no/such-preset"
+    unknown = _wait_terminal(engine.submit("anything", ["claude-code", "nope"]),
+                             timeout_s=10)
+    assert unknown.status == "failed" and unknown.fail_reason == "UNKNOWN_ROLE:nope"
+    none = _wait_terminal(engine.submit("anything at all"), timeout_s=10)
+    assert none.status == "failed"
+    assert none.fail_reason.startswith("PRESET_NOT_SPECIFIED")
     engine.shutdown()
 
 
-def test_review_workflow_judges_an_existing_run():
-    """review/pr-v1 is read-only: it re-serves the target run's artifact, the
-    review orchestrator judges it, and nothing new is composed."""
+def test_a_build_always_routes_a_checker():
+    """Structural: a builder alone would produce work with no authored acceptance
+    check, and with no check the gate is red by definition. Refuse the route."""
     engine = _engine()
-    built = _wait_terminal(engine.submit("Convert the module to an MCP server"))
+    run = _wait_terminal(engine.submit("anything", ["claude-code"]), timeout_s=10)
+    assert run.status == "failed"
+    assert run.fail_reason.startswith("NO_CHECKER_ROUTED")
+    engine.shutdown()
+
+
+def test_review_preset_judges_an_existing_run():
+    """The review preset is read-only: it re-runs the TARGET's own authored check and
+    posts an assessment; nothing new is composed."""
+    engine = _engine()
+    built = _wait_terminal(engine.submit("build any small thing", ALL_AGENTS))
     assert built.status == "passed"
-    rev = _wait_terminal(engine.submit("review the PR from the last run"))
-    assert rev.route["workflow_ref"] == "review/pr-v1"
+    rev = _wait_terminal(engine.submit("", preset="review-a-run"))
+    assert rev.route["preset"] == "review-a-run"
     assert rev.agents == ["claude-code-validator"]
     assert rev._review_target == built.run_id
     assert rev.status == "passed" and rev.review["state"] == "approved"
@@ -153,19 +175,21 @@ def test_review_workflow_judges_an_existing_run():
 
 
 def test_terminals_record_real_role_shell_work():
-    """Every role leaves a shell transcript: harness self-install (cp the
-    steering file), module probes, pytest, with exit codes."""
+    """Every routed role leaves a real shell transcript with real exit codes.
+
+    Asserts the transcript EXISTS and is honest, not what it contains: the commands a
+    role runs follow from what it decided to build, which the engine does not know."""
     engine = _engine()
-    run = _wait_terminal(engine.submit("Convert the module to an MCP server"))
+    run = _wait_terminal(engine.submit("build any small thing", ALL_AGENTS))
     assert set(run.terminals) == {"claude-code", "claude-code-validator", "opencode"}
-    backend = run.terminals["claude-code"]
-    assert any("CLAUDE.md" in line["cmd"] for line in backend)        # harness install
-    assert any("mcp_server.py" in line["cmd"] for line in backend)    # artifact probe
-    assert all(line["exit"] == 0 for line in backend)
-    validator = run.terminals["claude-code-validator"]
-    # offline floor: the grading contract graded in-process, echoed to the lane
-    assert any("grading contract" in line["cmd"] for line in validator)
-    assert any("checks green" in line["output"] for line in validator)
+    for agent_id, lines in run.terminals.items():
+        assert lines, f"{agent_id} recorded no shell work"
+        assert all(line["exit"] == 0 for line in lines), f"{agent_id} had a failing command"
+        # the harness install step names the role's own steering file, which is the
+        # one filename that IS part of the contract (it is the role's identity)
+        steering = "AGENTS.md" if agent_id == "opencode" else "CLAUDE.md"
+        assert any(steering in line["cmd"] for line in lines), (
+            f"{agent_id} never installed its steering file")
     engine.shutdown()
 
 
@@ -180,7 +204,7 @@ def test_agent_terminal_is_runtime_session_only_on_shipped_path():
     by ``_executor_name``, the same value ``submit`` stamps from the executor."""
     # Shipped path: host plumbing goes to the orchestrator lane, NOT the agent tab.
     shipped = Run(run_id="run_000000_001", task="t", agents=["claude-code"],
-                  roles={"claude-code": "backend-mcp"})
+                  roles={"claude-code": "backend-builder"})
     shipped._executor_name = "agentcore"
     out = shipped.term("claude-code", "echo staged-harness")
     assert out.strip() == "staged-harness"        # the command still really runs
@@ -192,7 +216,7 @@ def test_agent_terminal_is_runtime_session_only_on_shipped_path():
     # Test/offline path: no runtime session exists, so plumbing stays under the
     # agent (the offline tests' terminal contract is unchanged).
     offline = Run(run_id="run_000000_002", task="t", agents=["claude-code"],
-                  roles={"claude-code": "backend-mcp"})
+                  roles={"claude-code": "backend-builder"})
     offline._executor_name = "fixture"
     offline.term("claude-code", "echo staged")
     assert "claude-code" in offline.terminals
@@ -216,18 +240,21 @@ def test_admission_fail_closed():
     assert (empty.status, empty.fail_reason) == ("failed", "EMPTY_TASK")
     unknown = _wait_terminal(engine.submit(CONVERT_TASK, ["claude-code", "nope"]), timeout_s=10)
     assert unknown.status == "failed"
-    assert unknown.fail_reason.startswith("UNKNOWN_AGENT")
+    assert unknown.fail_reason.startswith("UNKNOWN_ROLE")
     engine.shutdown()
 
 
 def test_bounded_iteration_retries_then_passes():
+    """A genuinely RED gate (the authored check exits nonzero for real) triggers
+    exactly one bounded re-implement pass, then the second round passes.
+
+    The red comes from a real exit code, not from a faked broken endpoint: the whole
+    point of the gate is that its verdict is a real execution."""
     engine = _engine()
     run = _wait_terminal(
-        engine.submit(CONVERT_TASK, ALL_AGENTS, options={"inject_failure": True}),
+        engine.submit(CONVERT_TASK, ALL_AGENTS, options={"fail_first_check": True}),
         timeout_s=90,
     )
-    # round 1 review red (sabotaged endpoint) -> one bounded re-implement pass
-    # (the one-bounded-pass rule) -> round 2 approved
     assert run.iterations == 2 <= MAX_ITERATIONS
     assert run.status == "passed"
     warns = [e for e in run.events if e["level"] == "warn"]
@@ -253,9 +280,9 @@ def test_harness_setup_block_extends_a_role():
     (MCP servers, extra skills, install commands) is applied in the role's real
     terminal during harness install: the file IS the configuration."""
     import shutil
-    import builders
+    import harness_config
 
-    src = builders.harness_file("claude-code", "sample-to-mcp")
+    src = harness_config.harness_file("claude-code")
     backup = src + ".bak"
     shutil.copy(src, backup)
     try:
@@ -264,7 +291,7 @@ def test_harness_setup_block_extends_a_role():
                     "mcp:\n  - name: github\n    url: https://gw.example/mcp\n"
                     "install:\n  - echo custom-install-ran\n```\n")
         engine = _engine()
-        run = _wait_terminal(engine.submit("fix the server version string"))
+        run = _wait_terminal(engine.submit("fix whatever needs fixing", ["claude-code", "claude-code-validator"]))
         assert run.status == "passed"
         lines = run.terminals["claude-code"]
         assert any("mcp server github registered" in line["output"] for line in lines)

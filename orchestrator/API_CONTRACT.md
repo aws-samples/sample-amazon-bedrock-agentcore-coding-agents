@@ -20,16 +20,23 @@ orchestrator runs the autonomous blueprint → one composed PR. The API reflects
 ```json
 {
   "run_id": "run_0001",
-  "task": "Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server with tests + a chatbot UI",
+  "task": "Build a small app with a backend and a frontend",
   "status": "running",                  // queued | running | passed | failed | needs_human
   "phase": "agent_execution",           // the orchestration blueprint phase (see below)
   "created_at": "2026-06-09T07:40:00Z",
-  "agents": ["claude-code", "kiro", "codex"],
+  "agents": ["claude-code", "opencode", "claude-code-validator"],
   "roles": {                            // role per agent, composed, NOT raced
-    "claude-code": "backend-mcp",
-    "kiro": "validator",
-    "codex": "frontend-builder"
-  }
+    "claude-code": "backend-builder",
+    "opencode": "frontend-builder",
+    "claude-code-validator": "validator"
+  },
+  "route": {                            // the routing verdict (additive; see below)
+    "preset": "web-app",
+    "rule": "preset 'web-app': Build a web app, front and back",
+    "agents": ["claude-code", "opencode", "claude-code-validator"],
+    "read_only": false
+  },
+  "fail_reason": null                   // machine-readable reason when status is failed/needs_human
 }
 ```
 
@@ -41,12 +48,13 @@ A run also has a terminal status once finalization completes.
 ```json
 {
   "agent": "claude-code",
-  "role": "backend-mcp",
+  "role": "backend-builder",
   "state": "done",                      // pending | working | done | error
   "latency_ms": 192340,                 // run metric (observability), NOT a ranking
   "tokens": 184000,
   "cost_usd": 1.84,
-  "note": "wrapped 5 tools with FastMCP, deployed behind Gateway"
+  "note": "built the backend side of this request (12 files)",
+  "engine": "agentcore"                 // "agentcore" on the shipped path; "" on fixture
 }
 ```
 
@@ -55,21 +63,26 @@ A run also has a terminal status once finalization completes.
 {
   "run_id": "run_0001",
   "status": "passed",                   // passed | failed | needs_human
-  "gate": {                             // the deterministic pytest acceptance gate, no LLM judge
+  "gate": {                             // the validator-authored acceptance check result (agentic, real exit code)
     "passed": true,
     "checks": [
-      {"check": "tool_discovery",   "passed": true,  "detail": "all 5 tools discoverable"},
-      {"check": "tool_correctness", "passed": true,  "detail": "5 fixture cases correct"},
-      {"check": "input_validation", "passed": true,  "detail": "unknown type rejected"}
-    ]
+      {"check": "service_reachable", "passed": true,  "detail": "GET /health returned 200"},
+      {"check": "conversion_works",  "passed": true,  "detail": "length conversion returned correct value"},
+      {"check": "bad_input_rejected","passed": true,  "detail": "negative value returned 400"}
+    ],
+    "summary": "3 checks passed"
   },
   "pr_url": "https://github.com/your-org/your-repo/pull/42",   // null until finalization opens it
-  "composed_from": ["backend-mcp", "validator", "frontend-builder"],  // proves compose-not-compete
-  "iterations": 1,                      // bounded (~2) then needs_human
-  "artifact_endpoint": "http://127.0.0.1:49760",  // additive: where the composed MCP server answers
+  "composed_from": ["backend-builder", "frontend-builder", "validator"],  // proves compose-not-compete
+  "iterations": 1,                      // bounded (initial + MAX_REVIEW_ROUNDS) then needs_human
+  "artifact_endpoint": "http://127.0.0.1:49760",  // additive: where the running service answers (when applicable)
   "composed_branch": "run/run_150318_001",        // additive: REAL local git branch of the composed change
   "composed_commit": "517e4dcf66…",               // additive: real commit sha (null until gate green)
-  "fail_reason": null                   // additive: machine-readable reason on failed/needs_human
+  "fail_reason": null,                  // additive: machine-readable reason on failed/needs_human
+  "route": {…},                         // additive: same routing verdict as on Run
+  "review": {…},                        // additive: the reviewer's verdict (see below)
+  "pr": {…},                            // additive: GitHub finalization result (see below)
+  "merge_state": null                   // additive: "merged"|"human_review"|"skipped:…"|"error:…"|null
 }
 ```
 
@@ -86,25 +99,36 @@ Deterministic offline tests inject a test-only `fixture` executor by constructor
 reports `executor: "fixture"`.
 
 ### `GET /api/agents`
-List the configurable agents + their default role + model. Console renders these as checkboxes.
+List the served agents + their default role + model, projected from the role registry.
+Console renders these on the Stage 1 shelf.
 ```json
 {
   "agents": [
-    {"id": "claude-code", "label": "Claude Code", "default_role": "backend-mcp", "model": "us.anthropic.claude-opus-4-6-v1", "credential": "bedrock-native"},
-    {"id": "kiro",        "label": "Kiro",        "default_role": "validator",   "model": "auto",                          "credential": "token-vault"},
-    {"id": "codex",       "label": "Codex",       "default_role": "frontend-builder", "model": "openai.gpt-5.5",           "credential": "runtime-iam"}
+    {"id": "claude-code",           "label": "Claude Code", "default_role": "backend-builder",   "model": "us.anthropic.claude-opus-4-6-v1",          "credential": "bedrock-native"},
+    {"id": "opencode",              "label": "opencode",    "default_role": "frontend-builder",  "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6", "credential": "runtime-iam"},
+    {"id": "claude-code-validator", "label": "Claude Code", "default_role": "validator",         "model": "us.anthropic.claude-opus-4-6-v1",          "credential": "bedrock-native"}
   ]
 }
 ```
+The list is derived from `roles.py` (the one declarative registry) and is wirable at runtime
+via `WORKSHOP_ROLES`. Kiro and Codex remain in the registry as a restore path but are not
+included in the served roster by default.
 
 ### `POST /api/runs`: submit one task (fire-and-forget)
 Request:
 ```json
 {
-  "task": "Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server with tests + a chatbot UI",
-  "agents": ["claude-code", "kiro", "codex"]      // optional; defaults to all three
+  "task": "Build a small service that converts between units",
+  "preset": "service-from-scratch",    // optional; one of the ids from GET /api/presets
+  "agents": ["claude-code", "claude-code-validator"],  // optional explicit role override
+  "options": {}                        // optional per-run overrides (e.g. {"model": "..."})
 }
 ```
+Routing is explicit, never a guess: supply `preset` (a starting point), `agents` (an explicit
+role list), or both. With neither, `task` alone fails at admission with `PRESET_NOT_SPECIFIED`,
+because the coordinator must know which roles to dispatch. Unknown preset: `UNKNOWN_PRESET`.
+Unknown role in `agents`: `UNKNOWN_ROLE`. Build with no checker routed: `NO_CHECKER_ROUTED`.
+
 Response `202 Accepted` → a **Run** object (status `queued`, phase `admission`). The caller then
 polls `GET /api/runs/{id}`. (Fire-and-forget: the POST returns immediately; the run continues.)
 
@@ -113,8 +137,12 @@ Returns a **Run** plus a `progress` array of **AgentProgress**:
 ```json
 {
   "run_id": "run_0001", "task": "…", "status": "running", "phase": "agent_execution",
-  "created_at": "…", "agents": ["claude-code","kiro","codex"],
-  "roles": {"claude-code":"backend-mcp","kiro":"validator","codex":"frontend-builder"},
+  "created_at": "…",
+  "agents": ["claude-code","opencode","claude-code-validator"],
+  "roles": {"claude-code":"backend-builder","opencode":"frontend-builder",
+            "claude-code-validator":"validator"},
+  "route": {"preset":"web-app","rule":"…","agents":[…],"read_only":false},
+  "fail_reason": null,
   "progress": [ /* one AgentProgress per agent */ ]
 }
 ```
@@ -130,36 +158,52 @@ Append-only audit trail of phase transitions and role activity (embedded event a
 
 ### Additive endpoints (the routed engine, all contract-safe extensions)
 
-- **`GET /api/workflows`**: the workflow registry the router resolves against (versioned
-  workflow descriptors): `{ "workflows": [ {"workflow_ref":"convert/sample-to-mcp-v1","version":"1.0.0",
-  "agents":[…],"usecase":"sample-to-mcp","read_only":false,"description":"…"}, … ] }`
+- **`GET /api/presets`**: the starting points the console renders as chips, resolved from
+  the one registry (`presets.PRESETS`) so the console and the engine cannot drift:
+  `{ "presets": [ {"preset":"service-from-scratch","title":"Build a small service",
+  "roles":["claude-code","claude-code-validator"],"task":"…","read_only":false}, … ] }`.
+  Every build preset includes the checker in `roles`. `your-own` is always present with
+  an empty `task` (the attendee supplies the request).
+- **`GET /api/roster`**: the SERVED roles, projected from the one declarative registry
+  (`roles.py`). The console renders these instead of keeping its own copy, so the
+  sidebar can never advertise an agent this deployment does not run:
+  `{ "roster": [ {"role":"claude-code","label":"Claude Code","kind":"builder",
+  "capability":"backend","role_name":"backend-builder","description":"…",
+  "steering_file":"CLAUDE.md","model":"us.anthropic.claude-opus-4-6-v1",
+  "credential":"bedrock-native"}, … ] }`.
 - **`GET /api/runs/{id}/terminals`**: per-role shell transcripts (every line a real
   `/bin/sh` command the role ran in its container, with output + exit code):
-  `{ "run_id":"…", "terminals": {"claude-code":[{"cmd":"…","output":"…","exit":0,"elapsed_s":0.1}], …} }`
+  `{ "run_id":"…", "terminals": {"claude-code":[{"cmd":"…","output":"…","exit":0,"elapsed_s":0.1}], …},
+  "events": {…} }`. The `events` field carries the structured per-role agent event
+  stream (text/thinking/tool_use/tool_result) the console renders as live tool calls.
 - **`GET /api/runs/{id}/diff`**: the composed change as a per-file unified diff (the
   session Changes tab's data), read from this run's own commit in the composed repo:
-  `{ "run_id":"…", "commit":"…"|null, "branch":"run/…", "files": [{"path":"deliverable/mcp_server.py",
+  `{ "run_id":"…", "commit":"…"|null, "branch":"run/…", "files": [{"path":"claude-code/server.py",
   "added":42,"removed":0,"patch":"@@ …"}, …] }`. `files` is empty (with `reason`) until
   the gate is green and the commit lands. Each run's commit roots at the empty base, so
   its diff is exactly its own deliverable set (the same invariant the PR path assumes).
 - **`GET /api/github`** / **`POST /api/github`**: the real-PR credential ladder status
   (env var → Secrets Manager → settings file → local mode) and the Settings-pane
   save/clear. Storage backend: `WORKSHOP_GITHUB_STORE=secretsmanager` (the workshop box)
-  stores the pasted PAT in AWS Secrets Manager (secret name `WORKSHOP_GITHUB_SECRET`,
-  default `agentcore/workshop/github-connection`; `status().source` = `secrets-manager`);
+  stores the repo config in AWS Secrets Manager (`status().source` = `secrets-manager`);
   the default `local` keeps the gitignored 0600 settings file (`source` = `settings`),
-  and any Secrets Manager failure degrades to that file transparently. The token never
-  surfaces beyond its last 4 characters.
+  and any Secrets Manager failure degrades to that file transparently. The GitHub App
+  credential (repo + optional gateway URL) never surfaces beyond a masked summary.
 
 ### Additive fields on Run / Result (the routed engine)
 
-- `Run.route`: the router's verdict: `{"workflow_ref","version","rule","agents","usecase","read_only"}`.
-  `POST /api/runs` accepts an optional `workflow_ref` (unknown → run fails `UNKNOWN_WORKFLOW:…`,
-  fail-closed) and treats `agents` as an explicit override; OMIT it and the router decides.
-- `Result.review`: the SEPARATE review orchestrator's verdict: `{"state":"approved"|
-  "changes_requested","lgtm":bool,"round":n,"gate":…,"critique":[{check,passed,detail},…]}`.
+- `Run.route`: the routing verdict: `{"preset","rule","agents","read_only"}`. `preset` is
+  the id from `GET /api/presets`, or `"custom"` when `agents` was given explicitly.
+  `rule` is a human-readable explanation for the run log. `agents` is the resolved
+  role list; `read_only` is true for review-only routes (no builder dispatched).
+  Absent until the run exits admission (the router sets it there).
+- `Result.review`: the SEPARATE reviewer's verdict: `{"state":"approved"|"changes_requested",
+  "lgtm":bool,"round":n,"gate":{…},"reasons":[…],"assessment":"…"}`.
+  `reasons` is the list of change-request feedback items fed back to the routed roles on a
+  re-implement pass. `assessment` is the full markdown posted on the PR.
   Pass token is the exact string `LGTM: no changes needed`; non-LGTM buys ONE bounded
-  re-implement pass.
+  re-implement pass (MAX_REVIEW_ROUNDS). The LLM judge is fail-open: unreachable judge
+  abstains and the deterministic gate result stands.
 - `Result.pr`: GitHub finalization: `{"pr_url":…}` when connected, `{"skipped":…}` in local
   mode, `{"error":…}` on a real failure. `pr_url` is real or null, never fake.
 
@@ -173,7 +217,7 @@ POST /api/runs
         └─> running (context_hydration)
              └─> running (pre_flight)        // fail-closed: may go -> failed here
                   └─> running (agent_execution)   // the 3 roles work in parallel
-                       └─> running (finalization)  // compose + pytest gate
+                       └─> running (finalization)  // compose + validator-authored acceptance gate
                             ├─> passed        (gate green, pr_url set)
                             ├─> failed        (gate red after bounded iterations)
                             └─> needs_human   (iteration cap hit)

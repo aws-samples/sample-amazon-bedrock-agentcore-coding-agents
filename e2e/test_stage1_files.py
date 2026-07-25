@@ -5,9 +5,7 @@ the live `/mnt/s3files` workspace, drive the VS Code-like file explorer (tree, w
 freely-named file, read it back, rename, delete, nested paths, binary-ish content), the
 jail guard that refuses any path escaping the workspace, the scaffold-harness step that
 writes the agent's steering files, and the conversion payoff; `convert-skill` boots a
-real MCP server and verifies it over the wire (m5.large x2 == 140.16), `verify` runs the
 live checks, and `deploy-upload` packages the workspace into a code bundle whose manifest
-carries the converted `mcp_server.py`.
 
 Every test drives the shared real console server (conftest fixtures), asserts the real
 `/api/dev` contract over HTTP, and cleans up its own session. No mocks, no ordering deps.
@@ -16,8 +14,7 @@ from __future__ import annotations
 
 from e2e.conftest import (
     req, expect_status, open_session, close_session,
-    file_tree, write_file, read_file, file_op, seed_skill,
-    EC2_FIXTURE_COST,
+    file_tree, write_file, read_file, file_op, seed_file,
 )
 
 
@@ -26,7 +23,7 @@ from e2e.conftest import (
 # ---------------------------------------------------------------------------
 def test_file_tree_starts_empty_then_shows_created_skill(console, cookie):
     """Open the explorer: a fresh workspace is EMPTY; the module shows up only after
-    the participant creates cost_analyzer.py in the editor (New File -> paste)."""
+    the participant creates a file in the editor (New File -> type)."""
     sid = open_session(console, cookie, "claude-code")
     try:
         # the workspace starts empty; nothing is magically pre-seeded
@@ -34,13 +31,13 @@ def test_file_tree_starts_empty_then_shows_created_skill(console, cookie):
         assert out["workspace"] == "/mnt/s3files"
         assert out["tree"] == []
         # the participant creates the input module themselves (the real file-write API)
-        seed_skill(console, cookie, sid)
+        seed_file(console, cookie, sid)
         _, out = req(console, "GET", f"/api/dev/sessions/{sid}/files", headers=cookie)
         paths = {n["path"] for n in out["tree"]}
         # the module sits at the workspace root (it is a plain Python
         # module, not an Agent Skill, so it is NOT under a skills/ dir)
-        assert "/mnt/s3files/sample/cost_analyzer.py" in paths
-        skill = next(n for n in out["tree"] if n["path"] == "/mnt/s3files/sample/cost_analyzer.py")
+        assert "/mnt/s3files/sample/thing.py" in paths
+        skill = next(n for n in out["tree"] if n["path"] == "/mnt/s3files/sample/thing.py")
         assert skill["type"] == "file"
     finally:
         close_session(console, cookie, sid)
@@ -51,15 +48,15 @@ def test_file_tree_entries_have_path_type_size(console, cookie):
     sid = open_session(console, cookie, "claude-code")
     try:
         # create the input module the participant's way, then inspect the tree rows
-        seed_skill(console, cookie, sid)
+        seed_file(console, cookie, sid)
         tree = file_tree(console, cookie, sid)
         assert tree, "tree must not be empty after the module is created"
         for node in tree:
             assert set(("path", "type", "size")) <= set(node)
             assert node["type"] in ("file", "dir")
             assert node["path"].startswith("/mnt/s3files")
-        skill = next(n for n in tree if n["path"].endswith("cost_analyzer.py"))
-        assert skill["type"] == "file" and skill["size"] > 0
+        entry = next(n for n in tree if n["path"].endswith("thing.py"))
+        assert entry["type"] == "file" and entry["size"] > 0
     finally:
         close_session(console, cookie, sid)
 
@@ -69,7 +66,7 @@ def test_write_new_free_named_file_and_read_it_back(console, cookie):
     sid = open_session(console, cookie, "claude-code")
     try:
         path = "my-conversion-notes.md"
-        body = "# my plan\nconvert estimate_ec2_monthly_cost first\n"
+        body = "# my plan\nbuild the backend service first\n"
         w = write_file(console, cookie, sid, path, body)
         assert "error" not in w
         assert w["path"] == "/mnt/s3files/my-conversion-notes.md"
@@ -288,11 +285,9 @@ def test_scaffold_harness_writes_claude_md_and_skill_md(console, cookie):
         assert out["agent_id"] == "claude-code"
         written = out["written"]
         assert "/mnt/s3files/CLAUDE.md" in written
-        assert "/mnt/s3files/skills/configure-backend/SKILL.md" in written
-        # the returned tree reflects the new harness files
+        # the returned tree reflects the new harness file
         tree_paths = {n["path"] for n in out["tree"]}
         assert "/mnt/s3files/CLAUDE.md" in tree_paths
-        assert "/mnt/s3files/skills/configure-backend/SKILL.md" in tree_paths
     finally:
         close_session(console, cookie, sid)
 
@@ -305,9 +300,12 @@ def test_scaffold_harness_files_are_real_and_readable(console, cookie):
             {"agent_id": "claude-code"}, headers=cookie)
         r = read_file(console, cookie, sid, "CLAUDE.md")
         assert r["binary"] is False
-        assert "BACKEND" in r["content"]
-        skill = read_file(console, cookie, sid, "skills/configure-backend/SKILL.md")
-        assert "configure-backend" in skill["content"]
+        # it is the REAL shipped steering, byte-identical to what Lab 2 dispatches with
+        import os as _os
+        shipped = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            "orchestrator", "harness", "claude-code", "CLAUDE.md")
+        assert r["content"] == open(shipped, encoding="utf-8").read()
     finally:
         close_session(console, cookie, sid)
 
@@ -327,182 +325,12 @@ def test_scaffold_harness_claude_code_validator_writes_claude_md(console, cookie
 # ---------------------------------------------------------------------------
 # The conversion payoff: write -> boot -> verify a real MCP server over the wire.
 # ---------------------------------------------------------------------------
-def test_convert_skill_returns_verified_server(console, cookie):
-    """convert-skill on estimate_ec2_monthly_cost boots a real server and verifies it."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)  # the input module the server imports
-        _, conv = req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                      {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        assert conv["verified"] is True
-        assert conv["tool"] == "estimate_ec2_monthly_cost"
-        assert conv["server_file"] == "/mnt/s3files/mcp_server.py"
-        assert conv["session_id"] == sid
-        assert conv["endpoint"].startswith("http://127.0.0.1:")
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_convert_skill_tools_list_has_the_tool(console, cookie):
-    """The booted MCP server's tools/list (over the wire) advertises the converted tool."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        _, conv = req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                      {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        names = [t.get("name") for t in conv["tools_list"]]
-        assert "estimate_ec2_monthly_cost" in names
-        # and the converted MCP server's own /tools mirror reflects the same tool
-        _, tools = req(console, "GET", f"/api/dev/sessions/{sid}/tools",
-                       headers=cookie)
-        assert any(t.get("name") == "estimate_ec2_monthly_cost" for t in tools["tools"])
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_convert_skill_sample_call_returns_fixture_cost(console, cookie):
-    """The live server's own sample call (m5.large x2) returns the 140.16 fixture."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        _, conv = req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                      {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        sample = conv["sample_call"]
-        assert sample["args"] == {"instance_type": "m5.large", "count": 2}
-        assert sample["result"]["monthly_cost"] == EC2_FIXTURE_COST
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_convert_skill_writes_server_file_into_tree(console, cookie):
-    """After convert, mcp_server.py is a real file in the workspace tree and readable."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-            {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        paths = {n["path"] for n in file_tree(console, cookie, sid)}
-        assert "/mnt/s3files/mcp_server.py" in paths
-        server_src = read_file(console, cookie, sid, "mcp_server.py")
-        assert server_src["binary"] is False
-        assert "tools/list" in server_src["content"]
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_convert_skill_default_tool_when_unspecified(console, cookie):
-    """convert-skill with no tool defaults to estimate_ec2_monthly_cost (the taught one)."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        _, conv = req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                      {}, headers=cookie)
-        assert conv["tool"] == "estimate_ec2_monthly_cost"
-        assert conv["verified"] is True
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_convert_skill_on_closed_session_409(console, cookie):
-    """Converting on a closed session is 409; the booted server can't outlive it."""
-    sid = open_session(console, cookie, "claude-code")
-    req(console, "DELETE", f"/api/dev/sessions/{sid}", headers=cookie)
-    expect_status(lambda: req(console, "POST",
-        f"/api/dev/sessions/{sid}/convert-skill",
-        {"tool": "estimate_ec2_monthly_cost"}, headers=cookie), 409)
-
-
-# ---------------------------------------------------------------------------
-# Verify: run the converted server's live checks.
-# ---------------------------------------------------------------------------
-def test_verify_after_convert_runs_passed_checks(console, cookie):
-    """verify exercises the live server: ran+passed true, four named checks all green."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-            {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        _, ver = req(console, "POST", f"/api/dev/sessions/{sid}/verify", {},
-                     headers=cookie)
-        assert ver["ran"] is True
-        assert ver["passed"] is True
-        assert ver["tool"] == "estimate_ec2_monthly_cost"
-        assert ver["endpoint"].startswith("http://127.0.0.1:")
-        assert isinstance(ver["latency_ms"], int) and ver["latency_ms"] >= 0
-        checks = {c["check"]: c["passed"] for c in ver["checks"]}
-        assert checks == {"server_live": True, "tools_list": True,
-                          "tool_call": True, "input_validation": True}, checks
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_verify_sample_is_the_fixture_cost(console, cookie):
-    """verify's sample tools/call returns the same 140.16 fixture the gate grades on."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-            {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        _, ver = req(console, "POST", f"/api/dev/sessions/{sid}/verify", {},
-                     headers=cookie)
-        assert ver["sample"]["monthly_cost"] == EC2_FIXTURE_COST
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_verify_without_server_reports_not_ran(console, cookie):
-    """verify before any convert (no mcp_server.py) honestly reports ran=False, not a fake pass."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        _, ver = req(console, "POST", f"/api/dev/sessions/{sid}/verify", {},
-                     headers=cookie)
-        assert ver["ran"] is False
-        assert ver["checks"] == []
-        assert "error" in ver
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_verify_boots_agent_written_server(console, cookie):
-    """If the attendee hand-writes mcp_server.py (no engine convert), verify boots THAT file."""
-    # First, capture the real single-tool server source the workshop teaches: a throwaway
-    # session converts once so we can read the genuine mcp_server.py the engine wrote.
-    src_sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, src_sid)
-        req(console, "POST", f"/api/dev/sessions/{src_sid}/convert-skill",
-            {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        server_src = read_file(console, cookie, src_sid, "mcp_server.py")["content"]
-        assert "tools/list" in server_src
-    finally:
-        close_session(console, cookie, src_sid)
-
-    # Now a FRESH session that never ran convert: the attendee creates the input module
-    # and hand-writes the server, then verify must boot that hand-written file (no
-    # engine-staged _server) and pass; the booted server imports cost_analyzer.py.
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        w = write_file(console, cookie, sid, "mcp_server.py", server_src)
-        assert "error" not in w, w
-        _, ver = req(console, "POST", f"/api/dev/sessions/{sid}/verify", {},
-                     headers=cookie)
-        assert ver["ran"] is True
-        assert ver["passed"] is True
-        assert ver["sample"]["monthly_cost"] == EC2_FIXTURE_COST
-    finally:
-        close_session(console, cookie, sid)
-
-
-# ---------------------------------------------------------------------------
-# Deploy-upload: package the workspace into a code bundle.
-# ---------------------------------------------------------------------------
 def test_deploy_upload_packages_bundle_with_bytes(console, cookie):
     """deploy-upload zips the workspace into a real code bundle with bytes>0."""
     sid = open_session(console, cookie, "claude-code")
     try:
         # the participant has created the input module; it then rides along in the bundle
-        seed_skill(console, cookie, sid)
+        seed_file(console, cookie, sid)
         _, up = req(console, "POST", f"/api/dev/sessions/{sid}/deploy-upload", {},
                     headers=cookie)
         assert up["mode"] == "code-upload"
@@ -517,23 +345,7 @@ def test_deploy_upload_packages_bundle_with_bytes(console, cookie):
             "arn:aws:bedrock-agentcore:"), up["runtime_arn"]
         assert isinstance(up["manifest"], list) and up["manifest"]
         # the module the participant created rides along in the bundle
-        assert any(m.endswith("cost_analyzer.py") for m in up["manifest"])
-    finally:
-        close_session(console, cookie, sid)
-
-
-def test_deploy_upload_manifest_has_mcp_server_after_convert(console, cookie):
-    """After a convert, the deploy bundle's manifest carries mcp_server.py as the entrypoint."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        seed_skill(console, cookie, sid)
-        req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-            {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        _, up = req(console, "POST", f"/api/dev/sessions/{sid}/deploy-upload", {},
-                    headers=cookie)
-        assert "mcp_server.py" in up["manifest"]
-        assert up["entrypoint"] == "mcp_server.py"
-        assert up["bundle_bytes"] > 0
+        assert any(m.endswith("thing.py") for m in up["manifest"])
     finally:
         close_session(console, cookie, sid)
 
@@ -564,31 +376,3 @@ def test_deploy_upload_on_closed_session_409(console, cookie):
 # ---------------------------------------------------------------------------
 # End-to-end Stage 1 hand flow: write -> scaffold -> convert -> verify -> deploy.
 # ---------------------------------------------------------------------------
-def test_full_by_hand_conversion_flow(console, cookie):
-    """The whole Stage 1 by-hand arc: edit, scaffold, convert, verify green, deploy bundle."""
-    sid = open_session(console, cookie, "claude-code")
-    try:
-        # 0) the workspace starts empty; the attendee creates the input module first
-        seed_skill(console, cookie, sid)
-        # 1) attendee jots a plan with their own filename
-        write_file(console, cookie, sid, "plan.md", "wrap the module as MCP")
-        # 2) set up the harness
-        _, sc = req(console, "POST", f"/api/dev/sessions/{sid}/scaffold-harness",
-                    {"agent_id": "claude-code"}, headers=cookie)
-        assert "/mnt/s3files/CLAUDE.md" in sc["written"]
-        # 3) convert the module -> verified server with the fixture sample
-        _, conv = req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                      {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        assert conv["verified"] is True
-        assert conv["sample_call"]["result"]["monthly_cost"] == EC2_FIXTURE_COST
-        # 4) verify the live server
-        _, ver = req(console, "POST", f"/api/dev/sessions/{sid}/verify", {},
-                     headers=cookie)
-        assert ver["passed"] is True
-        # 5) package the deploy bundle; it carries the server we just built
-        _, up = req(console, "POST", f"/api/dev/sessions/{sid}/deploy-upload", {},
-                    headers=cookie)
-        assert "mcp_server.py" in up["manifest"]
-        assert up["bundle_bytes"] > 0
-    finally:
-        close_session(console, cookie, sid)

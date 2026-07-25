@@ -24,7 +24,7 @@ import pytest
 
 from e2e.conftest import (
     req, expect_status, open_session, close_session, open_pty, pty_type,
-    pty_wait_for, seed_skill, SUPPORTED_AGENTS,
+    pty_wait_for, seed_file, SUPPORTED_AGENTS,
 )
 
 # A unique marker echoed into the shell so pty_wait_for keys on OUR output, never
@@ -148,10 +148,10 @@ def test_pty_cwd_is_the_s3files_workspace(console, cookie):
 
 def test_pty_sees_participant_created_skill(console, cookie):
     """The shell shares the workspace with the editor: a file the participant CREATES
-    (New File → paste cost_analyzer.py) shows up in the PTY's `ls`.
+    (New File → write → save) shows up in the PTY's `ls`.
 
-    The workspace starts EMPTY; the participant authors cost_analyzer.py in the editor
-    (seed_skill writes it under sample/ through the real file API, the same path New
+    The workspace starts EMPTY; the participant authors a file in the editor
+    (seed_file writes it under sample/ through the real file API, the same path New
     File takes). The PTY's cwd IS that session workspace (the console maps it to
     /mnt/s3files for the attendee), so `ls sample` lists what they created. A literal
     `ls /mnt/s3files` only resolves on the deployed Runtime box where that mount exists;
@@ -159,9 +159,9 @@ def test_pty_sees_participant_created_skill(console, cookie):
     sid = open_session(console, cookie, "claude-code")
     try:
         open_pty(console, cookie, sid)
-        seed_skill(console, cookie, sid)
-        out = _run(console, cookie, sid, "ls -1 sample", "cost_analyzer.py")
-        assert "cost_analyzer.py" in out, out[-400:]
+        seed_file(console, cookie, sid)
+        out = _run(console, cookie, sid, "ls -1 sample", "thing.py")
+        assert "thing.py" in out, out[-400:]
     finally:
         close_session(console, cookie, sid)
 

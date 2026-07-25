@@ -99,19 +99,7 @@ echo "  Security Group:  ${SECURITY_GROUP_ID}"
 echo "  S3 Files FS:     ${S3FILES_FS_ID}"
 echo "  S3 Files AP ARN: ${S3FILES_AP_ARN}"
 
-# ── Upload the cost_analyzer module to S3 Files ─────────────────────────────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "Uploading the cost_analyzer module to S3 Files..."
-SAMPLE_S3_PREFIX="s3://${BUCKET_NAME}/agents/mnt/s3files/sample"
-SAMPLE_FILE="${SCRIPT_DIR}/../../usecase-sample-to-mcp/cost_analyzer.py"
-if [ -f "$SAMPLE_FILE" ]; then
-  aws s3 cp "$SAMPLE_FILE" "${SAMPLE_S3_PREFIX}/cost_analyzer.py" --region "${REGION}"
-  echo "  Uploaded: cost_analyzer.py"
-else
-  echo "  WARNING: cost_analyzer.py not found at ${SAMPLE_FILE}, skipping" >&2
-fi
-
 echo ""
 echo "Config saved to: ../infra.config"
-echo "Sample at: ${SAMPLE_S3_PREFIX}/ -> /mnt/s3files/sample/ in the runtime"
+echo "S3 Files mount starts empty; the attendee types any request into the agent terminal."
 echo "Next: cd ../claude-code && ./setup.sh"

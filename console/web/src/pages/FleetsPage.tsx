@@ -46,16 +46,14 @@ const PHASE_LABEL: Record<string, string> = {
   context_hydration: 'reading the module and steering files',
   pre_flight: 'running readiness checks',
   agent_execution: 'dispatching the agents',
-  finalization: 'running the pytest gate and review',
+  finalization: 'running the acceptance gate and review',
 };
 
-// Fallback openers shown until the live registry-derived suggestions load. Short
-// and capped at 3 to match the backend (chips must not clip).
-const PRESETS = [
-  'Convert the cost analyzer module to MCP + UI',
-  'Build the Critter Lab full-stack app',
-  'Patch the backend MCP server',
-];
+// How many opener chips the empty state shows (the backend caps its own list at
+// the same number, so the chips never clip). There is deliberately NO hardcoded
+// list of openers here: the chips come from the presets API, which is the one
+// source the router reads, so the console cannot offer a request it cannot route.
+const MAX_SUGGESTIONS = 3;
 
 const TERMINAL_STATUSES = ['passed', 'failed', 'needs_human'];
 
@@ -155,9 +153,11 @@ export function FleetsPage() {
 
   // GitHub repo chip, fetched once; null = not connected or not yet loaded.
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
-  // Prompt chips on the empty state, fetched from the real workflow registry;
-  // falls back to PRESETS if the endpoint is not yet available.
-  const [suggestions, setSuggestions] = useState<string[]>(PRESETS);
+  // Prompt chips on the empty state, fetched from the presets API. Empty until
+  // that fetch lands: an unreachable orchestrator must show NO chips rather than
+  // stale ones this file invented, because a chip the router cannot resolve is a
+  // request the attendee cannot actually run.
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   // Length of the last item's streamed text: a cheap signal that changes on every
   // token, so auto-scroll follows the stream (not just whole new messages) while
@@ -183,11 +183,11 @@ export function FleetsPage() {
       .catch(() => { /* keep placeholder */ });
   }, []);
 
-  // Fetch prompt suggestions from the real workflow registry.
+  // Fetch the opener chips from the presets API (the router's own source).
   useEffect(() => {
     listSuggestions()
       .then((r) => { if (r.suggestions?.length) setSuggestions(r.suggestions); })
-      .catch(() => { /* keep PRESETS */ });
+      .catch(() => { /* no chips: the attendee types their own request */ });
   }, []);
 
   // Fetch GitHub connection status for the repo chip in the message bar.
@@ -425,7 +425,7 @@ export function FleetsPage() {
                 Ask a question or describe a task. Agents run only when a build is needed.
               </p>
               <div className="mt-7 flex w-full flex-col items-stretch gap-2">
-                {suggestions.slice(0, 3).map((p, i) => (
+                {suggestions.slice(0, MAX_SUGGESTIONS).map((p, i) => (
                   <button
                     key={p}
                     onClick={() => { setDraft(p); void send(p); }}
@@ -950,7 +950,7 @@ function OrchestratorVerdict({ result }: { result: RunResult }) {
             : 'The run failed.'}
       </div>
       <ul className="space-y-0.5 text-xs text-muted-foreground">
-        <li>pytest gate: {gatePassed ? 'passed' : 'did not pass'}
+        <li>acceptance gate: {gatePassed ? 'passed' : 'did not pass'}
           {result.gate?.checks?.length ? ` (${result.gate.checks.length} checks)` : ''}</li>
         {reviewState && <li>review: {reviewState}</li>}
         {typeof result.iterations === 'number' && <li>iterations: {result.iterations}</li>}

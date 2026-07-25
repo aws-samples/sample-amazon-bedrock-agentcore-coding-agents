@@ -64,9 +64,9 @@ def test_s1_agents_get_blocked_without_cookie(console):
     assert "error" in body
 
 
-def test_s2_workflows_get_blocked_without_cookie(console):
+def test_s2_presets_get_blocked_without_cookie(console):
     """No cookie -> GET /api/orchestrator is the 401 login wall, not the workflow registry."""
-    expect_status(lambda: req(console, "GET", "/api/orchestrator/workflows"), 401)
+    expect_status(lambda: req(console, "GET", "/api/orchestrator/presets"), 401)
 
 
 def test_s3_dashboard_get_blocked_without_cookie(console):
@@ -132,9 +132,9 @@ def test_minted_cookie_actually_authorizes_the_api(console):
     """A cookie freshly minted by /login (not the shared fixture) clears the API wall."""
     _, set_cookie, _ = login(console, "ubuntu", "attendee-pass")
     jar = {"Cookie": set_cookie.split(";")[0]}
-    code, body = req(console, "GET", "/api/orchestrator/workflows", headers=jar)
+    code, body = req(console, "GET", "/api/orchestrator/presets", headers=jar)
     assert code == 200
-    assert isinstance(body["workflows"], list) and body["workflows"]
+    assert isinstance(body["presets"], list) and body["presets"]
 
 
 # ---------------------------------------------------------------------------

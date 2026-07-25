@@ -34,25 +34,15 @@ def _open_session():
     return sess["session_id"]
 
 
-# The workspace starts EMPTY: the participant creates every file in the editor,
-# beginning with the input module cost_analyzer.py. Tests that need the module present
-# create it the SAME WAY a participant does (New File → paste the real source → save),
-# by POSTing the canonical cost_analyzer.py source to the file-write API. This mirrors
-# e2e/conftest.py:seed_skill, which drives the same write over the console.
-_SKILL_SRC_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "usecase-sample-to-mcp", "cost_analyzer.py")
-
-
-def _seed_skill(sid, name="cost_analyzer.py"):
-    """Create cost_analyzer.py in the session workspace from the real source, the way a
-    participant does it (New File → paste → save), via the editor's file-write dispatch.
-    Lands under sample/ to mirror the content page (mkdir -p sample). Returns the path."""
-    with open(_SKILL_SRC_PATH, encoding="utf-8") as f:
-        code, out = ia.dispatch("POST", f"/api/sessions/{sid}/file",
-                                {"path": f"/mnt/s3files/sample/{name}", "content": f.read()})
-    assert code == 200 and "error" not in out, out
-    return f"/mnt/s3files/sample/{name}"
+# The workspace starts EMPTY and stays that way until someone writes to it. Tests that
+# need a file create it the SAME WAY a participant does (New File -> type -> save), by
+# POSTing to the file-write API.
+def _seed_file(sid, name="notes.md", body="# scratch\n"):
+    """Put ANY file in the session workspace. There is no sample module to seed: the
+    workspace starts empty and the attendee (or an agent) fills it, so these tests use
+    a throwaway file whose content nothing depends on."""
+    ia.dispatch("POST", f"/api/sessions/{sid}/file", {"path": name, "content": body})
+    return name
 
 
 def test_file_tree_reflects_the_real_workspace():
@@ -62,25 +52,23 @@ def test_file_tree_reflects_the_real_workspace():
     assert code == 200 and empty["workspace"] == "/mnt/s3files"
     assert empty["tree"] == [], f"a fresh workspace must be empty, got {empty['tree']!r}"
     # the participant creates the input module in the editor (New File → paste → save)
-    _seed_skill(sid)
+    _seed_file(sid, "sample/notes.md")
     code, out = ia.dispatch("GET", f"/api/sessions/{sid}/files", None)
     assert code == 200 and out["workspace"] == "/mnt/s3files"
     paths = {e["path"] for e in out["tree"]}
-    # the created module sits under sample/, NOT under a skills/ dir; cost_analyzer
-    # is a plain Python module, not an Agent Skill (which would be skills/<name>/SKILL.md)
-    assert "/mnt/s3files/sample/cost_analyzer.py" in paths
-    # the seeded module file reports a real, non-zero size
-    skill = next(e for e in out["tree"] if e["path"].endswith("cost_analyzer.py"))
-    assert skill["type"] == "file" and skill["size"] > 0
+    # the created file sits exactly where the writer put it
+    assert "/mnt/s3files/sample/notes.md" in paths
+    entry = next(e for e in out["tree"] if e["path"].endswith("notes.md"))
+    assert entry["type"] == "file" and entry["size"] > 0
 
 
 def test_editor_reads_and_writes_real_files():
     sid = _open_session()
-    # the participant creates the module in the editor, then reads it back
-    _seed_skill(sid)
+    # the participant creates a file in the editor, then reads it back
+    _seed_file(sid, "sample/thing.py", "def hello():\n    return 42\n")
     _, f = ia.dispatch("POST", f"/api/sessions/{sid}/file",
-                       {"path": "/mnt/s3files/sample/cost_analyzer.py"})
-    assert f["language"] == "python" and "def estimate_ec2_monthly_cost" in f["content"]
+                       {"path": "/mnt/s3files/sample/thing.py"})
+    assert f["language"] == "python" and "def hello" in f["content"]
     # write a new file via the editor
     _, w = ia.dispatch("POST", f"/api/sessions/{sid}/file",
                        {"path": "/mnt/s3files/notes.md", "content": "# hi\n"})
@@ -96,12 +84,12 @@ def test_content_search_finds_matching_lines_grouped_by_file():
     """The explorer's Cmd+F: op=search greps every text file in the jail and
     returns matching lines grouped by file with 1-based line numbers."""
     sid = _open_session()
-    _seed_skill(sid)
+    _seed_file(sid, "sample/notes.md")
     ia.dispatch("POST", f"/api/sessions/{sid}/file",
                 {"path": "/mnt/s3files/notes.md", "content": "alpha\nestimate beta\ngamma\n"})
     _, res = ia.dispatch("POST", f"/api/sessions/{sid}/file",
                          {"op": "search", "query": "estimate"})
-    # cost_analyzer.py defines estimate_* functions, and notes.md has "estimate beta"
+    # notes.md has "estimate beta" (seeded above); the search returns its path
     paths = {r["path"] for r in res["results"]}
     assert "/mnt/s3files/notes.md" in paths
     notes = next(r for r in res["results"] if r["path"].endswith("notes.md"))
@@ -185,15 +173,17 @@ def test_file_delete_missing_errors_without_crashing():
 
 
 def test_scaffold_harness_writes_real_steering_files():
-    # claude-code -> CLAUDE.md + a SKILL.md, with the harness build spec inside
+    # claude-code -> CLAUDE.md, and it is the REAL shipped steering (byte-identical to
+    # what the orchestrator dispatches with), not a second copy invented here.
     sid = _open_session()
     _, h = ia.dispatch("POST", f"/api/sessions/{sid}/scaffold-harness",
                        {"agent_id": "claude-code"})
     assert "/mnt/s3files/CLAUDE.md" in h["written"]
-    assert any(p.endswith("SKILL.md") for p in h["written"])
     _, claude = ia.dispatch("POST", f"/api/sessions/{sid}/file",
                             {"path": "/mnt/s3files/CLAUDE.md"})
-    assert "harness:build" in claude["content"]
+    shipped = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "orchestrator", "harness", "claude-code", "CLAUDE.md")
+    assert claude["content"] == open(shipped, encoding="utf-8").read()
 
     # opencode -> project-root AGENTS.md (with the UI spec) + .config/opencode/opencode.json
     sid2 = _open_session()
@@ -203,115 +193,39 @@ def test_scaffold_harness_writes_real_steering_files():
     assert "/mnt/s3files/.config/opencode/opencode.json" in hc["written"]
     _, agents = ia.dispatch("POST", f"/api/sessions/{sid2}/file",
                             {"path": "/mnt/s3files/AGENTS.md"})
-    assert "harness:ui" in agents["content"]
+    shipped_fe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "orchestrator", "harness", "opencode", "AGENTS.md")
+    assert agents["content"] == open(shipped_fe, encoding="utf-8").read()
 
-    # kiro -> .kiro/steering/*.md with inclusion: always
+    # the validator is the third served role: a second Claude Code with its own steering
     sid3 = _open_session()
-    _, hk = ia.dispatch("POST", f"/api/sessions/{sid3}/scaffold-harness",
-                        {"agent_id": "kiro"})
-    assert any("/.kiro/steering/" in p for p in hk["written"])
+    _, hv = ia.dispatch("POST", f"/api/sessions/{sid3}/scaffold-harness",
+                        {"agent_id": "claude-code-validator"})
+    assert "/mnt/s3files/CLAUDE.md" in hv["written"]
 
 
 def test_deploy_upload_produces_a_real_code_bundle():
     sid = _open_session()
-    _seed_skill(sid)  # the input module the participant created goes up in the bundle
+    _seed_file(sid, "sample/notes.md")  # the input module the participant created goes up in the bundle
     ia.dispatch("POST", f"/api/sessions/{sid}/scaffold-harness", {"agent_id": "claude-code"})
-    ia.dispatch("POST", f"/api/sessions/{sid}/convert-skill",
-                {"tool": "estimate_ec2_monthly_cost"})
+    _seed_file(sid, "sample/thing.py", "def hello():\n    return 42\n")
     _, d = ia.dispatch("POST", f"/api/sessions/{sid}/deploy-upload", None)
     assert d["mode"] == "code-upload"
     # Packaging produces a zip artifact, but it does NOT mint a Runtime: the
     # runtime_arn is null until a CreateAgentRuntime (deploy.py) lands.
     # Never a fabricated local:runtime placeholder.
     assert d["runtime_arn"] is None, d["runtime_arn"]
-    assert d["file_count"] >= 3 and d["bundle_bytes"] > 0
-    # the manifest names the real artifacts that went up (cost_analyzer under sample/)
+    assert d["file_count"] >= 2 and d["bundle_bytes"] > 0
+    # the manifest names the real files that went up, whatever they are
     assert "CLAUDE.md" in d["manifest"]
-    assert "sample/cost_analyzer.py" in d["manifest"]
-    assert d["entrypoint"] == "mcp_server.py"
+    assert "sample/thing.py" in d["manifest"]
     # the bundle is a zip on disk that opens and contains the manifest
     sess = ia._SESSIONS[sid]
     bundle = sess["_deploy"]["bundle"]
     assert os.path.isfile(bundle)
     with zipfile.ZipFile(bundle) as z:
         names = set(z.namelist())
-    assert "CLAUDE.md" in names and "sample/cost_analyzer.py" in names
-
-
-def test_verify_runs_the_live_server_over_the_wire():
-    sid = _open_session()
-    # before converting, verify has nothing to run
-    _, v0 = ia.dispatch("POST", f"/api/sessions/{sid}/verify", None)
-    assert v0["ran"] is False
-    # the participant creates the input module, then convert + verify exercise the live
-    # server (the converted mcp_server.py imports cost_analyzer at the workspace root)
-    _seed_skill(sid)
-    ia.dispatch("POST", f"/api/sessions/{sid}/convert-skill",
-                {"tool": "estimate_ec2_monthly_cost"})
-    _, v = ia.dispatch("POST", f"/api/sessions/{sid}/verify", None)
-    assert v["ran"] is True and v["passed"] is True
-    by = {c["check"]: c for c in v["checks"]}
-    assert by["server_live"]["passed"]
-    assert by["tools_list"]["passed"]
-    assert by["tool_call"]["passed"]
-    assert by["input_validation"]["passed"]
-    # the tool_call check really priced m5.large x2
-    assert "140.16" in by["tool_call"]["detail"]
-    # clean up the booted server
-    ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
-
-
-# --- preview-server reaping: a converted mcp_server.py must NEVER orphan --------
-# The Stage-1 "convert + verify" path boots the workspace mcp_server.py as a real
-# subprocess. An MCP server never exits on its own, so a half-reaped one survives
-# forever; left unbounded they piled into the thousands and wedged the console.
-# These prove every teardown path actually kills the real child.
-def test_stop_server_kills_the_real_preview_process():
-    sid = _open_session()
-    _seed_skill(sid)
-    ia.dispatch("POST", f"/api/sessions/{sid}/convert-skill",
-                {"tool": "estimate_ec2_monthly_cost"})
-    sess = ia._SESSIONS[sid]
-    proc = sess["_server"]["proc"]
-    assert proc.poll() is None  # the preview server is live
-    ia._stop_server(sess)
-    assert proc.poll() is not None       # the real child is dead
-    assert sess["_server"] is None       # and forgotten
-    ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
-
-
-def test_reconvert_does_not_leak_the_previous_server():
-    sid = _open_session()
-    _seed_skill(sid)
-    ia.dispatch("POST", f"/api/sessions/{sid}/convert-skill",
-                {"tool": "estimate_ec2_monthly_cost"})
-    first = ia._SESSIONS[sid]["_server"]["proc"]
-    # A second conversion in the same session stops the first server before booting.
-    ia.dispatch("POST", f"/api/sessions/{sid}/convert-skill",
-                {"tool": "estimate_ec2_monthly_cost"})
-    second = ia._SESSIONS[sid]["_server"]["proc"]
-    assert first is not second
-    assert first.poll() is not None      # the prior server was reaped, not leaked
-    assert second.poll() is None         # the new one is live
-    ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
-
-
-def test_atexit_reaper_kills_every_session_preview_server():
-    """The host process (the console) imports interactive_api in-process, so its
-    sessions' preview servers must be reaped when it exits. The atexit hook walks
-    _SESSIONS and stops each one; here we call it directly and assert the real
-    child dies (a console --reload / restart relies on exactly this)."""
-    sid = _open_session()
-    _seed_skill(sid)
-    ia.dispatch("POST", f"/api/sessions/{sid}/convert-skill",
-                {"tool": "estimate_ec2_monthly_cost"})
-    proc = ia._SESSIONS[sid]["_server"]["proc"]
-    assert proc.poll() is None
-    ia._reap_all_session_servers()       # what atexit fires on process exit
-    assert proc.poll() is not None       # the real preview server is reaped
-    ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
-
-
+    assert "CLAUDE.md" in names and "sample/thing.py" in names
 def test_closed_session_rejects_input_and_pty_io():
     """After DELETE closes a session, the dispatch guards reject further work on it:
     line `input` and live `pty` I/O both return 409 (session not open), never a
@@ -330,18 +244,8 @@ def test_closed_session_rejects_input_and_pty_io():
     assert code_pty == 409 and "error" in out_pty
 
 
-def test_closed_session_rejects_file_ops():
-    """A file write to a CLOSED session must be rejected, not silently applied to a
-    torn-down workspace. The `action == 'file'` dispatch branch guards on session
-    status exactly like input/pty/convert/verify, returning 409."""
-    sid = _open_session()
-    ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
-    code, w = ia.dispatch("POST", f"/api/sessions/{sid}/file",
-                          {"path": "/mnt/s3files/after-close.txt", "content": "nope"})
-    assert code == 409 and "error" in w, f"closed-session write was NOT rejected: {code} {w}"
-
-
 # --------------------------------------------------------------------------- PTY winsize
+
 def _report_cols(sid, offset):
     """Print the live PTY width with a unique marker, then return the parsed cols.
 

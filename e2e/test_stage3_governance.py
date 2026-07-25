@@ -49,10 +49,15 @@ def _get(console, cookie, path):
     return body
 
 
-def _run_a_convert(console, cookie):
-    """Submit one convert task through the local engine, wait for it to land in the
-    ledger as an orchestrator_run, and return the run dict (status is terminal)."""
-    run = submit_run(console, cookie, task="convert the cost_analyzer module to an MCP server")
+def _run_a_build(console, cookie):
+    """Submit one build through the local engine, wait for it to land in the ledger as
+    an orchestrator_run, and return the run dict (status is terminal).
+
+    The request text is arbitrary and the roles are named explicitly: routing never
+    guesses, and this file is about TELEMETRY, not about routing (see
+    e2e/test_stage2_presets.py for the routing contract)."""
+    run = submit_run(console, cookie, task="build any small thing",
+                     agents=["claude-code", "opencode", "claude-code-validator"])
     rid = run["run_id"]
     poll_route(console, cookie, rid)        # route attaches on the worker
     return poll_terminal(console, cookie, rid)
@@ -98,7 +103,7 @@ def test_dashboard_active_sessions_never_exceeds_total(console, cookie):
 def test_dashboard_cost_by_agent_matches_cost_breakdown(console, cookie):
     """API-first proof: the dashboard's cost_by_agent IS the cost-breakdown?by=agent
     payload, one shared data path, the UI derives nothing the API doesn't give."""
-    _run_a_convert(console, cookie)  # ensure the ledger has at least one row
+    _run_a_build(console, cookie)  # ensure the ledger has at least one row
     dash = _get(console, cookie, "/api/metrics/dashboard")
     by_agent = _get(console, cookie, "/api/metrics/cost-breakdown?by=agent")
     assert dash["cost_by_agent"] == by_agent["breakdown"], (dash, by_agent)
@@ -107,7 +112,7 @@ def test_dashboard_cost_by_agent_matches_cost_breakdown(console, cookie):
 def test_dashboard_runs_total_equals_session_count(console, cookie):
     """API-first proof: runs_total equals the length of the sessions list (the dashboard
     composes list_sessions, never a separately-counted number that can drift)."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     dash = _get(console, cookie, "/api/metrics/dashboard")
     sessions = _get(console, cookie, "/api/metrics/sessions")["sessions"]
     assert dash["runs_total"] == len(sessions), (dash["runs_total"], len(sessions))
@@ -125,7 +130,7 @@ def test_sessions_list_shape(console, cookie):
 def test_sessions_rows_have_governance_fields(console, cookie):
     """After a run lands, each session row carries the documented governance fields
     (identity user_id, assistant_type, runtime_arn, liveness): not a bare id."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     rows = _get(console, cookie, "/api/metrics/sessions")["sessions"]
     assert rows, "a session row must exist after a Stage-2 run"
     for row in rows:
@@ -142,7 +147,7 @@ def test_sessions_rows_have_governance_fields(console, cookie):
 
 def test_sessions_filter_by_assistant_type(console, cookie):
     """Attendee filters the session list to one agent: only that agent's rows return."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     rows = _get(console, cookie, "/api/metrics/sessions?assistant_type=claude-code-validator")["sessions"]
     assert rows, "a convert run dispatches claude-code-validator, so a claude-code-validator session must exist"
     assert all(r["assistant_type"] == "claude-code-validator" for r in rows), rows
@@ -152,7 +157,7 @@ def test_sessions_filter_by_user_isolates_local_user(console, cookie):
     """Filtering sessions by the local OS user returns only that user's rows
     (per-user attribution, the OBO stand-in), and an unknown user returns none."""
     me = getpass.getuser()
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     mine = _get(console, cookie, f"/api/metrics/sessions?user_id={me}")["sessions"]
     assert mine, "the local user owns the runs just submitted"
     assert all(r["user_id"] == me for r in mine), mine
@@ -174,7 +179,7 @@ def test_cost_breakdown_by_agent_shape(console, cookie):
 def test_cost_breakdown_by_agent_has_all_three_agents(console, cookie):
     """After a convert run (all three roles dispatched), the per-agent breakdown has a
     row for each of claude-code, kiro, opencode: attribution across the fleet, no winner."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, "/api/metrics/cost-breakdown?by=agent")
     assert set(SUPPORTED_AGENTS) <= set(body["breakdown"]), body
     for agent, cost in body["breakdown"].items():
@@ -185,7 +190,7 @@ def test_cost_breakdown_by_user_attributes_to_local_user(console, cookie):
     """Per-user cost attributes every dollar to the local OS user recorded on the run;
     the breakdown is keyed by user, not ranked: attribution, never a leaderboard."""
     me = getpass.getuser()
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, "/api/metrics/cost-breakdown?by=user")
     assert body["by"] == "user", body
     assert me in body["breakdown"], body
@@ -231,7 +236,7 @@ def test_latency_p95_unscoped_scope_is_empty(console, cookie):
 
 def test_latency_p95_scoped_to_agent(console, cookie):
     """Attendee scopes p95 to one agent: the response echoes that scope back."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, "/api/metrics/latency/p95?assistant_type=opencode")
     assert body["scope"].get("assistant_type") == "opencode", body
     assert isinstance(body["p95_latency_ms"], (int, float)) and body["p95_latency_ms"] >= 0
@@ -240,7 +245,7 @@ def test_latency_p95_scoped_to_agent(console, cookie):
 def test_latency_p95_scoped_to_user(console, cookie):
     """Attendee scopes p95 to the local user: scope echoes the user; value is >= 0."""
     me = getpass.getuser()
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, f"/api/metrics/latency/p95?user_id={me}")
     assert body["scope"].get("user_id") == me, body
     assert isinstance(body["p95_latency_ms"], (int, float)) and body["p95_latency_ms"] >= 0
@@ -284,7 +289,7 @@ def test_policies_two_tier_model(console, cookie):
 def test_audit_returns_structured_trail(console, cookie):
     """Attendee tails the governance audit feed: structured rows over the ledger,
     each with at/kind/user_id/line, plus a total and the ledger source path."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, "/api/metrics/audit?limit=100")
     assert isinstance(body["audit"], list) and body["audit"], body
     assert body["source"].endswith("telemetry.jsonl"), body
@@ -297,7 +302,7 @@ def test_audit_returns_structured_trail(console, cookie):
 def test_audit_includes_orchestrator_run_lines(console, cookie):
     """The Stage-2 run the attendee just submitted appears in the audit feed as an
     orchestrator_run line; the trail comes from the ledger, nothing synthesized."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, "/api/metrics/audit?limit=200")
     assert any(row["kind"] == "orchestrator_run" for row in body["audit"]), body
 
@@ -305,7 +310,7 @@ def test_audit_includes_orchestrator_run_lines(console, cookie):
 def test_audit_run_line_names_the_specific_run(console, cookie):
     """A submitted run's id appears verbatim in its audit line; Stage 2 -> Stage 3
     continuity over the shared ledger (one identity, not a re-minted id)."""
-    run = _run_a_convert(console, cookie)
+    run = _run_a_build(console, cookie)
     rid = run["run_id"]
     body = _get(console, cookie, "/api/metrics/audit?limit=200")
     orch = [r["line"] for r in body["audit"] if r["kind"] == "orchestrator_run"]
@@ -314,7 +319,7 @@ def test_audit_run_line_names_the_specific_run(console, cookie):
 
 def test_audit_limit_bounds_rows(console, cookie):
     """The audit `limit` param bounds the rows returned (the console tails a window)."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     body = _get(console, cookie, "/api/metrics/audit?limit=1")
     assert len(body["audit"]) <= 1, body
 
@@ -326,7 +331,7 @@ def test_dashboard_runs_total_grows_after_a_run(console, cookie):
     """Submit a Stage-2 task and the dashboard's runs_total grows by the dispatched
     role count; the governance layer reflects real work, not a static seed dataset."""
     before = _get(console, cookie, "/api/metrics/dashboard")["runs_total"]
-    run = _run_a_convert(console, cookie)
+    run = _run_a_build(console, cookie)
     roles = [p["agent"] for p in run.get("progress", [])]
     assert roles, run
     after = _get(console, cookie, "/api/metrics/dashboard")["runs_total"]
@@ -338,7 +343,7 @@ def test_cost_breakdown_user_total_reflects_the_run(console, cookie):
     API attributes the run's spend (>= 0; local engine may be honest-zero) to the user."""
     me = getpass.getuser()
     before = _get(console, cookie, "/api/metrics/cost-breakdown?by=user")["breakdown"].get(me, 0.0)
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     after = _get(console, cookie, "/api/metrics/cost-breakdown?by=user")["breakdown"].get(me, 0.0)
     assert after >= before, (before, after)
 
@@ -346,7 +351,7 @@ def test_cost_breakdown_user_total_reflects_the_run(console, cookie):
 def test_session_identity_records_user_attribution(console, cookie):
     """A governance session records the initiating user without inventing OAuth
     delegation or GitHub authorship. No static GitHub credential sits on the agent."""
-    _run_a_convert(console, cookie)
+    _run_a_build(console, cookie)
     rows = _get(console, cookie, "/api/metrics/sessions")["sessions"]
     sid = rows[0]["session_id"]
     ident = _get(console, cookie, f"/api/metrics/sessions/{sid}/identity")
@@ -367,7 +372,7 @@ def test_stage1_session_appears_in_governance_sessions(console, cookie):
     try:
         # the convert here drives the local engine; the governance layer aggregates the
         # shared ledger across stages; assert it stays consistent (active <= total).
-        _run_a_convert(console, cookie)
+        _run_a_build(console, cookie)
         dash = _get(console, cookie, "/api/metrics/dashboard")
         sessions = _get(console, cookie, "/api/metrics/sessions")["sessions"]
         assert dash["runs_total"] == len(sessions)

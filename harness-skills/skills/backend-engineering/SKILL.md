@@ -67,6 +67,21 @@ an interface, your job is to bridge to it, not to copy it.
 - Bind to loopback by default for a local/dev server; do not expose it wider than
   the task needs.
 
+## Callable from a browser
+
+If anything with a UI will call your service, a browser is a client with rules of its
+own, and ignoring them means the call fails before your code ever runs.
+
+- A JSON request from a page on another origin is **preflighted**: the browser sends
+  `OPTIONS` first. Answer it, and send the matching allow-origin, allow-methods, and
+  allow-headers on the real response too. A service that only handles `GET` and `POST`
+  looks fine from `curl` and is unreachable from a page.
+- Keep the allowance as narrow as the task allows, and be deliberate about it rather
+  than discovering it from a blocked console message later.
+- Preflight is a browser concern only: your own `curl` check passing proves nothing
+  about it, so verify with a real cross-origin call or state the constraint in your
+  handoff.
+
 ## Prove it runs (self-verification)
 
 Do not hand off a server you have only read. Before you are done, exercise it the

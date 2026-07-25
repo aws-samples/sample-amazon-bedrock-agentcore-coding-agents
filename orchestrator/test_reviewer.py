@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -85,17 +86,17 @@ def test_gate_runs_the_authored_executable_and_green_exit_passes(tmp_path):
     authored = _authored_executable(
         tmp_path, "#!/bin/sh\necho 'discovery: 5 tools present'\nexit 0\n")
     run = _FakeRun(acceptance_test_file=authored, artifact_endpoint="http://127.0.0.1:1")
-    gate = reviewer.run_gate(run, grading_dir="/nonexistent")
+    gate = reviewer.run_gate(run)
     assert gate["passed"] is True
-    assert gate["checks"][0]["check"] == "acceptance_test_authored"
+    assert gate["checks"][0]["check"] == "acceptance_check_authored"
     assert "discovery" in gate["summary"]
 
 
 def test_gate_red_exit_can_never_pass(tmp_path):
     authored = _authored_executable(
-        tmp_path, "#!/bin/sh\necho 'correctness: expected 140.16, got 0'\nexit 3\n")
+        tmp_path, "#!/bin/sh\necho 'correctness: expected hello, got nothing'\nexit 3\n")
     run = _FakeRun(acceptance_test_file=authored, artifact_endpoint="http://127.0.0.1:1")
-    gate = reviewer.run_gate(run, grading_dir="/nonexistent")
+    gate = reviewer.run_gate(run)
     assert gate["passed"] is False
     assert "exit 3" in gate["checks"][0]["detail"]
 
@@ -106,44 +107,41 @@ def test_gate_is_language_agnostic(tmp_path):
     authored = _authored_executable(
         tmp_path, "#!/bin/sh\n# no python, no test framework\nexit 0\n")
     run = _FakeRun(acceptance_test_file=authored)
-    assert reviewer.run_gate(run, grading_dir="/nonexistent")["passed"] is True
+    assert reviewer.run_gate(run)["passed"] is True
 
 
 def test_gate_passes_the_endpoint_env_to_the_executable(tmp_path):
     authored = _authored_executable(
         tmp_path,
-        '#!/bin/sh\ntest -n "$MCP_ENDPOINT_URL" || exit 9\n'
-        'echo "probing $MCP_ENDPOINT_URL"\nexit 0\n')
+        '#!/bin/sh\ntest -n "$DELIVERABLE_URL" || exit 9\n'
+        'test -n "$MCP_ENDPOINT_URL" || exit 8\n'
+        'echo "probing $DELIVERABLE_URL"\nexit 0\n')
     run = _FakeRun(acceptance_test_file=authored,
                    artifact_endpoint="http://127.0.0.1:9999")
-    gate = reviewer.run_gate(run, grading_dir="/nonexistent")
+    gate = reviewer.run_gate(run)
     assert gate["passed"] is True
     assert "9999" in gate["summary"]
 
 
-def test_gate_offline_floor_uses_the_grading_contract():
-    """With no authored test (fixture/offline), the usecase's shipped grading
-    contract grades in-process: the deterministic floor, an unreachable endpoint
-    is a red gate, never a crash."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    grading = os.path.join(os.path.dirname(here), "usecase-sample-to-mcp", "grading")
-    run = _FakeRun(artifact_endpoint="http://127.0.0.1:1")  # nothing listens
-    gate = reviewer.run_gate(run, grading)
+def test_no_authored_check_is_red_never_a_courtesy_pass():
+    """Validation is agentic only: with no check authored by the validator, NOTHING
+    proved the deliverable, so the gate is RED. There is deliberately no fallback
+    grade, because a fallback would be this repository deciding correctness."""
+    run = _FakeRun(artifact_endpoint="http://127.0.0.1:1")
+    gate = reviewer.run_gate(run)
     assert gate["passed"] is False
-    assert gate["checks"]  # real failing checks, not an empty fabrication
+    assert gate["checks"][0]["check"] == "acceptance_check_authored"
+    assert "no fallback" in gate["checks"][0]["detail"]
 
 
-# --------------------------------------------------------------- grading loader
-def test_load_grading_imports_the_contract_and_adapters():
-    """The offline floor grades against the usecase's own contract; loading it
-    returns the grade function plus both adapters (in-process and over-the-wire)."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    grading = os.path.join(os.path.dirname(here), "usecase-sample-to-mcp", "grading")
-    grade, InProcessClient, RemoteMCPClient = reviewer.load_grading(grading)
-    result = grade(InProcessClient())
-    assert result["passed"] is True
-    assert {c["check"] for c in result["checks"]} == {
-        "tool_discovery", "tool_correctness", "input_validation"}
+def test_unexecutable_check_is_red_not_an_error(tmp_path):
+    """A check that cannot run leaves the deliverable unproven, which is exactly
+    what red means: the run fails honestly instead of crashing the engine."""
+    bad = tmp_path / "acceptance_check"
+    bad.write_text("#!/nonexistent/interpreter\n")
+    bad.chmod(0o755)
+    gate = reviewer.run_gate(_FakeRun(acceptance_test_file=str(bad)))
+    assert gate["passed"] is False
 
 
 # ------------------------------------------------------------- the verdict shape
@@ -161,7 +159,7 @@ _GREEN_GATE = {"passed": True, "checks": [
     "summary": "all checks green"}
 _RED_GATE = {"passed": False, "checks": [
     {"check": "acceptance_test_authored", "passed": False,
-     "detail": "correctness: m5.large x2 returned 0.0, expected 140.16"}],
+     "detail": "correctness: service returned unexpected response"}],
     "summary": "exit 1"}
 
 
@@ -172,7 +170,7 @@ def test_red_gate_is_never_assessed_approvable():
     v = reviewer.assess(_FakeRun(), _RED_GATE, 1, judge=boom)
     assert v.lgtm is False
     assert v.state == "changes_requested"
-    assert any("140.16" in r for r in v.reasons)
+    assert v.reasons and all(isinstance(r, str) and r for r in v.reasons)
     assert LGTM_TOKEN not in v.assessment
     assert "Request changes" in v.assessment
 
@@ -226,3 +224,59 @@ def test_reasons_feed_the_reimplement_loop():
                           "reasons": ["error text leaks internals", "no empty-input case"],
                           "assessment": "**Assessment**: Request changes\n\ntwo issues"})
     assert v.reasons == ["error text leaks internals", "no empty-input case"]
+
+
+# ---------------------------------------------- the gate leaks no processes
+def _alive(pid: int) -> bool:
+    """True while the pid exists (signal 0 probes without killing)."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def test_gate_reaps_a_service_the_check_started(tmp_path):
+    """The validator is TOLD to start the deliverable if it needs to be running, so a
+    check routinely leaves a service running as its own child. A service process never
+    exits on its own, so if the gate reaped only its direct child, every run would leak
+    one forever (the failure mode that once wedged a box with thousands of orphans).
+    The whole process group must go down."""
+    marker = tmp_path / "child.pid"
+    authored = _authored_executable(
+        tmp_path,
+        "#!/bin/sh\n"
+        # a 'service': outlives the check, exactly like a real one would
+        f"sleep 120 & echo $! > {marker}\n"
+        "echo 'started the deliverable'\nexit 0\n")
+    gate = reviewer.run_gate(_FakeRun(acceptance_test_file=authored))
+    assert gate["passed"] is True                 # the real exit code still decides
+    child = int(marker.read_text().strip())
+    for _ in range(50):                           # the reap is signal-fast, not instant
+        if not _alive(child):
+            break
+        time.sleep(0.1)
+    assert not _alive(child), (
+        f"pid {child} survived the gate: a service the check started leaked")
+
+
+def test_gate_reaps_the_group_when_the_check_times_out(tmp_path, monkeypatch):
+    """A check that hangs is killed, and so is everything it spawned. Killing only the
+    check would leave its children running with nobody left to reap them."""
+    monkeypatch.setattr(reviewer, "GATE_TIMEOUT_S", 1)
+    marker = tmp_path / "child.pid"
+    authored = _authored_executable(
+        tmp_path,
+        "#!/bin/sh\n"
+        f"sleep 120 & echo $! > {marker}\n"
+        "sleep 120\n")                            # the check itself hangs
+    gate = reviewer.run_gate(_FakeRun(acceptance_test_file=authored))
+    assert gate["passed"] is False                # a timeout can never be a pass
+    assert "124" in gate["checks"][0]["detail"] or "did not finish" in gate["summary"]
+    child = int(marker.read_text().strip())
+    for _ in range(50):
+        if not _alive(child):
+            break
+        time.sleep(0.1)
+    assert not _alive(child), (
+        f"pid {child} survived a timed-out gate: the group was not reaped")

@@ -3,16 +3,16 @@
 The build engine never approves its own work. This module owns the verdict,
 in two layers that make one loop:
 
-  * The ACCEPTANCE GATE is dynamic, not pinned. The validator role AUTHORS an
-    EXECUTABLE acceptance test for each deliverable (loop-engineering: the
-    checker writes a runnable check for the maker's work) and the gate RUNS
-    that executable; its real exit code decides. Nothing here assumes the
-    deliverable's language, the test's language, or a test framework: the
-    authored executable (shebang line, any interpreter in the container)
-    probes the live endpoint over the wire and exits 0 to accept. Offline
-    (fixture executor, no deployed validator) the usecase's shipped grading
-    contract runs in-process as the floor. A red gate can never pass, and
-    nothing fabricates a verdict.
+  * The ACCEPTANCE GATE is AGENTIC ONLY. The validator role decides what
+    "acceptable" means for the task in front of it and AUTHORS one executable
+    check (loop-engineering: the checker writes a runnable check for the maker's
+    work); the gate RUNS that executable and its real exit code decides.
+    Nothing here assumes the deliverable's language, the check's language, or a
+    test framework, and no contract pinned in this repository is ever consulted.
+    No authored check means no pass: there is no fallback grade, because a
+    fallback would be this repository deciding correctness, which is the thing
+    the design forbids. A red gate can never pass, and nothing fabricates a
+    verdict.
   * The LLM ASSESSMENT reviews the artifacts the way a senior engineer reviews
     a pull request, and the engine posts it DIRECTLY on the GitHub PR as an
     Assessment comment (approve / request changes). It is FAIL-OPEN: with no
@@ -33,8 +33,8 @@ import json
 import os
 import re
 import subprocess
-import sys
-import threading
+import tempfile
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,24 +47,6 @@ LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
 MAX_REVIEW_ROUNDS = 1
 
 _RUN_BRANCH = re.compile(r"^run/(run_[0-9]{6}_[0-9]{3})$")
-
-# Grading contracts are per-usecase modules that share names (adapters, contract).
-# All imports of them go through load_grading() under this lock so two concurrent
-# runs on different usecases never cross-import each other's contract.
-_IMPORT_LOCK = threading.Lock()
-
-
-def load_grading(grading_dir: str):
-    """Import (grade, InProcessClient, RemoteMCPClient) from a usecase's grading dir."""
-    with _IMPORT_LOCK:
-        for stale in ("adapters", "contract"):
-            sys.modules.pop(stale, None)
-        if grading_dir in sys.path:
-            sys.path.remove(grading_dir)
-        sys.path.insert(0, grading_dir)
-        import adapters  # noqa: PLC0415
-        import contract  # noqa: PLC0415
-        return contract.grade, adapters.InProcessClient, adapters.RemoteMCPClient
 
 
 def branch_run_id(branch: str | None) -> str | None:
@@ -99,56 +81,146 @@ class Verdict:
 
 
 # ------------------------------------------------------------------ the gate
-def run_gate(run: Any, grading_dir: str) -> dict:
-    """The deterministic acceptance gate: run the authored executable, read its
-    real exit code.
+GATE_TIMEOUT_S = 120
+# How long a killed check's group gets to die before we stop waiting on it. Short on
+# purpose: this runs on the verdict path, and a wedged reap must not hold up the run.
+_GROUP_REAP_S = 5
 
-    Shipped path: the validator role authored an EXECUTABLE acceptance test for
-    THIS deliverable (``run._acceptance_test_file``); execute it against the
-    live endpoint (``MCP_ENDPOINT_URL`` in its env) and read its exit code.
-    The authored test is the acceptance authority: any language, any shape, as
-    long as it runs and exits 0 to accept. No test framework is assumed and no
-    contract pinned in the repo is consulted.
 
-    Offline floor (fixture executor / no deployed validator): the usecase's
-    shipped grading contract runs IN-PROCESS over the wire adapter. Either way
-    a real execution decides and a red run can never be presented as a pass.
-    The gate dict's ``summary`` field carries the one-line outcome.
+def _kill_process_group(pgid: int | None) -> None:
+    """Tear down the check's whole process group (SIGTERM, then SIGKILL).
+
+    The group is the unit because the check may have STARTED THE DELIVERABLE as a
+    child of itself, and a service process never exits on its own. Reaping only the
+    direct child would leave that service running after every single run.
+
+    Takes the PGID, not the Popen, and that is the load-bearing detail: once the
+    direct child has been waited on, its pid is reaped and ``os.getpgid(pid)`` raises
+    ProcessLookupError, so a group looked up too late resolves to nothing and the
+    surviving service is missed entirely. The caller captures the pgid BEFORE waiting.
+
+    Never raises: the verdict is already decided by the time this runs, and a cleanup
+    failure must not turn a real exit code into an exception.
     """
-    endpoint = getattr(run, "artifact_endpoint", "") or ""
-    env = {**os.environ, "MCP_ENDPOINT_URL": endpoint}
-
-    authored = getattr(run, "_acceptance_test_file", None)
-    if authored and os.path.isfile(authored):
+    if pgid is None:
+        return
+    import signal  # noqa: PLC0415 (only needed on this path)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            os.chmod(authored, os.stat(authored).st_mode | 0o755)
-        except OSError:
-            pass
-        proc = subprocess.run([authored], capture_output=True, text=True,
-                              env=env, timeout=90, cwd=os.path.dirname(authored))
-        tail = (proc.stdout or proc.stderr).strip().splitlines()
-        summary = tail[-1] if tail else f"exit {proc.returncode}"
-        return {
-            "passed": proc.returncode == 0,
-            "checks": [{"check": "acceptance_test_authored",
-                        "passed": proc.returncode == 0,
-                        "detail": ("validator-authored acceptance test passed "
-                                   "against the live endpoint" if proc.returncode == 0
-                                   else f"validator-authored acceptance test failed "
-                                        f"(exit {proc.returncode}): {summary}")}],
-            "summary": summary}
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return          # already gone (or not ours): nothing left to reap
+        # Give the group a moment to die on the gentler signal before escalating.
+        deadline = time.monotonic() + _GROUP_REAP_S
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pgid, 0)          # probe: does anything still live here?
+            except OSError:
+                return                      # the whole group is gone
+            time.sleep(0.05)
 
-    grade, _, RemoteMCPClient = load_grading(grading_dir)
+
+def run_gate(run: Any) -> dict:
+    """The acceptance gate: run the check the VALIDATOR ROLE authored, read its
+    real exit code. That is the whole gate.
+
+    Validation here is AGENTIC ONLY. The validator decided what "acceptable"
+    means for this task and wrote one self-contained executable to prove it; this
+    function executes that file and reports its exit code. Nothing in this
+    repository knows what the deliverable does, what language it is in, or what a
+    correct answer looks like, so there is no pinned contract to consult and no
+    stand-in grade to fall back to.
+
+    The executable is run from its own directory with three things in its
+    environment, and nothing else the engine knows: ``WORKSHOP_WORK_DIR`` (the tree
+    the builders wrote, so a check can inspect files), ``WORKSHOP_TASK`` (the request,
+    so a check can re-read what was asked), and ``DELIVERABLE_URL`` (a live URL when
+    one exists, with ``MCP_ENDPOINT_URL`` kept as a compatible alias). None of them
+    tells the check what to verify.
+
+    Fail-loud, with no exceptions: no authored check means NO PASS. A run that
+    reaches the gate without one is a red gate with a reason, never a courtesy
+    pass and never a substituted verdict.
+    """
+    authored = getattr(run, "_acceptance_test_file", None)
+    if not authored or not os.path.isfile(authored):
+        return {
+            "passed": False,
+            "checks": [{"check": "acceptance_check_authored", "passed": False,
+                        "detail": "the validator role produced no acceptance check, "
+                                  "so nothing proved this deliverable; validation is "
+                                  "agentic only, and there is no fallback grade"}],
+            "summary": "no validator-authored acceptance check to run"}
+
+    url = getattr(run, "artifact_endpoint", "") or ""
+    # A read-only review run inspects ANOTHER run's work, so the check must be
+    # pointed at that tree rather than this run's empty one.
+    work_dir = getattr(run, "_review_work_dir", "") or getattr(run, "workdir", "") or ""
+    env = {**os.environ,
+           "WORKSHOP_WORK_DIR": work_dir,
+           "WORKSHOP_TASK": getattr(run, "task", "") or "",
+           "DELIVERABLE_URL": url, "MCP_ENDPOINT_URL": url}
     try:
-        graded = grade(RemoteMCPClient(endpoint))
-    except Exception as exc:
-        graded = {"passed": False,
-                  "checks": [{"check": "endpoint_reachable", "passed": False,
-                              "detail": f"{type(exc).__name__}: {exc}"}]}
-    n_green = sum(1 for c in graded["checks"] if c.get("passed"))
-    return {"passed": bool(graded["passed"]),
-            "checks": list(graded["checks"]),
-            "summary": f"{n_green}/{len(graded['checks'])} contract checks green"}
+        os.chmod(authored, os.stat(authored).st_mode | 0o755)
+    except OSError:
+        pass
+    # Run the check in its OWN PROCESS GROUP, and tear that whole group down when it
+    # is over. This is load-bearing, not tidiness: the validator is told to START the
+    # deliverable if it needs to be running, so the check routinely spawns a service
+    # as a CHILD of itself. `subprocess.run` reaps only the direct child, so a service
+    # the check left running (or everything it spawned, when the check times out and
+    # only IT is killed) would survive the gate forever. A server process never exits
+    # on its own, so unbounded that is one orphan per run: the failure mode that used
+    # to wedge the box with thousands of leaked processes. Killing the group means the
+    # engine still needs to know nothing about what the check started.
+    # Output goes to a FILE, not a pipe, and we wait on the PROCESS, not on end-of-
+    # output. That distinction is the whole correctness of this gate: a pipe is only
+    # closed when every writer lets go of it, and a service the check started inherits
+    # that pipe, so reading to EOF would block until the SERVICE exits (it never
+    # does). Waiting on the pipe therefore turned an honest `exit 0` into a timeout,
+    # which is a RED gate on a passing deliverable: the worst failure this file could
+    # have, since the check that gets punished is exactly the one that followed its
+    # instructions and started the thing it was asked to probe.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as sink:
+        pgid = None
+        try:
+            proc = subprocess.Popen([authored], stdout=sink, stderr=subprocess.STDOUT,
+                                    env=env, cwd=os.path.dirname(authored),
+                                    start_new_session=True)
+            # Capture the group NOW: after proc.wait() the pid is reaped and the group
+            # can no longer be resolved from it, which would leave a started service
+            # running with nothing to kill it.
+            pgid = os.getpgid(proc.pid)
+        except OSError as exc:
+            # Not executable, bad interpreter, etc. A check that cannot run is a red
+            # gate: the deliverable is unproven, which is exactly what red means.
+            code, out = 126, f"could not execute the authored check: {exc}"
+        else:
+            try:
+                code = proc.wait(timeout=GATE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                code = 124
+            finally:
+                # Always tear the group down: on a timeout to stop a hung check, and on
+                # success to stop whatever it left running.
+                _kill_process_group(pgid)
+            sink.seek(0)
+            out = sink.read()
+            if code == 124:
+                out = (f"{out}\nthe acceptance check did not finish within "
+                       f"{GATE_TIMEOUT_S}s and was killed")
+
+    tail = (out or "").strip().splitlines()
+    summary = tail[-1] if tail else f"exit {code}"
+    return {
+        "passed": code == 0,
+        "checks": [{"check": "acceptance_check_authored", "passed": code == 0,
+                    "detail": ("the validator's authored check passed against the "
+                               "live deliverable" if code == 0 else
+                               f"the validator's authored check FAILED (exit {code}): "
+                               f"{summary}")}],
+        "summary": summary,
+        "output": (out or "")[-4000:]}
 
 
 # ------------------------------------------------------- the LLM assessment
@@ -158,11 +230,12 @@ JUDGE_MODEL = os.environ.get("WORKSHOP_REVIEW_MODEL", "claude-sonnet-4-6")
 
 _JUDGE_SYSTEM = (
     "You are a meticulous senior engineer reviewing a pull request opened by a "
-    "multi-agent coding system. The deliverable ALREADY passed a deterministic "
-    "acceptance test (authored by a separate validator agent and executed for "
-    "real); you respect that gate and never contradict it. Your job is what "
-    "tests miss: wrong logic despite green tests, security problems, dead or "
-    "copied code, and real quality defects. You do NOT rewrite code.\n"
+    "multi-agent coding system. The deliverable ALREADY passed an acceptance check "
+    "that a separate validator agent wrote for this specific task and that was "
+    "executed for real; you respect that result and never contradict it. Your job "
+    "is what a check like that misses: wrong logic despite a green run, security "
+    "problems, dead or copied code, work that does not actually answer the request, "
+    "and real quality defects. You do NOT rewrite code.\n"
     "Reply with STRICT JSON only:\n"
     '{"approve": true|false, "reasons": ["..."], "assessment": "<markdown>"}\n'
     "The assessment markdown is the review COMMENT posted on the PR. Format it "
@@ -180,9 +253,15 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
 
     FAIL-OPEN: returns ``None`` (abstain) whenever a model cannot be reached
     (no credentials, no access, or any transport error), so offline/unit runs
-    behave exactly like the deterministic gate. Returns
+    behave exactly like the gate alone. Returns
     ``{"approve": bool, "reasons": [...], "assessment": md}`` when it ran.
     """
+    # A run whose work came from the offline test double has nothing to review: the
+    # files say so themselves. Abstaining is the honest answer, and it keeps the
+    # offline suite from asserting a live judge's opinion of a stub. A real dispatch
+    # never sets this, so the shipped path always gets a real review.
+    if getattr(run, "_offline_double", False):
+        return None
     try:
         import llm  # noqa: PLC0415 (lazy; offline tests never import boto3)
     except Exception:

@@ -85,7 +85,7 @@ def test_second_call_reports_cache_hit():
             system=[{"text": agent.SYSTEM_PROMPT},
                     {"cachePoint": {"type": "default"}}],
             messages=[{"role": "user",
-                       "content": [{"text": "What does one m5.large cost monthly?"}]}],
+                       "content": [{"text": "What does one large instance cost monthly?"}]}],
             toolConfig={"tools": agent.TOOLS},
         )
         return resp["usage"]

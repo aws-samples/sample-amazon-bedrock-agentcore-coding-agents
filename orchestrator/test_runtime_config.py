@@ -21,7 +21,7 @@ def _isolate(tmp_path, monkeypatch):
     (WORKSHOP_RUNTIME_CONFIG, no patching of module internals) and clear the
     role env vars so each test starts from a clean, unwired slate."""
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
-    for role in runtime_config.ROLES:
+    for role in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(role), raising=False)
     monkeypatch.delenv("WORKSHOP_EXECUTOR", raising=False)
     # Point the deployed-ARN auto-discovery at an EMPTY temp coding-agents dir via
@@ -279,9 +279,21 @@ def test_chat_agent_prompt_includes_wired_descriptions():
     import chat
     runtime_config.save_runtime("claude-code", "claude_code-ID01")
     runtime_config.save_description("claude-code", "claude_code-ID01", "ZZZ-UNIQUE-BACKEND-MARKER")
-    section = chat._dynamic_agent_section()
+    section = chat._roster_section()
     assert "ZZZ-UNIQUE-BACKEND-MARKER" in section
     assert "dispatch_backend" in section
+
+
+def test_chat_roster_section_lists_every_served_role():
+    """The roster block is generated from the registry, so EVERY served role appears
+    with its dispatch tool. A role missing here is a role the model cannot be asked
+    to use, which is how a roster change silently loses an agent."""
+    import chat
+    import roles
+    section = chat._roster_section()
+    for r in roles.roster():
+        assert r.id in section, (r.id, section)
+        assert r.dispatch_tool in section, (r.dispatch_tool, section)
 
 
 # ---- deployed-ARN auto-discovery (the event pre-provisions Codex/Kiro) --------

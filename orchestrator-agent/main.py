@@ -11,7 +11,7 @@ calls its agents AS TOOLS: the three coding agents deployed on their own
 AgentCore Runtimes are exposed as ``dispatch_*`` tools the model invokes
 directly, so the MODEL decides who runs, not a fixed fan-out.
 
-  * ``route_task``        : classify the request against the workflow registry
+  * ``list_presets``      : the example starting points (any request works)
                             (advisory: it suggests which agents a task needs).
   * ``dispatch_backend``  : run Claude Code (backend MCP server) on its Runtime.
   * ``dispatch_frontend`` : run opencode (chatbot UI) on its Runtime.
@@ -29,11 +29,11 @@ grades it with the acceptance contract.
 
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs
-    agentcore dev --stream "Use route_task to classify a backend fix. Do not dispatch."
+    agentcore dev --stream "List the preset starting points. Do not dispatch anything."
 
 Deploy it (new @aws/agentcore CLI, container, CDK):
     agentcore deploy
-    agentcore invoke --stream "Use route_task to classify a backend fix. Do not dispatch."
+    agentcore invoke --stream "List the preset starting points. Do not dispatch anything."
 """
 
 from __future__ import annotations
@@ -56,11 +56,6 @@ for _cand in (os.path.join(_HERE, "orchestrator"),
         sys.path.insert(0, os.path.abspath(_cand))
         break
 
-# When the usecase modules were staged into the bundle (stage_engine.py), point the
-# wirable workspace root at the bundle so the router resolves them here. If an
-# operator already set WORKSHOP_REPO_ROOT (e.g. /mnt/s3files), leave it untouched.
-if "WORKSHOP_REPO_ROOT" not in os.environ and os.path.isdir(os.path.join(_HERE, "usecase-sample-to-mcp")):
-    os.environ["WORKSHOP_REPO_ROOT"] = _HERE
 
 import chat as _chat              # noqa: E402  the orchestrator brain (prompt+tools+agent)
 

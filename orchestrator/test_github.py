@@ -121,10 +121,13 @@ def _wire_gateway(monkeypatch, tmp_path, repo="octocat/critter-lab", policy=None
     subprocess.run(["git", "init", "-q", "-b", "main", str(composed)], check=True)
     subprocess.run(["git", "-C", str(composed), "commit", "-q", "--allow-empty",
                     "-m", "init"], check=True, env=env)
-    deliver = composed / "deliverable"
-    deliver.mkdir()
-    (deliver / "mcp_server.py").write_text("print('server')\n")
-    (deliver / "critique.md").write_text("LGTM: no changes needed\n")
+    # A NEUTRAL composed tree. github.py publishes whatever the commit carries, at
+    # whatever paths the agents chose, so the fixture must not imply a layout: these
+    # names are arbitrary on purpose, including a nested one.
+    (composed / "a.txt").write_text("first file\n")
+    nested = composed / "sub" / "dir"
+    nested.mkdir(parents=True)
+    (nested / "b.txt").write_text("nested file\n")
     subprocess.run(["git", "-C", str(composed), "checkout", "-q", "-B", "run/run_x"],
                    check=True, env=env)
     subprocess.run(["git", "-C", str(composed), "add", "-A"], check=True, env=env)
@@ -203,9 +206,9 @@ def test_open_pr_success_publishes_via_gateway_tools(monkeypatch, tmp_path):
     out = github.open_pr(_Run(), "## review\nLGTM: no changes needed")
     assert out["pr_url"] == "https://github.com/octocat/critter-lab/pull/7"
     assert out["number"] == 7 and out["base"] == "main" and out["source"] == "environment"
-    # both deliverable files were published
+    # EVERY file the commit carried was published, with its relative path preserved.
     put = [p for (t, p) in calls if t == "put_file"]
-    assert "deliverable/mcp_server.py" in put and "deliverable/critique.md" in put
+    assert set(put) == {"a.txt", "sub/dir/b.txt"}, put
 
 
 def test_open_pr_auto_mode_targets_integration_branch_not_main(monkeypatch, tmp_path):

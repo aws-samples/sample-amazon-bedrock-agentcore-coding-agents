@@ -93,7 +93,6 @@ def isolated_server_env(port: int, **extra) -> dict:
 
 # The cost fixture for Stage 1->2->3: an m5.large priced at
 # $0.096/hr * 730h * 2 instances. Every grading contract asserts this exact value.
-EC2_FIXTURE_COST = 140.16
 LGTM_TOKEN = "LGTM: no changes needed"
 SUPPORTED_AGENTS = ("claude-code", "claude-code-validator", "opencode")
 TERMINAL_STATUSES = ("passed", "failed", "needs_human")
@@ -172,7 +171,7 @@ def console():
     port = _free_port()
     env = isolated_server_env(port, CONSOLE_USER="ubuntu", CONSOLE_PASSWORD="attendee-pass")
     # start_new_session=True puts the server in its OWN process group, so teardown
-    # can kill the WHOLE tree (uvicorn + every mcp_server.py the engine booted),
+    # can kill the WHOLE tree (uvicorn + every child the engine spawned),
     # not just the parent. A bare proc.terminate() leaves the engine's replay
     # servers re-parented to init = orphaned, which piled up and wedged the box.
     proc = subprocess.Popen([sys.executable, _SERVER], env=env,
@@ -193,7 +192,7 @@ def console():
 
 
 def _kill_process_group(proc) -> None:
-    """Terminate the server AND every child it spawned (the engine's mcp_server.py
+    """Terminate the server AND every child it spawned (whatever a run started
     replay servers), by signalling the whole process group. SIGTERM first for a
     clean shutdown (lets the server's atexit reap its own children), then SIGKILL
     the group as a backstop, so nothing is left orphaned to init."""
@@ -335,22 +334,18 @@ def write_file(console, cookie, sid: str, path: str, content: str) -> dict:
     return out
 
 
-# The workspace now starts EMPTY: the participant creates every file in the editor,
-# beginning with the input module cost_analyzer.py. Tests that need the module present
-# call this to create it the same way (the real file-write API), from the canonical
-# source, so the seed contract lives in ONE place instead of an auto-copy in the
-# engine. Returns the file path it created.
-_SKILL_SRC_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "usecase-sample-to-mcp", "cost_analyzer.py")
+# The workspace starts EMPTY and stays that way until someone writes to it. There is no
+# sample module to seed any more: the request is whatever the attendee types, so a test
+# that needs a file present creates one the same way a participant does (the real
+# file-write API). The content is deliberately arbitrary; nothing asserts against it.
+_SEED_BODY = "def hello():\n    return 42\n"
 
 
-def seed_skill(console, cookie, sid: str, name: str = "sample/cost_analyzer.py") -> str:
-    """Create cost_analyzer.py in the session workspace from the real source, the
-    way a participant would (New File → paste). Lands under sample/ to mirror the
-    content page (mkdir -p sample). Returns the workspace path."""
-    with open(_SKILL_SRC_PATH, encoding="utf-8") as f:
-        write_file(console, cookie, sid, name, f.read())
+def seed_file(console, cookie, sid: str, name: str = "sample/thing.py",
+              body: str = _SEED_BODY) -> str:
+    """Create a file in the session workspace the way a participant would (New File,
+    type, save). Returns the workspace path."""
+    write_file(console, cookie, sid, name, body)
     return f"/mnt/s3files/{name}"
 
 
@@ -372,12 +367,14 @@ def file_op(console, cookie, sid: str, path: str, op: str, to: str | None = None
 # Stage 2 helpers: submit a task, watch the routed run reach a terminal state.
 # ---------------------------------------------------------------------------
 def submit_run(console, cookie, task: str | None = None,
-               workflow_ref: str | None = None) -> dict:
+               preset: str | None = None, agents: list[str] | None = None) -> dict:
     body: dict = {}
     if task is not None:
         body["task"] = task
-    if workflow_ref is not None:
-        body["workflow_ref"] = workflow_ref
+    if preset is not None:
+        body["preset"] = preset
+    if agents is not None:
+        body["agents"] = agents
     _, run = req(console, "POST", "/api/orchestrator/runs", body, headers=cookie)
     return run
 

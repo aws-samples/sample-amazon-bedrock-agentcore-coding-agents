@@ -37,6 +37,8 @@ import time
 import uuid
 from typing import Any, Callable
 
+import roles as _roles
+
 # Strip the VT/ANSI noise the PTY interleaves with output so sentinel lines
 # compare cleanly. In order: OSC (ESC ] … BEL/ST, set-title etc.); CSI (ESC [,
 # including private-mode markers ``<=>?`` before the params and intermediate
@@ -62,53 +64,25 @@ _RUN_END = "__ROLE_RUN_END__"
 _ART_BEGIN = "__ARTIFACT_BEGIN__"
 _ART_END = "__ARTIFACT_END__"
 
-# The Bedrock env each CLI needs, set inline in the dispatched command because a
-# fresh login shell does not inherit the container's PID-1 / Dockerfile ENV.
-# All roles use the runtime's own region: opencode (the frontend) talks to plain
-# Bedrock, so there is no mantle/us-east-2 special case anymore.
-_ROLE_ENV: dict[str, dict[str, str]] = {
-    "claude-code": {"CLAUDE_CODE_USE_BEDROCK": "1", "DISABLE_AUTOUPDATER": "1"},
-    # The validator is a second Claude Code, so it uses the same Bedrock env.
-    "claude-code-validator": {"CLAUDE_CODE_USE_BEDROCK": "1", "DISABLE_AUTOUPDATER": "1"},
-    "opencode": {},
-    "kiro": {},
-}
-
-# Telemetry-enable env per role (Lab 3). Every agent image runs an OTel
-# collector sidecar on 127.0.0.1:4318 (started at boot by entrypoint.sh);
-# these vars make the agent CLI emit to it. Claude Code exports metrics and
-# log events over OTLP; opencode needs OTEL_BSP_SCHEDULE_DELAY=1 because a
-# short-lived CLI exits before the default 5s batch flush and its spans would
-# silently drop. Enabling emission is only half the story: WHO ran it comes
+# Per-role execution facts (the Bedrock env each CLI needs, the telemetry env that
+# makes it emit, and the headless invocation itself) all come from the role
+# REGISTRY (``roles.py``), which declares them once. They used to be three parallel
+# dicts keyed by agent id here, which is three places to forget a role.
+#
+# Telemetry note (Lab 3): every agent image runs an OTel collector sidecar on
+# 127.0.0.1:4318 (started at boot by entrypoint.sh); a role's telemetry_env makes
+# its CLI emit to it. Enabling emission is only half the story: WHO ran it comes
 # from identity.to_otel_env() (the Lab 3 seam) merged in _build_command.
-_ROLE_TELEMETRY_ENV: dict[str, dict[str, str]] = {
-    "claude-code": {
-        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-        "OTEL_METRICS_EXPORTER": "otlp",
-        "OTEL_LOGS_EXPORTER": "otlp",
-        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
-        "OTEL_METRIC_EXPORT_INTERVAL": "5000",
-        "OTEL_LOGS_EXPORT_INTERVAL": "2000",
-    },
-    "claude-code-validator": {
-        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-        "OTEL_METRICS_EXPORTER": "otlp",
-        "OTEL_LOGS_EXPORTER": "otlp",
-        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
-        "OTEL_METRIC_EXPORT_INTERVAL": "5000",
-        "OTEL_LOGS_EXPORT_INTERVAL": "2000",
-    },
-    # opencode's exporter is switched on in its config file
-    # (experimental.openTelemetry, written by configure_opencode.py); the env
-    # here is the endpoint + the short-lived-process flush fix.
-    "opencode": {
-        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
-        "OTEL_BSP_SCHEDULE_DELAY": "1",
-    },
-    "kiro": {},
-}
+
+
+def _role(agent_id: str) -> "_roles.Role":
+    """The registry entry for a dispatch target, or a loud failure. A role that is
+    registered but NOT on the served roster still resolves here: the roster decides
+    what is offered, while this is the executor being asked to run a specific id."""
+    try:
+        return _roles.get(agent_id)
+    except _roles.UnknownRole:
+        raise RoleExecutionError(f"unknown agent: {agent_id}") from None
 
 
 def _cli_invocation(agent_id: str, prompt_var: str, model: str, workdir: str) -> str:
@@ -116,29 +90,14 @@ def _cli_invocation(agent_id: str, prompt_var: str, model: str, workdir: str) ->
     which ``cd``s to ``$HOME`` and would move the artifact off the run workspace).
 
     ``prompt_var`` is a shell variable name holding the (already-safely-assigned)
-    prompt, so the prompt text never needs re-quoting here. The flags are each
-    CLI's standard headless one-shot form (``--print`` / ``run`` / ``--no-interactive``).
-    ``workdir`` is the run workspace the caller has already cd'd into; opencode needs
-    it PASSED EXPLICITLY because it anchors its project at the nearest git root, not
-    the process cwd, and ``/mnt/s3files/<run>`` is not a git repo.
+    prompt, so the prompt text never needs re-quoting here. The command template and
+    the default model are the role's own (registry), so each CLI's standard headless
+    one-shot form lives with the role that needs it. ``workdir`` is the run workspace
+    the caller has already cd'd into; some CLIs need it PASSED EXPLICITLY because
+    they anchor their project at the nearest git root, not the process cwd, and
+    ``/mnt/s3files/<run>`` is not a git repo.
     """
-    if agent_id in ("claude-code", "claude-code-validator"):
-        # The validator is a second Claude Code, so it runs the same headless CLI.
-        m = model or "us.anthropic.claude-opus-4-6-v1"
-        return (f'claude --dangerously-skip-permissions --print --max-turns 50 '
-                f'--model {shlex.quote(m)} "${prompt_var}"')
-    if agent_id == "opencode":
-        m = model or "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
-        # opencode 1.17.x has NO --dangerously-skip-permissions flag (passing it
-        # hangs/errors). --dir pins the project to the run workspace (it otherwise
-        # walks up to the nearest git root and writes chatbot.html off-workspace, so
-        # the artifact read-back finds nothing); --auto auto-approves permissions
-        # (else it auto-REJECTS reading the staged module under <run>-skill and aborts).
-        return (f'opencode run --dir {shlex.quote(workdir)} --auto '
-                f'-m {shlex.quote(m)} "${prompt_var}"')
-    if agent_id == "kiro":
-        return f'kiro-cli chat --no-interactive --trust-all-tools "${prompt_var}"'
-    raise RoleExecutionError(f"unknown agent: {agent_id}")
+    return _role(agent_id).command(prompt_var, model, workdir)
 
 
 class RoleExecutionError(RuntimeError):
@@ -158,7 +117,7 @@ def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
     Used by both the headless one-shot (_build_command) and the live-PTY launch
     so every path emits attributed telemetry through the collector sidecar.
     """
-    env = dict(_ROLE_TELEMETRY_ENV.get(agent_id, {}))
+    env = dict(_role(agent_id).telemetry_env)
     try:
         from identity_baggage import get_current_identity
         identity = get_current_identity()
@@ -173,7 +132,7 @@ def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
     return env
 
 
-def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: str,
+def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: str | None,
                    model: str, region: str, nonce: str) -> str:
     """The one shell line dispatched into the runtime.
 
@@ -194,11 +153,13 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
     # Every role uses the runtime's own region: opencode/claude/kiro all call
     # plain Bedrock there (no mantle/us-east-2 special case).
     cli_region = region
+    role = _role(agent_id)
     env = {"AWS_REGION": cli_region, "AWS_DEFAULT_REGION": cli_region,
-           **_ROLE_ENV.get(agent_id, {}),
-           **_ROLE_TELEMETRY_ENV.get(agent_id, {})}
-    if agent_id in ("claude-code", "claude-code-validator") and model:
-        env["ANTHROPIC_MODEL"] = model
+           **role.env, **role.telemetry_env}
+    # A CLI that reads its model from the environment says so in the registry
+    # (model_env), so an override reaches it without this file knowing which CLI.
+    if role.model_env and model:
+        env[role.model_env] = model
     # Propagate authenticated run attribution metadata into the runtime.
     identity = None
     try:
@@ -224,16 +185,17 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
     env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
     cli = _cli_invocation(agent_id, "P", model, workdir)
 
-    # opencode's Bedrock provider (Vercel AI SDK, Node) signs with SigV4 but does
-    # NOT walk the AWS credential chain the way boto3 does: on a runtime it only has
-    # the container role via AWS_CONTAINER_CREDENTIALS_FULL_URI / IMDS, which the SDK
-    # leaves unresolved, so it errors "SigV4 authentication requires AWS credentials".
-    # claude-code (CLAUDE_CODE_USE_BEDROCK) and kiro resolve the chain fine. So for
-    # opencode ONLY, materialize the role's temporary keys into the static env vars
-    # the SDK reads, using the awscli that ships in the image. Fail-soft: if the
-    # export cannot run the CLI still tries the chain (unchanged behaviour).
+    # Some providers sign with SigV4 but do NOT walk the AWS credential chain the
+    # way boto3 does (opencode's Vercel AI SDK is the case in the served roster): on
+    # a runtime such a CLI only has the container role via
+    # AWS_CONTAINER_CREDENTIALS_FULL_URI / IMDS, which it leaves unresolved, so it
+    # errors "SigV4 authentication requires AWS credentials". Claude Code
+    # (CLAUDE_CODE_USE_BEDROCK) and Kiro resolve the chain fine. A role that needs
+    # it declares needs_static_credentials, and we materialize its temporary keys
+    # into the static env vars the SDK reads, using the awscli in the image.
+    # Fail-soft: if the export cannot run, the CLI still tries the chain.
     cred_prelude = ""
-    if agent_id == "opencode":
+    if role.needs_static_credentials:
         cred_prelude = (
             'eval "$(aws configure export-credentials --format env 2>/dev/null)" '
             '2>/dev/null || true; ')
@@ -369,7 +331,7 @@ def _slice(raw: str, begin: str, end: str) -> str:
 
 
 def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
-                      artifact_rel: str, model: str,
+                      artifact_rel: str | None, model: str,
                       on_line: Callable[[str], None] | None,
                       timeout_s: float) -> dict[str, Any]:
     """TESTING dispatch: POST the prompt to a local ``agentcore dev`` endpoint's
@@ -422,6 +384,10 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
         return full if (full == base_real
                         or full.startswith(base_real + os.sep)) else None
 
+    if not artifact_rel:
+        # Builder dispatch: no named file to wait for; the caller reads the tree.
+        return {"exit": 0, "transcript": transcript, "artifact": "",
+                "session_id": "local-dev"}
     candidates = [c for c in (
         _contained(mnt, run_subdir, artifact_rel),
         _contained(repo_root, ".runs", run_subdir, artifact_rel),
@@ -450,7 +416,7 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
 
 
 def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str,
-                   artifact_rel: str, model: str, region: str,
+                   artifact_rel: str | None, model: str, region: str,
                    on_line: Callable[[str], None] | None,
                    timeout_s: float) -> dict[str, Any]:
     """One shell dispatch of the role's CLI; returns ``{exit, transcript, raw}``.
@@ -470,7 +436,7 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
 
 
 def _run_in_live_pty(session: Any, agent_id: str, prompt: str, run_subdir: str,
-                     artifact_rel: str, region: str,
+                     artifact_rel: str | None, region: str,
                      on_line: Callable[[str], None] | None,
                      timeout_s: float) -> dict[str, Any]:
     """Drive the agent's LIVE interactive TUI (the SAME PTY the console's Agents
@@ -522,19 +488,22 @@ def _run_in_live_pty(session: Any, agent_id: str, prompt: str, run_subdir: str,
 
     # Artifact read-back: a separate one-shot command shell on the same runtime
     # (same S3Files mount), retried for write-back lag; identical to the headless
-    # path's read so the fail-loud contract is one code path.
-    artifact = _read_artifact_from_runtime(session.runtime_arn, run_subdir,
-                                           artifact_rel, region)
-    if not artifact:
-        raise RoleExecutionError(
-            f"ROLE_EXECUTION_ERROR: {agent_id} live turn ended but {artifact_rel} "
-            f"is missing/empty in the runtime; transcript tail:\n{transcript[-600:]}")
+    # path's read so the fail-loud contract is one code path. Unnamed (builder)
+    # dispatches read their whole tree in the caller instead.
+    artifact = ""
+    if artifact_rel:
+        artifact = _read_artifact_from_runtime(session.runtime_arn, run_subdir,
+                                               artifact_rel, region)
+        if not artifact:
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} live turn ended but {artifact_rel} "
+                f"is missing/empty in the runtime; transcript tail:\n{transcript[-600:]}")
     return {"exit": 0, "transcript": transcript, "artifact": artifact,
             "session_id": session.session_id, "live_session": True}
 
 
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
-                                artifact_rel: str, region: str) -> str:
+                                artifact_rel: str | None, region: str) -> str:
     """Read /mnt/s3files/<run>/<artifact> over a fresh one-shot command shell,
     sentinel-delimited, retrying for S3Files write-back lag. Returns "" when the
     file never appears (the caller decides how loud to fail).
@@ -643,7 +612,7 @@ def _live_session_for(agent_id: str, runtime_arn: str,
 
 
 def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str,
-                   artifact_rel: str, model: str, region: str = "us-west-2",
+                   artifact_rel: str | None, model: str, region: str = "us-west-2",
                    on_line: Callable[[str], None] | None = None,
                    timeout_s: float = 600.0) -> dict[str, Any]:
     """Run ``agent_id``'s CLI inside its deployed runtime and read the artifact
@@ -727,13 +696,18 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
             f"ROLE_EXECUTION_ERROR: {agent_id} CLI exited {run['exit']} in its "
             f"runtime; transcript tail:\n{transcript[-600:]}")
 
-    # Read the artifact back in a SEPARATE session, with retries; S3Files
-    # write-back can lag a beat behind the CLI's own "file written" return.
-    artifact = _read_artifact_from_runtime(runtime_arn, run_subdir,
-                                           artifact_rel, region)
-    if not artifact:
-        raise RoleExecutionError(
-            f"ROLE_EXECUTION_ERROR: {agent_id} finished but {artifact_rel} is "
-            f"missing/empty in the runtime after retries; transcript tail:\n{transcript[-600:]}")
+    # A NAMED artifact is read back in a SEPARATE session, with retries; S3Files
+    # write-back can lag a beat behind the CLI's own "file written" return. Only the
+    # validator's authored check is named: builders decide their own files, so their
+    # output is read as a whole tree by the caller, and "wrote nothing at all" is the
+    # failure signal there (engine._require_work) rather than a missing filename.
+    artifact = ""
+    if artifact_rel:
+        artifact = _read_artifact_from_runtime(runtime_arn, run_subdir,
+                                               artifact_rel, region)
+        if not artifact:
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} finished but {artifact_rel} is "
+                f"missing/empty in the runtime after retries; transcript tail:\n{transcript[-600:]}")
     return {"exit": run["exit"], "transcript": transcript, "artifact": artifact,
             "session_id": session_id}

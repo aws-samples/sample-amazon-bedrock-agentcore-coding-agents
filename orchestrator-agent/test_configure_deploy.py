@@ -19,7 +19,7 @@ def test_configure_wires_role_arns_execution_role_and_runtime_environment(tmp_pa
         "runtimes": [{"name": "orchestrator", "build": "Container"}]
     }), encoding="utf-8")
 
-    for role in configure_deploy.ROLES:
+    for role in configure_deploy.ROLES():
         role_dir = tmp_path / "coding-agents" / role
         role_dir.mkdir(parents=True)
         (role_dir / "runtime_config.json").write_text(json.dumps({

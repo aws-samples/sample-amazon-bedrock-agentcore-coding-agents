@@ -25,21 +25,20 @@ roles are unambiguous:
 
 | Agent | Role | Identity model | Per-agent skill |
 |---|---|---|---|
-| **Claude Code** | **BACKEND**: implements the AgentCore MCP server (the deliverable under test) | Bedrock native, runtime IAM role has `bedrock:InvokeModel`, **no API key** | `configure-claude-code-backend` |
-| **Claude Code (validator)** | **VALIDATOR**: runs the pytest acceptance gate / acceptance checks; the definition-of-done | Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), runtime IAM role has `bedrock:InvokeModel`; **no API key, no Token Vault, no ksk_** | `configure-claude-code-validator` |
-| **opencode** | **FRONTEND BUILDER**: builds the chatbot UI that talks to the backend MCP server | Bedrock native, runtime IAM role through the AWS SDK credential chain | `configure-opencode-frontend` |
+| **Claude Code** | **BACKEND**: implements the backend deliverable the task names and exposes it through the AgentCore Gateway | Bedrock native, runtime IAM role has `bedrock:InvokeModel`, **no API key** | `configure-claude-code-backend` |
+| **Claude Code (validator)** | **VALIDATOR**: reads the task and the builders' work, authors a self-contained executable check, the engine runs it, and its real exit code is the gate | Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), runtime IAM role has `bedrock:InvokeModel`; **no API key, no Token Vault, no ksk_** | `configure-claude-code-validator` |
+| **opencode** | **FRONTEND BUILDER**: builds the interface on top of the backend | Bedrock native, runtime IAM role through the AWS SDK credential chain | `configure-opencode-frontend` |
 
 Framing: this is an **autonomous, fire-and-forget** pipeline. The orchestrator handles the
 deterministic work (admission, context hydration, pre-flight, finalization); the three agents
 are the single agentic step fanned into three roles and composed into ONE deliverable. There
 is **no race, no winner, no fastest/cheapest ranking**: every agent has a job and does it.
-The local frontend panel is an *observability* window into the run, not a race UI.
 
 > Per-agent **model routing** is each agent's own concern (Sonnet for new tasks,
 > Haiku for read-only review, Opus opt-in for complex repos). The umbrella skill only confirms
 > region and which agents to configure; the per-agent skills own model selection. New agent
-> types (cursor, hermes, open-code) extend the harness the same way: add a sibling skill, keep
-> this dispatch table the contract.
+> types extend the harness the same way: add a sibling skill, keep this dispatch table the
+> contract.
 
 ## Step 1: Gather inputs (region + which agents)
 
@@ -88,7 +87,7 @@ gh auth status                   # GitHub MCP server needs an authenticated gh /
 > wires into `~/.mcp.json`. It must exist before the agents run, so deploy it before Step 5.
 
 ```bash
-cd gateway_mcp
+cd coding-agents/gateway_mcp
 export GITHUB_APP_ID="123456"
 export GITHUB_APP_PRIVATE_KEY_FILE="/path/to/your-app.private-key.pem"
 export GITHUB_APP_INSTALLATION_ID="78901234"
@@ -106,7 +105,7 @@ Confirm the Gateway is live and brokering GitHub tools before you point agents a
 is saved to `.deployed-state.json`:
 
 ```bash
-GATEWAY_URL=$(jq -r '.gateway_url' .deployed-state.json)
+GATEWAY_URL=$(jq -r '.gateway_url' coding-agents/gateway_mcp/.deployed-state.json)
 awscurl --service bedrock-agentcore --region "$AWS_REGION" -X POST "$GATEWAY_URL" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{}}'
@@ -119,19 +118,19 @@ Gateway before deploying agents; a missing Gateway makes every backend run fail 
 
 Do NOT inline agent deploys here. Invoke the focused skill for each selected agent so the
 identity model and model routing stay owned in one place. Suggested order: backend first
-(it's the deliverable under test), then validator (it gates that deliverable), then frontend:
+(it is the deliverable under test), then validator (it gates that deliverable), then frontend:
 
-1. **BACKEND: Claude Code** → run skill `configure-claude-code-backend`
+1. **BACKEND: Claude Code** -> run skill `configure-claude-code-backend`
    - Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), no API key. Roughly:
      ```bash
      cd coding-agents/claude-code && ./setup.sh && python deploy.py
      ```
-2. **VALIDATOR: Claude Code (validator)** → run skill `configure-claude-code-validator`
+2. **VALIDATOR: Claude Code (validator)** -> run skill `configure-claude-code-validator`
    - Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), no API key, no Token Vault, no ksk_. Roughly:
      ```bash
      cd coding-agents/claude-code-validator && ./setup.sh && python deploy.py
      ```
-3. **FRONTEND: opencode** → run skill `configure-opencode-frontend`
+3. **FRONTEND: opencode** -> run skill `configure-opencode-frontend`
    - Bedrock native, runtime IAM role; no API key or Token Vault provider. Roughly:
      ```bash
      cd coding-agents/opencode && ./setup.sh && python deploy.py
@@ -149,23 +148,15 @@ cd coding-agents && ./deploy-all.sh        # builds+deploys all agents; per-agen
 
 Once the selected agents are deployed and verified, the harness is ready for an autonomous run.
 Hand off to the orchestrator (single-chat, fire-and-forget): submit ONE task and the blueprint
-runs admission → context hydration → pre-flight → agent execution (the three roles) →
-finalization → acceptance gate → PR. See `orchestrator/` in this repo.
+runs admission -> context hydration -> pre-flight -> agent execution (the three roles) ->
+finalization -> acceptance gate -> PR. See `orchestrator/` in this repo.
 
-Optionally bring up the local observability panel to *watch* the agents work (not a race UI):
-
-```bash
-cd coding-agents/frontend && pip install -r requirements.txt && python app.py
-# http://127.0.0.1:5050 is multi-pane; reads runtime_config.json from each agent folder
-```
-
-The acceptance gate (the Claude Code validator role) is:
-
-```bash
-MCP_ENDPOINT_URL="<deployed-backend-mcp-endpoint>" pytest usecase-sample-to-mcp/grading/
-# 10 tests; in-process pre-deploy, over-the-wire when deployed. No LLM judge; this is the
-# autonomous "definition of done", with bounded iteration (~2 rounds, then escalate to a human).
-```
+The acceptance gate works as follows: after the builder roles complete, the validator role
+reads the task (`WORKSHOP_TASK`) and the work (`WORKSHOP_WORK_DIR`), authors one
+self-contained executable, and the engine runs it. The check's real exit code decides. A
+non-zero exit is a bounded retry (~2 rounds), then escalate to a human. Nothing in the repo
+pre-encodes what a correct answer looks like; the validator decides based on the deliverable
+in front of it.
 
 ## Step 7: Smoke-test checklist
 
@@ -178,14 +169,14 @@ Walk this before declaring the harness ready. Each item is a concrete, observabl
 - [ ] **Gateway live**: Step 4 `tools/list` returns a non-empty tool list with no JSON-RPC error.
 - [ ] **Backend (Claude Code)**: `python deploy.py` succeeded; runtime registered; an interactive
       `python connect.py` session opens (verified by `configure-claude-code-backend`).
-- [ ] **Validator (Claude Code validator)**: deployed Bedrock-native (no API key, no Token Vault); the
-      acceptance gate `pytest usecase-sample-to-mcp/grading/` runs (verified by `configure-claude-code-validator`).
+- [ ] **Validator (Claude Code validator)**: deployed Bedrock-native (no API key, no Token Vault);
+      runtime READY (verified by `configure-claude-code-validator`).
 - [ ] **Frontend (opencode)**: deployed AND runtime IAM role verified
-      (verified by `configure-opencode-frontend`); the chatbot UI reaches the backend MCP endpoint.
-- [ ] **Acceptance gate wired**: `MCP_ENDPOINT_URL` points at the deployed backend; the 10
-      grading tests are collectable.
-- [ ] **Orchestrator**: a single test task submitted to `orchestrator/` reaches a terminal
-      state (PR opened or a clear fail-closed reason like `GITHUB_UNREACHABLE` / `REPO_NOT_FOUND_OR_NO_ACCESS`).
+      (verified by `configure-opencode-frontend`); the frontend reaches the backend MCP endpoint.
+- [ ] **End-to-end run**: submit one request to the orchestrator and confirm it reaches a terminal
+      state where the validator authored a check, the engine ran it, and the real exit code
+      decided (PR opened, or a clear fail-closed reason like `GITHUB_UNREACHABLE` /
+      `REPO_NOT_FOUND_OR_NO_ACCESS`).
 - [ ] **No secrets committed**: GitHub App key/IDs, account ids, and tokens were passed by env/file
       only and are absent from the working tree. The Claude Code validator has no API key by design.
 
@@ -197,7 +188,9 @@ measured per-agent metrics from the run, never vendor "Nx cheaper" claims.
 ## Teardown (when the user is done)
 
 ```bash
-cd coding-agents && ./cleanup_all.sh
+python coding-agents/claude-code/cleanup.py
+python coding-agents/claude-code-validator/cleanup.py
+python coding-agents/opencode/cleanup.py
 cd coding-agents/infra && ./cleanup.sh      # removes VPC + S3 Files (keeps the S3 bucket)
-cd gateway_mcp && ./delete-all.sh
+cd coding-agents/gateway_mcp && ./delete-all.sh
 ```

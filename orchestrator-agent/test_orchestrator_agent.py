@@ -3,9 +3,9 @@ wrapper (main.py). The Strands tools are REAL.
 
 The orchestrator is a CHATBOT: the model converses and only dispatches an agent
 when it chooses to call a dispatch_*/run_build tool. These tests prove the tool
-wiring without a model call: route_task hits the real router; the dispatch tools
+wiring without a model call: list_presets reads the real preset registry; the dispatch tools
 kick a REAL run on the engine (non-blocking) and we poll it to a terminal verdict
-through the pytest gate. The engine is REAL-ONLY (it would dispatch to deployed
+through the validator's authored gate. The engine is REAL-ONLY (it would dispatch to deployed
 runtimes and fail loud without them), so the test injects the test-only
 FixtureExecutor by constructor: the same seam the shipped binary never exposes
 via a flag. The Strands agent loop itself (which calls Bedrock) is exercised live
@@ -42,7 +42,7 @@ chat.use_engine(chat._engine.Engine(executor_obj=FixtureExecutor()))
 def _wire_all_roles(tmp_path, monkeypatch):
     """The dispatch tools are generated from the WIRED roles (R8), so wire all
     three coding roles to a temp config via the real env var the module reads.
-    Without this the tool set is converse-only (route_task + run_status) and the
+    Without this the tool set is converse-only (list_presets + run_status) and the
     dispatch tests have nothing to call. Real-seam isolation, no monkeypatch of
     internals. main._get_or_create_agent caches; reset it so each test rebuilds
     the agent against the wired tool set."""
@@ -53,7 +53,7 @@ def _wire_all_roles(tmp_path, monkeypatch):
     # to a terminal verdict would hang/fail. Order-independent isolation.
     chat.use_engine(chat._engine.Engine(executor_obj=FixtureExecutor()))
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
-    for r in runtime_config.ROLES:
+    for r in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     runtime_config.save_runtime("opencode", "opencode-TESTID0001")
@@ -87,31 +87,24 @@ def _await_terminal(run_id, timeout=60):
     raise AssertionError(f"run {run_id} never reached a terminal state")
 
 
-# ----------------------------------------------------------- route_task (advisory)
-def test_route_task_routes_convert_to_full_workflow():
-    out = json.loads(_call("route_task", task="convert the cost analyzer module to an MCP server"))
-    assert out["workflow_ref"] == "convert/sample-to-mcp-v1"
-    assert set(out["agents"]) == {"claude-code", "claude-code-validator", "opencode"}
-
-
-def test_route_task_routes_patch_to_backend_only():
-    out = json.loads(_call("route_task", task="fix the version string"))
-    assert out["workflow_ref"] == "patch/backend-v1"
-    assert out["agents"] == ["claude-code"]
-
-
-def test_route_task_explicit_agent_intent_wins():
-    out = json.loads(_call("route_task", task="use codex to tweak the UI"))
-    assert out["workflow_ref"] == "patch/frontend-v1"
+# --------------------------------------------------------- list_presets (advisory)
+def test_list_presets_offers_starting_points_and_the_attendees_own_request():
+    out = json.loads(_call("list_presets"))
+    ids = {p["preset"] for p in out["presets"]}
+    assert "your-own" in ids, "the attendee's own request must be first-class"
+    for p in out["presets"]:
+        assert p["roles"]
+        if not p["read_only"]:
+            assert "claude-code-validator" in p["roles"], p["preset"]
 
 
 # ------------------------------------------------- dispatch tools (non-blocking, real)
 def test_dispatch_backend_kicks_a_real_single_role_run():
     """A dispatch_* tool starts ONE deployed agent (subagents-as-tool) for real:
     it returns IMMEDIATELY with a run id (the chatbot keeps talking), and the run
-    grades through the same engine + pytest gate when we poll it."""
+    grades through the same engine + authored gate when we poll it."""
     out = json.loads(_call("dispatch_backend",
-                           task="fix the server version string in the cost analyzer MCP server"))
+                           task="fix whatever needs fixing in this workspace"))
     assert out["agent"] == "claude-code"
     assert out["status"] == "started"          # non-blocking: started, not a verdict
     assert out["kind"] == "backend"
@@ -121,19 +114,20 @@ def test_dispatch_backend_kicks_a_real_single_role_run():
     assert result["gate"]["passed"] is True
 
 
-def test_run_build_kicks_a_real_routed_run():
-    out = json.loads(_call("run_build",
-                           task="fix the server version string in the cost analyzer MCP server"))
+def test_run_build_accepts_any_request_and_runs_it():
+    """The headline: an arbitrary sentence, matching no sample and no keyword, runs
+    all the way to a verdict."""
+    out = json.loads(_call("run_build", task="write me a haiku about tuesday"))
     assert out["status"] == "started"
     assert out["run_id"].startswith("run_")
     result = _await_terminal(out["run_id"])
     assert result["status"] == "passed"
-    assert (result.get("route") or {}).get("workflow_ref") == "patch/backend-v1"
+    assert (result.get("route") or {}).get("preset") == "custom"
 
 
 def test_run_status_reads_back_a_real_run():
     built = json.loads(_call("dispatch_backend",
-                             task="fix the server version string in the cost analyzer MCP server"))
+                             task="fix whatever needs fixing in this workspace"))
     _await_terminal(built["run_id"])
     status = json.loads(_call("run_status", run_id=built["run_id"]))
     assert status["run_id"] == built["run_id"]
@@ -152,7 +146,7 @@ def test_agent_has_all_tools_when_all_roles_wired():
     # composed build, and run_status.
     agent = main._get_or_create_agent()
     have = set(agent.tool_names) if hasattr(agent, "tool_names") else set()
-    expected = {"route_task", "dispatch_backend", "dispatch_frontend",
+    expected = {"list_presets", "dispatch_backend", "dispatch_frontend",
                 "dispatch_validator", "run_build", "run_status"}
     assert expected.issubset(have), f"agent tools: {have}"
 

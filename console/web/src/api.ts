@@ -67,20 +67,24 @@ export const editAgent = (agentId: string, fields: { name?: string; purpose?: st
 
 /* ---------------- Module 2: Fleets / runs ---------------- */
 
-export interface Workflow {
-  workflow_ref: string;
-  version: string;
-  agents: string[];
-  usecase: string;
+// A STARTING POINT the attendee can send as-is, edit, or ignore: an id, a title,
+// the request text it ships, and the roles it routes. Presets are examples, not a
+// catalogue of what the system supports; any request works (see `agents` on submit).
+export interface Preset {
+  preset: string;
+  title: string;
+  roles: string[];
+  task: string;
   read_only: boolean;
-  description: string;
 }
 
+// The routing verdict the engine attached to a run: which roles, and why. Routing
+// picks ROLES and nothing else, so there is no use case, shape, or target here.
 export interface RunRoute {
-  workflow_ref: string;
+  preset: string;          // the preset id, or "custom" when roles were named
   rule: string;
   agents: string[];
-  usecase: string;
+  read_only?: boolean;
 }
 
 export interface RunSummary {
@@ -94,8 +98,32 @@ export interface RunSummary {
   merge_state?: string | null;
 }
 
-export const listWorkflows = () =>
-  get<{ workflows: Workflow[] }>('/api/orchestrator/workflows').then((r) => r.workflows);
+// The starting points, from the ONE source (`presets.PRESETS`); the console renders
+// these rather than keeping its own copy, so the two cannot drift.
+export const listPresets = () =>
+  get<{ presets: Preset[] }>('/api/orchestrator/presets').then((r) => r.presets);
+
+/* ---------------- The served roster ---------------- */
+
+// One role this deployment SERVES, from the role registry (`orchestrator/roles.py`).
+// `kind` is 'builder' (makes the work) or 'checker' (decides it) -- the structural
+// maker-is-never-checker split; `capability` is what a preset asks for ('backend',
+// 'frontend', 'validator'). The roster is configurable, so the console reads it
+// rather than hardcoding a team.
+export interface RosterRole {
+  role: string;
+  label: string;
+  kind: 'builder' | 'checker';
+  capability: string;
+  role_name: string;
+  description: string;
+  steering_file: string;
+  model: string;
+  credential: string;
+}
+
+export const listRoster = () =>
+  get<{ roster: RosterRole[] }>('/api/orchestrator/roster').then((r) => r.roster);
 
 export const listRuns = () =>
   get<{ runs: RunSummary[] }>('/api/orchestrator/runs').then((r) => r.runs ?? []);
@@ -110,7 +138,7 @@ export const listRunsPaged = (limit: number, offset: number) =>
 export const getRun = (runId: string) =>
   get<RunSummary & Record<string, unknown>>(`/api/orchestrator/runs/${encodeURIComponent(runId)}`);
 
-// The terminal verdict the orchestrator reports back: the real pytest gate result,
+// The terminal verdict the orchestrator reports back: the real acceptance-gate result,
 // the review state, iterations, and the PR url (or null). Only valid once the run
 // is terminal (the endpoint 409s while it is still running), so callers fetch it
 // when the run settles. Every field is the run's own recorded outcome.
@@ -175,7 +203,11 @@ export const getRunDiff = (runId: string) =>
 
 export interface SubmitRunInput {
   task: string;
-  workflow_ref?: string;
+  /** A starting point to route from. Its request text fills an empty `task`. */
+  preset?: string;
+  /** Name the roles directly, with any request text at all. This is the real
+   *  surface: the engine validates the set and fails loud on an unknown role. */
+  agents?: string[];
   /** Optional model override. A single id applies to every dispatched role;
    *  the per-role map targets one role (engine `_role_model`: options.models). */
   model?: string;
@@ -184,15 +216,16 @@ export interface SubmitRunInput {
 
 // The engine reads model overrides off `options` (options.model / options.models),
 // so nest them there rather than at the top level (where they were silently
-// dropped). task + workflow_ref stay top-level, as the handler expects.
+// dropped). task + preset + agents stay top-level, as the handler expects.
 export const submitRun = (input: SubmitRunInput) => {
-  const { task, workflow_ref, model, models } = input;
+  const { task, preset, agents, model, models } = input;
   const options: Record<string, unknown> = {};
   if (model) options.model = model;
   if (models) options.models = models;
   return post<RunSummary & { route?: RunRoute }>('/api/orchestrator/runs', {
     task,
-    ...(workflow_ref ? { workflow_ref } : {}),
+    ...(preset ? { preset } : {}),
+    ...(agents?.length ? { agents } : {}),
     ...(Object.keys(options).length ? { options } : {}),
   });
 };
@@ -272,9 +305,10 @@ export async function streamChat(
   }
 }
 
-// Prompt suggestions from the real workflow registry. The backend derives these
-// from registered workflow descriptions so they reflect what the orchestrator can
-// actually do. Callers fall back to a local constant if this fetch fails.
+// Opening prompts for the empty chat: the preset titles, derived server-side from
+// the SAME `presets.PRESETS` the router reads, so a chip can never offer something
+// the roles cannot be routed to. They are starting points, not a menu the
+// orchestrator is limited to: any request the attendee types works.
 export const listSuggestions = () =>
   get<{ suggestions: string[] }>('/api/orchestrator/suggestions');
 

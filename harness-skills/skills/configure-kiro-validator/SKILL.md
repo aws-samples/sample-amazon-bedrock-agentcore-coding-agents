@@ -7,10 +7,22 @@ description: >-
   agent", "set up the tests agent", "wire up Kiro for testing", "make Kiro run
   the acceptance gate", "point Kiro at the grading checks", or asks how to
   deploy Kiro with Token Vault / Identity credentials. LOCKED role mapping in
-  this harness: Claude Code = BACKEND (AgentCore MCP server), Kiro = VALIDATOR
-  (tests / acceptance gate), Codex = FRONTEND BUILDER (chatbot UI). This skill
-  configures ONLY the Kiro = VALIDATOR slot.
+  this harness: Claude Code = BACKEND, Kiro = VALIDATOR (tests / acceptance
+  gate), Codex = FRONTEND BUILDER. This skill configures ONLY the Kiro =
+  VALIDATOR slot.
 ---
+
+> **RESTORE PATH - NOT THE SERVED ROLE**
+>
+> Kiro requires a paid per-user Pro+ subscription and a `ksk_` API key issued
+> through the Kiro console. Workshop Studio accounts cannot be issued these keys
+> (no per-user subscription, no admin toggle available at event provisioning time).
+> The served validator in the workshop is a second Claude Code (see
+> `configure-claude-code-validator`), which is Bedrock-native with no key.
+>
+> Use this skill only if you are restoring the Kiro path in a context where you
+> have a valid `ksk_` key and a Kiro Pro+ subscription. All Kiro assets
+> (`coding-agents/kiro/`) remain in the repository as the restore path.
 
 # Configure Kiro as the VALIDATOR
 
@@ -18,7 +30,7 @@ You are configuring the Kiro coding agent for the workshop's autonomous
 3-agent harness. Kiro's LOCKED role is **VALIDATOR**: it writes and runs the
 tests and owns the **acceptance gate**: the deterministic "definition of
 done" for every autonomous run. Kiro does not build the backend (that is
-Claude Code) and does not build the chatbot UI (that is Codex). Stay in lane.
+Claude Code) and does not build the frontend (that is Codex). Stay in lane.
 
 This is an autonomous, fire-and-forget pipeline. There is **no race, no
 winner, no fastest/cheapest ranking**: the three agents each do their role
@@ -29,11 +41,10 @@ the VALIDATOR slot deployed and pointed at the gate.
 
 Kiro is spec-driven (it classifies intent into chat / do / spec and works from
 requirements). That maps cleanly onto validation: the acceptance gate is a
-**fixed contract**, not an open-ended build. The validator's job is to take a
-spec (the required tools + their expected behavior) and assert the backend
-honors it, exactly the deterministic, requirement-anchored work Kiro is good
-at. Keep Kiro anchored to the contract in `usecase-sample-to-mcp/grading/`;
-do not let it drift into "improving" the backend.
+**fixed contract**, not an open-ended build. The validator's job is to take the
+task and the builders' work, decide what "acceptable" means for this specific
+deliverable, and assert the backend honors it. Keep Kiro anchored to the
+deliverable at hand; do not let it drift into "improving" the backend.
 
 ## Step 1: Gather inputs (AskUserQuestion)
 
@@ -48,8 +59,8 @@ Before running anything, confirm with the user (ask only for what is missing):
   `claude-haiku-4.5` if the user wants to override.
 - **Prerequisites already met?**: confirm shared infra is deployed
   (`coding-agents/infra/setup.sh us-west-2` runs ONCE for all agents) and the
-  GitHub MCP Gateway is up (`gateway_mcp/deploy-all.sh`). If not, that is a
-  separate setup step; flag it, do not silently skip it.
+  GitHub MCP Gateway is up (`coding-agents/gateway_mcp/deploy-all.sh`). If not,
+  that is a separate setup step; flag it, do not silently skip it.
 
 If the user has no `ksk_` key yet, do NOT invent one and do NOT fall back to
 writing a key to disk. Stop and ask.
@@ -91,63 +102,35 @@ Do NOT run Codex's credential steps here. `create-workload-identity` and
 `create-api-key-credential-provider` belong to the Codex (FRONTEND BUILDER)
 slot, not Kiro. Kiro's credential path is Token Vault only.
 
-## Step 3: Point Kiro at the deterministic acceptance gate
+## Step 3: Point Kiro at the acceptance gate
 
-The acceptance gate already exists and is **deterministic**: it is the source
-of truth Kiro validates against. It lives at:
+The acceptance gate for this harness is **agentic**: the validator reads the
+task (`WORKSHOP_TASK`) and the work the builder roles produced
+(`WORKSHOP_WORK_DIR`), decides what "acceptable" means for that specific
+deliverable, and authors one self-contained executable check. The engine runs
+that executable and its real exit code decides.
 
-```
-usecase-sample-to-mcp/grading/
-  contract.py            # REQUIRED_TOOLS + the three checks (the spec)
-  adapters.py            # in-process vs over-the-wire MCP client
-  test_mcp_contract.py   # the pytest harness (10 tests)
-```
+Tell Kiro to:
+1. Read the task and examine the builders' output.
+2. Author ONE self-contained executable (shebang + any language in the
+   container) that really exercises the deliverable.
+3. Exit 0 to accept, non-zero to reject; print one line per check.
 
-The contract enforces exactly **three checks** (`CHECKS` in `contract.py`):
+Kiro must NOT edit the backend or frontend it is checking. Maker is never
+checker: a model that grades its own work grades it generously; the validator
+runs in its own container with its own steering precisely to keep that
+separation honest.
 
-| check id            | what it asserts                                                        |
-|---------------------|------------------------------------------------------------------------|
-| `tool_discovery`    | every tool in `REQUIRED_TOOLS` is discoverable via `tools/list`        |
-| `tool_correctness`  | invoking each tool with valid args returns the expected value          |
-| `input_validation`  | the server rejects bad / malformed input instead of accepting it       |
+## Step 4: Run the gate (the authored check, not an LLM judgment)
 
-Tell Kiro to **align its tests to this contract**: same tool names, same
-expected behaviors, same three dimensions. Kiro's spec-driven output should
-mirror `REQUIRED_TOOLS` and the three checks, not introduce a parallel,
-divergent test suite. The contract is the spec; Kiro fills it in and exercises
-it against the live backend Claude Code produced.
+**CRITICAL: real execution decides; a model's opinion never overrides the exit
+code.** The gate is the validator's authored executable. Pass/fail is the real
+exit code the engine reads after running it. If a model "thinks it looks
+correct" but the check exits non-zero, the run is NOT done.
 
-## Step 4: Run the gate (this is the gate, NOT an LLM judge)
-
-The acceptance gate is plain `pytest`. Run it pre-deploy in-process, and again
-over the wire against the deployed MCP endpoint.
-
-```bash
-# Over-the-wire: point at the deployed backend MCP endpoint.
-export MCP_ENDPOINT_URL="https://<deployed-mcp-endpoint>"
-pytest usecase-sample-to-mcp/grading/
-# expected: 10 passed
-```
-
-```bash
-# Pre-deploy (in-process): same suite, no live endpoint needed; the adapter
-# imports the server module directly. Use this for the cheap left-shifted
-# check before anything is deployed.
-pytest usecase-sample-to-mcp/grading/
-```
-
-**CRITICAL: the gate is pytest, not an LLM judge.** Pass/fail is decided by
-deterministic assertions in `test_mcp_contract.py`, not by a model's opinion.
-This is "put the LLM in a box": the creative loops (Claude builds the backend,
-Codex builds the UI, Kiro authors tests) are wrapped in a deterministic gate
-that gives the same verdict every time. Never substitute a model's judgment
-for `10 passed`. If a model "thinks it looks correct" but pytest is red, the
-run is NOT done.
-
-`10 passed` is the autonomous **definition of done**. Iteration is bounded
-(~2 rounds): if the gate is still red after the bounded retries, the run
-escalates to a human rather than looping forever; long-running agents WILL
-fail, and the platform must drive every task to a terminal state regardless.
+The engine invokes the validator role, which authors and runs the check.
+Iteration is bounded (~2 rounds): if the gate is still failing after the
+bounded retries, the run escalates to a human rather than looping forever.
 
 ## Step 5: Verify and report
 
@@ -156,29 +139,25 @@ Confirm the VALIDATOR slot is live and reporting correctly:
 ```bash
 # Runtime registered?
 python deploy.py            # idempotent; re-run shows current runtime state
-
-# Gate green over the wire?
-MCP_ENDPOINT_URL="https://<deployed-mcp-endpoint>" \
-  pytest usecase-sample-to-mcp/grading/ -q
 ```
 
 Report back: Kiro deployed via Token Vault (key in vault, in-memory only),
-model in use (`auto` or the pinned override), and the gate result
-(`10 passed` = green, definition of done met). Do not claim completion until
-you have observed the pytest result yourself: verify, don't assume.
+model in use (`auto` or the pinned override), and runtime status READY. Do
+not claim completion until you have observed the runtime state yourself:
+verify, don't assume.
 
 ## Guardrails (stay in the VALIDATOR lane)
 
-- Kiro = VALIDATOR ONLY. It authors/runs tests and owns the gate. It does NOT
-  edit the backend MCP server (Claude Code's job) or the chatbot UI (Codex's).
+- Kiro = VALIDATOR ONLY. It authors/runs the check and owns the gate. It does
+  NOT edit the backend (Claude Code's job) or the frontend (Codex's).
 - Credential path is **Token Vault** (`KIRO_API_KEY=ksk_xxx ./setup.sh`).
   In-memory only, never on disk. No Codex Identity commands here.
-- The gate is **pytest**, deterministic, no LLM judge. `10 passed` is the only
-  green.
+- The gate is **the authored executable**. Real execution decides; a model's
+  opinion never overrides the exit code.
 - No race / no winner framing. The three agents are co-equal roles composed
   into one deliverable by the orchestrator. Any cost figures are illustrative
   orders of magnitude; use the workshop's own measured run metrics, never
   vendor "Nx cheaper" claims.
-- Extensibility note: the contract in `grading/` is the swappable interface:
-  to validate a different backend, change `REQUIRED_TOOLS` and the three check
-  bodies, not the harness. Extend behind the interface; don't fork the core.
+- Extensibility note: to validate a different deliverable, the validator reads
+  a different task and writes a different check. Nothing in the harness
+  pre-encodes what a correct answer looks like for any specific request.

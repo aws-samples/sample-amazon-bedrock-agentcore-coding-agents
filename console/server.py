@@ -406,7 +406,7 @@ async def runtime_session_stream(session_id: str, request: Request):
 # The chat box drives the Strands orchestrator (chat.py). A turn is a normal
 # conversation; a run (and "Running") is born ONLY when the agent calls a
 # dispatch_*/run_build tool, surfaced as a `run_started` event mid-stream, so
-# "야 안녕?" answers like a chatbot instead of kicking off a build.
+# a plain "hi there" answers like a chatbot instead of kicking off a build.
 @app.post("/api/orchestrator/chat")
 async def s2_chat(request: Request):
     if not _authed(request):

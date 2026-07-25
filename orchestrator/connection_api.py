@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat as _chat  # noqa: E402  the orchestrator brain (chatbot agent + streaming)
 import github  # noqa: E402
 import kiro_config  # noqa: E402  Kiro API key -> Token Vault (Settings pane)
-import router  # noqa: E402
+import presets  # noqa: E402
 import runtime_config  # noqa: E402
 from engine import (  # noqa: E402
     AGENTS,
@@ -130,8 +130,9 @@ def _reconcile_loop() -> None:
 
 _reconcile_loop()
 
-DEFAULT_TASK = ("Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server "
-                "with tests + a chatbot UI")
+# There is deliberately NO default task. The request is the attendee's, and inventing
+# one on their behalf is exactly the predetermined-answer problem this design removes:
+# a submit with no task and no preset fails loud so the caller has to say what it wants.
 
 
 def dispatch(method: str, path: str, body: dict | None,
@@ -152,8 +153,14 @@ def dispatch(method: str, path: str, body: dict | None,
                          "executor": ENGINE.executor.name}
         if path == "/api/agents":
             return 200, {"agents": AGENTS}
-        if path == "/api/workflows":
-            return 200, {"workflows": router.public_workflows()}
+        if path == "/api/presets":
+            return 200, {"presets": presets.public_presets()}
+        if path == "/api/roster":
+            # The SERVED roles, from the one registry the engine dispatches against
+            # (roles.py). The console renders these instead of keeping its own copy,
+            # so the sidebar can never offer an agent this deployment does not run.
+            import roles  # noqa: PLC0415 (local: keeps the offline import light)
+            return 200, {"roster": roles.public_roster()}
         if path == "/api/models":
             # The orchestrator's selectable brain models, resolved from the real
             # Bedrock catalog at runtime; the message-bar picker fetches this
@@ -226,12 +233,12 @@ def dispatch(method: str, path: str, body: dict | None,
             if body is None:
                 return 400, {"error": "invalid JSON body"}
             run = ENGINE.submit(
-                task=body.get("task") or DEFAULT_TASK,
+                task=body.get("task") or "",
                 # agents omitted -> the ROUTER decides which roles dispatch;
                 # an explicit list is honored (and validated) for compat.
                 agents=body.get("agents"),
                 options=body.get("options") or {},
-                workflow_ref=body.get("workflow_ref"),
+                preset=body.get("preset"),
             )
             return 202, public_run(run)
         if path == "/api/github":

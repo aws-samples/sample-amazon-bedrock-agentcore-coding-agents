@@ -17,7 +17,7 @@ from urllib.error import HTTPError
 
 from e2e.conftest import (
     req, expect_status, open_session, close_session, open_pty, pty_type,
-    pty_wait_for, file_tree, write_file, read_file, file_op, seed_skill,
+    pty_wait_for, file_tree, write_file, read_file, file_op, seed_file,
     deploy_real, undeploy_real, SUPPORTED_AGENTS,
 )
 
@@ -298,7 +298,7 @@ def test_get_unknown_session_404(console, cookie):
 
 def test_session_files_start_empty(console, cookie):
     """The new workspace starts EMPTY; nothing is pre-seeded. The attendee creates
-    every file (the first being cost_analyzer.py) themselves in the explorer."""
+    every file themselves in the explorer (New File, then type any content)."""
     sid = open_session(console, cookie, "claude-code")
     try:
         code, out = req(console, "GET", f"{S1}/sessions/{sid}/files", headers=cookie)
@@ -310,13 +310,13 @@ def test_session_files_start_empty(console, cookie):
 
 
 def test_session_files_skill_after_create(console, cookie):
-    """Once the attendee creates cost_analyzer.py (New File → paste the source), it
+    """Once the attendee creates a file (New File → paste content → save), it
     shows up as a non-empty file entry, not a directory."""
     sid = open_session(console, cookie, "claude-code")
     try:
-        seed_skill(console, cookie, sid)
+        seed_file(console, cookie, sid)
         tree = file_tree(console, cookie, sid)
-        skill = next(e for e in tree if e["path"] == "/mnt/s3files/sample/cost_analyzer.py")
+        skill = next(e for e in tree if e["path"] == "/mnt/s3files/sample/thing.py")
         assert skill["type"] == "file"
         assert skill["size"] > 0
     finally:
@@ -428,15 +428,6 @@ def test_file_op_on_closed_session_409(console, cookie):
     expect_status(
         lambda: req(console, "POST", f"{S1}/sessions/{sid}/file",
                     {"path": "x.txt", "content": "y"}, headers=cookie), 409)
-
-
-def test_convert_on_closed_session_409(console, cookie):
-    """After close, convert-skill is 409 (the session no longer accepts work)."""
-    sid = open_session(console, cookie, "claude-code")
-    req(console, "DELETE", f"{S1}/sessions/{sid}", headers=cookie)
-    expect_status(
-        lambda: req(console, "POST", f"{S1}/sessions/{sid}/convert-skill",
-                    {"tool": "estimate_ec2_monthly_cost"}, headers=cookie), 409)
 
 
 def test_pty_on_closed_session_409(console, cookie):

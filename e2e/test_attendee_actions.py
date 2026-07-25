@@ -15,7 +15,7 @@ if one breaks, an attendee action in the console is broken.
   login edges        wrong password is rejected; logout clears the cookie
   Stage 3 governance the p95 latency + audit endpoints answer over the real ledger
 
-Local engine mode (deterministic, no LLM); the same pytest gate the workshop grades with.
+Local engine mode (offline test double, no LLM); the same machinery the workshop runs.
 Run: WORKSHOP_SKIP_LIVE=1 python3 -m pytest e2e/test_attendee_actions.py -q
 """
 
@@ -33,7 +33,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from e2e.conftest import seed_skill
+from e2e.conftest import seed_file
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The TEST entrypoint (same app, deterministic FixtureExecutor-backed Stage-2
@@ -170,64 +170,40 @@ def test_scaffold_harness_writes_claude_steering_files(console, cookie, stage1_s
     assert res["agent_id"] == "claude-code"
     written = res["written"]
     assert any(p.endswith("/CLAUDE.md") for p in written), written
-    assert any(p.endswith("/skills/configure-backend/SKILL.md") for p in written), written
 
     # the freshly returned tree shows the steering files at their virtual paths
     tree_paths = {n["path"] for n in res["tree"]}
     assert "/mnt/s3files/CLAUDE.md" in tree_paths
-    assert "/mnt/s3files/skills/configure-backend/SKILL.md" in tree_paths
 
     # and a subsequent file-tree GET (what the explorer re-renders) agrees
     _, files = _req(console, "GET", f"/api/dev/sessions/{sid}/files", headers=cookie)
     later = {n["path"] for n in files["tree"]}
     assert "/mnt/s3files/CLAUDE.md" in later
 
-    # the CLAUDE.md content is the real backend steering, not an empty stub
+    # The CLAUDE.md content is the REAL shipped backend steering, not an empty stub and
+    # not a second copy invented by the scaffolder: it must be byte-identical to the one
+    # source of truth the orchestrator stages on every dispatch, or Lab 1 teaches an
+    # agent configuration Lab 2 does not use.
     _, claude = _req(console, "POST", f"/api/dev/sessions/{sid}/file",
                      {"path": "CLAUDE.md"}, headers=cookie)
-    assert "BACKEND role" in claude["content"] and "harness:build" in claude["content"]
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.join(repo, "orchestrator"))
+    import roles as _roles
+    role = _roles.get(_roles.by_capability("backend")[0])
+    shipped = os.path.join(repo, "orchestrator", "harness",
+                           role.harness_dir, role.steering_file)
+    with open(shipped, encoding="utf-8") as f:
+        assert claude["content"] == f.read()
+    # It describes the ROLE, and carries the live extension seam. `harness:setup` is the
+    # only harness block with a parser (the build/ui/gate variants and their parsers
+    # are deleted), so asserting one here would pin dead config that merely looks live.
+    assert "BACKEND role" in claude["content"]
+    assert "harness:setup" in claude["content"]
 
 
 # ---------------------------------------------------------------------------
 # 2. deploy-upload: the code-upload deploy packages the workspace into a real
-#    zip bundle; the manifest lists mcp_server.py once the module is converted.
-# ---------------------------------------------------------------------------
-def test_deploy_upload_packages_a_real_bundle_with_mcp_server(console, cookie):
-    """Convert the module first (so mcp_server.py exists in the workspace), then press
-    deploy-upload: the bundle has bytes, the manifest includes mcp_server.py, and the
-    code-first entrypoint resolves to it."""
-    _, sess = _req(console, "POST", "/api/dev/sessions",
-                   {"agent_id": "claude-code"}, headers=cookie)
-    sid = sess["session_id"]
-    try:
-        # the workspace starts EMPTY; the participant creates cost_analyzer.py in the
-        # editor (New File → paste → Save) before converting. We do it the same way
-        # (the real file-write API) so the conversion has the module to import.
-        seed_skill(console, cookie, sid)
-        # give the workspace content the bundle must capture
-        _, conv = _req(console, "POST", f"/api/dev/sessions/{sid}/convert-skill",
-                       {"tool": "estimate_ec2_monthly_cost"}, headers=cookie)
-        assert conv["verified"] is True
-
-        _, dep = _req(console, "POST", f"/api/dev/sessions/{sid}/deploy-upload",
-                      {}, headers=cookie)
-        assert dep["mode"] == "code-upload"
-        assert dep["bundle_bytes"] > 0
-        assert dep["file_count"] >= 1
-        assert "mcp_server.py" in dep["manifest"]
-        # the converted server is what AgentCore's code-first launch would run
-        assert dep["entrypoint"] == "mcp_server.py"
-        # the bundle path is the virtual /mnt/s3files view the UI shows
-        assert dep["bundle_file"].endswith("code-bundle.zip")
-    finally:
-        _req(console, "DELETE", f"/api/dev/sessions/{sid}", headers=cookie)
-
-
-# ---------------------------------------------------------------------------
-# 3. Real PTY: open a live bash, type a command, read the echoed output back.
-#    Contract (interactive_api._pty_io): {"open": true} spawns the shell;
-#    {"input": "...", "offset": N} writes keystrokes and returns
-#    {"output", "offset", "alive"} for the bytes after `offset`.
+#    zip bundle; the manifest lists whatever files the workspace holds.
 # ---------------------------------------------------------------------------
 def test_pty_open_type_and_read_real_output(console, cookie, stage1_session):
     """Open the PTY, send `echo hello`, and poll until "hello" surfaces in the live
@@ -345,25 +321,20 @@ def test_edit_agent_name_and_purpose_persists(console, cookie):
 
 
 # ---------------------------------------------------------------------------
-# 4. Stage 2 router ladder: each documented task phrasing resolves to the
-#    documented workflow_ref + dispatched agents. The route is set during
-#    admission (on the worker thread), so poll the run until `route` appears.
-#    Local mode completes fast; we assert the route, not a winner.
+# 4. Stage 2 preset routing: each starting point resolves to its documented
+#    role set. The route is set during admission (on the worker thread), so
+#    poll the run until `route` appears. Local mode completes fast; we assert
+#    the route, not a winner.
 # ---------------------------------------------------------------------------
-# (task phrasing, expected workflow_ref, expected dispatched agents); from the
-# content + router.py ladder. Verified against router.route() directly.
-_ROUTER_CASES = [
-    ("Convert /mnt/s3files/sample/cost_analyzer.py to a remote MCP server with "
-     "tests + a chatbot UI", "convert/sample-to-mcp-v1",
-     ["claude-code", "claude-code-validator", "opencode"]),
-    ("fix the server version string in mcp_server.py",
-     "patch/backend-v1", ["claude-code"]),
-    ("use opencode to restyle the chatbot UI",
-     "patch/frontend-v1", ["opencode"]),
-    ("Build the full-stack Critter Lab app: backend and frontend",
-     "build/fullstack-v1", ["claude-code", "claude-code-validator", "opencode"]),
-    ("review the PR from the last run",
-     "review/pr-v1", ["claude-code-validator"]),
+# (preset id, expected dispatched agents); from presets.PRESETS + roles.py.
+# Verified against presets.resolve() directly.
+_PRESET_CASES = [
+    # (preset id, the roles it routes). Presets are STARTING POINTS: the request text
+    # comes with them, and any other request works too (see the custom-roles test).
+    ("service-from-scratch", ["claude-code", "claude-code-validator"]),
+    ("web-app", ["claude-code", "opencode", "claude-code-validator"]),
+    ("cli-tool", ["claude-code", "claude-code-validator"]),
+    ("review-a-run", ["claude-code-validator"]),
 ]
 
 
@@ -377,41 +348,41 @@ def _route_of(console: str, cookie: dict, rid: str) -> dict:
     pytest.fail(f"run {rid} never reported a route")
 
 
-@pytest.mark.parametrize("task,expected_ref,expected_agents", _ROUTER_CASES,
-                         ids=[c[1] for c in _ROUTER_CASES])
-def test_stage2_router_resolves_documented_routes(console, cookie, task,
-                                                   expected_ref, expected_agents):
-    """Submit each documented phrasing; the run's reported route matches the docs."""
-    _, run = _req(console, "POST", "/api/orchestrator/runs", {"task": task}, headers=cookie)
+@pytest.mark.parametrize("preset,expected_agents", _PRESET_CASES,
+                         ids=[c[0] for c in _PRESET_CASES])
+def test_stage2_presets_route_their_documented_roles(console, cookie, preset,
+                                                     expected_agents):
+    """Submit each starting point; the run's reported route matches its roles."""
+    _, run = _req(console, "POST", "/api/orchestrator/runs",
+                  {"preset": preset}, headers=cookie)
     rid = run["run_id"]
     route = _route_of(console, cookie, rid)
-    assert route["workflow_ref"] == expected_ref, (
-        f"task {task!r} routed to {route['workflow_ref']} (expected {expected_ref})")
+    assert route["preset"] == preset, route
     assert route["agents"] == expected_agents, (
-        f"task {task!r} dispatched {route['agents']} (expected {expected_agents})")
+        f"preset {preset!r} dispatched {route['agents']} (expected {expected_agents})")
 
 
 # ---------------------------------------------------------------------------
-# 4b. Stage 2 workflows registry: the console's run page renders this list to
-#     offer the documented workflows; GET /api/orchestrator/workflows must expose the
-#     full versioned registry (router.public_workflows). Every entry carries the
-#     fields the UI binds to, and all five documented refs are present.
+# 4b. Stage 2 preset registry: the console renders these as starting points, from
+#     ONE source (presets.PRESETS), so the chips cannot drift from the tools.
 # ---------------------------------------------------------------------------
-def test_api_s2_workflows_contract(console, cookie):
-    """GET /api/orchestrator/workflows -> a non-empty workflows list; every entry has the
-    full descriptor shape and all five documented workflow_refs are present."""
-    code, body = _req(console, "GET", "/api/orchestrator/workflows", headers=cookie)
+def test_api_s2_presets_contract(console, cookie):
+    """GET /api/orchestrator/presets -> a non-empty list; every entry carries the
+    fields the UI binds to, every build routes a checker, and the attendee's own
+    request is a first-class option."""
+    code, body = _req(console, "GET", "/api/orchestrator/presets", headers=cookie)
     assert code == 200
-    workflows = body["workflows"]
-    assert isinstance(workflows, list) and workflows, body
-    required = {"workflow_ref", "version", "agents", "usecase", "description", "read_only"}
-    for wf in workflows:
-        assert required <= set(wf), f"workflow descriptor missing keys: {wf}"
-        assert isinstance(wf["agents"], list) and wf["agents"], wf
-        assert isinstance(wf["read_only"], bool), wf
-    refs = {wf["workflow_ref"] for wf in workflows}
-    assert {"convert/sample-to-mcp-v1", "patch/backend-v1", "patch/frontend-v1",
-            "build/fullstack-v1", "review/pr-v1"} <= refs, refs
+    items = body["presets"]
+    assert isinstance(items, list) and items, body
+    required = {"preset", "title", "roles", "task", "read_only"}
+    for p in items:
+        assert required <= set(p), f"preset descriptor missing keys: {p}"
+        assert isinstance(p["roles"], list) and p["roles"], p
+        assert isinstance(p["read_only"], bool), p
+        if not p["read_only"]:
+            assert "claude-code-validator" in p["roles"], p
+    ids = {p["preset"] for p in items}
+    assert "your-own" in ids, ids
 
 
 # ---------------------------------------------------------------------------

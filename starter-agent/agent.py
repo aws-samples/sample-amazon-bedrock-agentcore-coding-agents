@@ -1,14 +1,15 @@
 """Starter agent: DELIBERATELY INEFFICIENT. The Agentic Efficiency Lab's patient.
 
-A minimal Bedrock `converse` tool-use agent that answers AWS cost questions with the
-same `cost_analyzer` skill used everywhere else in this workshop. It works: and it
-wastes money on purpose. Every numbered inefficiency below maps to one row of the
-lab's enhancement table; you dispatch fixes through the Stage 2 orchestrator and the
+A minimal Bedrock `converse` tool-use agent that answers cost questions from a tiny
+lookup table it owns (see RATES_PER_HOUR). Self-contained on purpose: the lab is about
+this agent's own efficiency, not about any deliverable the workshop builds. It works,
+and it wastes money on purpose. Every numbered inefficiency below maps to one row of
+the lab's enhancement table; you dispatch fixes through the orchestrator and the
 validator proves each one with a test under tests/.
 
 Run it (needs AWS credentials with Bedrock access, e.g. the workshop account):
 
-    python3 src/starter-agent/agent.py "What does running 3 m5.large cost monthly?"
+    python3 starter-agent/agent.py "What do 3 large instances cost monthly?"
 
 Built-in inefficiencies (the lab menu):
   1. No prompt caching       : nothing in the request is marked cacheable.
@@ -43,17 +44,37 @@ REGION = "us-west-2"
 # even after a cachePoint is added, this prompt alone won't cache.
 SYSTEM_PROMPT = "You answer AWS cost questions using the tools."
 
+# The tiny lookup table this agent answers from. Self-contained ON PURPOSE: the lab
+# is about the AGENT's efficiency (caching, reasoning, tool specs, context bloat), so
+# it must not depend on anything else in the repository and it is not a sample the
+# workshop asks anyone to build. Values are illustrative, not real prices.
+RATES_PER_HOUR = {
+    "small": 0.05,
+    "medium": 0.10,
+    "large": 0.20,
+    "xlarge": 0.40,
+}
+HOURS_PER_MONTH = 730.0
+
+
+def monthly_cost(size: str, count: int = 1) -> dict:
+    """The one real computation behind both tools. Raises on an unknown size, so a
+    bad question can never return a plausible-but-wrong number."""
+    if size not in RATES_PER_HOUR:
+        raise ValueError(f"unknown size {size!r}; known: {sorted(RATES_PER_HOUR)}")
+    rate = RATES_PER_HOUR[size]
+    return {"size": size, "count": count, "hourly_rate": rate,
+            "monthly_cost": round(rate * count * HOURS_PER_MONTH, 2)}
+
+
 # (6) Weak tool specs: terse descriptions, no usage examples, untyped output.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "usecase-sample-to-mcp"))
-import cost_analyzer  # noqa: E402
 
 TOOLS = [
     {"toolSpec": {
-        "name": "estimate_ec2_monthly_cost",
-        "description": "ec2 cost",  # one fix: real description + examples
+        "name": "estimate_monthly_cost",
+        "description": "cost",  # one fix: real description + examples
         "inputSchema": {"json": {"type": "object", "properties": {
-            "instance_type": {"type": "string"},
+            "size": {"type": "string"},
             "count": {"type": "integer"},
         }}},
     }},
@@ -69,16 +90,14 @@ def _run_tool(name: str, args: dict) -> str:
     # (9) Debug noise printed AND returned: every byte of it becomes input
     # tokens on the next model call.
     print(f"[debug] tool={name} args={json.dumps(args)} pid={os.getpid()}")
-    if name == "estimate_ec2_monthly_cost":
-        out = cost_analyzer.dispatch(name, args)
+    if name == "estimate_monthly_cost":
+        out = monthly_cost(args.get("size", ""), int(args.get("count", 1) or 1))
         # (7) Prose, not structured output: the model has to re-parse this.
         return f"[debug] dispatch ok\nThe answer is: {json.dumps(out)}"
     if name == "list_price_sheet":
         # (8) The full price sheet, verbatim, into the parent context. The fix
         # is a sub-agent (or code) that summarizes before it reaches the model.
-        rows = [cost_analyzer.dispatch("estimate_ec2_monthly_cost",
-                                       {"instance_type": t, "count": 1})
-                for t in cost_analyzer.EC2_HOURLY_USD]
+        rows = [monthly_cost(size) for size in RATES_PER_HOUR]
         return "\n".join(json.dumps(r) for r in rows)
     return f"unknown tool {name}"
 
@@ -114,5 +133,5 @@ def ask(question: str) -> str:
 
 
 if __name__ == "__main__":
-    q = " ".join(sys.argv[1:]) or "What does running 3 m5.large cost monthly?"
+    q = " ".join(sys.argv[1:]) or "What do 3 large instances cost monthly?"
     print(ask(q))

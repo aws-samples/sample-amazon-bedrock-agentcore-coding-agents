@@ -2,38 +2,38 @@
 name: configure-claude-code-validator
 description: >-
   Configure a second Claude Code agent as the VALIDATOR in our AgentCore harness:
-  it runs the acceptance gate (the deterministic pytest contract) that OWNS the
-  "definition of done". Use when the user says "set up the validator", "configure
-  the validation agent", "set up the tests agent", "deploy the Claude Code
-  validator", "point the validator at the grading checks", or asks how to run the
-  acceptance gate. LOCKED role mapping in this harness: Claude Code = BACKEND
-  (AgentCore MCP server), Claude Code validator = VALIDATOR (acceptance gate),
-  opencode = FRONTEND BUILDER (chatbot UI). This skill configures ONLY the
-  validator slot. It is Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM
-  bedrock:InvokeModel, NO API key), so there is no Token Vault or vendor key step.
+  it reads the task and the builders' work, authors a self-contained executable check,
+  the engine runs that check, and its real exit code is the gate. Use when the user
+  says "set up the validator", "configure the validation agent", "set up the tests
+  agent", "deploy the Claude Code validator", or asks how to configure the acceptance
+  gate. LOCKED role mapping in this harness: Claude Code = BACKEND (implements the
+  backend), Claude Code validator = VALIDATOR (authors the check, exit code decides),
+  opencode = FRONTEND BUILDER. This skill configures ONLY the validator slot. It is
+  Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM bedrock:InvokeModel, NO API key),
+  so there is no Token Vault or vendor key step.
 ---
 
 # Configure Claude Code as the VALIDATOR
 
 You are configuring a second Claude Code coding agent for the workshop's
-autonomous harness. Its LOCKED role is **VALIDATOR**: it runs the acceptance
-gate, the deterministic "definition of done" for every autonomous run. It does
+autonomous harness. Its LOCKED role is **VALIDATOR**: it reads the task and the
+work the builder roles produced, authors an executable acceptance check, and the
+engine runs that check. The check's real exit code is the gate. The validator does
 not build the backend (that is the backend Claude Code) and does not build the
-chatbot UI (that is opencode). Stay in lane.
+frontend (that is opencode). Stay in lane.
 
 This is an autonomous, fire-and-forget pipeline. There is **no race, no winner,
 no fastest/cheapest ranking**: the three roles each do their job and the
-orchestrator composes one deliverable. Your job here is only to get the VALIDATOR
-slot deployed and pointed at the gate.
+orchestrator composes one deliverable.
 
 ## Why a second Claude Code fits validation
 
-The validator is steered by a fixed acceptance contract (the required tools +
-their expected behavior), not an open-ended build. Claude Code follows a
-CLAUDE.md steering file precisely, which maps cleanly onto validation: take the
-contract as the spec and assert the backend honors it. Keep it anchored to the
-contract in `usecase-sample-to-mcp/grading/`; do not let it drift into
-"improving" the backend.
+The validator is steered by its own acceptance-contract `CLAUDE.md`, not an
+open-ended build. Claude Code follows a `CLAUDE.md` steering file precisely, which
+maps cleanly onto validation: take the task and the builders' work, decide what
+"acceptable" means for THIS specific deliverable, and write ONE executable that
+probes it. The validator never touches the work it grades (maker is never checker:
+that separation is what makes the gate honest).
 
 ## Step 1: Gather inputs (AskUserQuestion)
 
@@ -70,90 +70,93 @@ Default model is `us.anthropic.claude-opus-4-6-v1`. To pin a cheaper validator,
 pass `WORKSHOP_MODEL=...` to `deploy.py`. Do NOT run any Token Vault /
 credential-provider steps here: the validator has no vendor key.
 
-## Step 3: Point the validator at the deterministic acceptance gate
+## Step 3: The validator's job - author the check, not answer the task
 
-The acceptance gate already exists and is **deterministic**: it is the source of
-truth the validator runs. It lives at:
+The validator receives three env vars the orchestrator sets:
 
-```
-usecase-sample-to-mcp/grading/
-  contract.py            # REQUIRED_TOOLS + the three checks (the spec)
-  adapters.py            # in-process vs over-the-wire MCP client
-  test_mcp_contract.py   # the pytest harness (10 tests)
-```
+| Env var | Contents |
+|---|---|
+| `WORKSHOP_TASK` | the original request (what the user typed) |
+| `WORKSHOP_WORK_DIR` | path to the tree the builder roles wrote |
+| `DELIVERABLE_URL` | a live URL, when one exists (may be empty) |
 
-The contract enforces exactly **three checks** (`CHECKS` in `contract.py`):
+With those inputs the validator's job is:
 
-| check id            | what it asserts                                                        |
-|---------------------|------------------------------------------------------------------------|
-| `tool_discovery`    | every tool in `REQUIRED_TOOLS` is discoverable via `tools/list`        |
-| `tool_correctness`  | invoking each tool with valid args returns the expected value          |
-| `input_validation`  | the server rejects bad / malformed input instead of accepting it       |
+1. Read the task and examine the work. Understand what "acceptable" means for THIS
+   specific deliverable - there is no pre-encoded answer anywhere in the repo.
+2. Author ONE self-contained executable: a shebang line at the top, then any
+   language available in the container. The check must:
+   - Really EXERCISE the deliverable (start it if it needs to be running, because
+     only the check knows what "running" means for this specific artifact).
+   - Exit 0 to accept, non-zero to reject.
+   - Print one line per check so the output is readable in the run log.
+3. Write that executable to a known path and declare it in `run.json` so the
+   engine knows what to execute.
 
-The validator's steering (`CLAUDE.md`, carrying the `harness:gate` block) pins it
-to this contract. Do not introduce a parallel, divergent test suite: the contract
-is the spec; the validator runs it against the live backend the backend Claude
-Code produced.
+The engine runs the authored executable and reads its real exit code. That exit
+code IS the gate. Nothing else decides.
 
-## Step 4: Run the gate (this is the gate, NOT an LLM judge)
+**CRITICAL: real execution decides; a model's opinion never overrides it.**
+The validator authors the check; the ENGINE runs it; the EXIT CODE is the verdict.
+If the check exits non-zero, the run is NOT done, regardless of what any model
+"thinks". This is "put the LLM in a box": the creative work (building the backend,
+building the frontend) is wrapped in a gate that gives the same verdict for the same
+behavior every time. The validator may never edit the work it is checking (maker is
+never checker: a model that grades its own work grades it generously; a separate
+agent with its own container and steering is the only honest judge).
 
-The acceptance gate is plain `pytest`. Run it pre-deploy in-process, and again
-over the wire against the deployed MCP endpoint.
+## Step 4: Run the gate
+
+The engine calls the validator role, which authors and runs the check. The validator
+signals completion by writing `run.json` with a `start` entrypoint and exiting with
+the appropriate code after running it.
+
+To observe the validator's output during development or to test the deployment:
 
 ```bash
-# Over-the-wire: point at the deployed backend MCP endpoint.
-export MCP_ENDPOINT_URL="https://<deployed-mcp-endpoint>"
-pytest usecase-sample-to-mcp/grading/
-# expected: 10 passed
+# Verify the runtime is registered and READY.
+python deploy.py            # idempotent; re-run shows current runtime state
+
+# Open an interactive shell into the validator runtime to inspect or debug.
+agentcore exec --it \
+  --runtime "$(jq -r .runtime_arn coding-agents/claude-code-validator/runtime_config.json)" \
+  --region us-west-2
 ```
 
-```bash
-# Pre-deploy (in-process): same suite, no live endpoint needed; the adapter
-# imports the server module directly.
-pytest usecase-sample-to-mcp/grading/
-```
+**The gate is the validator's authored check, not a repo-side test suite.** There
+is no pytest contract, no fixture file, no reference implementation in this repo
+that grades an agent's work. The validator decides what to check based on the task
+and the deliverable in front of it. A red exit code can never become a pass, and
+nothing is ever fabricated.
 
-**CRITICAL: the gate is pytest, not an LLM judge.** Pass/fail is decided by
-deterministic assertions in `test_mcp_contract.py`, not by a model's opinion.
-This is "put the LLM in a box": the creative loops (the backend builds the
-server, opencode builds the UI, the validator runs the gate) are wrapped in a
-deterministic gate that gives the same verdict every time. Never substitute a
-model's judgment for `10 passed`. If a model "thinks it looks correct" but pytest
-is red, the run is NOT done.
-
-`10 passed` is the autonomous **definition of done**. Iteration is bounded
-(~2 rounds): if the gate is still red after the bounded retries, the run escalates
-to a human rather than looping forever.
+Iteration is bounded (~2 rounds): if the gate exits non-zero after the bounded
+retries, the run escalates to a human rather than looping forever.
 
 ## Step 5: Verify and report
 
-Confirm the VALIDATOR slot is live and reporting correctly:
+Confirm the VALIDATOR slot is live:
 
 ```bash
-# Runtime registered?
-python deploy.py            # idempotent; re-run shows current runtime state
-
-# Gate green over the wire?
-MCP_ENDPOINT_URL="https://<deployed-mcp-endpoint>" \
-  pytest usecase-sample-to-mcp/grading/ -q
+# Runtime registered and READY?
+python deploy.py            # idempotent; shows current runtime state
 ```
 
 Report back: the validator deployed Bedrock-native (no key), model in use, and
-the gate result (`10 passed` = green, definition of done met). Do not claim
-completion until you have observed the pytest result yourself: verify, don't
-assume.
+runtime status READY. Do not claim completion until you have observed the runtime
+state yourself: verify, don't assume.
 
 ## Guardrails (stay in the VALIDATOR lane)
 
-- The validator = VALIDATOR ONLY. It runs the gate. It does NOT edit the backend
-  MCP server (the backend Claude Code's job) or the chatbot UI (opencode's).
+- The validator = VALIDATOR ONLY. It authors the check and runs it. It does NOT
+  edit the backend (the backend Claude Code's job) or the frontend (opencode's).
+  Maker is never checker: this separation is the reason the gate is honest.
 - Credential path is **Bedrock-native** (IAM `bedrock:InvokeModel`, no API key,
   nothing on disk). No Token Vault / credential-provider commands here.
-- The gate is **pytest**, deterministic, no LLM judge. `10 passed` is the only
-  green.
+- The gate is **the validator's authored executable**. Real execution decides.
+  A model's opinion never overrides the exit code.
 - No race / no winner framing. The three roles are co-equal, composed into one
   deliverable by the orchestrator. Any cost figures are illustrative; use the
   workshop's own measured run metrics, never vendor "Nx cheaper" claims.
-- Extensibility note: the contract in `grading/` is the swappable interface: to
-  validate a different backend, change `REQUIRED_TOOLS` and the three check
-  bodies, not the harness. Extend behind the interface; don't fork the core.
+- Extensibility note: to validate a different kind of deliverable, the validator
+  reads a different task and writes a different check. Nothing in the harness
+  encodes what a correct answer looks like for any specific request.

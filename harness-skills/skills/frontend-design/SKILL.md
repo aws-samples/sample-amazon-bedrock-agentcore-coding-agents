@@ -41,6 +41,33 @@ The frontend renders and interacts. It does not own business logic or data.
 If you are asked for a UI over a service, the correctness of every answer lives
 on the wire, not in the markup.
 
+### Resolve the backend address; never hardcode it
+
+An address you bake in at build time is wrong the moment the page moves, and it
+always moves: from the machine that built it, into a repository, onto a reviewer's
+laptop, behind a proxy. Worse, `localhost` and `127.0.0.1` mean *the machine running
+the browser*, so a page opened through a proxy or a tunnel resolves them to the
+viewer's own machine and quietly reaches nothing.
+
+Resolve the address at runtime and let the first of these that exists win:
+
+1. an explicit override the user can pass (a query parameter such as `?endpoint=`),
+2. a value the hosting page injected (a global, a `meta` tag, a small config file),
+3. **the page's own origin** as the default, for when one process serves the page and
+   answers its calls. That case needs no configuration, so make it the default rather
+   than an afterthought.
+
+Show the resolved address in the UI, and when a call fails say which address failed.
+A silent empty state sends the user hunting in the wrong place.
+
+### Expect the browser's cross-origin rules
+
+If the page and the service are on different origins, a JSON `POST` is preflighted:
+the browser sends `OPTIONS` first and blocks the real call unless the service allows
+it. When you own only the page, prefer same-origin so the question never arises; when
+a cross-origin call is unavoidable, say so plainly in your handoff so the service side
+can allow it, and surface the browser's own error instead of showing an empty result.
+
 ## Layout
 
 - One clear primary action per view. The eye should land on it without a hunt.
@@ -102,6 +129,8 @@ on the wire, not in the markup.
 
 - It renders with no console errors, at 360px and at a desktop width.
 - Every data value on screen came from a backend call you can point to.
+- The backend address is resolved, not hardcoded, and the page works when served from
+  the same origin as the service with nothing configured.
 - Keyboard-only: you can reach and operate every control, focus is always visible.
 - Loading, empty, and error states all exist and are distinct.
 - No business logic, pricing, or copied data lives in the page.

@@ -58,7 +58,7 @@ def _wire_all(tmp_path, monkeypatch):
     full dispatch tool set is present. Real-seam isolation (the module reads the
     env var), never a monkeypatch of internals."""
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
-    for r in runtime_config.ROLES:
+    for r in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     runtime_config.save_runtime("opencode", "opencode-TESTID0001")
@@ -80,7 +80,7 @@ def test_build_tools_exposes_all_tools_when_all_roles_wired(tmp_path, monkeypatc
     _wire_all(tmp_path, monkeypatch)
     names = set(_tools_map())
     # The always-present orchestration tools when every role is wired.
-    assert {"route_task", "dispatch_backend", "dispatch_frontend",
+    assert {"list_presets", "dispatch_backend", "dispatch_frontend",
             "dispatch_validator", "run_build", "run_status"} <= names
     # The interactive-terminal tools (agent_send/read/status) are added ONLY when
     # runtime_shell is importable (the console hosts the orchestrator). They are an
@@ -95,7 +95,7 @@ def test_workspace_inspection_tools_are_always_present(tmp_path, monkeypatch):
     grep_workspace/exec_command) is available with NO role wired, so the
     orchestrator can look before it leaps."""
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
-    for r in runtime_config.ROLES:
+    for r in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     names = set(_tools_map())
     assert {"read_file", "list_files", "grep_workspace", "exec_command"} <= names
@@ -125,13 +125,13 @@ def test_tool_set_is_dynamic_from_wired_roles(tmp_path, monkeypatch):
     """R8: the dispatch tools are generated from Settings, not a fixed 3. An
     unwired role gets no dispatch tool; wiring one adds it."""
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
-    for r in runtime_config.ROLES:
+    for r in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     # Nothing wired -> converse-only: no dispatch_*, no run_build.
     names = set(_tools_map())
     assert "dispatch_backend" not in names and "dispatch_frontend" not in names
     assert "dispatch_validator" not in names and "run_build" not in names
-    assert {"route_task", "run_status"} <= names
+    assert {"list_presets", "run_status"} <= names
     # Wire only the backend -> exactly its dispatch tool appears (+ run_build).
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     names = set(_tools_map())
@@ -157,12 +157,21 @@ def test_dispatch_tools_are_non_blocking_and_return_a_run_id(tmp_path, monkeypat
     assert chat.ENGINE.get(out["run_id"]) is not None
 
 
-def test_route_task_is_advisory_and_starts_nothing():
+def test_list_presets_is_advisory_and_starts_nothing(tmp_path, monkeypatch):
+    """The starting points are readable without running anything. They are EXAMPLES:
+    the tool exists so an attendee with no idea can pick one, not to constrain what
+    can be built."""
+    _wire_all(tmp_path, monkeypatch)
     before = len(chat.ENGINE.list())
-    out = json.loads(_call("route_task", task="convert the cost analyzer module to an MCP server"))
-    assert out["workflow_ref"] == "convert/sample-to-mcp-v1"
-    assert len(chat.ENGINE.list()) == before  # no run created
-
+    out = json.loads(_call("list_presets"))
+    ids = {p["preset"] for p in out["presets"]}
+    assert "your-own" in ids, "the attendee's own request must be a first-class option"
+    for p in out["presets"]:
+        assert p["roles"], p
+        if not p["read_only"]:
+            assert "claude-code-validator" in p["roles"], (
+                f"{p['preset']} builds with no checker")
+    assert len(chat.ENGINE.list()) == before   # advisory: nothing started
 
 def test_run_build_starts_a_buildable_route(tmp_path, monkeypatch):
     _wire_all(tmp_path, monkeypatch)
@@ -171,30 +180,24 @@ def test_run_build_starts_a_buildable_route(tmp_path, monkeypatch):
     assert chat.ENGINE.get(out["run_id"]) is not None
 
 
-def test_run_build_refuses_a_read_only_route_without_minting_a_run(tmp_path, monkeypatch):
-    """Live-found on the event-2 box: the orchestrator model paraphrased the
-    attendee's build request into review-flavored wording, the router matched the
-    read-only review workflow, and the engine minted a permanently failed
-    NO_RUN_TO_REVIEW run as the attendee's first visible result. run_build must
-    refuse that route as a retryable tool error instead, so the model can retry
-    with the user's verbatim text."""
+def test_run_build_refuses_an_empty_task_without_minting_a_run(tmp_path, monkeypatch):
+    """There is nothing to classify any more: ANY wording is a valid build, so the
+    only refusable case is having no request at all. Refuse it as a retryable tool
+    error rather than minting a run that is born failed."""
     _wire_all(tmp_path, monkeypatch)
     before = len(chat.ENGINE.list())
-    out = json.loads(_call("run_build", task="review the pull request from the last run"))
-    assert out["error"].startswith("REVIEW_NOT_A_BUILD:")
-    assert "verbatim" in out["hint"]
+    out = json.loads(_call("run_build", task="   "))
+    assert out["error"] == "EMPTY_TASK"
+    assert "own words" in out["hint"]
     assert len(chat.ENGINE.list()) == before  # no dead run created
 
 
-def test_run_build_surfaces_no_route_as_a_retryable_error(tmp_path, monkeypatch):
-    """A task the router cannot classify must come back as a tool error with a
-    retry hint, never as a run that is born failed (NO_ROUTE)."""
+def test_run_build_accepts_any_request_at_all(tmp_path, monkeypatch):
+    """The headline property: a request that matches no sample, no keyword, and no
+    preset still starts a real run. Nothing here classifies the attendee's wording."""
     _wire_all(tmp_path, monkeypatch)
-    before = len(chat.ENGINE.list())
-    out = json.loads(_call("run_build", task="the grading contract is green"))
-    assert "NO_ROUTE" in out["error"]
-    assert "verbatim" in out["hint"]
-    assert len(chat.ENGINE.list()) == before
+    out = json.loads(_call("run_build", task="write me a haiku about tuesday"))
+    assert out["run_id"].startswith("run_") and out["status"] == "started"
 
 
 def test_system_prompt_tells_the_model_to_pass_the_task_verbatim():
@@ -213,14 +216,15 @@ def test_available_models_comes_from_the_real_bedrock_catalog():
 
 
 # --------------------------------------------------- the dynamic opener chips
-def test_suggestions_are_capped_and_registry_derived():
-    """R7: at most 3 openers, each derived from the real workflow registry (not a
-    hardcoded frontend list). The cap is the behavior under test; we don't pin
-    exact strings (presentation) beyond that they reflect a real workflow."""
+def test_suggestions_are_capped_and_preset_derived():
+    """At most 3 openers, each a real preset title from ONE source (presets.PRESETS),
+    never a hardcoded frontend list. The cap and the single source are the behavior;
+    the exact wording is presentation and is not pinned."""
+    import presets
     s = chat.suggestions()["suggestions"]
     assert 1 <= len(s) <= 3
-    joined = " ".join(s).lower()
-    assert "mcp" in joined or "critter" in joined or "backend" in joined
+    titles = {p["title"] for p in presets.public_presets()}
+    assert set(s) <= titles, (s, titles)
 
 
 def test_system_prompt_has_no_emoji_and_a_voice_section():

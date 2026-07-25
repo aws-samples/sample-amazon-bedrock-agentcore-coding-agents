@@ -202,11 +202,6 @@ esac
     assert '"gateway_target_id": "AbCdEf1234"' in state
 
 
-def test_full_deploy_fails_if_tools_are_not_discoverable():
-    script = (GATEWAY / "deploy-all.sh").read_text()
-    assert '"$SCRIPT_DIR/verify-gateway.sh"' in script
-
-
 def test_gateway_verify_fails_fast_with_runtime_421_guidance(tmp_path):
     state_file = tmp_path / "state.json"
     state_file.write_text(
@@ -281,7 +276,6 @@ def test_attendee_shell_scripts_parse():
         GATEWAY / "verify-gateway.sh",
         ROOT / "coding-agents" / "claude-code-validator" / "run.sh",
         ROOT / "coding-agents" / "opencode" / "run.sh",
-        ROOT / "usecase-sample-to-mcp" / "deploy" / "deploy.sh",
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)

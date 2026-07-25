@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -17,9 +18,18 @@ import boto3
 
 
 HERE = Path(__file__).resolve().parent
-# The validator role is a second Claude Code (claude-code-validator); kiro was
-# retired from the roster (kept in the codebase, off every roster, like codex).
-ROLES = ("claude-code", "opencode", "claude-code-validator")
+
+# The roster comes from the role REGISTRY (``orchestrator/roles.py``), the one place
+# it is declared, so this script wires exactly the roles the engine dispatches. This
+# module is loaded standalone (by the CLI and by its test), so reach the registry by
+# path rather than assuming the orchestrator dir is already importable.
+sys.path.insert(0, str(HERE.parent / "orchestrator"))
+import roles as _roles  # noqa: E402
+
+
+def ROLES() -> tuple[str, ...]:
+    """The role ids whose deployed runtime ARNs the orchestrator project needs."""
+    return _roles.roster_ids()
 
 
 def _region(value: str | None) -> str:
@@ -61,7 +71,7 @@ def _stack_outputs(stack_name: str, region: str) -> dict[str, str]:
 
 def _runtime_arns(source_root: Path) -> dict[str, str]:
     arns: dict[str, str] = {}
-    for role in ROLES:
+    for role in ROLES():
         path = source_root / "coding-agents" / role / "runtime_config.json"
         try:
             arn = json.loads(path.read_text(encoding="utf-8"))["runtime_arn"]
@@ -89,9 +99,11 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
 
     arns = _runtime_arns(source_root)
     env = {
-        "AGENTCORE_RUNTIME_CLAUDE_CODE": arns["claude-code"],
-        "AGENTCORE_RUNTIME_OPENCODE": arns["opencode"],
-        "AGENTCORE_RUNTIME_CLAUDE_CODE_VALIDATOR": arns["claude-code-validator"],
+        # One AGENTCORE_RUNTIME_<ROLE> per served role, keyed the way
+        # runtime_config._env_key derives it, so the coordinator finds every role
+        # it can dispatch and a roster change needs no edit here.
+        **{f"AGENTCORE_RUNTIME_{role.replace('-', '_').upper()}": arn
+           for role, arn in arns.items()},
         "PERUSER_ROLE_ARN": peruser_role,
         "GITHUB_GATEWAY_URL": os.environ.get("GITHUB_GATEWAY_URL", ""),
         "GITHUB_REPO": os.environ.get("GITHUB_REPO", ""),

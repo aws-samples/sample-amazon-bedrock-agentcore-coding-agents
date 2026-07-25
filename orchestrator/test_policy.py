@@ -86,7 +86,7 @@ def test_engine_term_blocks_a_denied_command(tmp_path, monkeypatch):
     import engine
     importlib.reload(engine)
     run = engine.Run(run_id="run_000000_001", task="t", agents=["claude-code"],
-                     roles={"claude-code": "backend-mcp"})
+                     roles={"claude-code": "backend-builder"})
     run._t0 = 0.0
 
     # A benign command runs and lands in the transcript with exit 0.

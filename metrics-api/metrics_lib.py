@@ -36,11 +36,6 @@ import os
 import time
 from typing import Any, Optional
 
-# Valid assistant types (matches the orchestrator's AGENTS roster). The validator
-# is a second Claude Code (claude-code-validator); kiro was retired from the
-# roster (kept in the codebase, off every roster, like codex).
-ASSISTANT_TYPES = ("claude-code", "claude-code-validator", "opencode")
-
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
 _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO, ".runs"))
@@ -611,7 +606,7 @@ def get_audit_trail(limit: int = 200) -> dict[str, Any]:
         if kind == "orchestrator_run":
             roles = ",".join(r.get("agent", "?") for r in row.get("roles", []))
             cost = sum(r.get("cost_usd", 0) for r in row.get("roles", []))
-            msg = (f"run {row.get('run_id')} [{row.get('workflow_ref') or 'n/a'}] "
+            msg = (f"run {row.get('run_id')} [{row.get('preset') or 'n/a'}] "
                    f"user={user} agents={roles or '-'} status={row.get('status')} "
                    f"review={row.get('review_state') or 'n/a'} "
                    f"iter={row.get('iterations')} cost=${cost:.2f}"

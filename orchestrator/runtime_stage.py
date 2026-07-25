@@ -1,12 +1,16 @@
-"""Stage a usecase module + grading contract onto the shared S3Files mount.
+"""Stage a role's SKILLS onto the shared S3Files mount, for its container to read.
 
 The deployed coding agents build INSIDE their AgentCore Runtime container, where
 the only shared, writable workspace is ``/mnt/s3files``, backed by an S3Files
 access point all three runtimes mount. That mount is read-through from S3: an
 object uploaded to ``s3://<bucket>/agents/mnt/s3files/<key>`` appears at
-``/mnt/s3files/<key>`` inside every runtime. So to let the backend agent
-``import cost_analyzer`` and the validator run the grading contract, we upload
-those files there before dispatch.
+``/mnt/s3files/<key>`` inside every runtime. So to give a role the SKILL it applies
+(its principle-based harness), we upload it there before dispatch.
+
+What is deliberately NOT staged is a sample module, a scaffold, or an acceptance
+contract. The request is whatever the attendee typed, so there is nothing to stage on
+its behalf, and staging an answer would be the predetermined-shape problem this design
+exists to remove.
 
 Per-run prefix (``<run_id>/``) isolates concurrent runs and makes cleanup a
 single prefix delete. The bucket name follows the infra convention
@@ -37,7 +41,7 @@ def mnt_root() -> str:
 
 def skill_path(run_id: str) -> str:
     """The in-workspace path the staged module lives at (read by the backend
-    agent's ``sys.path.insert``). Mirrors where ``stage_usecase`` puts it."""
+    agent reads its skill from). Read-only material for one run."""
     return os.path.join(mnt_root(), f"{run_id}-skill")
 
 
@@ -78,45 +82,6 @@ def _upload_tree(s3, bucket: str, local_dir: str, key_prefix: str) -> int:
     return n
 
 
-def stage_usecase(run_id: str, uc: dict[str, str], region: str | None = None) -> str:
-    """Stage the usecase module module + grading contract to /mnt/s3files/<run_id>.
-
-    Returns the runtime workspace path the agents should ``cd`` into. Raises on
-    any AWS failure (fail loud: a missing module means the backend cannot
-    build)."""
-    # LOCAL mount seam: when WORKSHOP_S3FILES_DIR wires the mount to a local dir
-    # (the on-laptop `agentcore dev` / capture path), there is no S3 read-through,
-    # so COPY the build inputs straight into <mount>/<run_id>-skill. The layout the
-    # agent sees is identical to the deployed mount; only the transport differs.
-    if os.environ.get("WORKSHOP_S3FILES_DIR"):
-        skill_dir = skill_path(run_id)
-        os.makedirs(os.path.join(skill_dir, "grading"), exist_ok=True)
-        module_file = os.path.join(uc["dir"], uc["module"] + ".py")
-        shutil.copy(module_file, os.path.join(skill_dir, uc["module"] + ".py"))
-        shutil.copytree(uc["grading"], os.path.join(skill_dir, "grading"),
-                        dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc"))
-        return skill_dir
-
-    region = region or _s3_region()
-    account_id = _account_id(region)
-    bucket = _bucket(region, account_id)
-    s3 = _client(region)
-
-    # Keep immutable build inputs and writable outputs in separate prefixes. The
-    # S3 Files access point maps the runtime identity to uid/gid 1000, so this is
-    # an isolation boundary, not a claim that the mount is root-owned. The agent
-    # reads ``<run_id>-skill/`` and creates its artifact under ``<run_id>/``.
-    skill_key = f"{_MOUNT_PREFIX}/{run_id}-skill"
-    module_file = os.path.join(uc["dir"], uc["module"] + ".py")
-    s3.upload_file(module_file, bucket, f"{skill_key}/{uc['module']}.py")
-    # the grading contract dir: the offline floor grades against it.
-    _upload_tree(s3, bucket, uc["grading"], f"{skill_key}/grading")
-    # Return the in-runtime input path; the agent's output dir is the separate
-    # /mnt/s3files/<run_id> prefix created at dispatch.
-    return skill_path(run_id)
-
-
 def stage_skills(run_id: str, skill_dirs: list[str],
                  region: str | None = None) -> int:
     """Upload each harness skill dir to ``<run_id>-skill/skills/<name>``, the
@@ -148,29 +113,3 @@ def stage_skills(run_id: str, skill_dirs: list[str],
         key = f"{_MOUNT_PREFIX}/{run_id}-skill/skills/{os.path.basename(d)}"
         n += _upload_tree(s3, bucket, d, key)
     return n
-
-
-def unstage_usecase(run_id: str, region: str | None = None) -> dict[str, Any]:
-    """Delete a run's staged prefix (cleanup / return-to-clean-state)."""
-    # Local mount seam: remove the local <mount>/<run_id>* dirs, no S3.
-    if os.environ.get("WORKSHOP_S3FILES_DIR"):
-        deleted = 0
-        for d in (skill_path(run_id), os.path.join(mnt_root(), run_id)):
-            if os.path.isdir(d):
-                shutil.rmtree(d, ignore_errors=True)
-                deleted += 1
-        return {"deleted": deleted, "run_id": run_id}
-    region = region or _s3_region()
-    account_id = _account_id(region)
-    bucket = _bucket(region, account_id)
-    s3 = _client(region)
-    deleted = 0
-    paginator = s3.get_paginator("list_objects_v2")
-    # Both the staged-skill prefix and (any) agent work prefix for this run.
-    for prefix in (f"{_MOUNT_PREFIX}/{run_id}-skill/", f"{_MOUNT_PREFIX}/{run_id}/"):
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-            if objs:
-                s3.delete_objects(Bucket=bucket, Delete={"Objects": objs})
-                deleted += len(objs)
-    return {"deleted": deleted, "run_id": run_id}
