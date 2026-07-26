@@ -61,6 +61,7 @@ Run it (always via the HTTP shell, ``connection_api.py``):
 
 from __future__ import annotations
 
+import filecmp
 import getpass
 import json
 import os
@@ -176,6 +177,33 @@ _NO_PRODUCER_ERROR = (
 # port flag, waiting for it needs a readiness convention, and a declared manifest is
 # still a schema we invented. One subprocess, no conventions.
 _ACCEPTANCE_CHECK = "acceptance_check"
+
+# What compose must NOT publish. Two kinds, and both were observed on a live run:
+#   * the HARNESS we installed into the role's working directory (its steering file
+#     and any `harness:setup` skills). That is workshop scaffolding, not the
+#     agents' deliverable, and it is identical in every run.
+#   * what a RUNNING service leaves behind. The validator's check starts the
+#     deliverable, so a real 3-role run committed `issues.db` next to
+#     `issues.db-wal` and `issues.db-shm`: a SQLite database and its write-ahead
+#     sidecars, i.e. one run's state, published as if it were source.
+# Nothing here encodes what the deliverable IS; these are only artifacts the
+# engine itself put there or that running the code produced.
+_COMPOSE_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache",
+                      ".ruff_cache", ".mypy_cache", "skills"}
+_COMPOSE_SKIP_NAMES = {"CLAUDE.md", "AGENTS.md", ".DS_Store"}
+_COMPOSE_SKIP_SUFFIXES = (".pyc", ".pyo", ".db-wal", ".db-shm", ".sqlite-wal",
+                          ".sqlite-shm", ".log")
+
+
+def _compose_excluded(rel: str) -> bool:
+    """True when ``rel`` is scaffolding or run-time state, not the deliverable."""
+    parts = rel.replace(os.sep, "/").split("/")
+    if any(p in _COMPOSE_SKIP_DIRS for p in parts[:-1]):
+        return True
+    name = parts[-1]
+    if name in _COMPOSE_SKIP_NAMES:
+        return True
+    return name.endswith(_COMPOSE_SKIP_SUFFIXES)
 
 # What builders are told about runnability. Not a layout and not a filename: a
 # property of good work, stated once. The engine never reads the answer.
@@ -1745,16 +1773,52 @@ class Engine:
         # Drop any leftover from a prior run (a file a previous run's role wrote and
         # this one did not), so the commit is exactly this run's deliverable.
         subprocess.run(["git", "-C", repo, "clean", "-fdq"], check=True, timeout=20, env=git_env)
-        # Copy each routed role's OWN tree, at the paths the agent chose. The engine
-        # does not know or rename anything: whatever a role wrote is the deliverable.
-        # Each role's work lands under its own top-level directory, which is what
-        # keeps two roles that both wrote a README from silently overwriting one
-        # another; a collision is named, never dropped.
+        # Copy the deliverable at the paths the AGENTS chose. The engine renames
+        # nothing: whatever the roles wrote IS the deliverable.
+        #
+        # Every role shares ONE directory in the runtime workspace, so each role's
+        # read-back tree is a view of the SAME files. Committing one directory per
+        # role therefore published the identical project two or three times (a live
+        # 3-role run produced 21 files that were really 7), which makes the pull
+        # request unreviewable. So compose the union ONCE, flat, exactly as it sits
+        # in the workspace.
+        #
+        # Excluded, deliberately: the harness steering and skills (ours, not the
+        # deliverable) and the run-time droppings a service leaves behind (caches,
+        # and the SQLite sidecars a started service creates: a live run committed
+        # issues.db plus .db-wal and .db-shm). A collision between two roles writing
+        # the same path is a real possibility and is reported rather than hidden.
+        seen: dict[str, str] = {}
+        collisions: list[str] = []
         for agent_id in run.agents:
             src = run.roledir(agent_id)
             if not os.path.isdir(src):
                 continue
-            shutil.copytree(src, os.path.join(repo, agent_id), dirs_exist_ok=True)
+            for dirpath, dirnames, filenames in os.walk(src):
+                dirnames[:] = [d for d in dirnames if d not in _COMPOSE_SKIP_DIRS]
+                for fn in filenames:
+                    rel = os.path.relpath(os.path.join(dirpath, fn), src)
+                    if _compose_excluded(rel):
+                        continue
+                    full = os.path.join(dirpath, fn)
+                    prior = seen.get(rel)
+                    if prior is not None:
+                        # Same path from two roles: identical is the shared-mount
+                        # norm, different is a real conflict a reviewer must see.
+                        if not filecmp.cmp(prior, full, shallow=False):
+                            collisions.append(rel)
+                            dest = os.path.join(repo, f"CONFLICT-{agent_id}", rel)
+                            os.makedirs(os.path.dirname(dest), exist_ok=True)
+                            shutil.copy2(full, dest)
+                        continue
+                    seen[rel] = full
+                    dest = os.path.join(repo, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(full, dest)
+        run.log(f"compose: {len(seen)} file(s) the agents wrote"
+                + (f"; {len(collisions)} path(s) differed between roles and were "
+                   f"committed under CONFLICT-<role>/: {', '.join(collisions[:5])}"
+                   if collisions else ""))
         # The validator's authored check SHIPS WITH the deliverable, so the PR
         # reviewer (human or bot) can rerun the exact gate that passed. The review
         # verdict itself is NOT a committed file: it is posted on the pull request as

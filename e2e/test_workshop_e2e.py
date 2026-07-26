@@ -121,11 +121,17 @@ def test_stage2_composes_whatever_the_roles_wrote():
         assert run.status == "passed", run.fail_reason
         # the gate was a real execution with a real verdict
         assert run.gate["passed"] is True and run.gate["summary"]
-        # every routed role contributed files, under its own directory
+        # Every routed BUILDER's work is in the commit, at the path the agent chose.
+        # The layout is FLAT (the roles share one workspace directory, so a
+        # per-role copy published the same project two or three times), which is
+        # why this asserts the files are present rather than a directory prefix:
+        # the engine names no paths, and neither does this test.
         diff = engine.public_diff(run)
         paths = {f["path"] for f in diff["files"]}
         for agent_id in run.agents:
-            assert any(p.startswith(f"{agent_id}/") for p in paths), (agent_id, paths)
+            if agent_id.endswith("validator"):
+                continue          # the checker's contribution is the check, below
+            assert any(agent_id in p for p in paths), (agent_id, paths)
         # the validator's authored check ships with the deliverable so a reviewer can
         # rerun the exact gate that passed
         assert any(p.endswith("acceptance_check") for p in paths), paths

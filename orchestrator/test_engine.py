@@ -105,10 +105,26 @@ def test_public_diff_carries_whatever_the_roles_wrote():
     assert diff["branch"] == f"run/{run.run_id}"
     paths = {f["path"] for f in diff["files"]}
     assert paths, "the commit carried no files"
-    # each routed role's own work is in the commit, under its own directory
+    # EVERY file a role actually wrote is in the commit, at the path the role chose.
+    # Asserted against the roles' own trees rather than a directory prefix: the
+    # layout is flat now (the roles share one workspace, so a per-role copy
+    # published the same project once per role), and this way the test cannot pass
+    # by accident when a role's work is silently dropped.
+    import os as _os
+    import engine as _eng_mod
     for agent_id in run.agents:
-        assert any(p.startswith(f"{agent_id}/") for p in paths), (
-            f"{agent_id} contributed nothing to the commit; paths={sorted(paths)}")
+        roledir = run.roledir(agent_id)
+        if not _os.path.isdir(roledir):
+            continue
+        for dirpath, dirnames, filenames in _os.walk(roledir):
+            dirnames[:] = [d for d in dirnames if d not in _eng_mod._COMPOSE_SKIP_DIRS]
+            for fn in filenames:
+                rel = _os.path.relpath(_os.path.join(dirpath, fn), roledir)
+                if _eng_mod._compose_excluded(rel):
+                    continue
+                assert rel.replace(_os.sep, "/") in paths, (
+                    f"{agent_id} wrote {rel} and the commit does not carry it; "
+                    f"paths={sorted(paths)}")
     # every file carries a real unified-diff patch with add counts
     for f in diff["files"]:
         assert f["added"] > 0 and "@@" in f["patch"]

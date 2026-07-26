@@ -101,6 +101,35 @@ PRESETS: dict[str, dict[str, Any]] = {
         "task": ("Build a small app that lets a person keep a shopping list: a page "
                  "they interact with, and the service behind it that owns the data."),
     },
+    # The FLAGSHIP request: deliberately the largest thing on this list, because a
+    # team of agents is only interesting when the job is bigger than one obvious
+    # file. It names OUTCOMES and CONSTRAINTS, never files, frameworks, or
+    # endpoints: several features that must hold together, real persistence, real
+    # input rejection, and a UI over the same service. That gives both builders
+    # substantial parallel work and gives the validator something worth checking,
+    # so watching it happen (the console Agents tabs, or `watch_agents.py` in a
+    # terminal) actually shows a team building a system.
+    "project-from-scratch": {
+        "title": "Build a whole small project (the big one)",
+        "needs": ["backend", "frontend"],
+        "task": (
+            "Build a small issue tracker that a team could actually use.\n"
+            "\n"
+            "It must support: creating an issue with a title and description; "
+            "listing issues with a filter by status; changing an issue's status "
+            "through the lifecycle open -> in progress -> done; adding comments to "
+            "an issue; and a per-status count summary.\n"
+            "\n"
+            "Requirements that matter more than the feature list: the data must "
+            "survive a restart of the service; invalid input must be refused with a "
+            "clear error rather than accepted (an unknown status, an empty title, a "
+            "comment on an issue that does not exist); and an illegal status "
+            "transition must be rejected. Include a page a person can use to do all "
+            "of this against the same service.\n"
+            "\n"
+            "Decide the language, the storage, the protocol, the file layout, and "
+            "the shape of the interface yourselves."),
+    },
     "cli-tool": {
         "title": "Build a command line tool",
         "needs": ["backend"],
