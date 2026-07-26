@@ -179,3 +179,42 @@ def test_the_gate_sees_the_workspace_the_pr_does_not_have_to_carry():
     # BOTH withhold only what the engine itself installed.
     for rel in ("CLAUDE.md", "AGENTS.md", "skills/frontend-design/SKILL.md"):
         assert engine._compose_excluded(rel) and engine._gate_excluded(rel), rel
+
+
+def test_the_newer_copy_lands_at_the_root_when_two_roles_differ():
+    """Roster order is not evidence about which copy is current.
+
+    Both builders edit ONE shared workspace, and the engine reads each role's tree
+    at a different moment, so a difference on the same path usually means one
+    snapshot is simply older. A live run committed an 8.9KB `index.html` at the
+    root while the workspace (and the file the gate actually ran against) held the
+    31.6KB one, purely because the earlier reader came first in roster order.
+    """
+    import time
+    engine = importlib.import_module("engine")
+    eng = engine.Engine.__new__(engine.Engine)
+    run = engine.Run(run_id="run_000000_884", task="t",
+                     agents=["claude-code", "opencode"],
+                     roles={"claude-code": "backend-builder",
+                            "opencode": "frontend-builder"})
+    try:
+        # claude-code is read FIRST (roster order) but holds the OLDER snapshot.
+        _seed(run, "claude-code", {"index.html": "<h1>old, smaller</h1>\n"})
+        time.sleep(0.02)
+        _seed(run, "opencode", {"index.html": "<h1>the newer, bigger page</h1>\n"})
+        run.gate = {"passed": True, "summary": "ok"}
+        eng._compose_commit_locked(run)
+
+        import subprocess
+        root = subprocess.run(
+            ["git", "-C", os.path.join(engine._RUNS_DIR, "composed"),
+             "show", f"run/{run.run_id}:index.html"],
+            capture_output=True, text=True).stdout
+        assert "newer" in root, (
+            "the PR's root carries the STALE copy, so the pull request does not match "
+            f"what was built and graded: {root!r}")
+        # The disagreement is still visible, not silently resolved.
+        paths = sorted(f["path"] for f in engine.public_diff(run)["files"])
+        assert any(p.startswith("CONFLICT-") for p in paths), paths
+    finally:
+        shutil.rmtree(run.workdir, ignore_errors=True)

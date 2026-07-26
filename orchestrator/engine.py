@@ -1983,13 +1983,31 @@ class Engine:
                     full = os.path.join(dirpath, fn)
                     prior = seen.get(rel)
                     if prior is not None:
-                        # Same path from two roles: identical is the shared-mount
-                        # norm, different is a real conflict a reviewer must see.
+                        # Same path from two roles. Identical is the shared-mount
+                        # norm and needs no comment. Different usually means the two
+                        # roles were READ AT DIFFERENT TIMES while both were editing
+                        # the one shared workspace, so one snapshot is simply older:
+                        # a live run committed an 8.9KB index.html at the root while
+                        # the workspace (and the file the gate actually ran against)
+                        # held the 31.6KB one, because the earlier reader happened to
+                        # come first in roster order.
+                        #
+                        # Roster order is not evidence, so prefer the NEWER file and
+                        # keep the older one as the flagged copy. That makes the PR's
+                        # root match what was really built and graded, while still
+                        # showing a reviewer that two roles disagreed on this path.
                         if not filecmp.cmp(prior, full, shallow=False):
                             collisions.append(rel)
+                            newer, older = full, prior
+                            if os.path.getmtime(prior) >= os.path.getmtime(full):
+                                newer, older = prior, full
+                            root_dest = os.path.join(repo, rel)
+                            os.makedirs(os.path.dirname(root_dest), exist_ok=True)
+                            shutil.copy2(newer, root_dest)
+                            seen[rel] = newer
                             dest = os.path.join(repo, f"CONFLICT-{agent_id}", rel)
                             os.makedirs(os.path.dirname(dest), exist_ok=True)
-                            shutil.copy2(full, dest)
+                            shutil.copy2(older, dest)
                         continue
                     seen[rel] = full
                     dest = os.path.join(repo, rel)
