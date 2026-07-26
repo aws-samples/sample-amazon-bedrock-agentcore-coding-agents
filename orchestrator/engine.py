@@ -1304,7 +1304,16 @@ class Engine:
             if failed:
                 feedback = ("\n\nA previous round requested changes; make sure your "
                             "check covers each point:\n"
-                            + "\n".join(f"- {d}" for d in failed))
+                            + "\n".join(f"- {d}" for d in failed)
+                            + "\n\nRe-read those failures critically before you write "
+                              "this round's check. If a failure was YOUR CHECK's fault "
+                              "rather than the work's (it probed a service it never "
+                              "started, assumed a port or a path the deliverable does "
+                              "not use, or asserted something the request never asked "
+                              "for), fix that in your check now. A check that blames "
+                              "working software is the worst outcome available to you: "
+                              "the builders will be sent to change code that was "
+                              "already correct.")
         live = (f"The deliverable is running at {endpoint} .\n"
                 if endpoint else
                 "The deliverable does not expose a running service this round.\n")
@@ -1330,7 +1339,15 @@ class Engine:
             "deliverable's URL from the `DELIVERABLE_URL` env var"
             + (f" (it will be {endpoint!r})" if endpoint else "") + ". Do not soften "
             "a real failure, and do not rubber-stamp. You do NOT edit the work; you "
-            "only check it. Write ONLY the file; do not run it." + feedback)
+            "only check it. Write ONLY the file; do not run it.\n\n"
+            "IF THE DELIVERABLE IS A SERVICE, YOUR CHECK MUST START IT ITSELF, wait "
+            "for it to accept connections, and stop it when it is done. NOTHING ELSE "
+            "STARTS IT FOR YOU: no process is running when your check begins, so a "
+            "check that only probes an address it did not start can never pass, and "
+            "it would report a working deliverable as broken. Pick the port yourself "
+            "(an unused one) rather than assuming a default, and if you cannot start "
+            "it, print why and fail: that is a real finding, not a technicality."
+            + feedback)
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
                                    _ACCEPTANCE_CHECK)
         test_path = os.path.join(run.roledir(_validator_agent()), _ACCEPTANCE_CHECK)

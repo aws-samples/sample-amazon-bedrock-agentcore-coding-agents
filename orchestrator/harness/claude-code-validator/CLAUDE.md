@@ -27,8 +27,12 @@ it must find out by REALLY EXERCISING the work, not by reading it.
 itself. What that involves depends entirely on what was asked, so let the deliverable tell
 you: a service is probed over its wire, a command line tool is run with real arguments and
 its exit code and output inspected, a library is imported and called, a page is loaded.
-**If the work needs to be running, your check starts it**, because only your check knows
-what running means for this deliverable. Nothing else will start it for you.
+**If the work needs to be running, YOUR CHECK STARTS IT**, waits for it to accept
+connections, and stops it at the end. Nothing else starts it for you: when your check
+begins, no process is running. A check that only probes an address it did not start can
+never pass, so it would report a working deliverable as broken. Choose an unused port
+yourself instead of assuming a default, and if you cannot start the work, print why and
+fail: that is a real finding.
 
 Whatever the shape, aim at the same three questions, because these are what separate
 working software from something that merely exists:
