@@ -182,21 +182,36 @@ _ACCEPTANCE_CHECK = "acceptance_check"
 #   * the HARNESS we installed into the role's working directory (its steering file
 #     and any `harness:setup` skills). That is workshop scaffolding, not the
 #     agents' deliverable, and it is identical in every run.
-#   * what a RUNNING service leaves behind. The validator's check starts the
+#   * what a RUNNING service leaves behind. The validator's check STARTS the
 #     deliverable, so a real 3-role run committed `issues.db` next to
-#     `issues.db-wal` and `issues.db-shm`: a SQLite database and its write-ahead
-#     sidecars, i.e. one run's state, published as if it were source.
+#     `issues.db-wal` and `issues.db-shm`: one run's state, published as source.
+#
+# The database file goes with its sidecars, and that pairing is the point. In WAL
+# mode the committed rows live in the `-wal` until a checkpoint, so shipping the
+# `.db` while excluding the `-wal` publishes a TORN database: a live run committed
+# an `issues.db` whose tables existed and whose row counts were all zero, because
+# the data was in the WAL we correctly left out. Half a database is worse than
+# neither half, so the whole set goes.
+#
 # Nothing here encodes what the deliverable IS; these are only artifacts the
-# engine itself put there or that running the code produced.
+# engine itself put there or that running the code produced. A deliverable that
+# genuinely needs seed data ships the code or the migration that creates it, which
+# is what a reviewer can actually read.
 _COMPOSE_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache",
                       ".ruff_cache", ".mypy_cache", "skills"}
 _COMPOSE_SKIP_NAMES = {"CLAUDE.md", "AGENTS.md", ".DS_Store"}
-_COMPOSE_SKIP_SUFFIXES = (".pyc", ".pyo", ".db-wal", ".db-shm", ".sqlite-wal",
-                          ".sqlite-shm", ".log")
+_COMPOSE_SKIP_SUFFIXES = (".pyc", ".pyo", ".db", ".db-wal", ".db-shm",
+                          ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm",
+                          ".log")
 
 
 def _compose_excluded(rel: str) -> bool:
-    """True when ``rel`` is scaffolding or run-time state, not the deliverable."""
+    """True when ``rel`` is scaffolding or run-time state, not the deliverable.
+
+    Used for the PULL REQUEST only. The gate uses ``_gate_excluded``, which is
+    narrower: a file that merely reads badly in a diff is still part of the
+    workspace the authored check was written against.
+    """
     parts = rel.replace(os.sep, "/").split("/")
     if any(p in _COMPOSE_SKIP_DIRS for p in parts[:-1]):
         return True
@@ -204,6 +219,22 @@ def _compose_excluded(rel: str) -> bool:
     if name in _COMPOSE_SKIP_NAMES:
         return True
     return name.endswith(_COMPOSE_SKIP_SUFFIXES)
+
+
+def _gate_excluded(rel: str) -> bool:
+    """True when ``rel`` is OUR harness rather than the agents' workspace.
+
+    Deliberately withholds only what the engine installed. Everything the roles
+    (or the running deliverable) put in the workspace reaches the gate, because
+    the check was authored against that workspace and the engine does not get to
+    decide which of those files the check is allowed to see.
+    """
+    parts = rel.replace(os.sep, "/").split("/")
+    if parts[0] == "skills":
+        return True
+    if any(p in ("__pycache__", ".git") for p in parts[:-1]):
+        return True
+    return parts[-1] in _COMPOSE_SKIP_NAMES
 
 # What builders are told about runnability. Not a layout and not a filename: a
 # property of good work, stated once. The engine never reads the answer.
@@ -1238,10 +1269,16 @@ class Engine:
                 dirnames[:] = [d for d in dirnames if d not in _COMPOSE_SKIP_DIRS]
                 for fn in filenames:
                     rel = os.path.relpath(os.path.join(dirpath, fn), src)
-                    # Our harness, not the deliverable. The authored check comes
-                    # from the validator's own artifact below, so a stale copy a
-                    # builder read back from the shared mount must not shadow it.
-                    if _compose_excluded(rel) or rel == _ACCEPTANCE_CHECK:
+                    # The gate uses a NARROWER exclusion than compose, on purpose.
+                    # Compose also drops things that are merely ugly in a pull
+                    # request (a database the service created), but the gate must
+                    # see the workspace the check was authored against: a check
+                    # that opens an existing database, or reads a file the service
+                    # wrote, would fail on work that is fine. Only OUR harness is
+                    # withheld here, plus a stale check a builder read back from
+                    # the shared mount, which must not shadow the one the validator
+                    # authored this round (copied in below).
+                    if _gate_excluded(rel) or rel == _ACCEPTANCE_CHECK:
                         continue
                     dest = os.path.join(gate_dir, rel)
                     os.makedirs(os.path.dirname(dest), exist_ok=True)

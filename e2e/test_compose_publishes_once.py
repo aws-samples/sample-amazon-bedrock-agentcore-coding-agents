@@ -152,3 +152,30 @@ def test_the_authored_check_ships_once_and_never_as_a_conflict():
         assert "ROUND 2" in body, body
     finally:
         shutil.rmtree(run.workdir, ignore_errors=True)
+
+
+def test_the_gate_sees_the_workspace_the_pr_does_not_have_to_carry():
+    """Two different questions, two different exclusion sets.
+
+    Compose asks "what belongs in a pull request", so it drops a database the
+    running service created: in WAL mode the rows live in the `-wal` until a
+    checkpoint, so shipping the `.db` while excluding the `-wal` publishes a TORN
+    database (a live run committed an `issues.db` whose tables existed with zero
+    rows, because the data was in the WAL). Half a database is worse than neither
+    half.
+
+    The GATE asks "what was this check authored against", and there the answer is
+    the workspace as it stands. A check that opens an existing database, or reads a
+    file the service wrote, must not fail because the engine tidied the diff.
+    """
+    engine = importlib.import_module("engine")
+    # The PR view: state is not source.
+    for rel in ("issues.db", "issues.db-wal", "issues.db-shm", "app.log"):
+        assert engine._compose_excluded(rel), rel
+    # The GATE view: the check sees everything the roles and the service left.
+    for rel in ("issues.db", "issues.db-wal", "issues.db-shm", "app.log",
+                "server.py", "static/index.html", "package.json"):
+        assert not engine._gate_excluded(rel), rel
+    # BOTH withhold only what the engine itself installed.
+    for rel in ("CLAUDE.md", "AGENTS.md", "skills/frontend-design/SKILL.md"):
+        assert engine._compose_excluded(rel) and engine._gate_excluded(rel), rel
