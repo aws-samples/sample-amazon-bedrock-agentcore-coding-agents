@@ -106,3 +106,49 @@ def test_a_real_conflict_between_two_roles_is_reported_not_hidden():
             f"silently dropped: {paths}")
     finally:
         shutil.rmtree(run.workdir, ignore_errors=True)
+
+
+def test_the_authored_check_ships_once_and_never_as_a_conflict():
+    """A re-implement round must not report the check as a role conflict.
+
+    The check lives in the SAME shared mount as the deliverable, so every role
+    reads it back as if it were their own file. On a second round the builders
+    carry the PREVIOUS round's copy while the validator has just written a new
+    one, so comparing them found a difference and a live 3-role run published
+    `CONFLICT-claude-code-validator/acceptance_check` beside the real one. The
+    check must ship exactly once, from the validator's own artifact.
+    """
+    engine = importlib.import_module("engine")
+    eng = engine.Engine.__new__(engine.Engine)
+    run = engine.Run(run_id="run_000000_883", task="t",
+                     agents=["claude-code", "opencode", "claude-code-validator"],
+                     roles={"claude-code": "backend-builder",
+                            "opencode": "frontend-builder",
+                            "claude-code-validator": "validator"})
+    try:
+        # Both builders carry ROUND 1's check back from the shared mount...
+        for agent in ("claude-code", "opencode"):
+            _seed(run, agent, {"server.py": "# round 2 service\n",
+                               "acceptance_check": "#!/bin/sh\n# ROUND 1 check\nexit 0\n"})
+        # ...while the validator has authored a DIFFERENT one for round 2.
+        _seed(run, "claude-code-validator",
+              {"acceptance_check": "#!/bin/sh\n# ROUND 2 check\nexit 0\n"})
+        run._acceptance_test_file = os.path.join(
+            run.roledir("claude-code-validator"), "acceptance_check")
+        run.gate = {"passed": True, "summary": "ok"}
+        eng._compose_commit_locked(run)
+
+        paths = sorted(f["path"] for f in engine.public_diff(run)["files"])
+        assert "acceptance_check" in paths, paths
+        assert not [p for p in paths if "CONFLICT" in p], (
+            f"the authored check was reported as a role conflict: {paths}")
+        assert sum(1 for p in paths if p.endswith("acceptance_check")) == 1, paths
+        # And the shipped one is the round the gate actually ran.
+        import subprocess
+        body = subprocess.run(
+            ["git", "-C", os.path.join(engine._RUNS_DIR, "composed"),
+             "show", f"run/{run.run_id}:acceptance_check"],
+            capture_output=True, text=True).stdout
+        assert "ROUND 2" in body, body
+    finally:
+        shutil.rmtree(run.workdir, ignore_errors=True)

@@ -146,3 +146,65 @@ def test_a_genuinely_broken_deliverable_still_fails():
     finally:
         import shutil
         shutil.rmtree(run.workdir, ignore_errors=True)
+
+
+def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
+    """A re-implement round must not be graded against the previous round's files.
+
+    The gate directory is assembled per round. A leftover is a file the NEW check
+    never saw, and it can satisfy a check the fixed deliverable no longer
+    satisfies: round 2 passing on round 1's evidence. A live run left round 1's
+    `issues.db` (created when the check started the service) in place for round 2.
+    """
+    engine = importlib.import_module("engine")
+    eng = engine.Engine.__new__(engine.Engine)
+    run = engine.Run(run_id="run_000000_773", task="t",
+                     agents=["claude-code", "claude-code-validator"],
+                     roles={"claude-code": "backend-builder",
+                            "claude-code-validator": "validator"})
+    builder = run.roledir("claude-code")
+    validator = run.roledir("claude-code-validator")
+    os.makedirs(builder, exist_ok=True)
+    os.makedirs(validator, exist_ok=True)
+    try:
+        with open(os.path.join(builder, "server.py"), "w") as f:
+            f.write("# round 1\n")
+        authored = os.path.join(validator, "acceptance_check")
+        with open(authored, "w") as f:
+            f.write(_SIBLING_CHECK)
+        os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
+
+        staged = eng._gate_dir_check_path(run, authored)
+        gate_dir = os.path.dirname(staged)
+        # Round 1's check started the service, which dropped state in the gate dir.
+        with open(os.path.join(gate_dir, "issues.db"), "w") as f:
+            f.write("round 1 state\n")
+
+        # Round 2: the builder replaced its file; the leftover must be gone.
+        os.remove(os.path.join(builder, "server.py"))
+        with open(os.path.join(builder, "server2.py"), "w") as f:
+            f.write("# round 2\n")
+        staged2 = eng._gate_dir_check_path(run, authored)
+        gate_dir2 = os.path.dirname(staged2)
+        assert not os.path.exists(os.path.join(gate_dir2, "issues.db")), (
+            "round 1's run-time state survived into round 2's gate workspace")
+        assert not os.path.exists(os.path.join(gate_dir2, "server.py")), (
+            "a file the builder deleted is still being graded")
+        assert os.path.isfile(os.path.join(gate_dir2, "server2.py"))
+
+
+        # And a stale check a BUILDER read back from the shared mount must never
+        # shadow the validator's freshly authored one. Belt and braces: the authored
+        # copy is written LAST, so it already wins; this pins that it keeps winning
+        # if that ordering is ever changed.
+        with open(os.path.join(builder, "acceptance_check"), "w") as f:
+            f.write("#!/bin/sh\necho stale round-1 check\nexit 0\n")
+        staged3 = eng._gate_dir_check_path(run, authored)
+        with open(staged3, encoding="utf-8") as f:
+            body = f.read()
+        assert "stale round-1 check" not in body, (
+            "the gate is about to run a stale check a builder carried back, not the "
+            "one the validator authored this round")
+    finally:
+        import shutil as _sh
+        _sh.rmtree(run.workdir, ignore_errors=True)

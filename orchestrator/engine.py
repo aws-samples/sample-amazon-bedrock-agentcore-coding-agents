@@ -1222,17 +1222,26 @@ class Engine:
         code. Nothing here inspects or grades the work.
         """
         gate_dir = os.path.join(run.workdir, "gate")
+        # REBUILD it, never add to it. A re-implement round runs this again, and a
+        # leftover from the previous round is a file the new check never saw: it
+        # could satisfy a check the fixed deliverable no longer satisfies, which
+        # would make round 2 pass on round 1's evidence. A live run left round 1's
+        # `issues.db` (created when the check STARTED the service) sitting here for
+        # round 2.
+        shutil.rmtree(gate_dir, ignore_errors=True)
         os.makedirs(gate_dir, exist_ok=True)
         for agent_id in run.agents:
             src = run.roledir(agent_id)
             if not os.path.isdir(src):
                 continue
             for dirpath, dirnames, filenames in os.walk(src):
-                dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+                dirnames[:] = [d for d in dirnames if d not in _COMPOSE_SKIP_DIRS]
                 for fn in filenames:
                     rel = os.path.relpath(os.path.join(dirpath, fn), src)
-                    # The harness steering is ours, not the deliverable's.
-                    if rel in ("CLAUDE.md", "AGENTS.md") or rel.startswith("skills" + os.sep):
+                    # Our harness, not the deliverable. The authored check comes
+                    # from the validator's own artifact below, so a stale copy a
+                    # builder read back from the shared mount must not shadow it.
+                    if _compose_excluded(rel) or rel == _ACCEPTANCE_CHECK:
                         continue
                     dest = os.path.join(gate_dir, rel)
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -1785,9 +1794,17 @@ class Engine:
         #
         # Excluded, deliberately: the harness steering and skills (ours, not the
         # deliverable) and the run-time droppings a service leaves behind (caches,
-        # and the SQLite sidecars a started service creates: a live run committed
-        # issues.db plus .db-wal and .db-shm). A collision between two roles writing
-        # the same path is a real possibility and is reported rather than hidden.
+        # and the SQLite write-ahead sidecars a started service creates: a live run
+        # committed .db-wal and .db-shm). A collision between two roles writing the
+        # same path is a real possibility and is reported rather than hidden.
+        #
+        # The authored check is excluded from the ROLES' trees too, and shipped once
+        # from the validator's own artifact below. It lives in the same shared mount
+        # as the deliverable, so every role reads it back as if it were their own
+        # file, and on a re-implement round the builders carry the PREVIOUS round's
+        # copy while the validator has just written a new one. A live 3-role run
+        # therefore reported a CONFLICT on two byte-identical-looking checks that
+        # were really two different rounds of the same file.
         seen: dict[str, str] = {}
         collisions: list[str] = []
         for agent_id in run.agents:
@@ -1798,7 +1815,7 @@ class Engine:
                 dirnames[:] = [d for d in dirnames if d not in _COMPOSE_SKIP_DIRS]
                 for fn in filenames:
                     rel = os.path.relpath(os.path.join(dirpath, fn), src)
-                    if _compose_excluded(rel):
+                    if _compose_excluded(rel) or rel == _ACCEPTANCE_CHECK:
                         continue
                     full = os.path.join(dirpath, fn)
                     prior = seen.get(rel)
