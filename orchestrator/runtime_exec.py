@@ -540,6 +540,38 @@ _TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
                   "dist", "build", ".cache")
 
 
+def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
+                         region: str = "us-west-2") -> str:
+    """A cheap LISTING of the run workspace, for telling two failures apart.
+
+    When ``read_tree_from_runtime`` comes back empty the engine cannot tell "the
+    role wrote nothing" from "the transfer failed", and the difference decides
+    whether an attendee is told their agent produced no work or that a transport
+    hiccup is being retried. This asks the runtime for names only, so it stays
+    small no matter how large the workspace is (the payload is what broke the
+    real read-back). Excluded directories are not listed, because a workspace
+    containing only ``node_modules`` is not a deliverable.
+
+    Returns the listing, or "" when the probe itself fails: an inconclusive probe
+    must never be read as evidence either way.
+    """
+    path = f"/mnt/s3files/{run_subdir}"
+    prune = " ".join(f"-name {shlex.quote(p)} -prune -o" for p in _TREE_EXCLUDES)
+    nonce = uuid.uuid4().hex[:12]
+    cmd = (
+        f"B3={_ART_BEGIN}-{nonce}; E3={_ART_END}-{nonce}; "
+        f'echo "$B3"; '
+        f"find {shlex.quote(path)} {prune} -type f -print 2>/dev/null | head -50; "
+        f'echo "$E3"; exit 0\n'
+    )
+    sid = "rexls-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+    try:
+        rr = asyncio.run(_drive_shell(runtime_arn, cmd, region, None, 60.0, sid))
+    except Exception:  # noqa: BLE001 (a probe that cannot run proves nothing)
+        return ""
+    return _clean(_slice(rr["raw"], f"{_ART_BEGIN}-{nonce}", f"{_ART_END}-{nonce}"))
+
+
 def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
                            region: str = "us-west-2") -> dict[str, bytes]:
     """Read a whole DIRECTORY (/mnt/s3files/<run>/<tree_rel>) back from the

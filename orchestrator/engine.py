@@ -1099,6 +1099,39 @@ class Engine:
                     except Exception as exc:  # noqa: BLE001 (reported, then counted)
                         run.log(f"{agent_id}: work tree read-back failed: {exc}", "warn")
                         tree = {}
+                    if not tree:
+                        # A read-back that returns NOTHING is ambiguous: either the
+                        # role really wrote nothing, or the transfer failed. The
+                        # difference matters enormously, because the second is a
+                        # TRANSPORT problem being reported to the attendee as
+                        # "your agent produced no work", which is what a live run
+                        # did when a dependency tree overflowed the channel.
+                        #
+                        # So ask the runtime directly whether files exist. If they
+                        # do, this is a transfer failure and it is worth one more
+                        # attempt on a fresh shell; if the workspace is genuinely
+                        # empty, fall through and let the empty-tree guard say so.
+                        listing = ""
+                        try:
+                            listing = runtime_exec.list_tree_in_runtime(
+                                hit[0], run.run_id,
+                                region=os.environ.get("WORKSHOP_BEDROCK_REGION",
+                                                      "us-west-2"))
+                        except Exception:  # noqa: BLE001 (best effort probe)
+                            listing = ""
+                        if listing.strip():
+                            run.log(f"{agent_id}: the runtime HAS files but the "
+                                    f"transfer returned none; retrying the read-back "
+                                    f"once (workspace: {listing.strip()[:160]})",
+                                    "warn")
+                            try:
+                                tree = runtime_exec.read_tree_from_runtime(
+                                    hit[0], run.run_id, ".",
+                                    region=os.environ.get("WORKSHOP_BEDROCK_REGION",
+                                                          "us-west-2"))
+                            except Exception as exc:  # noqa: BLE001
+                                run.log(f"{agent_id}: read-back retry failed: {exc}",
+                                        "warn")
                     # Only when the read-back actually returned something: an empty
                     # tree is a FAILED read, and clearing on that would destroy the
                     # previous round's evidence and turn a transport failure into a
@@ -1220,9 +1253,33 @@ class Engine:
         n = self._read_work_tree(run, agent_id)
         if n == 0:
             suffix = f"; tail:\n{tail}" if tail else ""
+            # Say WHICH failure this is. "wrote no files" sent a facilitator
+            # looking at the agent when a live run had actually written a complete
+            # deliverable the transfer could not carry, so name the transport case
+            # explicitly when the runtime still has files.
+            hint = ""
+            if self.executor.name == "agentcore" and not os.environ.get(
+                    "WORKSHOP_S3FILES_DIR"):
+                try:
+                    import runtime_config  # noqa: PLC0415
+                    import runtime_exec  # noqa: PLC0415
+                    hit = runtime_config.pick(agent_id)
+                    if hit:
+                        listing = runtime_exec.list_tree_in_runtime(
+                            hit[0], run.run_id,
+                            region=os.environ.get("WORKSHOP_BEDROCK_REGION",
+                                                  "us-west-2"))
+                        if listing.strip():
+                            hint = ("; NOTE: the runtime workspace is NOT empty, so "
+                                    "this is a read-back/transport failure rather "
+                                    "than an agent that produced nothing. Resubmit "
+                                    f"the same request. Workspace: "
+                                    f"{listing.strip()[:200]}")
+                except Exception:  # noqa: BLE001 (diagnostic only)
+                    pass
             raise RuntimeError(
                 f"ROLE_EXECUTION_ERROR: {agent_id} finished but wrote no files, so "
-                f"there is nothing to review or run{suffix}")
+                f"there is nothing to review or run{hint}{suffix}")
         return n
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
