@@ -10,7 +10,9 @@ SigV4:
 
   * ``create_branch``       open the run branch off the base
   * ``put_file``            write each composed deliverable file onto that branch
-  * ``create_pull_request`` open the PR with the critique report as the body
+  * ``create_pull_request`` open the PR with the run's narrative as the body
+                            (``replay.py``; write-once, there is no
+                            ``update_pull_request`` tool)
   * ``comment_on_issue``    post the reviewer verdict as a PR comment (a PR is an
                             issue for the comments endpoint, so this works even
                             when the App installation authored the PR -- unlike an
@@ -507,7 +509,7 @@ def _ensure_integration_branch(cfg: dict, default_branch: str) -> str | None:
     return INTEGRATION_BRANCH
 
 
-def open_pr(run: Any, report_md: str) -> dict[str, Any]:
+def open_pr(run: Any, body_md: str) -> dict[str, Any]:
     """Publish the composed run branch to the attendee repo via the gateway and
     open the PR. Returns {pr_url} or {error}. Fails LOUD (real-only): no gateway
     -> PR_NO_GATEWAY, pr_url stays null, never a fake URL."""
@@ -560,12 +562,12 @@ def open_pr(run: Any, report_md: str) -> dict[str, Any]:
         except GatewayError as exc:
             return {"error": f"gateway put_file failed for {path}: {exc}"}
 
-    # 3. Open the PR with the critique report as the body.
+    # 3. Open the PR with the run's narrative as the body (the caller passes it).
     title = f"{run.run_id}: {run.task[:80]}"
     try:
         pr = _tool(cfg, "create_pull_request",
                    {"owner": owner, "repo": repo_name, "title": title,
-                    "head": branch, "base": base, "body": report_md})
+                    "head": branch, "base": base, "body": body_md})
     except GatewayError as exc:
         # A PR for this head may already exist from a prior attempt; surface it.
         return {"error": f"gateway create_pull_request failed: {exc}"}

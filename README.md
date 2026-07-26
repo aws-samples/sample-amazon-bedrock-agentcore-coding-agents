@@ -29,7 +29,7 @@ per-attendee repository through the GitHub App gateway.
   - `claude-code-validator/` acceptance-contract validator (Claude Code, native Bedrock; steered by an acceptance-contract CLAUDE.md that directs it to author an executable check whose exit code is the gate)
   - `opencode/` frontend chatbot UI builder (opencode, native Bedrock)
   - `kiro/` legacy restore path (hidden; kept restorable like `codex/`, not on any served roster)
-- `orchestrator/` the Strands orchestrator engine (router, engine, executor, reviewer, github)
+- `orchestrator/` the Strands orchestrator engine (routing, engine, executor, reviewer, github)
   - `orchestrator/roles.py` declares the served roster (`WORKSHOP_ROLES`-configurable); this is the single place role ids, kinds (builder/checker), and capabilities (backend/frontend/validator) live
 - `orchestrator-agent/` the deployable Strands agent bundle
 - `console/` the React + FastAPI console (Agents / Fleets / Governance)
@@ -47,6 +47,24 @@ python3 -m pytest -q
 
 `pytest.ini` declares the `testpaths`; the root `conftest.py` isolates GitHub /
 runtime credentials so no test can read a real token or open a real pull request.
+
+## When something is not working
+
+Both are read-only, collect no credentials, and are safe to re-run:
+
+```bash
+python3 orchestrator/github.py doctor   # can the GitHub App reach YOUR repo?
+python3 orchestrator/diagnose.py        # roles wired, gateway, recent verdicts
+python3 orchestrator/diagnose.py <run_id>   # + that run's engine-log tail
+```
+
+Run `doctor` BEFORE deploying the coordinator. The mistakes that cost the most time
+(an App installed on a different repository, a wrong owner in `GITHUB_REPO`) all pass
+a plain gateway health check and then fail when a build tries to write, after the
+agents have already run.
+
+Every finished run also persists its verdict, so `run_status <run_id>` still answers
+from a NEW coordinator session, and `list_runs` finds it when the run id is lost.
 
 ## License
 

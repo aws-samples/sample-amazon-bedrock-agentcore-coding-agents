@@ -82,9 +82,21 @@ A run also has a terminal status once finalization completes.
   "route": {…},                         // additive: same routing verdict as on Run
   "review": {…},                        // additive: the reviewer's verdict (see below)
   "pr": {…},                            // additive: GitHub finalization result (see below)
-  "merge_state": null                   // additive: "merged"|"human_review"|"skipped:…"|"error:…"|null
+  "compose_base": {…},                  // additive: {mode: "external"|"local", …} compose base
+  "merge_state": null,                  // additive: "merged"|"human_review"|"skipped:…"|"error:…"|null
+  "next_action": "Open the pull request and read the assessment comment on it."
+                                        // additive: what to DO about this outcome; "" when
+                                        // there is genuinely nothing to say
 }
 ```
+
+`next_action` is DERIVED from `(status, fail_reason, pr)` on every read, never stored:
+the reason is the fact, this is how to read it. It exists because `needs_human` covers
+both a gate that stayed red on real work and a role that produced nothing (opposite
+fixes), and because a PASSING run splits into "the PR opened" and "no PR opened, so
+the work is only on a local branch". That second case is NOT a `fail_reason` (the
+build succeeded), so it is read from `pr.error`. An unmapped reason yields `""` rather
+than invented advice.
 
 ---
 

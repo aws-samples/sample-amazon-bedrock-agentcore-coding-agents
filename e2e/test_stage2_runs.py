@@ -312,10 +312,13 @@ def test_review_run_composes_no_new_deliverable(console, cookie):
 # Full-stack: three distinct role artifacts compose into one deliverable.
 # --------------------------------------------------------------------------- #
 def test_fullstack_lands_three_distinct_role_artifacts(console, cookie):
-    """The full-stack build composes DISTINCT role artifacts into the
-    deliverable: mcp_server.py (backend) and the ui/ project (frontend). The
-    validator's verdict is posted on the PR as an Assessment comment, never a
-    committed critique file. This proves collaboration, not a single winner."""
+    """The full-stack build composes DISTINCT role artifacts into ONE deliverable.
+
+    Which files, and at what paths, is the AGENTS' decision: nothing in the repo
+    pre-encodes a backend filename or a UI directory, so this asserts that more than
+    one role contributed rather than looking for named artifacts. The validator's
+    verdict is posted on the PR as an Assessment comment, never a committed file.
+    Proves collaboration, not a single winner."""
     run = submit(console, cookie,
                      "Build the full-stack Critter Lab app: backend and frontend")
     rid = run["run_id"]

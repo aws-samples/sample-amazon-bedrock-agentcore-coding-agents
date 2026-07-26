@@ -27,17 +27,26 @@ run requires a human.
 
 | File | Responsibility |
 |---|---|
+| `roles.py` | The role roster, declared ONCE: kind, capability, steering, CLI, env |
+| `presets.py` | Routing: which capabilities a request needs |
 | `chat.py` | Strands conversation and tool selection |
-| `router.py` | Versioned workflow registry and advisory route ladder |
+| `role_graph.py` | The agent-execution schedule as a Strands graph |
 | `engine.py` | Five-phase lifecycle, state, compose, and finalization |
 | `executor.py` | Real AgentCore executor boundary |
-| `runtime_exec.py` | Command-shell dispatch and artifact readback |
-| `runtime_stage.py` | Stage skills and grading data on S3 Files |
+| `runtime_exec.py` | Command-shell dispatch and work-tree readback |
+| `runtime_stage.py` | Stage the harness skills onto S3 Files |
 | `runtime_config.py` | Resolve per-role Runtime ARN fleets or explicit dev URIs |
-| `reviewer.py` | Pytest floor, critique, and optional stricter LLM judge |
-| `github.py` | Credential resolution, branch push, and real PR creation |
+| `reviewer.py` | Runs the validator's authored check; optional fail-open LLM judge |
+| `replay.py` | The run's narrative, for the PR body (reports, never judges) |
+| `github.py` | Gateway config resolution, PR creation, and the `doctor` preflight |
+| `run_store.py` | Durable run state, so a verdict outlives its session |
+| `diagnose.py` | The shareable diagnostic bundle (read-only, collects no credentials) |
 | `identity_baggage.py` | Carry submitter metadata for audit and cost grouping |
+| `policy.py` | Guardrails every engine-run command is screened against |
+| `llm.py` | Model id resolution and Bedrock invocation |
 | `connection_api.py` | JSON and SSE adapter used by the console |
+| `watch_agents.py` | Read-only terminal client for watching a live build |
+| `fixture_executor.py` | TEST-ONLY deterministic producer; never on the shipped path |
 
 The wire contract is in [API_CONTRACT.md](API_CONTRACT.md).
 
@@ -50,16 +59,28 @@ robin selection. An explicit `http://` or `https://` target is the supported
 
 Other important settings:
 
-- `WORKSHOP_REPO_ROOT` selects the attendee fork used as the compose base.
+- `WORKSHOP_ROLES` selects which registered roles are served (an unknown id fails loud).
 - `WORKSHOP_RUNS_DIR` selects untracked run state.
-- `WORKSHOP_GITHUB_SETTINGS` isolates the GitHub credential store.
-- `GITHUB_TOKEN` and `GITHUB_REPO` provide the environment credential path.
-- `WORKSHOP_RUNTIME_BUCKET` overrides the S3 staging bucket.
+- `WORKSHOP_MAX_RUN_STATE` caps how many persisted run verdicts are kept.
+- `WORKSHOP_S3FILES_DIR` points the shared workspace at a local dir (the dev seam).
+- `WORKSHOP_GITHUB_SETTINGS` isolates the GitHub settings file.
+- `GITHUB_GATEWAY_URL` and `GITHUB_REPO` wire the PR path; there is no token.
+- `WORKSHOP_RUNTIME_BUCKET` overrides the S3 staging bucket, and is where the
+  deployed coordinator mirrors run state (its own filesystem dies with the microVM).
 - `WORKSHOP_BEDROCK_REGION` selects coordinator inference region.
+- `WORKSHOP_MERGE_POLICY` is `human_review` (default) or `auto`.
 
-GitHub attributes a PR to the PAT owner or App installation used for the API
-call. Cognito identity baggage records who submitted the run. Those are separate
-facts and this package does not infer OAuth OBO delegation.
+GitHub attributes a PR to the App installation whose token the MCP server minted
+for the call. Cognito identity baggage records who submitted the run. Those are
+separate facts and this package does not infer OAuth OBO delegation.
+
+Before deploying the coordinator, prove the PR path end to end. Both are
+read-only and safe to re-run:
+
+```bash
+python3 orchestrator/github.py doctor   # can the App reach THIS repo?
+python3 orchestrator/diagnose.py        # roles wired, gateway, recent verdicts
+```
 
 ## Run focused tests
 
@@ -67,8 +88,8 @@ The test suite injects `FixtureExecutor` explicitly. That fixture exercises the
 same lifecycle and review code without pretending to be a deployed Runtime.
 
 ```bash
+python3 -m pytest orchestrator/ -q          # every unit test in this package
 python3 -m pytest \
-  orchestrator/test_router.py \
   orchestrator/test_reviewer.py \
   orchestrator/test_runtime_config.py \
   orchestrator/test_runtime_exec.py \

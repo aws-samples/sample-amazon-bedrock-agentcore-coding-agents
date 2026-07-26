@@ -25,8 +25,9 @@ Three design decisions define this engine:
     that updates the same PR.
   * **A real PR at the end** (``github.py``). When the attendee connects GitHub,
     the composed run branch is pushed to their fork and the PR opens with the
-    critique report. Without credentials the PR field carries a typed error and
-    ``pr_url`` stays null. A local diagnostic branch is never presented as a PR.
+    run's own narrative as its body (``replay.py``). Without credentials the PR
+    field carries a typed error and ``pr_url`` stays null. A local diagnostic
+    branch is never presented as a PR.
 
 Every role works in its own container directory and leaves a TERMINAL TRANSCRIPT:
 ``/bin/sh`` commands with their output (installing its harness by writing the
@@ -1808,7 +1809,7 @@ class Engine:
         return True
 
     # Phase 5, deterministic, but a SEPARATE PEN: the review orchestrator owns
-    # the verdict (gate + critique + LGTM token); the build engine only reacts.
+    # the verdict (gate + assessment + LGTM token); the build engine only reacts.
     def _finalize(self, run: Run) -> bool:
         """Returns True when the run reached a terminal state, False to iterate.
 
