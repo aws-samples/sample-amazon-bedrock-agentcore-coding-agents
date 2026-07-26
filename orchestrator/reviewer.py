@@ -155,7 +155,15 @@ def run_gate(run: Any) -> dict:
     url = getattr(run, "artifact_endpoint", "") or ""
     # A read-only review run inspects ANOTHER run's work, so the check must be
     # pointed at that tree rather than this run's empty one.
-    work_dir = getattr(run, "_review_work_dir", "") or getattr(run, "workdir", "") or ""
+    #
+    # Otherwise: the check runs from its OWN directory (cwd below), which the engine
+    # assembles to hold every role's files plus the check, i.e. the shared workspace
+    # it was authored in. Point WORKSHOP_WORK_DIR at that same directory, so a check
+    # that reads the env var and a check that walks its own directory see the SAME
+    # tree. They disagreed before, and the env var pointed one level above the files.
+    work_dir = (getattr(run, "_review_work_dir", "")
+                or os.path.dirname(authored)
+                or getattr(run, "workdir", "") or "")
     env = {**os.environ,
            "WORKSHOP_WORK_DIR": work_dir,
            "WORKSHOP_TASK": getattr(run, "task", "") or "",

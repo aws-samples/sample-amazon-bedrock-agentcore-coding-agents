@@ -1168,7 +1168,53 @@ class Engine:
         test_path = os.path.join(run.roledir(_validator_agent()), _ACCEPTANCE_CHECK)
         self._read_artifact(test_path, _ACCEPTANCE_CHECK, result)
         run.term(_validator_agent(), f"head -1 {_ACCEPTANCE_CHECK} && wc -l {_ACCEPTANCE_CHECK}")
-        return test_path
+        return self._gate_dir_check_path(run, test_path)
+
+    def _gate_dir_check_path(self, run: Run, authored: str) -> str:
+        """Reunite the authored check with the work it was authored BESIDE.
+
+        Every role shares ONE directory in the runtime workspace
+        (``/mnt/s3files/<run_id>``), so the validator writes its check next to the
+        builders' files and naturally addresses them as siblings: a check that does
+        ``os.path.dirname(__file__) + "/server.py"``, or plain ``./server.py``, is
+        correct where it was written. The engine then reads each role's tree back
+        into a SEPARATE ``role-<agent>`` directory (which compose needs, so each
+        role's contribution is attributable), and that split leaves the check alone
+        in the validator's directory with the deliverable one level away.
+
+        Running it there fails every file and import check and starts no service, so
+        a CORRECT deliverable is graded RED and the loop burns its bounded retry to
+        ``needs_human``. Verified on a live event box: the same check scored 0/4 in
+        the validator's directory and 45/0 beside the work.
+
+        So build one gate directory that looks like the workspace the check was
+        authored in: every role's files, plus the check at its root. The per-role
+        dirs are untouched (compose still attributes each file to its author), and
+        the gate stays exactly what it was: run THAT executable, read its real exit
+        code. Nothing here inspects or grades the work.
+        """
+        gate_dir = os.path.join(run.workdir, "gate")
+        os.makedirs(gate_dir, exist_ok=True)
+        for agent_id in run.agents:
+            src = run.roledir(agent_id)
+            if not os.path.isdir(src):
+                continue
+            for dirpath, dirnames, filenames in os.walk(src):
+                dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+                for fn in filenames:
+                    rel = os.path.relpath(os.path.join(dirpath, fn), src)
+                    # The harness steering is ours, not the deliverable's.
+                    if rel in ("CLAUDE.md", "AGENTS.md") or rel.startswith("skills" + os.sep):
+                        continue
+                    dest = os.path.join(gate_dir, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(os.path.join(dirpath, fn), dest)
+        staged = os.path.join(gate_dir, os.path.basename(authored))
+        shutil.copy2(authored, staged)
+        os.chmod(staged, os.stat(staged).st_mode | 0o755)
+        run.log(f"gate workspace assembled at {gate_dir} "
+                f"({sum(len(f) for _, _, f in os.walk(gate_dir))} files, the check beside the work)")
+        return staged
 
     def _write_validator_report(self, run: Run, role: RoleResult,
                                 grade_tail: str) -> None:
