@@ -26,6 +26,7 @@ import engine as _engine          # the in-process build engine
 import policy as _policy          # the guardrail exec_command is screened against
 import presets as _presets        # role selection (never task classification)
 import roles as _roles            # the ONE declarative roster (configurable)
+import run_store as _run_store    # durable run state (a verdict outlives its session)
 
 # One engine instance backs every conversation in this process. REAL-ONLY: it
 # dispatches each routed role to its DEPLOYED AgentCore Runtime; a role with no
@@ -87,6 +88,12 @@ nothing classifies it and nothing maps it to a sample, so there is no wording to
 get right.
 If the user has no idea yet, call list_presets() and offer one; those are example \
 starting points, not a limit on what can be built.
+
+## Reading back a run you did not start
+run_status(run_id) answers for runs from EARLIER sessions too: the engine persists \
+every verdict, so an expired session no longer loses the result. If the user has \
+lost their run id, call list_runs() for the recent builds and their outcomes rather \
+than telling them the run is gone.
 
 ## If a build fails or reaches needs_human, RESUBMIT the same build, do not improvise
 When a run reaches `failed` or `needs_human` before opening a PR (for example a
@@ -226,11 +233,43 @@ def build_tools() -> list:
     @tool
     def run_status(run_id: str) -> str:
         """Read back the current verdict for a run id a dispatch_*/run_build tool
-        returned: status, gate result, review state, and the PR URL if one opened."""
+        returned: status, gate result, review state, and the PR URL if one opened.
+
+        Answers for a run this session did not submit, by reading the state the
+        engine persisted when the run reached a terminal state. Without that, a
+        recycled or expired session lost the verdict permanently: the build had
+        finished and the PR was open, but nobody could ask what happened.
+        """
         run = ENGINE.get(run_id)
-        if run is None:
-            return json.dumps({"error": f"UNKNOWN_RUN:{run_id}"})
-        return json.dumps(_engine.public_result(run))
+        if run is not None:
+            return json.dumps(_engine.public_result(run))
+        # Not live here: fall back to the durable record.
+        saved = _run_store.load(_engine._RUNS_DIR, run_id)
+        if saved is not None:
+            return json.dumps({**saved, "source": "persisted"})
+        recent = [r.get("run_id") for r in
+                  _run_store.recent(_engine._RUNS_DIR, limit=5) if r.get("run_id")]
+        return json.dumps({
+            "error": f"UNKNOWN_RUN:{run_id}",
+            "hint": "This session did not submit that run and no persisted state "
+                    "was found for it. Check the run id, or inspect the pull "
+                    "request on the repository.",
+            "recent_runs": recent,
+        })
+
+    @tool
+    def list_runs() -> str:
+        """The most recent builds this workshop has run, newest first.
+
+        The answer to "what did I run?" when a session id or a run id has been
+        lost, which is otherwise a dead end: run ids are minted per run and the
+        only other record is the pull request itself.
+        """
+        rows = _run_store.recent(_engine._RUNS_DIR, limit=10)
+        return json.dumps({"runs": [
+            {k: r.get(k) for k in ("run_id", "status", "task", "preset",
+                                   "pr_url", "fail_reason", "_saved_at")}
+            for r in rows]})
 
     # --- Interactive control of a LIVE agent terminal (shared PTY, F1) -------
     # These talk to the SAME run.sh TUI the human is watching on the Agents page
@@ -394,6 +433,9 @@ def build_tools() -> list:
     if dispatchable:
         tools.append(run_build)
     tools.append(run_status)
+    # Always available, even with nothing wired: it reads persisted history, so it
+    # is the way back to a run whose session (or run id) was lost.
+    tools.append(list_runs)
     # Interactive terminal control is added only when runtime_shell is importable
     # (the console hosts it); in the standalone agent bundle it is absent, so the
     # model never sees tools it cannot use.

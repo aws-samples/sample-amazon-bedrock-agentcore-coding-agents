@@ -124,6 +124,7 @@ import policy  # noqa: E402  (the guardrail every role command is screened again
 import reviewer  # noqa: E402
 import presets  # noqa: E402
 import role_graph  # noqa: E402  (the agent-execution phase as a Strands graph)
+import run_store  # noqa: E402  (durable run state: a verdict outlives its session)
 import roles  # noqa: E402  (the ONE declarative roster)
 
 # Frozen contract enums (API_CONTRACT.md): the engine's public vocabulary.
@@ -698,6 +699,15 @@ class Engine:
             if run.status in ("queued", "running"):  # safety net
                 run.status = "failed"
                 run.fail_reason = run.fail_reason or "ENGINE_STALL"
+            # Persist the verdict where a LATER session can still read it. In the
+            # `finally` deliberately: every exit path (passed, failed,
+            # needs_human, engine error, stall) has to leave an answer behind, and
+            # the one that matters most is the failure an attendee wants to ask
+            # about after their session expired. Never raises; see run_store.
+            try:
+                run_store.save(_RUNS_DIR, run.run_id, public_result(run), run.log)
+            except Exception as exc:  # noqa: BLE001 (history is not the verdict)
+                run.log(f"run state not persisted: {exc}", "warn")
             # Two-bucket terminal model: a deterministic failure stays
             # `failed` (resubmit won't help); a transient one is re-graded to
             # `needs_human` so a human can resume rather than just see "failed".
