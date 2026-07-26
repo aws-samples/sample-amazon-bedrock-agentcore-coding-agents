@@ -340,9 +340,17 @@ def render(data: dict[str, Any]) -> str:
         if not run.get("found"):
             lines.append(f"- not found: {run.get('hint', '')}")
         else:
-            lines += [f"- status: {run.get('status')}",
-                      f"- next: {run.get('next_action')}",
-                      f"- review: {run.get('review_state')}"]
+            lines.append(f"- status: {run.get('status')}")
+            # Only print a field that has something in it: an empty "next:" reads as
+            # "there is nothing to do", which is a claim, not a blank.
+            if run.get("next_action"):
+                lines.append(f"- next: {run['next_action']}")
+            if run.get("review_state"):
+                lines.append(f"- review: {run['review_state']}")
+            gate = run.get("gate") or {}
+            if gate:
+                lines.append(f"- gate: {'green' if gate.get('passed') else 'RED'}"
+                             f" ({gate.get('summary') or 'no summary'})")
             if run.get("log_tail"):
                 lines += ["", "<details><summary>engine log tail</summary>", "",
                           "```"] + run["log_tail"] + ["```", "", "</details>"]

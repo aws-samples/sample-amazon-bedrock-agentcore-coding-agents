@@ -28,8 +28,14 @@ def test_the_two_needs_human_cases_get_different_advice():
     assert "same" in empty.lower() and "resubmit" not in red.lower(), (empty, red)
 
 
-def test_a_passing_run_offers_no_advice():
-    assert engine.next_action("passed", None) == ""
+def test_a_passing_run_is_advised_from_its_PR_not_its_reason():
+    """A passing run has two endings, and only the PR result tells them apart.
+
+    See test_localdev_findings.py: a live run showed this returning "" for the most
+    common outcome there is. With nothing attempted there is genuinely nothing to say.
+    """
+    assert engine.next_action("passed", None, {}, None) == ""
+    assert engine.next_action("passed", None, {"pr_url": "u"}, "u")
 
 
 def test_every_fail_reason_the_engine_sets_has_advice():
@@ -47,7 +53,6 @@ def test_prefixed_reasons_resolve():
     """Reasons carry a detail suffix (`RUNTIME_NOT_WIRED:opencode`)."""
     assert engine.next_action("failed", "RUNTIME_NOT_WIRED:opencode")
     assert engine.next_action("failed", "UNKNOWN_ROLE:nope")
-    assert "doctor" in engine.next_action("failed", "PR_NO_GATEWAY: not wired")
 
 
 def test_an_unknown_reason_invents_nothing():

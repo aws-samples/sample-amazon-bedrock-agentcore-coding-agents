@@ -50,6 +50,7 @@ def _run(**over):
         gate={"passed": True, "summary": "all 7 probes passed", "checks": []},
         route={"preset": "project-from-scratch", "rule": "keyword"},
         review=None,
+        retry_reasons=[],
         events=[],
         pr_url=None,
         _acceptance_test_file=None,
@@ -117,22 +118,52 @@ def test_a_single_round_run_does_not_narrate_a_loop_that_did_not_happen():
 
 def test_a_second_round_explains_itself_with_the_feedback_that_caused_it():
     run = _run(iterations=2,
-               review={"reasons": ["the delete path is not persisted",
-                                   "invalid input returns 500"]})
+               retry_reasons=[{"round": 1, "gate_summary": "18 passed, 2 failed",
+                               "reasons": ["the delete path is not persisted",
+                                           "invalid input returns 500"]}])
     body = replay.narrative(run)
     assert "2 rounds" in body
     assert "the delete path is not persisted" in body
     assert "invalid input returns 500" in body
+    assert "18 passed, 2 failed" in body
+
+
+def test_the_feedback_shown_is_what_CAUSED_the_retry_not_the_final_verdict():
+    """Found on a live 2-round run: it printed the APPROVAL notes as "feedback".
+
+    `run.review` holds only the LATEST verdict, so on a run that ended green it
+    carries the approving judge's notes. Rendering those under "what came back as
+    feedback" states the opposite of what happened, which is worse than saying
+    nothing. The engine now records each retry's reasons as it orders the retry.
+    """
+    run = _run(iterations=2,
+               retry_reasons=[{"round": 1, "gate_summary": "2 failed",
+                               "reasons": ["THE REAL COMPLAINT"]}],
+               # what the run ended with: an approval
+               review={"reasons": ["looks great, approving"], "state": "approved"})
+    body = replay.narrative(run)
+    assert "THE REAL COMPLAINT" in body, body
+    assert "looks great" not in body, (
+        "the narrative quoted the FINAL approval as the feedback that caused the retry")
 
 
 def test_the_round_comment_exists_because_a_body_cannot_be_rewritten():
     """New commits on a branch a reviewer already read need a timeline entry."""
-    run = _run(iterations=2, review={"reasons": ["the delete path is not persisted"]},
+    run = _run(iterations=2,
+               retry_reasons=[{"round": 1, "gate_summary": "2 failed",
+                               "reasons": ["the delete path is not persisted"]}],
                gate={"passed": True, "summary": "all 7 probes passed"})
     note = replay.round_comment(run)
     assert "Round 2" in note
     assert "the delete path is not persisted" in note
     assert "passed" in note
+
+
+def test_a_retry_with_no_recorded_reasons_says_so_rather_than_implying_none():
+    run = _run(iterations=2,
+               retry_reasons=[{"round": 1, "gate_summary": "", "reasons": []}])
+    body = replay.narrative(run)
+    assert "no specific reasons were recorded" in body, body
 
 
 def test_a_failed_role_note_does_not_shred_the_table():

@@ -357,7 +357,13 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             for raw in resp:  # the dev server streams SSE-ish lines; relay them
-                line = raw.decode("utf-8", "replace")
+                # Clean PER LINE, not once at the end: `on_line` is what the engine
+                # collects into the `tail:` of a role-failure message, so cleaning the
+                # assembled transcript afterwards leaves the caller's copy raw. A real
+                # opencode failure arrived wrapped in colour codes, and the diagnosis
+                # ("AWS SigV4 requires credentials") was present but unreadable, with
+                # truncation landing mid-escape-sequence.
+                line = _clean(raw.decode("utf-8", "replace"))
                 transcript_parts.append(line)
                 if on_line:
                     on_line(line.rstrip("\n"))
@@ -365,7 +371,8 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
         raise RoleExecutionError(
             f"ROLE_EXECUTION_ERROR: {agent_id} local dev dispatch to {url} "
             f"failed: {exc}") from exc
-    transcript = "".join(transcript_parts)
+    transcript = "".join(transcript_parts)  # already cleaned per line above
+    dev_exit = _dev_exit_code(transcript)
 
     # Read the artifact the dev server wrote to the shared local workspace. The
     # mount root is wirable (WORKSHOP_S3FILES_DIR; defaults to /mnt/s3files), and
@@ -386,7 +393,7 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
 
     if not artifact_rel:
         # Builder dispatch: no named file to wait for; the caller reads the tree.
-        return {"exit": 0, "transcript": transcript, "artifact": "",
+        return {"exit": dev_exit, "transcript": transcript, "artifact": "",
                 "session_id": "local-dev"}
     candidates = [c for c in (
         _contained(mnt, run_subdir, artifact_rel),
@@ -411,8 +418,36 @@ def _run_in_local_dev(dev_url: str, agent_id: str, prompt: str, run_subdir: str,
             f"ROLE_EXECUTION_ERROR: {agent_id} local dev run finished but "
             f"{artifact_rel} is missing/empty under {run_subdir}; "
             f"transcript tail:\n{transcript[-600:]}")
-    return {"exit": 0, "transcript": transcript, "artifact": artifact,
+    return {"exit": dev_exit, "transcript": transcript, "artifact": artifact,
             "session_id": "local-dev"}
+
+
+# The trailer local_dev_runtime.py prints as its last line. Prefixed so it cannot be
+# confused with the agent's own output.
+_DEV_EXIT_MARKER = "__DEV_RUNTIME_EXIT__"
+
+
+def _dev_exit_code(transcript: str) -> int:
+    """The role CLI's REAL exit code from the local dev seam's transcript.
+
+    This path used to return 0 unconditionally, which quietly disabled the engine's
+    exit-code guard for the whole local seam. A live run had opencode fail on missing
+    SigV4 credentials (exit 1, nothing written) and the engine still marked the role
+    ``done`` with a file count borrowed from its teammates, because every role shares
+    one workspace and the only remaining check was "the tree is not empty".
+
+    An ABSENT marker returns 0 on purpose: it means the dev server predates the
+    trailer, and inventing a failure for an old server would be worse than the status
+    quo. A present marker is authoritative.
+    """
+    for line in reversed((transcript or "").splitlines()):
+        stripped = line.strip()
+        if stripped.startswith(_DEV_EXIT_MARKER):
+            try:
+                return int(stripped[len(_DEV_EXIT_MARKER):].strip())
+            except ValueError:
+                return 0
+    return 0
 
 
 def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str,

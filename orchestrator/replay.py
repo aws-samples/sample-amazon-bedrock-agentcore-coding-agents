@@ -215,17 +215,27 @@ def narrative(run: Any) -> str:
     iterations = int(getattr(run, "iterations", 0) or 0)
     if iterations > 1:
         parts.append(f"\n## Why there were {iterations} rounds\n")
-        reasons = (getattr(run, "review", None) or {}).get("reasons") or []
         parts.append(
             "The first round did not end approved, so the same roles were sent "
             "back with the reasons as feedback and this branch was updated in "
             "place (a re-implement round pushes new commits to the same pull "
             "request rather than opening another one)."
         )
-        if reasons:
-            parts.append("\nWhat came back as feedback:\n")
-            for reason in reasons[:5]:
-                parts.append(f"- {reason}")
+        # `retry_reasons` and NOT `review`: review holds only the latest verdict, so on
+        # a run that ended green it carries the APPROVAL notes. A live 2-round run
+        # printed those under "what came back as feedback", which states the opposite
+        # of what happened.
+        for entry in (getattr(run, "retry_reasons", None) or []):
+            summary = entry.get("gate_summary") or ""
+            parts.append(f"\nAfter round {entry.get('round', '?')}"
+                         + (f", the check reported `{summary}`" if summary else "")
+                         + ", the roles were sent back with:\n")
+            reasons = entry.get("reasons") or []
+            if reasons:
+                for reason in reasons[:5]:
+                    parts.append(f"- {reason}")
+            else:
+                parts.append("- (no specific reasons were recorded for this round)")
         for i, rnd in enumerate(_rounds(run), start=1):
             if rnd.get("detail"):
                 parts.append(f"\n- round {i}: gate {rnd['detail']}"
@@ -257,7 +267,10 @@ def round_comment(run: Any) -> str:
     """
     gate = getattr(run, "gate", None) or {}
     summary = (gate.get("summary") or "").strip()
-    reasons = (getattr(run, "review", None) or {}).get("reasons") or []
+    # The reasons that CAUSED this round, not whatever the newest verdict says (see
+    # narrative(): `review` is overwritten each round).
+    history = getattr(run, "retry_reasons", None) or []
+    reasons = (history[-1].get("reasons") or []) if history else []
     lines = [f"### Round {getattr(run, 'iterations', '?')}: this branch was updated\n",
              "The previous round was not approved, so the same roles ran again with "
              "the review feedback and pushed new commits to this branch.\n"]

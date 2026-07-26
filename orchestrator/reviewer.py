@@ -120,6 +120,34 @@ def _kill_process_group(pgid: int | None) -> None:
             time.sleep(0.05)
 
 
+# Lines that are decoration rather than a result: a rule, a box border, a blank. The
+# validator writes its own output format, so we cannot ask it for a machine-readable
+# verdict, but we can decline to quote its punctuation back to a human.
+_DIVIDER_CHARS = set("=-_*#~+ \t.")
+
+
+def _summary_line(out: str, code: int) -> str:
+    """The last line of the check's output that actually SAYS something.
+
+    Was `lines[-1]` unconditionally, which is wrong for the most natural way a shell
+    check ends: printing a results line and then a `====` rule under it. A live run
+    then reported its gate summary as `===============================` -- on the PR
+    body, in `run_status`, and in the ledger -- so the one human-readable sentence the
+    check produced was replaced by its own underline.
+
+    Scans backwards for the last line with real content and falls back to the raw last
+    line (then to the exit code) rather than inventing a verdict.
+    """
+    lines = (out or "").strip().splitlines()
+    if not lines:
+        return f"exit {code}"
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped and not set(stripped) <= _DIVIDER_CHARS:
+            return stripped
+    return lines[-1].strip() or f"exit {code}"
+
+
 def run_gate(run: Any) -> dict:
     """The acceptance gate: run the check the VALIDATOR ROLE authored, read its
     real exit code. That is the whole gate.
@@ -218,8 +246,7 @@ def run_gate(run: Any) -> dict:
                 out = (f"{out}\nthe acceptance check did not finish within "
                        f"{GATE_TIMEOUT_S}s and was killed")
 
-    tail = (out or "").strip().splitlines()
-    summary = tail[-1] if tail else f"exit {code}"
+    summary = _summary_line(out, code)
     return {
         "passed": code == 0,
         "checks": [{"check": "acceptance_check_authored", "passed": code == 0,

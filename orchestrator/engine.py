@@ -90,6 +90,10 @@ _LEDGER = os.path.join(_RUNS_DIR, "telemetry.jsonl")
 # the shared composed-git repo are NOT under work/, so they are never touched.
 _MAX_WORK_DIRS = int(os.environ.get("WORKSHOP_MAX_WORK_DIRS", "40"))
 
+# How much of a run's event log rides along in its persisted state. The tail is where
+# a failure is; the head is admission noise. Bounded so a status file stays a few KB.
+_PERSIST_LOG_TAIL = 60
+
 
 def _prune_work_dirs(keep: int) -> None:
     """Keep the `keep` most-recently-modified run dirs under .runs/work, deleting
@@ -459,6 +463,10 @@ class Run:
     gate: dict | None = None
     route: dict | None = None              # the routing verdict (preset, rule, agents, ...)
     review: dict | None = None             # the review orchestrator's verdict
+    # Why each round was sent back, captured AS IT HAPPENS. `review` is overwritten by
+    # each round, so the reason a re-implement pass was ordered is gone by the time the
+    # run ends; this keeps it for the PR narrative and the round comment.
+    retry_reasons: list[dict] = field(default_factory=list)
     pr: dict | None = None                 # github finalization result ({pr_url} | {skipped} | {error})
     compose_base: dict | None = None       # external-repo compose base ({mode: external|local, ...})
     terminals: dict[str, list[dict]] = field(default_factory=dict)  # per-role shell transcript
@@ -712,7 +720,14 @@ class Engine:
             # the one that matters most is the failure an attendee wants to ask
             # about after their session expired. Never raises; see run_store.
             try:
-                run_store.save(_RUNS_DIR, run.run_id, public_result(run), run.log)
+                # The tail of the run's own log rides along, because a verdict
+                # without it answers "what happened" but not "why". It is NOT added
+                # to public_result: that is the API contract the console renders, and
+                # the log is already on the live run there. This is the durable copy
+                # for the run whose session is gone (diagnose.py reads it).
+                saved = {**public_result(run),
+                         "events": (run.events or [])[-_PERSIST_LOG_TAIL:]}
+                run_store.save(_RUNS_DIR, run.run_id, saved, run.log)
             except Exception as exc:  # noqa: BLE001 (history is not the verdict)
                 run.log(f"run state not persisted: {exc}", "warn")
             # Two-bucket terminal model: a deterministic failure stays
@@ -1101,11 +1116,20 @@ class Engine:
             import runtime_exec  # noqa: PLC0415
             if os.environ.get("WORKSHOP_S3FILES_DIR"):
                 # Local mount seam: the runtime workspace IS a local dir; copy it.
+                # Apply the SAME exclusions the deployed read-back applies, or the two
+                # seams disagree about what a role "wrote". They did: a local run
+                # counted 20 files for a role whose real output was one, because the
+                # copy swept in .git and its 15 sample hooks. That number is the
+                # engine's only measure of a role's work, and it appears on the pull
+                # request, so an inflated count hides a role that produced nothing.
                 import runtime_stage  # noqa: PLC0415
+                import runtime_exec  # noqa: PLC0415
                 src = os.path.join(runtime_stage.mnt_root(), run.run_id)
                 if os.path.isdir(src):
                     self._clear_transferred(dest_root)
-                    shutil.copytree(src, dest_root, dirs_exist_ok=True)
+                    shutil.copytree(
+                        src, dest_root, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns(*runtime_exec._TREE_EXCLUDES))
             else:
                 hit = runtime_config.pick(agent_id)
                 if hit:
@@ -1908,6 +1932,17 @@ class Engine:
             self._ledger(run)
             return True
         why = (gate.get("summary") or "assessment requested changes")
+        # Remember WHY this round was sent back, here and now. `run.review` holds only
+        # the LATEST verdict, so by the time the PR narrative is written it has been
+        # overwritten by the round that passed: a live 2-round run rendered "what came
+        # back as feedback" and then listed round 2's approval notes, which reads as
+        # the opposite of what happened. This is the only point where the causal fact
+        # exists, so it is captured rather than reconstructed.
+        run.retry_reasons.append({
+            "round": run.iterations,
+            "gate_summary": gate.get("summary") or "",
+            "reasons": list((run.review or {}).get("reasons") or []),
+        })
         run.log(f"changes requested ({why}) -> one bounded re-implement pass "
                 "updating the same PR", "warn")
         return False
@@ -2275,13 +2310,34 @@ _NEXT_ACTION = {
 }
 
 
-def next_action(status: str, fail_reason: str | None) -> str:
+def next_action(status: str, fail_reason: str | None,
+                pr: dict | None = None, pr_url: str | None = None) -> str:
     """One sentence telling the reader what to do about this outcome.
 
     Derived, never stored: the reason is the fact, this is how to read it. An
     unrecognised reason returns "" rather than inventing advice.
+
+    ``pr`` matters because the most common outcome is a run that PASSED, and a passing
+    run still has two very different endings: the pull request opened (go read it) or
+    it did not (the work is real but stranded in a local branch, and nothing else in
+    the payload says so at a glance). The PR failure is NOT a fail_reason -- the build
+    genuinely succeeded -- so it can only be read from the PR result.
     """
     if status == "passed":
+        pr = pr or {}
+        if pr_url:
+            return "Open the pull request and read the assessment comment on it."
+        pr_error = str(pr.get("error") or "")
+        if pr_error.startswith("PR_NO_GATEWAY"):
+            return ("The build passed but no GitHub MCP Gateway is wired, so no PR was "
+                    "opened and the deliverable is only on a local branch. Run "
+                    "`python3 orchestrator/github.py doctor`, then resubmit.")
+        if pr_error.startswith("PR_NO_CREDENTIAL"):
+            return ("The build passed but the App credential did not resolve, so no PR "
+                    "was opened. Re-run deploy-credential.sh, then resubmit.")
+        if pr_error:
+            return (f"The build passed but the PR step failed: {pr_error[:160]}. Run "
+                    "`python3 orchestrator/github.py doctor`.")
         return ""
     reason = (fail_reason or "").split(":")[0].strip()
     if reason in _NEXT_ACTION:
@@ -2292,9 +2348,9 @@ def next_action(status: str, fail_reason: str | None) -> str:
                 "build.")
     if reason.startswith(("UNKNOWN_PRESET", "UNKNOWN_ROLE")):
         return "That preset or role does not exist. Call list_presets for what does."
-    if reason.startswith("PR_NO_GATEWAY"):
-        return ("The build finished but no GitHub MCP Gateway is wired, so no PR was "
-                "opened. Run `python3 orchestrator/github.py doctor`.")
+    # No PR_NO_GATEWAY branch here on purpose: a failed PR step never becomes a
+    # fail_reason (the BUILD succeeded), it lands in run.pr["error"], which the
+    # status == "passed" arm above reads. A branch here would be unreachable.
     return ""
 
 
@@ -2326,5 +2382,5 @@ def public_result(run: Run) -> dict:
         # What to DO about this outcome, in one sentence. `needs_human` alone cannot
         # tell "the gate stayed red on real work" from "a role produced nothing",
         # and those have opposite next steps.
-        "next_action": next_action(run.status, run.fail_reason),
+        "next_action": next_action(run.status, run.fail_reason, run.pr, run.pr_url),
     }
