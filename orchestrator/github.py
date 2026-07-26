@@ -353,6 +353,104 @@ def status() -> dict[str, Any]:
             "source": cfg["source"], "tool_count": len(names)}
 
 
+def doctor() -> dict[str, Any]:
+    """Prove the PR path works BEFORE a build spends ten minutes discovering it does not.
+
+    ``status()`` answers "does the gateway respond", which is not the same question.
+    The mistakes Lab 2 actually produces are one step further in: the App installed
+    on the wrong repository, ``GITHUB_REPO`` pointing at a repo the installation
+    cannot see, or a typo in the owner. Every one of those passes ``tools/list`` and
+    then fails at ``create_branch``, after the coordinator is deployed and a build
+    has run its agents. That is the most expensive possible moment to find out.
+
+    Idea from awslabs/aidlc-workflows v2, which ships ``/aidlc --doctor``: check the
+    setup as its own step, with a named result per check, so a broken install is a
+    30-second answer rather than a failed run.
+
+    READ-ONLY. It resolves config, lists the gateway's tools, and asks the App to
+    read the target repository through the same signed path a build uses. It creates
+    no branch, writes no file, and opens no pull request, so it is safe to run
+    repeatedly and it cannot leave anything behind on the attendee's repo.
+
+    Returns ``{ok, checks: [{check, passed, detail}], hint}``: ``ok`` only when every
+    check passed.
+    """
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, passed: bool, detail: str) -> bool:
+        checks.append({"check": name, "passed": passed, "detail": detail})
+        return passed
+
+    def done(hint: str = "") -> dict[str, Any]:
+        ok = all(c["passed"] for c in checks)
+        out: dict[str, Any] = {"ok": ok, "checks": checks}
+        if not ok and hint:
+            out["hint"] = hint
+        return out
+
+    cfg = _gateway_config()
+    if not add("config_resolved", cfg is not None,
+               "gateway URL + owner/repo resolved"
+               if cfg else "no gateway URL and/or repo is wired"):
+        return done("Export GITHUB_GATEWAY_URL and GITHUB_REPO (the Broker GitHub "
+                    "Tools page, step 6), or paste owner/repo in console Settings. "
+                    "Until then a build composes locally and opens no PR.")
+    add("repo_shape", bool(_REPO_RE.match(cfg["repo"])),
+        f"repo is {cfg['repo']!r}")
+
+    try:
+        tools = _tools_list(cfg)
+        names = [t.get("name", "") for t in tools] if isinstance(tools, list) else []
+    except GatewayError as exc:
+        add("gateway_reachable", False, f"signed tools/list failed: {exc}")
+        return done("The Gateway did not answer a signed request. Re-run "
+                    "coding-agents/gateway_mcp/verify-gateway.sh; if that fails too, "
+                    "the Runtime or its target is not READY yet.")
+    add("gateway_reachable", True, f"{len(names)} tool(s) discoverable")
+
+    # The three tools the PR path actually calls. A gateway that answers but does
+    # not expose these cannot open a pull request, and that is worth naming now.
+    need = ("create_branch", "put_file", "create_pull_request", "list_files")
+    missing = [t for t in need
+               if not any(n.endswith(f"___{t}") or n == t for n in names)]
+    add("pr_tools_present", not missing,
+        "create_branch + put_file + create_pull_request exposed" if not missing
+        else f"missing from the gateway: {', '.join(missing)}")
+
+    # The check that catches the real Lab 2 mistake: can the App READ this repo?
+    # A wrong owner, a typo, or an App installed on a different repository all
+    # reach the gateway fine and only fail when a build tries to write.
+    owner, _, repo_name = cfg["repo"].partition("/")
+    try:
+        # list_files at the repo root, on the resolved default branch: the
+        # cheapest call that requires the installation to actually have this
+        # repository, and it is the same tool set a build uses.
+        _tool(cfg, "list_files",
+              {"owner": owner, "repo": repo_name, "path": "",
+               "ref": cfg["default_branch"]}, timeout=20.0)
+        add("app_can_reach_repo", True,
+            f"the App installation can read {cfg['repo']} "
+            f"({cfg['default_branch']})")
+    except GatewayError as exc:
+        reason = str(exc)
+        lowered = reason.lower()
+        if "not found" in lowered or "404" in lowered:
+            detail = (f"the App installation cannot see {cfg['repo']} (404). Either "
+                      "the App is installed on a different repository, or "
+                      "GITHUB_REPO names the wrong owner/repo.")
+        elif "401" in lowered or "credential" in lowered or "auth" in lowered:
+            detail = ("the App credential was rejected. Re-run deploy-credential.sh "
+                      "with the App ID, installation ID, and .pem that belong "
+                      "together.")
+        else:
+            detail = f"read through the gateway failed: {reason}"
+        add("app_can_reach_repo", False, detail)
+        return done("Fix the App installation or GITHUB_REPO before deploying the "
+                    "coordinator: every one of these failures would otherwise "
+                    "surface only after a build had already run its agents.")
+    return done()
+
+
 # --- Compose base -------------------------------------------------------------
 
 def ensure_compose_base() -> dict[str, Any]:
@@ -558,3 +656,34 @@ def merge_pr(run: Any) -> dict[str, Any]:
     if isinstance(resp, dict) and resp.get("merged"):
         return {"merged": True, "sha": resp.get("sha", "")}
     return {"error": f"merge did not complete: {resp!r}"}
+
+
+# --- CLI ----------------------------------------------------------------------
+
+def _main(argv: list[str]) -> int:
+    """`python3 orchestrator/github.py doctor`: check the PR path from a terminal.
+
+    A module entrypoint rather than a new script: the checks have to run through
+    the same config resolution and the same signed calls a build uses, or they
+    would be verifying something else.
+    """
+    if len(argv) != 1 or argv[0] not in ("doctor", "status"):
+        print("usage: python3 orchestrator/github.py doctor|status")
+        return 2
+    if argv[0] == "status":
+        print(json.dumps(status(), indent=2))
+        return 0
+    result = doctor()
+    for check in result["checks"]:
+        mark = "PASS" if check["passed"] else "FAIL"
+        print(f"  {mark}  {check['check']}: {check['detail']}")
+    if result["ok"]:
+        print("\nGitHub PR path ready: the App can reach the repo through the Gateway.")
+        return 0
+    print(f"\nNOT READY. {result.get('hint', '')}")
+    return 1
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.exit(_main(_sys.argv[1:]))
