@@ -121,6 +121,7 @@ import executor  # noqa: E402
 import github  # noqa: E402
 import llm  # noqa: E402  (model-id alias resolution for the runtime dispatch)
 import policy  # noqa: E402  (the guardrail every role command is screened against)
+import replay  # noqa: E402  (the run's story, for the PR body: reports, never judges)
 import reviewer  # noqa: E402
 import presets  # noqa: E402
 import role_graph  # noqa: E402  (the agent-execution phase as a Strands graph)
@@ -403,6 +404,12 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _files(n: int) -> str:
+    """"1 file" / "6 files". A role's note is now reviewer-facing text on the pull
+    request body, not an internal status string, so it reads like prose."""
+    return f"{n} file" + ("" if n == 1 else "s")
 
 
 def _py(snippet: str) -> str:
@@ -1552,7 +1559,7 @@ class Engine:
             # RAISES on an empty tree, whatever produced it: a builder that wrote
             # nothing is a role failure, never a builder that "built" something.
             n = self._require_tree_nonempty(run, role.agent)
-            role.note = f"built the backend side of this request ({n} files)"
+            role.note = f"built the backend side of this request ({_files(n)})"
             run.log(f"backend: wrote {n} files; the validator's check decides whether "
                     "they answer the request")
 
@@ -1595,7 +1602,7 @@ class Engine:
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
             n = self._require_tree_nonempty(run, role.agent)
-            role.note = f"built the interface this request asked for ({n} files)"
+            role.note = f"built the interface this request asked for ({_files(n)})"
             run.log(f"frontend: wrote {n} files; the validator's check decides whether "
                     "they answer the request")
 
@@ -1818,11 +1825,22 @@ class Engine:
                 else:
                     run.log(f"PR branch updated in place: {run.pr_url} "
                             f"(round {run.iterations})")
+                    # New commits appeared on a branch a reviewer may already have
+                    # read, with nothing on the timeline saying why. The body cannot
+                    # be rewritten (the gateway exposes no update_pull_request), so
+                    # the round's story goes on as a comment, which is where an
+                    # update belongs anyway.
+                    said = github.post_review(run, replay.round_comment(run))
+                    if said.get("error"):
+                        run.log(f"round note not posted: {said['error']}", "warn")
             else:
-                run.pr = github.open_pr(
-                    run, f"Automated build for: {run.task}\n\n"
-                         f"Acceptance gate: {gate.get('summary', '')}. The reviewer's "
-                         "assessment follows as a PR comment.")
+                # The body is the run's own story (replay.py): which roles ran, what
+                # the validator chose to assert, and why a second round happened.
+                # A reviewer arriving from a notification cannot reach the engine log
+                # or the coordinator session, so if the loop is not legible here it is
+                # not legible at all. Generated from the run record, and reporting
+                # only: it reads the gate's verdict, it never contributes to it.
+                run.pr = github.open_pr(run, replay.narrative(run))
                 if run.pr.get("pr_url"):
                     run.pr_url = run.pr["pr_url"]
                     run.log(f"PR opened for real: {run.pr_url} (credential source: "

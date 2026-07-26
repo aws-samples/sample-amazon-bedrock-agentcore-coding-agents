@@ -78,6 +78,7 @@ def save(runs_dir: str, run_id: str, payload: dict[str, Any],
             f.write(body)
         # Atomic replace, so a reader never sees a half-written status.
         os.replace(tmp, _local_path(runs_dir, run_id))
+        prune(runs_dir)
     except OSError as exc:
         if log:
             log(f"run state not written locally: {exc}", "warn")
@@ -124,21 +125,70 @@ def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
     having no way back to their own build. Local only: listing a bucket prefix on
     every call is a cost the answer does not justify, and the local directory is
     what the console and the box actually read.
+
+    Ordered by MTIME, not by name. A run id is ``run_<HHMMSS>_<NNN>`` -- time of day
+    with no date -- so sorting the filenames puts last night's 23:59 run ahead of
+    this morning's 00:05 one, and "your most recent run" would name the wrong build
+    for anyone whose session crosses midnight UTC.
     """
     out: list[dict[str, Any]] = []
     d = _local_dir(runs_dir)
     try:
-        names = sorted(os.listdir(d), reverse=True)
+        entries = []
+        for name in os.listdir(d):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(d, name)
+            try:
+                entries.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
     except OSError:
         return out
-    for name in names:
-        if not name.endswith(".json"):
-            continue
+    for _mtime, path in sorted(entries, reverse=True):
         try:
-            with open(os.path.join(d, name), encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 out.append(json.load(f))
         except (OSError, json.JSONDecodeError):
             continue
         if len(out) >= limit:
             break
     return out
+
+
+# Cap how many status files accumulate. Each is a couple of KB, but nothing ever
+# deleted them, so a long-lived box (or a test suite) grows the directory without
+# limit -- the same unbounded-growth shape `_MAX_WORK_DIRS` already guards for build
+# trees. Keep the newest N; overridable for an operator who wants deeper history.
+_MAX_STATE_FILES = int(os.environ.get("WORKSHOP_MAX_RUN_STATE", "200"))
+
+
+def prune(runs_dir: str, keep: int | None = None) -> None:
+    """Delete all but the ``keep`` newest status files. Best effort, never raises.
+
+    ``keep`` defaults to ``_MAX_STATE_FILES`` read AT CALL TIME, not baked into the
+    signature: a default argument is evaluated once at import, which would make the
+    cap unchangeable after this module loads.
+    """
+    if keep is None:
+        keep = _MAX_STATE_FILES
+    if keep < 0:
+        return
+    d = _local_dir(runs_dir)
+    try:
+        entries = []
+        for name in os.listdir(d):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(d, name)
+            try:
+                entries.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
+    except OSError:
+        return
+    for _mtime, path in sorted(entries, reverse=True)[keep:]:
+        try:
+            os.remove(path)
+        except OSError:
+            continue
