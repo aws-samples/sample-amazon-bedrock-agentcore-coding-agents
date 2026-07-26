@@ -109,3 +109,35 @@ def test_node_modules_is_excluded_by_name():
     """Pin the specific directory that broke a live run."""
     assert "node_modules" in runtime_exec._TREE_EXCLUDES
     assert "__pycache__" in runtime_exec._TREE_EXCLUDES
+
+
+def test_a_transfer_replaces_the_previous_rounds_files_but_keeps_the_harness():
+    """A re-implement round must not leave round 1's files behind.
+
+    A live run had round 2 rewrite `server.py` while one role's directory still
+    held round 1's copy, so compose reported a CONFLICT between two ROUNDS of the
+    same file rather than a disagreement between two roles.
+    """
+    import importlib
+    import shutil
+    engine = importlib.import_module("engine")
+    root = tempfile.mkdtemp()
+    os.makedirs(os.path.join(root, "skills", "backend-engineering"))
+    with open(os.path.join(root, "skills", "backend-engineering", "SKILL.md"), "w") as f:
+        f.write("harness skill\n")
+    with open(os.path.join(root, "CLAUDE.md"), "w") as f:
+        f.write("harness steering\n")
+    # Round 1's work, including a file round 2 will not write again.
+    with open(os.path.join(root, "server.py"), "w") as f:
+        f.write("# round 1\n")
+    with open(os.path.join(root, "dropped_in_round_2.py"), "w") as f:
+        f.write("# round 1 only\n")
+
+    engine.Engine._clear_transferred(root)
+
+    left = sorted(os.listdir(root))
+    assert "CLAUDE.md" in left, left        # the engine's harness stays
+    assert "skills" in left, left
+    assert "server.py" not in left, left    # round 1's work goes
+    assert "dropped_in_round_2.py" not in left, left
+    shutil.rmtree(root, ignore_errors=True)

@@ -200,6 +200,13 @@ _ACCEPTANCE_CHECK = "acceptance_check"
 _COMPOSE_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache",
                       ".ruff_cache", ".mypy_cache", "skills"}
 _COMPOSE_SKIP_NAMES = {"CLAUDE.md", "AGENTS.md", ".DS_Store"}
+# NFS silly-rename stubs: when a process deletes a file it still has open, the
+# S3 Files (NFS) mount keeps it as `.nfsXXXXXXXX` until the handle closes. A live
+# run committed three of them (4KB/32KB/49KB of nothing) because the validator's
+# check had the database open when it replaced it. Filesystem bookkeeping, never
+# anyone's work, and invisible on a local disk, which is why only a real mount
+# surfaces it.
+_COMPOSE_SKIP_PREFIXES = (".nfs",)
 _COMPOSE_SKIP_SUFFIXES = (".pyc", ".pyo", ".db", ".db-wal", ".db-shm",
                           ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm",
                           ".log")
@@ -216,7 +223,7 @@ def _compose_excluded(rel: str) -> bool:
     if any(p in _COMPOSE_SKIP_DIRS for p in parts[:-1]):
         return True
     name = parts[-1]
-    if name in _COMPOSE_SKIP_NAMES:
+    if name in _COMPOSE_SKIP_NAMES or name.startswith(_COMPOSE_SKIP_PREFIXES):
         return True
     return name.endswith(_COMPOSE_SKIP_SUFFIXES)
 
@@ -234,7 +241,9 @@ def _gate_excluded(rel: str) -> bool:
         return True
     if any(p in ("__pycache__", ".git") for p in parts[:-1]):
         return True
-    return parts[-1] in _COMPOSE_SKIP_NAMES
+    name = parts[-1]
+    # Not a withheld file so much as not a file at all: see _COMPOSE_SKIP_PREFIXES.
+    return name in _COMPOSE_SKIP_NAMES or name.startswith(_COMPOSE_SKIP_PREFIXES)
 
 # What builders are told about runnability. Not a layout and not a filename: a
 # property of good work, stated once. The engine never reads the answer.
@@ -1060,7 +1069,15 @@ class Engine:
 
         Returns the number of files now on disk for that role, which the caller
         uses to fail loud on an empty tree: a role that wrote nothing must never
-        look like a role that wrote something."""
+        look like a role that wrote something.
+
+        The role's directory is REPLACED, not merged into. A re-implement round
+        reads the workspace again, and a file round 1 wrote that round 2 replaced
+        or deleted would otherwise linger here as a stale copy. A live run showed
+        exactly that: round 2 rewrote `server.py`, one role's directory still held
+        round 1's version, and compose reported a CONFLICT between two rounds of
+        the same file rather than between two roles.
+        """
         dest_root = run.roledir(agent_id)
         if self.executor.name == "agentcore":
             import runtime_config  # noqa: PLC0415
@@ -1070,6 +1087,7 @@ class Engine:
                 import runtime_stage  # noqa: PLC0415
                 src = os.path.join(runtime_stage.mnt_root(), run.run_id)
                 if os.path.isdir(src):
+                    self._clear_transferred(dest_root)
                     shutil.copytree(src, dest_root, dirs_exist_ok=True)
             else:
                 hit = runtime_config.pick(agent_id)
@@ -1081,6 +1099,12 @@ class Engine:
                     except Exception as exc:  # noqa: BLE001 (reported, then counted)
                         run.log(f"{agent_id}: work tree read-back failed: {exc}", "warn")
                         tree = {}
+                    # Only when the read-back actually returned something: an empty
+                    # tree is a FAILED read, and clearing on that would destroy the
+                    # previous round's evidence and turn a transport failure into a
+                    # role that "wrote nothing".
+                    if tree:
+                        self._clear_transferred(dest_root)
                     for rel, data in tree.items():
                         dest = os.path.join(dest_root, rel)
                         if (os.path.commonpath([os.path.abspath(dest),
@@ -1093,6 +1117,34 @@ class Engine:
         n = self._authored_count(run, agent_id)
         run.log(f"{agent_id}: work tree read back ({n} files)")
         return n
+
+    @staticmethod
+    def _clear_transferred(dest_root: str) -> None:
+        """Drop a previous round's transferred files before writing this round's.
+
+        Only the paths that TRANSFER a tree call this. A re-implement round reads
+        the workspace again, and a file round 1 wrote that round 2 replaced or
+        deleted would otherwise linger as a stale copy: a live run had round 2
+        rewrite `server.py` while one role's directory still held round 1's, so
+        compose reported a CONFLICT between two ROUNDS rather than between two
+        roles.
+
+        The harness the engine installed (steering + skills) is kept: it is not
+        part of the read-back, and reinstalling it is not this function's job.
+        """
+        if not os.path.isdir(dest_root):
+            return
+        for name in os.listdir(dest_root):
+            if name == "skills" or name in _COMPOSE_SKIP_NAMES:
+                continue
+            victim = os.path.join(dest_root, name)
+            if os.path.isdir(victim):
+                shutil.rmtree(victim, ignore_errors=True)
+            else:
+                try:
+                    os.remove(victim)
+                except OSError:
+                    pass
 
     def _harness_installed_paths(self, agent_id: str) -> set[str]:
         """Role-relative paths that the HARNESS put in the workspace, not the role.
