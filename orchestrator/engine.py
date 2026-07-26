@@ -2218,6 +2218,68 @@ def public_diff(run: Run) -> dict:
             "files": files}
 
 
+# What an attendee should DO about each terminal reason. Idea from
+# awslabs/aidlc-workflows v2, whose stage checkboxes say WHO IS BLOCKING at a glance
+# (`[?]` awaiting you, `[R]` revising) rather than making you decode a state name.
+#
+# Our `needs_human` covers two very different situations: the gate stayed red on real
+# work (read the check's own failing lines, the deliverable needs changing) and a role
+# never produced anything (a transport or turn failure, just resubmit). Same status,
+# opposite next action, and the raw token said neither.
+_NEXT_ACTION = {
+    "ITERATION_CAP":
+        "The authored check was still red after the bounded re-implement round. Read "
+        "the failing lines in gate.summary: they are the check's own output, so they "
+        "name what the deliverable did not do. The PR is open with the assessment.",
+    "ROLE_EXECUTION_ERROR":
+        "A role's turn produced no usable work. This is usually transient: submit the "
+        "SAME request again. Do not try to finish it by dispatching one role by hand.",
+    "ROLE_TOTAL_FAILURE":
+        "EVERY routed role failed, which points at the harness or the environment "
+        "rather than the request: check that each role's runtime is wired and READY, "
+        "then resubmit.",
+    "ENGINE_STALL":
+        "The run ended without reaching a verdict. Resubmit; if it stalls again, the "
+        "engine log for this run id is the place to look.",
+    "NO_RUN_TO_REVIEW":
+        "A review-only request needs an earlier run to review. Submit a build first.",
+    "PRESET_NOT_SPECIFIED":
+        "No task text and no preset. Say what you want built, or name a preset from "
+        "list_presets.",
+    "NO_BUILDER_ROUTED":
+        "The route selected no maker, so nothing would be built. Name a preset or a "
+        "role set that includes a builder.",
+    "NO_CHECKER_ROUTED":
+        "The route selected no checker, so nothing would verify the work. Every build "
+        "route must carry the validator.",
+    "NO_ROLES_ROUTED":
+        "The route selected no roles at all. Name a preset or an explicit role set.",
+}
+
+
+def next_action(status: str, fail_reason: str | None) -> str:
+    """One sentence telling the reader what to do about this outcome.
+
+    Derived, never stored: the reason is the fact, this is how to read it. An
+    unrecognised reason returns "" rather than inventing advice.
+    """
+    if status == "passed":
+        return ""
+    reason = (fail_reason or "").split(":")[0].strip()
+    if reason in _NEXT_ACTION:
+        return _NEXT_ACTION[reason]
+    if reason.startswith("RUNTIME_NOT_WIRED"):
+        return ("A routed role has no wired runtime ARN. Deploy that role (Lab 1) or "
+                "wire its ARN, then resubmit; the engine never falls back to a local "
+                "build.")
+    if reason.startswith(("UNKNOWN_PRESET", "UNKNOWN_ROLE")):
+        return "That preset or role does not exist. Call list_presets for what does."
+    if reason.startswith("PR_NO_GATEWAY"):
+        return ("The build finished but no GitHub MCP Gateway is wired, so no PR was "
+                "opened. Run `python3 orchestrator/github.py doctor`.")
+    return ""
+
+
 def public_result(run: Run) -> dict:
     return {
         "run_id": run.run_id,
@@ -2243,4 +2305,8 @@ def public_result(run: Run) -> dict:
         "review": run.review,
         "pr": run.pr,
         "compose_base": run.compose_base,
+        # What to DO about this outcome, in one sentence. `needs_human` alone cannot
+        # tell "the gate stayed red on real work" from "a role produced nothing",
+        # and those have opposite next steps.
+        "next_action": next_action(run.status, run.fail_reason),
     }
