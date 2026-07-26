@@ -509,7 +509,16 @@ def _run_in_live_pty(session: Any, agent_id: str, prompt: str, run_subdir: str,
         session.send_turn(
             f"Work in /mnt/s3files/{run_subdir} (create it if needed; cd there "
             f"first).\n\n{prompt}")
-        finished = session.wait_turn_idle(quiet_s=8.0, timeout_s=timeout_s)
+        # How long the TUI must be SILENT before the turn counts as finished. The signal
+        # is sound (a working CLI repaints its spinner many times a second, so the buffer
+        # only stops growing when it is genuinely idle), but it is the one place where a
+        # correct run can be cut short: if a CLI stops repainting while the model thinks,
+        # an early "done" reads the artifact before it is written and the run fails with
+        # ROLE_EXECUTION_ERROR on work that was fine. 8s was a bare literal; 20s costs at
+        # most 12 extra seconds per role and removes a whole class of false failure.
+        # Wirable so an operator can tune it for a slower CLI without a code change.
+        quiet_s = float(os.environ.get("WORKSHOP_TURN_QUIET_S", "20"))
+        finished = session.wait_turn_idle(quiet_s=quiet_s, timeout_s=timeout_s)
         transcript = _clean(session.buffer[t0_len:])
         if on_line:
             for line in transcript.splitlines():

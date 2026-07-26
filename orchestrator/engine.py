@@ -302,9 +302,26 @@ def _display_scrub(text: str) -> str:
 # forever; the lease auto-releases so a dead holder never deadlocks the engine.
 COMPOSE_LEASE_STUCK_S = 90
 # The reconcile() sweeper force-fails runs whose phase deadline has elapsed but
-# whose status is still non-terminal (a stranded-task reconciler). Wider than the
-# agent_execution budget so a sweep never kills a live run.
-STRANDED_AFTER_S = 600
+# whose status is still non-terminal (a stranded-task reconciler).
+#
+# DERIVED from the agent-execution budget, never hardcoded, because the two must not
+# drift: the sweep compares against `run._t0`, which is set at SUBMIT (see submit()),
+# while AGENT_EXECUTION_TIMEOUT_S only starts counting when the graph runs. So the
+# threshold has to cover admission + hydration + pre-flight + the whole agent budget +
+# finalization (gate execution, compose, PR), or the sweeper kills a run that is still
+# legitimately working.
+#
+# It was 600 against a 1800s agent budget, i.e. the comment claimed "wider than the
+# agent_execution budget" while being 3x NARROWER. Any build over ~10 minutes was
+# swept to needs_human mid-flight. A measured 3-role build took 819s, and a
+# re-implement round doubles the agent phase, so this was reachable on the flagship
+# request. It only ever fired on the CONSOLE path (connection_api starts the sweep
+# thread; the deployed coordinator does not stage that module), which is exactly the
+# path Lab 2's UI page and all of Lab 3 use.
+# MAX_ITERATIONS rounds of (agent execution + gate), plus slack for the phases the
+# agent budget does not cover: admission, hydration, pre-flight, compose and the PR.
+STRANDED_AFTER_S = (MAX_ITERATIONS * (AGENT_EXECUTION_TIMEOUT_S + reviewer.GATE_TIMEOUT_S)
+                    + 600)
 
 # Two-bucket terminal model (reconciler-recoverable vs hard preflight reject).
 # PERMANENT reasons mean "resubmitting won't help" -> status=failed.

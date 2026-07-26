@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from typing import Any
 
 _MOUNT_PREFIX = "agents/mnt/s3files"  # S3 key prefix that maps to /mnt/s3files
@@ -77,7 +78,20 @@ def _upload_tree(s3, bucket: str, local_dir: str, key_prefix: str) -> int:
                 continue
             full = os.path.join(dp, fn)
             rel = os.path.relpath(full, local_dir)
-            s3.upload_file(full, bucket, f"{key_prefix}/{rel}")
+            # Retry a transient upload. The caller treats a staging failure as
+            # non-fatal (the role falls back to its baked-in guidance), which means a
+            # single throttled PutObject silently changes what the agent was told --
+            # two attendees running the same request get different-quality work and
+            # nothing on the run says why. A retry keeps that fallback for real
+            # outages instead of for one unlucky packet.
+            for attempt in range(3):
+                try:
+                    s3.upload_file(full, bucket, f"{key_prefix}/{rel}")
+                    break
+                except Exception:  # noqa: BLE001 (re-raised on the last attempt)
+                    if attempt == 2:
+                        raise
+                    time.sleep(1.0 * (attempt + 1))
             n += 1
     return n
 

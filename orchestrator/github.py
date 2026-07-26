@@ -44,6 +44,8 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -198,34 +200,67 @@ def _sigv4_headers(url: str, body: bytes, region: str) -> dict[str, str]:
 
 
 _RPC_ID = 0
+_RPC_ID_LOCK = threading.Lock()
+
+# One transient network failure must not cost an attendee their pull request. The PR
+# path makes one call per deliverable FILE (see open_pr), so a build that wrote a dozen
+# files rolls a dozen dice; without a retry, a single reset or 503 anywhere in that loop
+# left the run `passed` with `pr_url` null and nothing to re-run.
+_RPC_ATTEMPTS = 3
+_RPC_BACKOFF_S = 2.0
+# Retry ONLY what is genuinely transient. A 4xx is the gateway or GitHub telling us the
+# request is wrong (bad repo, missing permission, protected branch) and retrying it
+# hides a real answer behind a slower failure.
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 def _gateway_rpc(cfg: dict, method: str, params: dict, timeout: float = 30.0) -> Any:
     """POST one SigV4-signed JSON-RPC call to the gateway. Returns ``result`` or
-    raises GatewayError on a JSON-RPC error / transport failure."""
+    raises GatewayError on a JSON-RPC error / transport failure.
+
+    Transient transport failures are retried (see ``_RPC_ATTEMPTS``); a 4xx or a
+    JSON-RPC error is returned immediately, because those are answers, not blips.
+    """
     global _RPC_ID
-    _RPC_ID += 1
+    with _RPC_ID_LOCK:
+        # Increment and CAPTURE under the lock: read-then-serialize is not atomic, so
+        # concurrent runs could otherwise put the same id on two different requests.
+        _RPC_ID += 1
+        rpc_id = _RPC_ID
     body = json.dumps({"jsonrpc": "2.0", "method": method,
-                       "id": _RPC_ID, "params": params}).encode("utf-8")
+                       "id": rpc_id, "params": params}).encode("utf-8")
     headers = {"Content-Type": "application/json",
                "Accept": "application/json, text/event-stream"}
-    try:
-        headers.update(_sigv4_headers(cfg["gateway_url"], body, cfg["region"]))
-    except Exception as exc:  # noqa: BLE001
-        raise GatewayError(f"cannot SigV4-sign the gateway call: {exc}") from exc
-    req = urllib.request.Request(cfg["gateway_url"], data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read()[:300].decode("utf-8", "replace")
-        raise GatewayError(f"gateway HTTP {exc.code}: {detail}") from exc
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise GatewayError(f"gateway call failed: {exc}") from exc
-    if "error" in payload:
-        err = payload["error"]
-        raise GatewayError(f"{err.get('code')}: {err.get('message')}")
-    return payload.get("result", {})
+    last: Exception | None = None
+    for attempt in range(_RPC_ATTEMPTS):
+        call_headers = dict(headers)
+        try:
+            # Re-sign per attempt: a SigV4 signature carries a timestamp and a retry
+            # after a backoff can fall outside the accepted skew window.
+            call_headers.update(_sigv4_headers(cfg["gateway_url"], body, cfg["region"]))
+        except Exception as exc:  # noqa: BLE001 (never transient: bad/absent creds)
+            raise GatewayError(f"cannot SigV4-sign the gateway call: {exc}") from exc
+        req = urllib.request.Request(cfg["gateway_url"], data=body,
+                                     headers=call_headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:300].decode("utf-8", "replace")
+            err = GatewayError(f"gateway HTTP {exc.code}: {detail}")
+            if exc.code not in _RETRY_STATUS:
+                raise err from exc          # a real answer; do not paper over it
+            last = err
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            last = GatewayError(f"gateway call failed: {exc}")
+        else:
+            if "error" in payload:
+                e = payload["error"]
+                raise GatewayError(f"{e.get('code')}: {e.get('message')}")
+            return payload.get("result", {})
+        if attempt < _RPC_ATTEMPTS - 1:
+            time.sleep(_RPC_BACKOFF_S * (attempt + 1))
+    raise last if last else GatewayError("gateway call failed with no error recorded")
 
 
 def _tool(cfg: dict, tool: str, arguments: dict, timeout: float = 30.0) -> Any:
@@ -450,6 +485,45 @@ def doctor() -> dict[str, Any]:
         return done("Fix the App installation or GITHUB_REPO before deploying the "
                     "coordinator: every one of these failures would otherwise "
                     "surface only after a build had already run its agents.")
+
+    # Reading the repo does NOT prove the App may write to it, and a beginner filling in
+    # the GitHub App permission form commonly leaves "Pull requests" (or "Contents") on
+    # read-only. That combination passes every check above -- the gateway answers, the
+    # tools are all listed, the repo is visible -- and then fails at `create_branch`
+    # AFTER a ten-minute build. So probe a write here, while it is still cheap.
+    #
+    # The probe creates the INTEGRATION BRANCH the auto-merge path uses anyway, which
+    # makes it litter-free: `create_branch` is idempotent ("already exists" is success),
+    # the gateway exposes no delete, and this branch is a legitimate part of the repo
+    # rather than a stray `doctor-test-123`.
+    try:
+        _tool(cfg, "create_branch",
+              {"owner": owner, "repo": repo_name, "branch": INTEGRATION_BRANCH,
+               "from_branch": cfg["default_branch"]}, timeout=20.0)
+        add("app_can_write_repo", True,
+            f"the App can create a branch on {cfg['repo']} "
+            f"(prepared {INTEGRATION_BRANCH})")
+    except GatewayError as exc:
+        reason = str(exc)
+        lowered = reason.lower()
+        if "already exists" in lowered or "reference already exists" in lowered:
+            add("app_can_write_repo", True,
+                f"{INTEGRATION_BRANCH} already exists, so the App can write")
+        elif "403" in lowered or "forbidden" in lowered or "permission" in lowered:
+            add("app_can_write_repo", False,
+                "the App can READ the repo but not write to it (403). In the App's "
+                "settings, set Repository permissions -> Contents: Read and write AND "
+                "Pull requests: Read and write, then re-install the App so the new "
+                "permissions take effect.")
+            return done("Grant the App write access before deploying the coordinator: "
+                        "otherwise the build runs for ten minutes and only then fails "
+                        "at the pull-request step.")
+        else:
+            # Do not fail the whole preflight on something we cannot attribute; say so.
+            add("app_can_write_repo", False,
+                f"could not confirm write access: {reason}")
+            return done("Resolve the write check above before deploying the "
+                        "coordinator.")
     return done()
 
 

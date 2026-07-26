@@ -113,20 +113,65 @@ def test_a_gateway_missing_the_pr_tools_is_reported(monkeypatch):
         assert t in detail, detail
 
 
-def test_the_doctor_never_writes_to_the_repo(monkeypatch):
-    """Read-only: it must be safe to run repeatedly on an attendee's real repo."""
+def test_the_doctor_is_idempotent_and_leaves_no_litter(monkeypatch):
+    """Safe to run repeatedly on a real repo. NOT the same as "read-only".
+
+    It deliberately performs ONE write: creating the integration branch. Reading a repo
+    does not prove the App may write to it, and a beginner leaving "Pull requests" on
+    read-only passes every read check and then fails at `create_branch` after a
+    ten-minute build. So the write is probed here, while it is cheap.
+
+    What must still hold: no content is written, nothing is opened or merged, and the one
+    branch it touches is the integration branch the auto-merge path creates anyway
+    (`create_branch` treats "already exists" as success), so re-running changes nothing
+    and leaves no stray `doctor-test-*` behind.
+    """
     called: list[str] = []
 
     def record(c, tool, args, timeout=30.0):
         called.append(tool)
+        if tool == "create_branch":
+            assert args["branch"] == github.INTEGRATION_BRANCH, (
+                f"doctor created a branch other than the integration branch: {args}")
+            return "ok"
         return ["README.md"]
     _wire(monkeypatch, tool_fn=record)
     github.doctor()
-    for mutating in ("create_branch", "put_file", "create_pull_request",
-                     "merge_pull_request", "comment_on_issue"):
-        assert mutating not in called, (
-            f"doctor called {mutating}, so running it changes the attendee's repo: "
-            f"{called}")
+    for forbidden in ("put_file", "create_pull_request", "merge_pull_request",
+                      "comment_on_issue"):
+        assert forbidden not in called, (
+            f"doctor called {forbidden}, which changes the attendee's repo content or "
+            f"opens something: {called}")
+
+
+def test_a_read_only_app_permission_is_caught_before_the_coordinator_deploys(monkeypatch):
+    """The expensive mistake: readable repo, unwritable repo.
+
+    Every read check passes (the gateway answers, all tools are listed, the repo is
+    visible) and the failure lands at `create_branch` AFTER a build has run its agents.
+    """
+    def forbidden(c, tool, args, timeout=30.0):
+        if tool == "create_branch":
+            raise github.GatewayError("gateway HTTP 403: Resource not accessible by "
+                                      "integration")
+        return ["README.md"]
+    _wire(monkeypatch, tool_fn=forbidden)
+    r = github.doctor()
+    assert r["ok"] is False
+    detail = _failed(r)["app_can_write_repo"]
+    assert "Contents" in detail and "Pull requests" in detail, detail
+    assert "re-install" in detail, "must say the App needs re-installing to take effect"
+
+
+def test_an_already_existing_integration_branch_is_success(monkeypatch):
+    """Second and later runs: the branch is already there, which PROVES write access."""
+    def exists(c, tool, args, timeout=30.0):
+        if tool == "create_branch":
+            raise github.GatewayError("422: Reference already exists")
+        return ["README.md"]
+    _wire(monkeypatch, tool_fn=exists)
+    r = github.doctor()
+    assert r["ok"] is True, _failed(r)
 
 
 def test_the_cli_exits_nonzero_when_not_ready(monkeypatch, capsys):
