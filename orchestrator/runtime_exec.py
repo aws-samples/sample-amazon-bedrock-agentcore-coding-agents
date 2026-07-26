@@ -529,6 +529,17 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
     return prev or artifact
 
 
+# Directories a build creates that are NOT the deliverable and must never enter the
+# read-back channel: installed dependencies, caches, and virtualenvs. They are
+# reproducible from the manifest the agent wrote, and one of them (a 615-file,
+# 4.6MB node_modules from an agent that ran `npm install`) broke a live run's tree
+# read-back outright. Kept as a small explicit list rather than a heuristic: the
+# engine must not start guessing which of the agent's files matter.
+_TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
+                  ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next",
+                  "dist", "build", ".cache")
+
+
 def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
                            region: str = "us-west-2") -> dict[str, bytes]:
     """Read a whole DIRECTORY (/mnt/s3files/<run>/<tree_rel>) back from the
@@ -539,19 +550,31 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
 
     STABILITY: S3Files write-back settles per file, so a tar taken mid-settle
     can carry PARTIAL contents (a truncated app.js) yet still succeed. Two
-    consecutive reads must agree byte-for-byte before the tree is accepted."""
+    consecutive reads must agree byte-for-byte before the tree is accepted.
+
+    SIZE: the tree crosses a WebSocket shell as base64 text, so it must stay
+    small. DEPENDENCY AND STATE DIRECTORIES ARE EXCLUDED AT THE TAR, not
+    afterwards: an agent that runs `npm install` creates a `node_modules` of
+    thousands of files, and a live run of the big preset produced 615 files /
+    4.6MB, which broke the read-back (the frontend role came back with only its
+    harness files, so the run failed the empty-tree guard and ended
+    ``needs_human`` even though the work was on the mount). Those directories are
+    reproducible from the manifest the agent wrote (package.json, requirements.txt)
+    and are not the deliverable, so excluding them loses nothing a reviewer needs.
+    The payload is gzipped for the same reason (``mode="r:*"`` reads either)."""
     import base64  # noqa: PLC0415
     import io  # noqa: PLC0415
     import tarfile  # noqa: PLC0415
     path = f"/mnt/s3files/{run_subdir}"
+    excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in _TREE_EXCLUDES)
     prev: dict[str, bytes] | None = None
     for attempt in range(8):
         nonce = uuid.uuid4().hex[:12]
         cmd = (
             f"B2={_ART_BEGIN}-{nonce}; E2={_ART_END}-{nonce}; "
             f'echo "$B2"; '
-            f"tar -C {shlex.quote(path)} -cf - {shlex.quote(tree_rel)} 2>/dev/null "
-            f"| base64; "
+            f"tar -C {shlex.quote(path)} {excludes} -czf - {shlex.quote(tree_rel)} "
+            f"2>/dev/null | base64; "
             f"printf '\\n'; "
             f'echo "$E2"; exit 0\n'
         )
@@ -562,7 +585,7 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
             try:
                 raw = base64.b64decode("".join(blob.split()))
                 out: dict[str, bytes] = {}
-                with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
+                with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as tf:
                     for m in tf.getmembers():
                         if not m.isfile():
                             continue
