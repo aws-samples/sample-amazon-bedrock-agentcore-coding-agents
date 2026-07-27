@@ -95,6 +95,11 @@ _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
 _OPENCODE_REGION = os.environ.get("WORKSHOP_OPENCODE_REGION", "us-west-2")
 _CLAUDE_MODEL = os.environ.get("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opus-4-6-v1")
+# Cheap background model for opencode (titles/summaries). Same wirable seam as
+# the two above; must be an inference profile, never a bare model id.
+_SMALL_MODEL = "amazon-bedrock/" + os.environ.get(
+    "WORKSHOP_SMALL_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+).removeprefix("amazon-bedrock/")
 # LEGACY (Codex path, no longer in the active flow): the Codex harness stays in
 # the repo (coding-agents/codex/) but is not a wired role. These are kept so a
 # manual Codex deploy still resolves its model/region; the frontend role is now
@@ -422,7 +427,7 @@ def _stage_agent_config(session: dict) -> None:
                 "$schema": "https://opencode.ai/config.json",
                 "provider": {"amazon-bedrock": {"options": {"region": _OPENCODE_REGION}}},
                 "model": _OPENCODE_MODEL,
-                "small_model": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "small_model": _SMALL_MODEL,
             }, f, indent=2)
     elif agent_id == "kiro":
         d = os.path.join(root, ".kiro", "steering")

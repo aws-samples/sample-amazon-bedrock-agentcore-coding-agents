@@ -179,3 +179,56 @@ def test_no_bare_haiku_inference_profile_anywhere() -> None:
     assert not bad, (
         "bare (unprefixed) haiku inference profile id found; use "
         "us.anthropic.claude-haiku-4-5-...:\n  " + "\n  ".join(bad))
+
+
+def test_role_deploys_refuse_a_cross_region_access_point() -> None:
+    """ONE region per workshop, enforced in code because two are now accessible.
+
+    The access point ARN carries its own region. If the mount and the Runtime disagree
+    the Runtime comes up unable to reach /mnt/s3files and the failure surfaces much
+    later as an agent that "wrote nothing" -- the same misleading shape this file
+    exists to prevent. Each role's deploy must refuse while the fix is one line.
+    """
+    import re as _re
+
+    root = os.path.dirname(_HERE)
+    for role in ("opencode", "claude-code", "claude-code-validator"):
+        path = os.path.join(root, "coding-agents", role, "deploy.py")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        assert "REGION_MISMATCH" in src, (
+            f"{role}/deploy.py has no same-region guard: a mount in one region and a "
+            "Runtime in another must fail AT DEPLOY, not later as a phantom empty "
+            "workspace.")
+        assert "_assert_same_region(S3FILES_AP_ARN, REGION)" in src, (
+            f"{role}/deploy.py defines the guard but never calls it")
+        # And the region itself must not be a literal (same rule as the engine).
+        head = src[:src.find("def ")] if "def " in src else src
+        code = "\n".join(l.split("#", 1)[0] for l in head.splitlines())
+        assert not _re.findall(r"[\"'](?:us|eu|ap)-[a-z]+-\d[\"']", code), (
+            f"{role}/deploy.py hardcodes a region default; derive it from the env, "
+            "infra.config, then boto3's own resolver.")
+
+
+def test_the_small_model_is_wirable_and_always_an_inference_profile() -> None:
+    """opencode's cheap background model lives in a CONFIG FILE, so it needs the same
+    wirable seam as the others, and it must never end up a bare model id (which every
+    Bedrock invoke API rejects for on-demand use)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "coding-agents", "opencode"))
+    import configure_opencode  # noqa: PLC0415
+
+    saved = os.environ.pop("WORKSHOP_SMALL_MODEL", None)
+    try:
+        default = configure_opencode._small_model()
+        assert default.startswith("amazon-bedrock/us."), default
+        # An override without the provider prefix must be normalised, not doubled.
+        os.environ["WORKSHOP_SMALL_MODEL"] = "us.anthropic.claude-sonnet-4-6"
+        assert configure_opencode._small_model() == (
+            "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
+        os.environ["WORKSHOP_SMALL_MODEL"] = "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
+        assert configure_opencode._small_model() == (
+            "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
+    finally:
+        os.environ.pop("WORKSHOP_SMALL_MODEL", None)
+        if saved is not None:
+            os.environ["WORKSHOP_SMALL_MODEL"] = saved

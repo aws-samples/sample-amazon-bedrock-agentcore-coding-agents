@@ -42,12 +42,42 @@ local = load_dotconfig(LOCAL_CONFIG)
 # Resolve everything tolerantly at import time so the module can be imported for
 # tests/tooling without the deploy prerequisites present. Hard requirements (infra.config,
 # ECR_URI, GATEWAY_URL) are only enforced inside main() when an actual deploy runs.
-REGION = os.environ.get("AWS_REGION", infra.get("INFRA_REGION", "us-west-2"))
+# Region: the env (the box exports the STACK region), then infra.config, then
+# boto3's own resolver. Never a literal: a hardcoded region deploys the Runtime
+# somewhere the attendee's mount is not.
+REGION = (os.environ.get("AWS_REGION")
+          or infra.get("INFRA_REGION")
+          or boto3.session.Session().region_name or "")
 ACCOUNT_ID = infra.get("INFRA_ACCOUNT_ID", "")
 SUBNET_1 = infra.get("INFRA_SUBNET_1", "")
 SUBNET_2 = infra.get("INFRA_SUBNET_2", "")
 SECURITY_GROUP = infra.get("INFRA_SECURITY_GROUP", "")
 S3FILES_AP_ARN = infra.get("INFRA_S3FILES_AP_ARN", "")
+
+# ONE region per workshop, enforced rather than documented. The access point ARN
+# carries the region it was created in, so if the mount and this Runtime disagree the
+# Runtime comes up unable to reach /mnt/s3files, and the failure surfaces much later
+# as an agent that "wrote nothing". With two accessible regions an attendee can
+# genuinely end up here (create the file system in one terminal's region, deploy from
+# another), so refuse the deploy while the fix is still one line.
+def _assert_same_region(ap_arn: str, region: str) -> None:
+    if not ap_arn or not region:
+        return
+    parts = ap_arn.split(":")
+    ap_region = parts[3] if len(parts) > 3 else ""
+    if ap_region and ap_region != region:
+        raise SystemExit(
+            f"REGION_MISMATCH: this deploy targets {region}, but the S3 Files access\n"
+            f"point in coding-agents/infra.config was created in {ap_region}:\n"
+            f"  {ap_arn}\n"
+            "The mount and the Runtime must be in the SAME region. Either export\n"
+            f"AWS_REGION={ap_region} and re-run this deploy, or re-create the file\n"
+            f"system in {region} (Lab 1) and update infra.config."
+        )
+
+
+_assert_same_region(S3FILES_AP_ARN, REGION)
+
 S3FILES_BUCKET = infra.get("INFRA_BUCKET", "")
 ECR_URI = local.get("ECR_URI") or os.environ.get("ECR_URI", "")
 
@@ -345,6 +375,14 @@ def deploy_runtime(role_arn: str) -> dict:
     }
     if GATEWAY_URL:
         env_vars["GATEWAY_URL"] = GATEWAY_URL
+    # Model overrides, forwarded so entrypoint.sh can rewrite the baked config with
+    # them at boot. Without this the container falls back to the id baked into the
+    # image, which is exactly the drift that made a us-east-1 runtime call us-west-2.
+    # Only forwarded when SET, so the image default stays the default.
+    for _var in ("WORKSHOP_SMALL_MODEL", "WORKSHOP_OPENCODE_MODEL"):
+        _val = (os.environ.get(_var) or "").strip()
+        if _val:
+            env_vars[_var] = _val
 
     existing_id = None
     config_path = os.path.join(SCRIPT_DIR, "runtime_config.json")

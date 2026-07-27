@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,19 @@ def load_existing_config(path: Path) -> dict[str, Any]:
     return value
 
 
+# The cheap background model (titles, summaries). Wirable through the same env the
+# rest of the workshop uses, because a region or account without this profile enabled
+# must be able to change it without editing code or rebuilding the image. It MUST be an
+# inference profile: a bare `anthropic.claude-haiku-...` id is rejected for on-demand
+# use by Converse, InvokeModel and InvokeModelWithResponseStream alike.
+_SMALL_MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def _small_model() -> str:
+    value = (os.environ.get("WORKSHOP_SMALL_MODEL") or "").strip() or _SMALL_MODEL_DEFAULT
+    return value if value.startswith("amazon-bedrock/") else f"amazon-bedrock/{value}"
+
+
 def build_config(
     region: str,
     gateway_url: str,
@@ -44,7 +58,7 @@ def build_config(
             },
         },
         "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-        "small_model": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "small_model": _small_model(),
     }
     if gateway_url:
         config["mcp"] = {
