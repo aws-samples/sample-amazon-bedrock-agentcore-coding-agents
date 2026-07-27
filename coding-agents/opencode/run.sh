@@ -67,6 +67,10 @@ fi
 
 # ── Parse --model flag (default: Bedrock Claude Sonnet 4.6) ──────────────────
 MODEL="amazon-bedrock/us.anthropic.claude-sonnet-4-6"
+# Reasoning effort, high by default and wirable. Same rationale as the
+# orchestrator dispatch: these roles are given real projects and graded by an
+# executable, so thinking less costs a red gate rather than saving anything.
+OPENCODE_VARIANT="${WORKSHOP_OPENCODE_VARIANT:-high}"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,7 +91,12 @@ cd "$RUN_DIR"
 if [ $# -gt 0 ]; then
   PROMPT="$*"
   echo "Running prompt with model: ${MODEL}"
-  exec opencode run --dangerously-skip-permissions -m "$MODEL" "$PROMPT"
+  # --auto (not --dangerously-skip-permissions, which opencode has NEVER had: it is
+  # absent from `opencode run --help` in 1.18.x and the run errors out). --auto
+  # auto-approves permissions that are not explicitly denied; without it opencode
+  # auto-REJECTS and aborts. --variant is the provider-specific reasoning effort.
+  exec opencode run --auto ${OPENCODE_VARIANT:+--variant "$OPENCODE_VARIANT"} \
+    -m "$MODEL" "$PROMPT"
 else
   exec opencode
 fi

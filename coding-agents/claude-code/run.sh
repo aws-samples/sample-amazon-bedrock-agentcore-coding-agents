@@ -81,6 +81,7 @@ fi
 # Marketplace subscription) can point the backend at an enabled model
 # (e.g. us.anthropic.claude-sonnet-4-6) WITHOUT editing this image. An explicit
 # --model on the command line still overrides both.
+CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT:-xhigh}"
 MODEL="${WORKSHOP_MODEL:-us.anthropic.claude-opus-4-6-v1}"
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -99,7 +100,12 @@ set -- "${ARGS[@]}"
 
 # ── Run ──────────────────────────────────────────────────────
 if [ $# -gt 0 ]; then
-  exec claude --dangerously-skip-permissions --print --max-turns 50 --model "$MODEL" "$@"
+  # --effort: reasoning budget, high by default and wirable. `claude --effort`
+  # accepts low|medium|high|xhigh|max and WARNS-and-ignores anything else, so a
+  # bad value degrades to the default rather than failing the run.
+  exec claude --dangerously-skip-permissions --print --max-turns 50 \
+    ${CLAUDE_EFFORT:+--effort "$CLAUDE_EFFORT"} --model "$MODEL" "$@"
 else
-  exec claude --dangerously-skip-permissions --model "$MODEL"
+  exec claude --dangerously-skip-permissions \
+    ${CLAUDE_EFFORT:+--effort "$CLAUDE_EFFORT"} --model "$MODEL"
 fi

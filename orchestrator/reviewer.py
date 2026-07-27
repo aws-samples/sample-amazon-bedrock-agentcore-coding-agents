@@ -123,7 +123,27 @@ def _kill_process_group(pgid: int | None) -> None:
 # Lines that are decoration rather than a result: a rule, a box border, a blank. The
 # validator writes its own output format, so we cannot ask it for a machine-readable
 # verdict, but we can decline to quote its punctuation back to a human.
-_DIVIDER_CHARS = set("=-_*#~+ \t.")
+# Box-drawing characters too: a check that draws its rule with U+2550 is common.
+_DIVIDER_CHARS = set("=-_*#~+ \t." + "".join(chr(c) for c in range(0x2500, 0x2580)))
+
+# Lines that belong to the SERVICE the check started, not to the check's own report.
+# A check that boots the deliverable and shuts it down cleanly prints its results and
+# THEN the server's teardown, so the last content line is the server's. A live run
+# published `INFO:     Finished server process [25985]` as its gate summary -- on the
+# pull request, in the assessment comment, in run_status and in the ledger -- while the
+# check's actual verdict, `TOTAL: 30 checks | PASS: 30 | FAIL: 0`, sat four lines above
+# it. Same failure shape as the `====` case below: the one human-readable sentence the
+# check produced was replaced by noise around it.
+_SERVICE_NOISE_PREFIXES = (
+    "info:", "warning:", "error:", "critical:", "debug:",   # uvicorn / logging
+    "* running on", "* serving", "press ctrl+c",             # flask / werkzeug
+    "listening on", "server listening", "[nodemon]",         # node
+)
+
+
+def _is_service_noise(line: str) -> bool:
+    low = line.strip().lower()
+    return any(low.startswith(p) for p in _SERVICE_NOISE_PREFIXES)
 
 
 def _summary_line(out: str, code: int) -> str:
@@ -141,6 +161,14 @@ def _summary_line(out: str, code: int) -> str:
     lines = (out or "").strip().splitlines()
     if not lines:
         return f"exit {code}"
+    # Pass 1: skip decoration AND the started service's own log lines.
+    for line in reversed(lines):
+        stripped = line.strip()
+        if (stripped and not set(stripped) <= _DIVIDER_CHARS
+                and not _is_service_noise(stripped)):
+            return stripped
+    # Pass 2: a check whose entire output looks like service logs still gets quoted
+    # rather than replaced by a number we invented.
     for line in reversed(lines):
         stripped = line.strip()
         if stripped and not set(stripped) <= _DIVIDER_CHARS:

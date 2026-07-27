@@ -280,3 +280,35 @@ def test_gate_reaps_the_group_when_the_check_times_out(tmp_path, monkeypatch):
         time.sleep(0.1)
     assert not _alive(child), (
         f"pid {child} survived a timed-out gate: the group was not reaped")
+
+
+def test_gate_summary_skips_the_started_services_own_log_lines():
+    """The gate summary is what a human reads on the PR, so it must be the CHECK's
+    verdict, not the deliverable's teardown noise.
+
+    Live: a passing run published `INFO:     Finished server process [25985]` as its
+    gate summary (PR body, assessment comment, run_status, ledger) while the check's
+    real verdict sat four lines above it. Same shape as the `====` divider case: the one
+    human-readable sentence the check produced replaced by noise around it.
+    """
+    out = (
+        "  PASS: Data survives server restart (persistence)\n"
+        "══════════\n"
+        " TOTAL: 30 checks | PASS: 30 | FAIL: 0\n"
+        "══════════\n"
+        "INFO:     Shutting down\n"
+        "INFO:     Waiting for application shutdown.\n"
+        "INFO:     Application shutdown complete.\n"
+        "INFO:     Finished server process [26473]\n"
+    )
+    assert reviewer._summary_line(out, 0) == "TOTAL: 30 checks | PASS: 30 | FAIL: 0"
+
+    # Box-drawing rules are decoration too, not a verdict.
+    assert reviewer._summary_line("ok\n════\n", 0) == "ok"
+
+    # A check whose whole output looks like service logs is still QUOTED, never
+    # replaced by a verdict we invented.
+    assert reviewer._summary_line("INFO: started\nINFO: stopped", 0) == "INFO: stopped"
+
+    # And the empty case still falls back to the exit code.
+    assert reviewer._summary_line("", 1) == "exit 1"

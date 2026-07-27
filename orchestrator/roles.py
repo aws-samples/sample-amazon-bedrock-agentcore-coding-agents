@@ -109,9 +109,22 @@ _CLAUDE_TELEMETRY = {
     "OTEL_METRIC_EXPORT_INTERVAL": "5000",
     "OTEL_LOGS_EXPORT_INTERVAL": "2000",
 }
+# Reasoning EFFORT, high by default. These agents are given real projects (several
+# features, real persistence, real input rejection) and their work is graded by an
+# executable another agent wrote, so the cost of thinking less is a red gate and a
+# wasted re-implement round, not a cheaper run. Verified against the installed CLIs
+# rather than assumed: `claude --effort` accepts low|medium|high|xhigh|max and warns
+# and IGNORES anything else, so a bad value degrades to the default instead of failing
+# the run. Wirable for an operator who wants to trade quality for latency or spend.
+_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
+# opencode calls the same idea a model VARIANT and its accepted values are
+# provider-specific (its help names high, max, minimal), so it gets its own variable.
+_OPENCODE_VARIANT = os.environ.get("WORKSHOP_OPENCODE_VARIANT", "high").strip()
+
 # The headless one-shot form of each CLI. Placeholders are filled by Role.command.
 _CLAUDE_CLI = ("claude --dangerously-skip-permissions --print --max-turns 50 "
-               "--model {model} {prompt}")
+               + (f"--effort {_CLAUDE_EFFORT} " if _CLAUDE_EFFORT else "")
+               + "--model {model} {prompt}")
 
 # Each role's default model is WIRABLE, because an account without Opus access must
 # be able to run the workshop by exporting one variable rather than editing code.
@@ -159,7 +172,9 @@ REGISTRY: tuple[Role, ...] = (
         # to the nearest git root and writes off-workspace, so the artifact read-back
         # finds nothing). --auto auto-approves permissions; it auto-REJECTS otherwise
         # and aborts. There is NO --dangerously-skip-permissions flag in 1.17.x.
-        cli="opencode run --dir {workdir} --auto -m {model} {prompt}",
+        cli=("opencode run --dir {workdir} --auto "
+             + (f"--variant {_OPENCODE_VARIANT} " if _OPENCODE_VARIANT else "")
+             + "-m {model} {prompt}"),
         default_model=_OPENCODE_MODEL,
         skills=("configure-opencode-frontend", "vercel-deploy"),
         # opencode's exporter is switched on in its config file
