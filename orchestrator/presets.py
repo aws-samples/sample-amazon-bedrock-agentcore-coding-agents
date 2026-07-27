@@ -141,10 +141,10 @@ PRESETS: dict[str, dict[str, Any]] = {
     # so watching it happen (the console Agents tabs, or `watch_agents.py` in a
     # terminal) actually shows a team building a system.
     "project-from-scratch": {
-        "title": "Build a whole small project (the big one)",
+        "title": "Build a whole project (the big one)",
         "needs": ["backend", "frontend"],
         "task": (
-            "Build a small issue tracker that a team could actually use.\n"
+            "Build an issue tracker that a team could actually use.\n"
             "\n"
             "It must support: creating an issue with a title and description; "
             "listing issues with a filter by status; changing an issue's status "

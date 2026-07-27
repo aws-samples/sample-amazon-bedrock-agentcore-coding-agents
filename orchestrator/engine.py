@@ -2011,8 +2011,17 @@ class Engine:
         # ride into the next round as feedback (run.review["reasons"]).
         if run.iterations >= MAX_ITERATIONS:
             run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
-            run.log(f"changes still requested after {run.iterations} rounds "
-                    "-> needs_human (the PR stays open with the assessment)", "warn")
+            # Say whether a PR actually exists. A RED gate never reaches compose or
+            # open_pr, so on the common path there is NO pull request, and telling the
+            # attendee "the PR stays open with the assessment" sends them looking for
+            # something that was never created. Only claim it when pr_url is real.
+            run.log(
+                f"changes still requested after {run.iterations} rounds -> needs_human"
+                + (f" (the PR stays open with the assessment: {run.pr_url})"
+                   if run.pr_url else
+                   " (no pull request was opened: the gate never went green, so there "
+                   "is nothing to publish; the failing lines are in gate.summary)"),
+                "warn")
             self._ledger(run)
             return True
         why = (gate.get("summary") or "assessment requested changes")
@@ -2384,10 +2393,13 @@ def public_diff(run: Run) -> dict:
 # never produced anything (a transport or turn failure, just resubmit). Same status,
 # opposite next action, and the raw token said neither.
 _NEXT_ACTION = {
+    # No "the PR is open" here: a run that ends ITERATION_CAP had a RED gate, and a red
+    # gate never reaches compose or open_pr, so there is usually no pull request at all.
+    # The `passed` arm above is where a real pr_url gets mentioned.
     "ITERATION_CAP":
-        "The authored check was still red after the bounded re-implement round. Read "
-        "the failing lines in gate.summary: they are the check's own output, so they "
-        "name what the deliverable did not do. The PR is open with the assessment.",
+        "The authored check was still red after the bounded re-implement round, so no "
+        "pull request was opened. Read the failing lines in gate.summary: they are the "
+        "check's own output, so they name exactly what the deliverable did not do.",
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",

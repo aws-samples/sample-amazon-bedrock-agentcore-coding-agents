@@ -293,11 +293,31 @@ def _tool(cfg: dict, tool: str, arguments: dict, timeout: float = 30.0) -> Any:
         for block in result["content"]:
             if block.get("type") == "text":
                 text = block.get("text", "")
+                _raise_if_tool_error(tool, text)
                 try:
                     return json.loads(text)
                 except (ValueError, TypeError):
                     return text
     return result
+
+
+# A tool that FAILED inside the MCP server answers with a normal JSON-RPC result whose
+# text is the error message ("Error calling tool 'create_branch': ... 404 ..."), not a
+# JSON-RPC error. So `_gateway_rpc` sees success and every `except GatewayError` around
+# a `_tool` call is dead code for exactly the failures it was written to catch.
+#
+# Live consequence: `doctor` called create_branch against a repo whose default ref the
+# App could not read, got that 404 back as a STRING, and reported
+# "PASS app_can_write_repo (prepared workshop/integration)" -- while no branch existed.
+# A preflight whose whole job is to fail early instead reported green.
+_TOOL_ERROR_PREFIXES = ("error calling tool", "error executing tool", "tool error:")
+
+
+def _raise_if_tool_error(tool: str, text: str) -> None:
+    """Turn an error-shaped tool RESULT into the GatewayError callers already handle."""
+    head = (text or "").strip()
+    if any(head[:40].lower().startswith(p) for p in _TOOL_ERROR_PREFIXES):
+        raise GatewayError(f"{tool}: {head[:400]}")
 
 
 def _tools_list(cfg: dict, timeout: float = 15.0) -> list[dict]:

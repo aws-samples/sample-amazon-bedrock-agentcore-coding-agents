@@ -202,3 +202,45 @@ def test_the_normal_path_is_unchanged(monkeypatch) -> None:
         _ARN, "cmd", "us-east-1", None, 30.0, "s" * 40))
     assert result["exit"] == 0
     assert "hello" in result["raw"]
+
+
+# --- 3. a FAILED gateway tool must not read as success ---------------------------
+
+def test_error_shaped_tool_result_raises(monkeypatch) -> None:
+    """A GitHub MCP tool that fails INSIDE the server answers with a normal JSON-RPC
+    RESULT whose text is the error, not a JSON-RPC error. Live consequence: `doctor`
+    called create_branch, got back
+    ``"Error calling tool 'create_branch': ... 404 ..."``, and reported
+    ``PASS app_can_write_repo (prepared workshop/integration)`` while no branch existed.
+    Every ``except GatewayError`` around a ``_tool`` call was dead code for exactly the
+    failures it was written to catch.
+    """
+    import github
+
+    cfg = {"target": "GitHubMCP", "gateway_url": "https://gw.example/mcp",
+           "region": "us-west-2", "repo": "o/r", "default_branch": "main",
+           "source": "test"}
+
+    def _fail(_cfg, _method, _params, _timeout):
+        return {"content": [{"type": "text", "text":
+                "Error calling tool 'create_branch': Client error '404 Not Found' for "
+                "url 'https://api.github.com/repos/o/r/git/ref/heads/main'"}]}
+
+    monkeypatch.setattr(github, "_gateway_rpc", _fail)
+    with pytest.raises(github.GatewayError) as excinfo:
+        github._tool(cfg, "create_branch", {"owner": "o", "repo": "r"})
+    assert "404" in str(excinfo.value)
+
+    # A tool that SUCCEEDS must still return its payload untouched, JSON or raw text.
+    monkeypatch.setattr(github, "_gateway_rpc",
+                        lambda *a: {"content": [{"type": "text",
+                                                 "text": '{"url": "https://pr/1"}'}]})
+    assert github._tool(cfg, "create_pull_request", {}) == {"url": "https://pr/1"}
+    monkeypatch.setattr(github, "_gateway_rpc",
+                        lambda *a: {"content": [{"type": "text", "text": "abc123sha"}]})
+    assert github._tool(cfg, "put_file", {}) == "abc123sha"
+    # And a message that merely MENTIONS an error must not be mistaken for one.
+    monkeypatch.setattr(github, "_gateway_rpc",
+                        lambda *a: {"content": [{"type": "text",
+                                                 "text": "fixed the error handling"}]})
+    assert github._tool(cfg, "get_file", {}) == "fixed the error handling"
