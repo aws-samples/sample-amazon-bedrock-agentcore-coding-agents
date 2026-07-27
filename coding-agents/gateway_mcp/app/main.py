@@ -315,6 +315,69 @@ def create_branch(owner: str, repo: str, branch: str, from_branch: str = "main")
 
 
 @mcp.tool()
+def put_files(
+    owner: str,
+    repo: str,
+    branch: str,
+    files: List[dict],
+    message: str,
+) -> str:
+    """Write MANY files to a branch as ONE commit. Returns the commit SHA.
+
+    ``files`` is ``[{"path": "a/b.py", "content": "..."}]``.
+
+    Why this exists: the Contents API (``put_file``) creates a commit PER FILE, so a
+    38-file deliverable arrived as 38 commits titled "run_x: <path>" -- a commit log
+    that describes the transport rather than the change, and a reviewer who cannot see
+    the deliverable as one unit. The Git Data API builds a tree and commits it once:
+    blobs -> tree -> commit -> move the ref.
+
+    ``put_file`` stays for genuine single-file edits.
+    """
+    with httpx.Client(timeout=60) as c:
+        # 1. The branch tip we are building on.
+        r = c.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+                  headers=_headers())
+        r.raise_for_status()
+        parent_sha = r.json()["object"]["sha"]
+        r = c.get(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits/{parent_sha}",
+                  headers=_headers())
+        r.raise_for_status()
+        base_tree = r.json()["tree"]["sha"]
+
+        # 2. One blob per file. base64 so any content (binary, CRLF, unicode) survives.
+        tree_entries = []
+        for item in files:
+            path = item["path"]
+            r = c.post(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/blobs",
+                headers=_headers(),
+                json={"content": base64.b64encode(
+                          str(item["content"]).encode()).decode(),
+                      "encoding": "base64"},
+            )
+            r.raise_for_status()
+            tree_entries.append({"path": path, "mode": "100644", "type": "blob",
+                                 "sha": r.json()["sha"]})
+
+        # 3. One tree, one commit, then move the branch ref to it.
+        r = c.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/trees", headers=_headers(),
+                   json={"base_tree": base_tree, "tree": tree_entries})
+        r.raise_for_status()
+        tree_sha = r.json()["sha"]
+
+        r = c.post(f"{GITHUB_API}/repos/{owner}/{repo}/git/commits", headers=_headers(),
+                   json={"message": message, "tree": tree_sha, "parents": [parent_sha]})
+        r.raise_for_status()
+        commit_sha = r.json()["sha"]
+
+        r = c.patch(f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                    headers=_headers(), json={"sha": commit_sha})
+        r.raise_for_status()
+        return commit_sha
+
+
+@mcp.tool()
 def put_file(
     owner: str,
     repo: str,

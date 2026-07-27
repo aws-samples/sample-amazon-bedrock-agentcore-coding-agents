@@ -184,17 +184,22 @@ def test_status_reports_unhealthy_gateway(monkeypatch, tmp_path):
 # ---- the PR path (create_branch + put_file + create_pull_request) -----------
 
 def test_open_pr_success_publishes_via_gateway_tools(monkeypatch, tmp_path):
-    """open_pr creates the branch, puts each deliverable file, and opens the PR,
-    all via gateway MCP tools. human_review -> PR targets the default branch."""
+    """open_pr creates the branch, publishes the deliverable as ONE commit, and opens
+    the PR, all via gateway MCP tools. human_review -> PR targets the default branch.
+
+    One commit, not one per file: the Contents API commits per PUT, so a 38-file
+    deliverable arrived on a live PR as 38 commits each titled "run_x: <path>" -- a log
+    describing our transport instead of the change.
+    """
     _wire_gateway(monkeypatch, tmp_path)
     calls = []
 
     def _handler(method, tool, args):
-        calls.append((tool, args.get("path")))
+        calls.append((tool, args))
         if tool == "create_branch":
             assert args["from_branch"] == "main"  # human_review base
             return "refs/heads/run/run_x"
-        if tool == "put_file":
+        if tool == "put_files":
             return "abc123"
         if tool == "create_pull_request":
             assert args["head"] == "run/run_x" and args["base"] == "main"
@@ -206,9 +211,59 @@ def test_open_pr_success_publishes_via_gateway_tools(monkeypatch, tmp_path):
     out = github.open_pr(_Run(), "## review\nLGTM: no changes needed")
     assert out["pr_url"] == "https://github.com/octocat/critter-lab/pull/7"
     assert out["number"] == 7 and out["base"] == "main" and out["source"] == "environment"
-    # EVERY file the commit carried was published, with its relative path preserved.
+    # EXACTLY ONE write call, carrying EVERY file with its relative path preserved.
+    writes = [a for (t, a) in calls if t in ("put_files", "put_file")]
+    assert len(writes) == 1, [t for (t, _) in calls]
+    assert {f["path"] for f in writes[0]["files"]} == {"a.txt", "sub/dir/b.txt"}
+    # And the message names the run, not a path.
+    assert "run_x" in writes[0]["message"]
+
+
+def test_open_pr_falls_back_per_file_on_a_gateway_without_put_files(
+        monkeypatch, tmp_path):
+    """An attendee who deployed the gateway before put_files existed must still get a
+    PR. That is version skew, not error hiding: the deliverable lands, as several
+    commits."""
+    _wire_gateway(monkeypatch, tmp_path)
+    calls = []
+
+    def _handler(method, tool, args):
+        calls.append((tool, args.get("path")))
+        if tool == "create_branch":
+            return "refs/heads/run/run_x"
+        if tool == "put_files":
+            raise github.GatewayError("Unknown tool: GitHubMCP___put_files")
+        if tool == "put_file":
+            return "abc123"
+        if tool == "create_pull_request":
+            return {"number": 8, "url": "https://github.com/octocat/critter-lab/pull/8"}
+        raise AssertionError(f"unexpected tool {tool}")
+    _fake_gateway(monkeypatch, _handler)
+
+    out = github.open_pr(_Run(), "## review\nLGTM: no changes needed")
+    assert out["number"] == 8
     put = [p for (t, p) in calls if t == "put_file"]
     assert set(put) == {"a.txt", "sub/dir/b.txt"}, put
+
+
+def test_open_pr_does_not_hide_a_real_put_files_failure(monkeypatch, tmp_path):
+    """Only an UNKNOWN-TOOL error may fall back. A put_files that ran and failed must
+    surface, never quietly retry file by file and look like success."""
+    _wire_gateway(monkeypatch, tmp_path)
+    calls = []
+
+    def _handler(method, tool, args):
+        calls.append(tool)
+        if tool == "create_branch":
+            return "refs/heads/run/run_x"
+        if tool == "put_files":
+            raise github.GatewayError("put_files: 403 Forbidden")
+        raise AssertionError(f"must not reach {tool}")
+    _fake_gateway(monkeypatch, _handler)
+
+    out = github.open_pr(_Run(), "body")
+    assert "403" in out["error"] and "put_files" in out["error"]
+    assert "put_file" not in calls and "create_pull_request" not in calls
 
 
 def test_open_pr_auto_mode_targets_integration_branch_not_main(monkeypatch, tmp_path):
@@ -221,7 +276,7 @@ def test_open_pr_auto_mode_targets_integration_branch_not_main(monkeypatch, tmp_
         if tool == "create_branch":
             seen["branches"].append(args["branch"])
             return f"refs/heads/{args['branch']}"
-        if tool == "put_file":
+        if tool in ("put_files", "put_file"):
             return "sha"
         if tool == "create_pull_request":
             assert args["base"] == github.INTEGRATION_BRANCH, "auto PR must NOT target main"
@@ -255,7 +310,7 @@ def test_open_pr_tolerates_existing_branch(monkeypatch, tmp_path):
     def _handler(method, tool, args):
         if tool == "create_branch":
             raise github.GatewayError("422: Reference already exists")
-        if tool == "put_file":
+        if tool in ("put_files", "put_file"):
             return "sha"
         if tool == "create_pull_request":
             return {"number": 9, "url": "https://github.com/octocat/critter-lab/pull/9"}
@@ -382,7 +437,7 @@ def test_engine_opens_pr_automatically_after_lgtm(monkeypatch, tmp_path):
             return {"tools": []}
         if tool == "create_branch":
             return "refs/heads/" + args["branch"]
-        if tool == "put_file":
+        if tool in ("put_files", "put_file"):
             return "sha"
         if tool == "create_pull_request":
             return {"number": 42, "url": pr_url}
@@ -440,7 +495,7 @@ def test_result_payload_surfaces_pr_url_after_auto_open(monkeypatch, tmp_path):
             return {"tools": []}
         if tool == "create_branch":
             return "refs/heads/" + args["branch"]
-        if tool == "put_file":
+        if tool in ("put_files", "put_file"):
             return "sha"
         if tool == "create_pull_request":
             return {"number": 99, "url": pr_url}

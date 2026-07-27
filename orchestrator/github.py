@@ -488,9 +488,16 @@ def doctor() -> dict[str, Any]:
     need = ("create_branch", "put_file", "create_pull_request", "list_files")
     missing = [t for t in need
                if not any(n.endswith(f"___{t}") or n == t for n in names)]
+    # put_files is NOT in `need`: a gateway deployed before it exists still opens a
+    # perfectly good PR, just as one commit per file. So report it rather than fail on
+    # it, and say what the attendee will see either way.
+    has_batch = any(n.endswith("___put_files") or n == "put_files" for n in names)
     add("pr_tools_present", not missing,
-        "create_branch + put_file + create_pull_request exposed" if not missing
-        else f"missing from the gateway: {', '.join(missing)}")
+        ("create_branch + put_file + create_pull_request exposed"
+         + (" (put_files too: the deliverable lands as ONE commit)" if has_batch
+            else " (no put_files on this gateway: the deliverable will land as one "
+                 "commit PER FILE; redeploy the gateway for a single commit)"))
+        if not missing else f"missing from the gateway: {', '.join(missing)}")
 
     # The check that catches the real Lab 2 mistake: can the App READ this repo?
     # A wrong owner, a typo, or an App installed on a different repository all
@@ -621,6 +628,56 @@ def _ensure_integration_branch(cfg: dict, default_branch: str) -> str | None:
     return INTEGRATION_BRANCH
 
 
+def _publish_files(cfg: dict, owner: str, repo_name: str, branch: str,
+                   files: list[str], message: str) -> str:
+    """Write every deliverable file to ``branch`` as ONE commit. Returns "" or an error.
+
+    The Contents API commits PER FILE, so a 38-file deliverable arrived as 38 commits
+    each titled "run_x: <path>": a log that describes our transport instead of the
+    change, and no single commit a reviewer can read as "the deliverable". The gateway's
+    ``put_files`` builds one tree and one commit instead.
+
+    Falls back to per-file ``put_file`` ONLY when the deployed gateway predates
+    ``put_files`` (an attendee who deployed it earlier in the lab). That is a real
+    version skew, not an error-hiding fallback: the deliverable still lands, just as
+    several commits, and the reason is logged rather than swallowed.
+    """
+    payload = []
+    for path in files:
+        content = _read_composed(branch, path)
+        if content is None:
+            continue
+        payload.append({"path": path, "content": content})
+    if not payload:
+        return "composed branch has no readable files to publish"
+    try:
+        _tool(cfg, "put_files", {"owner": owner, "repo": repo_name, "branch": branch,
+                                 "files": payload, "message": message}, timeout=120.0)
+        return ""
+    except GatewayError as exc:
+        if not _is_unknown_tool(exc):
+            return f"gateway put_files failed: {exc}"
+    # Version skew: this gateway has no put_files. One commit per file, as before.
+    for item in payload:
+        try:
+            _tool(cfg, "put_file",
+                  {"owner": owner, "repo": repo_name, "branch": branch,
+                   "path": item["path"], "content": item["content"],
+                   "message": f"{message} ({item['path']})"})
+        except GatewayError as exc:
+            return f"gateway put_file failed for {item['path']}: {exc}"
+    return ""
+
+
+def _is_unknown_tool(exc: Exception) -> bool:
+    """True when the gateway does not expose the tool we asked for (version skew),
+    as opposed to the tool running and failing."""
+    low = str(exc).lower()
+    return ("unknown tool" in low or "tool not found" in low
+            or "no such tool" in low or "not a valid tool" in low
+            or ("does not exist" in low and "tool" in low))
+
+
 def open_pr(run: Any, body_md: str) -> dict[str, Any]:
     """Publish the composed run branch to the attendee repo via the gateway and
     open the PR. Returns {pr_url} or {error}. Fails LOUD (real-only): no gateway
@@ -662,17 +719,11 @@ def open_pr(run: Any, body_md: str) -> dict[str, Any]:
                 and "reference already exists" not in str(exc).lower()):
             return {"error": f"gateway create_branch failed: {exc}"}
 
-    # 2. Write each deliverable file onto the run branch.
-    for path in files:
-        content = _read_composed(branch, path)
-        if content is None:
-            continue
-        try:
-            _tool(cfg, "put_file", {"owner": owner, "repo": repo_name, "branch": branch,
-                                    "path": path, "content": content,
-                                    "message": f"{run.run_id}: {path}"})
-        except GatewayError as exc:
-            return {"error": f"gateway put_file failed for {path}: {exc}"}
+    # 2. Write the deliverable onto the run branch as ONE commit.
+    err = _publish_files(cfg, owner, repo_name, branch, files,
+                         f"{run.run_id}: {run.task.splitlines()[0][:72]}")
+    if err:
+        return {"error": err}
 
     # 3. Open the PR with the run's narrative as the body (the caller passes it).
     title = f"{run.run_id}: {run.task[:80]}"
@@ -691,10 +742,9 @@ def open_pr(run: Any, body_md: str) -> dict[str, Any]:
 
 def update_pr(run: Any) -> dict[str, Any]:
     """Push the freshly-composed deliverable files onto the run's EXISTING PR
-    branch (the re-implement round of the review loop). ``put_file`` is
-    create-or-update (it passes the blob sha when the file exists), so each
-    changed file lands as a new commit on the same branch and the open pull
-    request updates in place. Returns {updated, files} | {error}."""
+    branch (the re-implement round of the review loop), as ONE commit, so the round
+    reads as a single "re-implement round 2" change rather than one commit per file.
+    The open pull request updates in place. Returns {updated, files} | {error}."""
     cfg = _gateway_config()
     if not cfg:
         return {"error": "no gateway wired"}
@@ -705,17 +755,11 @@ def update_pr(run: Any) -> dict[str, Any]:
     files = _composed_files(branch)
     if not files:
         return {"error": "composed branch has no files to publish"}
-    for path in files:
-        content = _read_composed(branch, path)
-        if content is None:
-            continue
-        try:
-            _tool(cfg, "put_file", {"owner": owner, "repo": repo_name, "branch": branch,
-                                    "path": path, "content": content,
-                                    "message": f"{run.run_id}: re-implement round "
-                                               f"{getattr(run, 'iterations', '?')}: {path}"})
-        except GatewayError as exc:
-            return {"error": f"gateway put_file failed for {path}: {exc}"}
+    err = _publish_files(
+        cfg, owner, repo_name, branch, files,
+        f"{run.run_id}: re-implement round {getattr(run, 'iterations', '?')}")
+    if err:
+        return {"error": err}
     return {"updated": True, "files": files}
 
 
