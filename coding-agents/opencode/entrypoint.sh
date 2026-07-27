@@ -31,5 +31,28 @@ else
   echo "[entrypoint] otelcol-contrib not installed or config missing; skipping collector (telemetry export disabled)"
 fi
 
+# ── Pin the baked config to THIS container's region, before anything runs ─────
+# opencode reads provider.options.region from its config FILE, and that value
+# WINS over AWS_REGION. The image bakes a region, so a runtime in any other
+# region signs Bedrock calls for the baked one and every model call fails with
+# AccessDenied on a foreign inference profile (seen live: a us-east-1 runtime
+# calling us-west-2). run.sh already rewrites the config, but the orchestrator
+# dispatches the `opencode` binary DIRECTLY and never runs run.sh, so the fix has
+# to live here at boot, where both paths pass. Fail-soft: a config we cannot
+# rewrite leaves the baked file in place, exactly as before.
+_CFG="${OPENCODE_CONFIG:-/home/agent/.config/opencode/opencode.json}"
+_RGN="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+if [ -z "$_RGN" ] && [ -r /proc/1/environ ]; then
+  _RGN=$(tr '\0' '\n' < /proc/1/environ | sed -n 's/^AWS_REGION=//p' | head -n 1)
+fi
+if [ -n "$_RGN" ] && [ -f "$_CFG" ] && [ -f /app/configure_opencode.py ]; then
+  if python3 /app/configure_opencode.py --config "$_CFG" --region "$_RGN" \
+       ${GATEWAY_URL:+--gateway-url "$GATEWAY_URL"}; then
+    echo "[entrypoint] opencode config pinned to region $_RGN"
+  else
+    echo "[entrypoint] WARNING: could not rewrite $_CFG; keeping the baked region"
+  fi
+fi
+
 # Hand off to the container's real command (CMD args passed by Docker).
 exec "$@"

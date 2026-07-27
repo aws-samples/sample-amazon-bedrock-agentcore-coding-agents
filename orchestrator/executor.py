@@ -90,7 +90,11 @@ class AgentCoreExecutor(Executor):
                  region: str | None = None,
                  client: Any | None = None) -> None:
         self._arns = dict(runtime_arns or {})
-        self._region = region or os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2")
+        # Ambient region, never a literal: a hardcoded us-west-2 here builds a
+        # client that cannot talk to a runtime in any other region.
+        self._region = (region or os.environ.get("WORKSHOP_BEDROCK_REGION")
+                        or os.environ.get("AWS_REGION")
+                        or os.environ.get("AWS_DEFAULT_REGION") or None)
         self._client = client  # injectable for tests; lazily built otherwise
 
     def runtime_arn(self, agent_id: str) -> str | None:

@@ -76,6 +76,21 @@ clarifying question and stop. Prefer inspecting the workspace to resolve an \
 ambiguity you can answer yourself; ask the user only when inspection cannot. \
 Dispatch only when the ask is unambiguous.
 
+A BUILD request is under-specified in two more ways that matter, and both change \
+what gets built rather than who builds it. Ask about them, ONCE, in a single \
+message, before the first `run_build` of a new project:
+- **Stack.** Any language, framework, or storage preference, or should the agents \
+choose? Left unasked, each agent picks alone and you get a hand-rolled server \
+where the user wanted FastAPI, or plain HTML where they wanted React.
+- **Scope and shape.** State the features you understood as a short list and ask \
+whether that is the right set. A vague request becomes a toy deliverable, and a \
+reviewer cannot tell an agent that under-built from a user who under-asked.
+Offer a sensible default in the same breath ("otherwise I will have them choose, \
+aiming for a production-shaped project rather than a script") so a user who does \
+not care can just say "go". Ask once and then build: this is one question, not an \
+interview, and never a reason to stall a clear request. If the user already named \
+their stack and features, or says "just build it", dispatch immediately.
+
 ## How to act once the ask is clear
 - Focused single-role job (rebuild the UI, patch the backend): call the matching \
 dispatch_* tool. It returns a run id immediately and the build runs in the \

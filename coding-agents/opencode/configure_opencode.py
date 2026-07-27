@@ -44,7 +44,7 @@ def build_config(
             },
         },
         "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
-        "small_model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "small_model": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
     }
     if gateway_url:
         config["mcp"] = {

@@ -209,6 +209,36 @@ def narrative(run: Any) -> str:
         parts.append(f"\n<details><summary>The check that ran</summary>\n\n"
                      f"```\n{excerpt}\n```{more}\n\n</details>")
 
+    # 3b. Where two roles wrote the SAME path. Compose keeps one copy at the root
+    #     and commits the other under CONFLICT-<role>/, which shows up in the diff
+    #     as a directory a reviewer cannot account for. A live PR shipped
+    #     CONFLICT-opencode/server.py with no mention of it anywhere, and the
+    #     reviewing agent called the difference cosmetic instead of noticing two
+    #     competing servers. Reported, never judged: this says what happened and
+    #     leaves whether it matters to the reviewer.
+    conflicts = list(getattr(run, "compose_conflicts", None) or [])
+    if conflicts:
+        n_c = len(conflicts)
+        parts.append(f"\n## {n_c} file{'' if n_c == 1 else 's'} written by more "
+                     "than one role\n")
+        parts.append(
+            "Two roles wrote the same path with different content. The engine kept "
+            "the more recently written copy at the root (the one the gate above "
+            "actually ran against) and committed the other under a `CONFLICT-` "
+            "directory so nothing is hidden from you. **Worth a look: the roles may "
+            "have duplicated work, and only the root copy was graded.**"
+        )
+        parts.append("\n| path | kept from | also written by | the other copy |")
+        parts.append("|---|---|---|---|")
+        for c in conflicts[:10]:
+            parts.append(
+                f"| `{_cell(c.get('path', '?'), 60)}` "
+                f"| `{_cell(c.get('kept_from') or '?', 40)}` "
+                f"| `{_cell(c.get('also_written_by') or '?', 40)}` "
+                f"| `{_cell(c.get('flagged_under', '?'), 70)}` |")
+        if len(conflicts) > 10:
+            parts.append(f"\n_({len(conflicts) - 10} more not listed.)_")
+
     # 4. The loop, but only when there WAS a loop. A one-round run saying
     #    "1 round" is noise; a second round is the interesting event and needs its
     #    reason attached.

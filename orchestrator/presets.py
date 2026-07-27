@@ -89,17 +89,48 @@ class RouteError(ValueError):
 # is not a valid route.
 PRESETS: dict[str, dict[str, Any]] = {
     "service-from-scratch": {
-        "title": "Build a small service",
+        "title": "Build a real HTTP API (backend only)",
         "needs": ["backend"],
-        "task": ("Build a small service that converts between units (length, mass, "
-                 "temperature). A caller should be able to discover what conversions "
-                 "are available and ask for one over the wire."),
+        "task": (
+            "Build an HTTP API for a personal library: books with a title, author, "
+            "and read/unread status.\n"
+            "\n"
+            "It must support: adding a book; listing books with a filter by status "
+            "and a search across title and author; updating a book; deleting one; "
+            "and a summary endpoint with counts by status.\n"
+            "\n"
+            "Requirements that matter more than the endpoint list: the data must "
+            "survive a restart; invalid input must be refused with a clear error and "
+            "a correct status code (empty title, unknown status, updating or deleting "
+            "an id that does not exist); and the API must be documented enough that a "
+            "caller can use it without reading the source.\n"
+            "\n"
+            "Build it the way a real service is built: a proper web framework rather "
+            "than a hand-rolled request handler, dependencies declared in the "
+            "manifest for your ecosystem, and the concerns (routing, domain logic, "
+            "storage, validation) in separate modules. Decide the language, the "
+            "framework, and the storage yourselves."),
     },
     "web-app": {
         "title": "Build a web app, front and back",
         "needs": ["backend", "frontend"],
-        "task": ("Build a small app that lets a person keep a shopping list: a page "
-                 "they interact with, and the service behind it that owns the data."),
+        "task": (
+            "Build an app for keeping a shopping list that a household could share.\n"
+            "\n"
+            "It must support: adding an item with a quantity; ticking an item off and "
+            "back on; editing an item; removing one; filtering to what is still "
+            "needed; and clearing everything already bought.\n"
+            "\n"
+            "The data must survive a restart of the service, invalid input must be "
+            "refused with a clear error rather than accepted, and the page must do "
+            "all of the above against that same service (the page never owns the "
+            "data).\n"
+            "\n"
+            "Build both sides the way real ones are built: a proper web framework on "
+            "the service side, a component-based UI rather than one hand-written file "
+            "on the page side, and dependencies declared in the manifest for your "
+            "ecosystem. Decide the languages, the frameworks, and the storage "
+            "yourselves."),
     },
     # The FLAGSHIP request: deliberately the largest thing on this list, because a
     # team of agents is only interesting when the job is bigger than one obvious
@@ -127,8 +158,14 @@ PRESETS: dict[str, dict[str, Any]] = {
             "transition must be rejected. Include a page a person can use to do all "
             "of this against the same service.\n"
             "\n"
-            "Decide the language, the storage, the protocol, the file layout, and "
-            "the shape of the interface yourselves."),
+            "Build it the way a team would build a real one: a proper web framework "
+            "rather than a hand-rolled request handler, a component-based UI rather "
+            "than one hand-written file, dependencies declared in the manifest for "
+            "your ecosystem, and the concerns split into modules with real names. A "
+            "single file that happens to pass is not the deliverable.\n"
+            "\n"
+            "Decide the language, the framework, the storage, the protocol, the file "
+            "layout, and the shape of the interface yourselves."),
     },
     "cli-tool": {
         "title": "Build a command line tool",

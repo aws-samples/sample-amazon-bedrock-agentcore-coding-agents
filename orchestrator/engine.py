@@ -145,7 +145,15 @@ MAX_ITERATIONS = 1 + reviewer.MAX_REVIEW_ROUNDS
 # Per-role CLI hard timeout (a single coding-agent CLI dispatch inside its deployed
 # Runtime). AGENT_EXECUTION_TIMEOUT_S (below) is the outer net; this kills one
 # wedged CLI tree.
-HARNESS_ROLE_TIMEOUT_S = int(os.environ.get("HARNESS_ROLE_TIMEOUT_S", "600"))
+#
+# 1200s, not 600s. This is a BUDGET, not a target: a role that finishes in 3
+# minutes still finishes in 3 minutes. But the flagship preset asks for a whole
+# small project (several features, real persistence, a UI over the same service),
+# and a role doing that job properly runs past 10 minutes. At 600s the timeout was
+# effectively a scope cap that rewarded the cheapest possible answer: the CLI got
+# killed mid-build, so the deliverable that survived was whatever a single file
+# could do. Raised so the ambition in the preset text is actually reachable.
+HARNESS_ROLE_TIMEOUT_S = int(os.environ.get("HARNESS_ROLE_TIMEOUT_S", "1200"))
 
 # Bounds for the per-role structured event feed (run.role_events): a chatty agent
 # must not grow the in-memory run record without limit. Long bodies are truncated
@@ -157,7 +165,21 @@ _ROLE_EVENT_CAP = 200
 # Single fixed budget for the one agentic phase. A role dispatched to its deployed
 # AgentCore Runtime drives a real CLI over the command shell; the per-role hard
 # timeout (HARNESS_ROLE_TIMEOUT_S) is the inner net, this is the outer one.
-AGENT_EXECUTION_TIMEOUT_S = 1800
+#
+# DERIVED from the inner net, never a standalone literal. The phase is
+# builders-in-parallel THEN the checker, so the worst legitimate case is two
+# sequential role budgets plus staging and read-back overhead. A flat 1800s was
+# only ever safe while a role was capped at 600s; leaving it there while raising
+# the role cap would make the OUTER net fire first and kill a build that was still
+# progressing -- reported, of course, as the roles having failed.
+# max(): an OUTER net below the inner one is never what an operator meant. It would
+# fire while a role was still legitimately working and report the roles as having
+# failed, which is the same "blame the agent for our config" failure mode as the
+# region bug. An explicit override can only ever RAISE the phase budget.
+AGENT_EXECUTION_TIMEOUT_S = max(
+    int(os.environ.get("AGENT_EXECUTION_TIMEOUT_S",
+                       str(2 * HARNESS_ROLE_TIMEOUT_S + 600))),
+    HARNESS_ROLE_TIMEOUT_S + 600)
 
 # The shipped path produces artifacts ONLY by dispatching each role to its deployed
 # AgentCore Runtime (AgentCoreExecutor + engine._runtime_cli); there is no local,
@@ -259,6 +281,28 @@ _RUNNABLE_RULE = (
     "no manual setup, and say plainly in your output how to start it (the exact "
     "command). A separate validator will start it that way to check it, and a human "
     "will read the same instruction in the pull request.\n")
+
+# What builders are told about SCOPE. Still not a layout and not a filename: it
+# constrains the CRAFT, not the shape. Needed because the gate only asks "does it
+# do what was asked?", which the cheapest possible answer can also satisfy -- a
+# live run shipped one hand-rolled `BaseHTTPRequestHandler` file with inline-styled
+# HTML for a request that deserved a structured service, and passed. A reviewer
+# reads these pull requests as production work, so say so up front.
+_SCOPE_RULE = (
+    "BUILD IT AT THE SIZE THE REQUEST ACTUALLY IS. The check that grades you only "
+    "asks whether the behaviour is there, so the smallest thing that passes will "
+    "pass -- do not build that. Build what you would put up for review at work:\n"
+    "- Use a real framework when the request is a real service or app (a proper web "
+    "framework, not a hand-rolled request handler; a component-based UI, not one "
+    "hand-written file with inline styles), and declare your dependencies in the "
+    "manifest your ecosystem expects.\n"
+    "- Split the concerns the task actually has into separate modules with real "
+    "names. One file holding everything is a prototype.\n"
+    "- Cover EVERY feature the request names, and honour its non-functional asks "
+    "literally (if data must survive a restart, an in-memory dict is a failure even "
+    "when the checks pass in one process).\n"
+    "You still choose the language, the framework, the files, and the structure. "
+    "This constrains the standard of the work, not its shape.\n")
 
 
 # Terminal DISPLAY scrubbing. Commands EXECUTE with real absolute paths (the engine
@@ -497,6 +541,14 @@ class Run:
     user_identity: dict = field(default_factory=dict)  # Cognito baggage: {user_id, user_email, user_name}
     composed_branch: str | None = None     # real local git branch holding the composed change
     composed_commit: str | None = None     # real commit sha of the composed artifacts
+    # Paths TWO roles both wrote with different content. Compose keeps the newer
+    # file at the root and the loser under CONFLICT-<role>/, which lands in the
+    # PR as a directory a reviewer cannot explain unless we say so. Recorded here
+    # so the PR narrative can report it: a live PR shipped
+    # CONFLICT-opencode/server.py with no mention of it anywhere on the PR, and
+    # the LLM reviewer dismissed it as cosmetic instead of flagging two competing
+    # servers.
+    compose_conflicts: list[dict] = field(default_factory=list)
     artifact_endpoint: str | None = None
     # A read-only review run points the target's authored check at the TARGET's work.
     _review_work_dir: str | None = None
@@ -948,7 +1000,7 @@ class Engine:
                     runtime_arn=arn, agent_id=agent_id, prompt=prompt,
                     run_subdir=run.run_id, artifact_rel=artifact_rel,
                     model=llm.resolve(model),
-                    region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"),
+                    region=runtime_exec.region_for(arn),
                     on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
                 break
             except runtime_exec.RoleExecutionError as exc:
@@ -1056,6 +1108,7 @@ class Engine:
             f"request carefully; any material it refers to is staged read-only under "
             f"{staged} . Write your work in THIS directory (it is yours), and use as "
             "many files as the job deserves.\n\n"
+            + _SCOPE_RULE + "\n"
             + _RUNNABLE_RULE
             + "\nDo not leave a long-running server in the foreground of your own "
               "session; finish your turn." + feedback)
@@ -1103,6 +1156,7 @@ class Engine:
             "- Every value a user sees comes from a backend call. Render the response, "
             "or the backend's own error; never compute an answer locally and never "
             "invent one to fill a gap.\n\n"
+            + _SCOPE_RULE + "\n"
             + _RUNNABLE_RULE)
         result = self._runtime_cli(run, agent_id, role, prompt, model)
         self._require_work(run, agent_id, result)
@@ -1152,9 +1206,11 @@ class Engine:
                 hit = runtime_config.pick(agent_id)
                 if hit:
                     try:
+                        # No region argument: read_tree_from_runtime derives it from
+                        # the ARN. Passing an env default here is what made every
+                        # read-back fail outside us-west-2.
                         tree = runtime_exec.read_tree_from_runtime(
-                            hit[0], run.run_id, ".",
-                            region=os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2"))
+                            hit[0], run.run_id, ".")
                     except Exception as exc:  # noqa: BLE001 (reported, then counted)
                         run.log(f"{agent_id}: work tree read-back failed: {exc}", "warn")
                         tree = {}
@@ -1173,9 +1229,7 @@ class Engine:
                         listing = ""
                         try:
                             listing = runtime_exec.list_tree_in_runtime(
-                                hit[0], run.run_id,
-                                region=os.environ.get("WORKSHOP_BEDROCK_REGION",
-                                                      "us-west-2"))
+                                hit[0], run.run_id)
                         except Exception:  # noqa: BLE001 (best effort probe)
                             listing = ""
                         if listing.strip():
@@ -1185,9 +1239,7 @@ class Engine:
                                     "warn")
                             try:
                                 tree = runtime_exec.read_tree_from_runtime(
-                                    hit[0], run.run_id, ".",
-                                    region=os.environ.get("WORKSHOP_BEDROCK_REGION",
-                                                          "us-west-2"))
+                                    hit[0], run.run_id, ".")
                             except Exception as exc:  # noqa: BLE001
                                 run.log(f"{agent_id}: read-back retry failed: {exc}",
                                         "warn")
@@ -1312,11 +1364,14 @@ class Engine:
         n = self._read_work_tree(run, agent_id)
         if n == 0:
             suffix = f"; tail:\n{tail}" if tail else ""
-            # Say WHICH failure this is. "wrote no files" sent a facilitator
-            # looking at the agent when a live run had actually written a complete
-            # deliverable the transfer could not carry, so name the transport case
-            # explicitly when the runtime still has files.
-            hint = ""
+            # Say WHICH failure this is, and NEVER blame the agent for a failure
+            # that is ours. "finished but wrote no files" is a claim about the
+            # AGENT, and it is FALSE whenever the runtime workspace still holds the
+            # work: a live us-east-1 run reported exactly that while a complete
+            # server.py sat on the mount, because the read-back had asked the wrong
+            # region. So probe the runtime first and, when it HAS files, raise a
+            # transport error that says so instead of the no-files claim.
+            listing = ""
             if self.executor.name == "agentcore" and not os.environ.get(
                     "WORKSHOP_S3FILES_DIR"):
                 try:
@@ -1324,21 +1379,25 @@ class Engine:
                     import runtime_exec  # noqa: PLC0415
                     hit = runtime_config.pick(agent_id)
                     if hit:
+                        # No region argument: derived from the ARN. This probe is
+                        # the ONLY thing standing between a transport bug and an
+                        # attendee being told their agent did nothing, so it must
+                        # not share the defaulting mistake it exists to catch.
                         listing = runtime_exec.list_tree_in_runtime(
-                            hit[0], run.run_id,
-                            region=os.environ.get("WORKSHOP_BEDROCK_REGION",
-                                                  "us-west-2"))
-                        if listing.strip():
-                            hint = ("; NOTE: the runtime workspace is NOT empty, so "
-                                    "this is a read-back/transport failure rather "
-                                    "than an agent that produced nothing. Resubmit "
-                                    f"the same request. Workspace: "
-                                    f"{listing.strip()[:200]}")
+                            hit[0], run.run_id) or ""
                 except Exception:  # noqa: BLE001 (diagnostic only)
-                    pass
+                    listing = ""
+            if listing.strip():
+                raise RuntimeError(
+                    f"ARTIFACT_TRANSFER_ERROR: {agent_id} DID write work, but the "
+                    f"engine could not read it back from the runtime workspace, so "
+                    f"there is nothing local to review or run. This is a transport "
+                    f"failure on our side, not a failed agent turn: do not go "
+                    f"looking at the agent. Resubmit the same request. Workspace: "
+                    f"{listing.strip()[:200]}{suffix}")
             raise RuntimeError(
                 f"ROLE_EXECUTION_ERROR: {agent_id} finished but wrote no files, so "
-                f"there is nothing to review or run{hint}{suffix}")
+                f"there is nothing to review or run{suffix}")
         return n
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
@@ -1763,6 +1822,13 @@ class Engine:
             # metric filter should alarm on distinctly (a total-failure tier).
             total = len(errored) == len(run.progress) and len(run.progress) > 0
             reason = "ROLE_TOTAL_FAILURE" if total else "ROLE_EXECUTION_ERROR"
+            # ...but never relabel OUR failure as the agents'. When every failing
+            # role failed because the engine could not read work back that the
+            # runtime still holds, the run-level reason must say transport too,
+            # or the honest per-role note is contradicted by the headline the
+            # attendee actually reads.
+            if all("ARTIFACT_TRANSFER_ERROR" in (r.note or "") for r in errored):
+                reason = "ARTIFACT_TRANSFER_ERROR"
             run.status, run.fail_reason = "failed", reason
             if total:
                 run.log(f"agent execution: ALL {len(errored)} routed roles failed "
@@ -2050,6 +2116,9 @@ class Engine:
         # therefore reported a CONFLICT on two byte-identical-looking checks that
         # were really two different rounds of the same file.
         seen: dict[str, str] = {}
+        # Which role's copy currently occupies each path, so a conflict record can
+        # name the winner EXACTLY rather than inferring it from a directory name.
+        owner: dict[str, str] = {}
         collisions: list[str] = []
         for agent_id in run.agents:
             src = run.roledir(agent_id)
@@ -2085,12 +2154,29 @@ class Engine:
                             root_dest = os.path.join(repo, rel)
                             os.makedirs(os.path.dirname(root_dest), exist_ok=True)
                             shutil.copy2(newer, root_dest)
+                            # Whoever wrote the file we KEPT owns the path now: the
+                            # incoming role when its copy is newer, else the role
+                            # that already held it.
+                            prior_owner = owner.get(rel, "")
+                            kept_by = agent_id if newer is full else prior_owner
+                            lost_by = prior_owner if newer is full else agent_id
                             seen[rel] = newer
+                            owner[rel] = kept_by
                             dest = os.path.join(repo, f"CONFLICT-{agent_id}", rel)
                             os.makedirs(os.path.dirname(dest), exist_ok=True)
                             shutil.copy2(older, dest)
+                            # Record it so the PR can SAY so. The reviewer sees a
+                            # CONFLICT-<role>/ directory in the diff; without this
+                            # the PR never explains where it came from.
+                            run.compose_conflicts.append({
+                                "path": rel,
+                                "kept_from": kept_by,
+                                "also_written_by": lost_by,
+                                "flagged_under": f"CONFLICT-{agent_id}/{rel}",
+                            })
                         continue
                     seen[rel] = full
+                    owner[rel] = agent_id
                     dest = os.path.join(repo, rel)
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
                     shutil.copy2(full, dest)
@@ -2305,6 +2391,13 @@ _NEXT_ACTION = {
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",
+    # Distinct from the above ON PURPOSE: the agent SUCCEEDED and its work is still
+    # in the runtime workspace. Saying "the role produced nothing" here would send
+    # the reader to debug an agent that did its job.
+    "ARTIFACT_TRANSFER_ERROR":
+        "The role's work exists in its runtime workspace but the engine could not "
+        "read it back, so this is our transport failure and not a failed agent turn. "
+        "Submit the SAME request again; the workspace listing is in the fail reason.",
     "ROLE_TOTAL_FAILURE":
         "EVERY routed role failed, which points at the harness or the environment "
         "rather than the request: check that each role's runtime is wired and READY, "
@@ -2329,7 +2422,8 @@ _NEXT_ACTION = {
 
 
 def next_action(status: str, fail_reason: str | None,
-                pr: dict | None = None, pr_url: str | None = None) -> str:
+                pr: dict | None = None, pr_url: str | None = None,
+                conflicts: list[dict] | None = None) -> str:
     """One sentence telling the reader what to do about this outcome.
 
     Derived, never stored: the reason is the fact, this is how to read it. An
@@ -2343,8 +2437,18 @@ def next_action(status: str, fail_reason: str | None,
     """
     if status == "passed":
         pr = pr or {}
+        # A duplicate path is worth ONE clause on a passing run: the gate graded
+        # only the copy at the root, so "it passed" is true but incomplete.
+        dup = ""
+        if conflicts:
+            n = len(conflicts)
+            dup = (f" Note: {n} file{'' if n == 1 else 's'} "
+                   f"({', '.join(str(c.get('path')) for c in conflicts[:3])}) "
+                   f"{'was' if n == 1 else 'were'} written by more than one role; "
+                   "only the copy at the repository root was graded.")
         if pr_url:
-            return "Open the pull request and read the assessment comment on it."
+            return ("Open the pull request and read the assessment comment on it."
+                    + dup)
         pr_error = str(pr.get("error") or "")
         if pr_error.startswith("PR_NO_GATEWAY"):
             return ("The build passed but no GitHub MCP Gateway is wired, so no PR was "
@@ -2355,8 +2459,10 @@ def next_action(status: str, fail_reason: str | None,
                     "was opened. Re-run deploy-credential.sh, then resubmit.")
         if pr_error:
             return (f"The build passed but the PR step failed: {pr_error[:160]}. Run "
-                    "`python3 orchestrator/github.py doctor`.")
-        return ""
+                    "`python3 orchestrator/github.py doctor`." + dup)
+        # No advice to give on a clean pass with no PR -- but a duplicate path is
+        # still worth saying, so `dup` alone (stripped) beats an empty string.
+        return dup.strip()
     reason = (fail_reason or "").split(":")[0].strip()
     if reason in _NEXT_ACTION:
         return _NEXT_ACTION[reason]
@@ -2392,6 +2498,10 @@ def public_result(run: Run) -> dict:
         "artifact_endpoint": run.artifact_endpoint,
         "composed_branch": run.composed_branch,
         "composed_commit": run.composed_commit,
+        # Paths two roles both wrote. A PASSING run can still ship a duplicate the
+        # gate never graded, and every other field here would report plain success,
+        # so the CLI and console need to be able to say so too.
+        "compose_conflicts": run.compose_conflicts,
         "fail_reason": run.fail_reason,
         "route": run.route,
         "review": run.review,
@@ -2400,5 +2510,6 @@ def public_result(run: Run) -> dict:
         # What to DO about this outcome, in one sentence. `needs_human` alone cannot
         # tell "the gate stayed red on real work" from "a role produced nothing",
         # and those have opposite next steps.
-        "next_action": next_action(run.status, run.fail_reason, run.pr, run.pr_url),
+        "next_action": next_action(run.status, run.fail_reason, run.pr, run.pr_url,
+                                   run.compose_conflicts),
     }

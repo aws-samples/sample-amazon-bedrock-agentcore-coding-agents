@@ -104,6 +104,27 @@ class RoleExecutionError(RuntimeError):
     """A role's runtime dispatch failed (no runtime, nonzero exit, missing artifact)."""
 
 
+def region_for(runtime_arn: str, fallback: str | None = None) -> str:
+    """The region a runtime call MUST use: the one in the runtime's own ARN.
+
+    An AgentCore ARN carries its region (``arn:aws:bedrock-agentcore:<region>:...``)
+    and ``open_shell`` REJECTS a client whose region differs, so the ARN is the only
+    authoritative source. A caller-supplied default is a guess, and a hardcoded
+    default is a guess that is silently wrong in every other region: this file used
+    to default to ``us-west-2``, and on a us-east-1 event box every workspace
+    read-back raised "ARN region does not match client region" and was reported to
+    the attendee as their agent having written nothing.
+
+    Falls back (only for a non-ARN target, e.g. the local ``agentcore dev`` URI) to
+    the caller's value, then the ambient region, and never to a literal region."""
+    parts = (runtime_arn or "").split(":")
+    if len(parts) > 3 and parts[3]:
+        return parts[3]
+    return (fallback or os.environ.get("WORKSHOP_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION") or "")
+
+
 def _client(region: str):
     # Lazy import: the SDK is only needed when actually dispatching to a runtime,
     # mirroring llm.py / executor.py. Keeps unit tests import-light.
@@ -265,11 +286,33 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
 
     async with client.open_shell(runtime_arn=runtime_arn, session_id=session_id,
                                  shell_id=shell_id) as shell:
-        await shell.send(command)
-        async for frame in shell:
-            if time.monotonic() > deadline:
+        # asyncio.wait_for on EACH frame, not a check inside the loop body. The
+        # deadline used to be tested only after a frame arrived, so a shell that
+        # connected and then went silent blocked forever: `async for` simply never
+        # yielded, the check never ran, and the timeout was unreachable. Observed
+        # live twice on one box (a 600s dispatch sat 9m02s, a 180s probe 4m32s,
+        # both with zero output) until killed by hand. A run that hangs reports no
+        # verdict at all, which is worse than any red gate, so the wall clock -- not
+        # the peer -- has to decide when to give up.
+        await asyncio.wait_for(shell.send(command),
+                               timeout=max(1.0, deadline - time.monotonic()))
+        frames = shell.__aiter__()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise RoleExecutionError(
                     f"ROLE_EXECUTION_ERROR: runtime dispatch exceeded {timeout_s:.0f}s")
+            try:
+                frame = await asyncio.wait_for(frames.__anext__(), timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                # Silence past the deadline is the SAME failure as an overlong run,
+                # and it must be reported, never waited out.
+                raise RoleExecutionError(
+                    f"ROLE_EXECUTION_ERROR: runtime dispatch exceeded "
+                    f"{timeout_s:.0f}s with no further output from the shell "
+                    f"(the session stopped sending frames)") from exc
+            except StopAsyncIteration:
+                break
             ch = frame.channel
             if ch == ShellChannel.STDOUT:
                 text = frame.text
@@ -585,7 +628,7 @@ _TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
 
 
 def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
-                         region: str = "us-west-2") -> str:
+                         region: str | None = None) -> str:
     """A cheap LISTING of the run workspace, for telling two failures apart.
 
     When ``read_tree_from_runtime`` comes back empty the engine cannot tell "the
@@ -610,14 +653,16 @@ def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
     )
     sid = "rexls-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
     try:
-        rr = asyncio.run(_drive_shell(runtime_arn, cmd, region, None, 60.0, sid))
+        rr = asyncio.run(_drive_shell(runtime_arn, cmd,
+                                      region_for(runtime_arn, region),
+                                      None, 60.0, sid))
     except Exception:  # noqa: BLE001 (a probe that cannot run proves nothing)
         return ""
     return _clean(_slice(rr["raw"], f"{_ART_BEGIN}-{nonce}", f"{_ART_END}-{nonce}"))
 
 
 def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
-                           region: str = "us-west-2") -> dict[str, bytes]:
+                           region: str | None = None) -> dict[str, bytes]:
     """Read a whole DIRECTORY (/mnt/s3files/<run>/<tree_rel>) back from the
     runtime as {relative_path: bytes}, via one tar|base64 pass between the same
     sentinels the single-file read uses. Lets a role deliver a multi-file
@@ -655,7 +700,9 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
             f'echo "$E2"; exit 0\n'
         )
         sid = "rextr-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
-        rr = asyncio.run(_drive_shell(runtime_arn, cmd, region, None, 90.0, sid))
+        rr = asyncio.run(_drive_shell(runtime_arn, cmd,
+                                      region_for(runtime_arn, region),
+                                      None, 90.0, sid))
         blob = _slice(rr["raw"], f"{_ART_BEGIN}-{nonce}", f"{_ART_END}-{nonce}")
         if blob.strip():
             try:
@@ -711,7 +758,7 @@ def _live_session_for(agent_id: str, runtime_arn: str,
 
 
 def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str,
-                   artifact_rel: str | None, model: str, region: str = "us-west-2",
+                   artifact_rel: str | None, model: str, region: str | None = None,
                    on_line: Callable[[str], None] | None = None,
                    timeout_s: float = 600.0) -> dict[str, Any]:
     """Run ``agent_id``'s CLI inside its deployed runtime and read the artifact
@@ -751,8 +798,7 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
         return _run_in_local_dev(runtime_arn, agent_id, prompt, run_subdir,
                                  artifact_rel, model, on_line, timeout_s)
 
-    _arn_parts0 = runtime_arn.split(":")
-    _live_region = _arn_parts0[3] if len(_arn_parts0) > 3 and _arn_parts0[3] else region
+    _live_region = region_for(runtime_arn, region)
     # A live-PTY CLI inherits its env at LAUNCH, so the run's telemetry env
     # (enable + identity + run.id/agent.id) must be in the session's launch
     # command; typing a turn into an already-running TUI can inject nothing.
@@ -766,12 +812,10 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
                                 _live_region, on_line, timeout_s)
 
     # The AgentCore client AND the dispatched command must use the RUNTIME's own
-    # region, parsed from its ARN (arn:aws:bedrock-agentcore:<region>:...), never a
-    # caller default. Otherwise open_shell raises a region mismatch on any runtime
-    # not in the default region and the container never runs.
-    _arn_parts = runtime_arn.split(":")
-    if len(_arn_parts) > 3 and _arn_parts[3]:
-        region = _arn_parts[3]
+    # region (region_for: parsed from the ARN), never a caller default. Otherwise
+    # open_shell raises a region mismatch on any runtime not in the default region
+    # and the container never runs.
+    region = region_for(runtime_arn, region)
 
     import llm  # noqa: PLC0415 (lazy; only the dispatch path needs alias/fallback)
 

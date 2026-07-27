@@ -57,13 +57,35 @@ an interface, your job is to bridge to it, not to copy it.
 - Fail loud and specific: the caller should learn what was wrong, not just that
   something was.
 
+## Build it at the size the task actually is
+
+The gate only asks "does it do what was asked?", so the cheapest thing that passes
+is a real temptation. Resist it. A reviewer reads this as production work.
+
+- **Match the scope to the request.** A request naming several features, real
+  persistence, and validation is a project, not a script. Do not collapse it into
+  one file because one file can be made to pass.
+- **Structure it as you would at work.** Separate the concerns the task actually
+  has (routing, domain logic, storage, validation) into their own modules with
+  real names. A single 100-line file holding all of them is a prototype, and
+  saying "keep it minimal" to yourself is not a design decision.
+- **Use a real framework when the task is a real service.** A production HTTP
+  service in Python is FastAPI or Flask, not a hand-rolled
+  `BaseHTTPRequestHandler`; in Node it is Express or Fastify, not raw `http`.
+  Hand-rolling the protocol layer is how you end up re-implementing routing,
+  parsing, and status codes badly. Declare your dependencies in the manifest the
+  ecosystem expects (`requirements.txt`, `package.json`) so anyone can install and
+  run it.
+- Reach for the standard library for genuinely small helpers, not to avoid the
+  framework a real service would use.
+- **Persistence means persistence.** If the task says data must survive a restart,
+  an in-memory dict is a failed requirement even if the gate's checks happen to
+  pass in one process.
+
 ## Runnable and self-contained
 
 - The service must actually start and serve, from a clean checkout, with an
   obvious entry point and a way to choose its port/address.
-- Prefer the standard library and what the environment already has; add a
-  dependency only when it earns its weight, and if you do, make installing it
-  obvious.
 - Bind to loopback by default for a local/dev server; do not expose it wider than
   the task needs.
 

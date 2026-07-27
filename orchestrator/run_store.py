@@ -59,8 +59,11 @@ def _s3() -> tuple[Any, str] | None:
         return None
     try:
         import boto3  # noqa: PLC0415 (lazy, mirrors the other AWS seams)
-        region = os.environ.get("WORKSHOP_BEDROCK_REGION",
-                                os.environ.get("AWS_REGION", "us-west-2"))
+        # Ambient region, then boto3's own resolver. Never a literal: a hardcoded
+        # region mirrors run state into the wrong region's endpoint.
+        region = (os.environ.get("WORKSHOP_BEDROCK_REGION")
+                  or os.environ.get("AWS_REGION")
+                  or os.environ.get("AWS_DEFAULT_REGION") or None)
         return boto3.client("s3", region_name=region), bucket
     except Exception:  # noqa: BLE001 (no SDK / no credentials: no mirror)
         return None

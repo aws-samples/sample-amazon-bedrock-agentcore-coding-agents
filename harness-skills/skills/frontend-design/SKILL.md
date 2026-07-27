@@ -25,6 +25,25 @@ agent-built frontends. When the task points at a specific stack (React, plain
 HTML, a component library), follow that stack's own conventions first and use
 these as the cross-cutting bar.
 
+## Build it at the size the task actually is
+
+"Thin" (below) is about where LOGIC lives. It is not permission to ship less UI
+than the task asks for. The gate only checks behaviour, so one inline-styled HTML
+file can pass a request that deserved an application; a reviewer reads this as
+production work, so build it that way.
+
+- **Cover every feature the request names**, each reachable and usable in the UI.
+  A page that exercises one endpoint of a multi-feature request is unfinished.
+- **Use a real framework when the task is a real app.** A multi-view, stateful
+  interface is React/Vue/Svelte with components and a build manifest
+  (`package.json`), not one hand-written file with inline `onclick`. Declare your
+  dependencies so anyone can install and run it.
+- A single static page is the right answer only for a genuinely single-interaction
+  task. Say which it is on purpose, rather than defaulting to the smaller one.
+- **Separate structure, style, and behaviour** into their own files once there is
+  more than a trivial amount of any of them. Inline `style="..."` on every element
+  is not a design system.
+
 ## The one rule that outranks the rest: the UI is thin
 
 The frontend renders and interacts. It does not own business logic or data.

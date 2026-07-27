@@ -37,7 +37,18 @@ BEDROCK_MODEL_MAP: dict[str, str] = {
     "claude-haiku-4-5": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
-CLAUDE_REGION = os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2")
+def claude_region() -> str:
+    """The region to call Bedrock in: whatever region we are actually running in.
+
+    A FUNCTION, not a module constant: a constant is frozen at import time, so a
+    process whose region is set after the first import (the console, a dispatched
+    run) would keep calling the region it was imported with. And the fallback is
+    the AMBIENT region, never a literal: hardcoding ``us-west-2`` here sent every
+    reviewer call on a us-east-1 box to the wrong region. Empty string lets boto3
+    resolve its own chain (config file, then IMDS) rather than us guessing."""
+    return (os.environ.get("WORKSHOP_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION") or "")
 # GPT-5.5 is served from us-east-2 on the mantle endpoint (us-west-2 = 5.4 only).
 OPENAI_REGION = os.environ.get("WORKSHOP_MANTLE_REGION", "us-east-2")
 OPENAI_RESPONSES_URL = f"https://bedrock-mantle.{OPENAI_REGION}.api.aws/openai/v1/responses"
@@ -106,7 +117,7 @@ def _invoke_claude(model_id: str, prompt: str, system: str | None,
                    max_tokens: int) -> dict[str, Any]:
     try:
         import boto3  # noqa: PLC0415
-        rt = boto3.client("bedrock-runtime", region_name=CLAUDE_REGION)
+        rt = boto3.client("bedrock-runtime", region_name=claude_region() or None)
         kwargs: dict[str, Any] = {
             "modelId": model_id,
             "messages": [{"role": "user", "content": [{"text": prompt}]}],

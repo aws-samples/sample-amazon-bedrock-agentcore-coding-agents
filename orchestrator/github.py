@@ -109,13 +109,31 @@ INTEGRATION_BRANCH = "workshop/integration"
 
 # --- Gateway config resolution ------------------------------------------------
 
+def _ambient_region() -> str:
+    """The session's real region from boto3 (config file, then IMDS), or "".
+
+    Used only when neither the gateway URL nor the environment names one, so the
+    workshop host still signs for its own region instead of a hardcoded guess."""
+    try:
+        import boto3  # noqa: PLC0415 (lazy, mirrors the other AWS seams)
+        return boto3.session.Session().region_name or ""
+    except Exception:  # noqa: BLE001 (no SDK: caller surfaces the empty region)
+        return ""
+
+
 def _region_from_url(url: str) -> str:
-    """Best-effort region from the gateway host (…bedrock-agentcore.<region>.…),
-    else the ambient AWS region, else us-west-2."""
+    """The region to SigV4-sign for: the gateway's own
+    (…bedrock-agentcore.<region>.…), else the ambient AWS region.
+
+    The URL wins because the signature must match the endpoint being called. No
+    literal fallback: signing for a region the gateway is not in fails the
+    request, and guessing one region for every attendee is how that happens."""
     m = re.search(r"\.([a-z]{2}-[a-z]+-\d)\.", url or "")
     if m:
         return m.group(1)
-    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+    return (os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+            or _ambient_region())
 
 
 def _load_config_file() -> dict:

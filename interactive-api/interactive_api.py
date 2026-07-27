@@ -422,7 +422,7 @@ def _stage_agent_config(session: dict) -> None:
                 "$schema": "https://opencode.ai/config.json",
                 "provider": {"amazon-bedrock": {"options": {"region": _OPENCODE_REGION}}},
                 "model": _OPENCODE_MODEL,
-                "small_model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+                "small_model": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
             }, f, indent=2)
     elif agent_id == "kiro":
         d = os.path.join(root, ".kiro", "steering")
@@ -1326,7 +1326,7 @@ def _harness_files(agent_id: str) -> dict[str, str]:
             '  "provider": { "amazon-bedrock": { "options": '
             f'{{ "region": "{_OPENCODE_REGION}" }} }} }},\n'
             f'  "model": "{_OPENCODE_MODEL}",\n'
-            '  "small_model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"\n'
+            '  "small_model": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"\n'
             "}\n")
     return files
 

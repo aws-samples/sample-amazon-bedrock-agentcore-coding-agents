@@ -48,23 +48,55 @@ def skill_path(run_id: str) -> str:
 
 def _bucket(region: str, account_id: str) -> str:
     # Wirable override first, then the infra/setup.sh convention.
-    return os.environ.get("WORKSHOP_RUNTIME_BUCKET",
-                          f"coding-agents-{account_id}-{region}")
+    override = os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
+    if override:
+        return override
+    # The region is part of the NAME here, so an empty one is not "let boto3
+    # decide" but a WRONG bucket: `coding-agents-<acct>-` with a trailing dash,
+    # which is exactly the name a live run failed on. Ask the session for the
+    # real region rather than interpolating a blank.
+    if not region:
+        region = _resolved_region()
+    if not region:
+        raise RuntimeError(
+            "REGION_NOT_RESOLVED: cannot build the runtime bucket name without a "
+            "region. Set AWS_REGION (or WORKSHOP_RUNTIME_BUCKET) and retry.")
+    return f"coding-agents-{account_id}-{region}"
+
+
+def _resolved_region() -> str:
+    """The session's real region, asked of boto3 when the env does not say.
+
+    boto3 resolves ``~/.aws/config`` then IMDS, so on the workshop host this
+    returns the box's own region even when no AWS_* variable is exported (the
+    non-interactive-shell case that produced a trailing-dash bucket name)."""
+    try:
+        import boto3  # noqa: PLC0415
+        return boto3.session.Session().region_name or ""
+    except Exception:  # noqa: BLE001 (no SDK: caller raises a clear error)
+        return ""
 
 
 def _s3_region() -> str:
-    return os.environ.get("WORKSHOP_BEDROCK_REGION",
-                          os.environ.get("AWS_REGION", "us-west-2"))
+    """The region to stage into: the ambient one. "" means "let boto3 resolve it"
+    (config file, then IMDS), which is right on the workshop host; a hardcoded
+    region would silently target another region's bucket."""
+    return (os.environ.get("WORKSHOP_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION") or "")
 
 
 def _client(region: str):
     import boto3  # noqa: PLC0415 (lazy, mirrors llm.py / executor.py)
-    return boto3.client("s3", region_name=region)
+    # region or None: an EMPTY string is not a region, and passing one to boto3
+    # raises instead of letting its own resolver (config file, IMDS) answer.
+    return boto3.client("s3", region_name=region or None)
 
 
 def _account_id(region: str) -> str:
     import boto3  # noqa: PLC0415
-    return boto3.client("sts", region_name=region).get_caller_identity()["Account"]
+    return boto3.client("sts",
+                        region_name=region or None).get_caller_identity()["Account"]
 
 
 def _upload_tree(s3, bucket: str, local_dir: str, key_prefix: str) -> int:
