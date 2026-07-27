@@ -551,7 +551,7 @@ def doctor() -> dict[str, Any]:
     except GatewayError as exc:
         reason = str(exc)
         lowered = reason.lower()
-        if "already exists" in lowered or "reference already exists" in lowered:
+        if _branch_already_exists(exc):
             add("app_can_write_repo", True,
                 f"{INTEGRATION_BRANCH} already exists, so the App can write")
         elif "403" in lowered or "forbidden" in lowered or "permission" in lowered:
@@ -623,9 +623,25 @@ def _ensure_integration_branch(cfg: dict, default_branch: str) -> str | None:
                "branch": INTEGRATION_BRANCH, "from_branch": default_branch})
     except GatewayError as exc:
         # Already existing is success; anything else is a real failure.
-        if "already exists" not in str(exc).lower() and "reference already exists" not in str(exc).lower():
+        if not _branch_already_exists(exc):
             return None
     return INTEGRATION_BRANCH
+
+
+def _branch_already_exists(exc: Exception) -> bool:
+    """True when create_branch failed only because the branch is already there.
+
+    GitHub answers a duplicate ref with a bare ``422 Unprocessable Entity`` and the MCP
+    server forwards httpx's message, which does NOT contain the words "already exists".
+    Matching only that phrase made a SUCCESS look like a failure: on a rerun, `doctor`
+    reported "could not confirm write access: ... 422" and NOT READY on a repo it had
+    itself prepared moments earlier, and `open_pr` would abort a legitimate re-run of
+    the same run id. 422 on the refs endpoint has exactly one cause here, since the ref
+    name and the base sha are both ours.
+    """
+    low = str(exc).lower()
+    return ("already exists" in low or "reference already exists" in low
+            or "422" in low)
 
 
 def _publish_files(cfg: dict, owner: str, repo_name: str, branch: str,
@@ -715,8 +731,7 @@ def open_pr(run: Any, body_md: str) -> dict[str, Any]:
         _tool(cfg, "create_branch", {"owner": owner, "repo": repo_name,
                                      "branch": branch, "from_branch": base})
     except GatewayError as exc:
-        if ("already exists" not in str(exc).lower()
-                and "reference already exists" not in str(exc).lower()):
+        if not _branch_already_exists(exc):
             return {"error": f"gateway create_branch failed: {exc}"}
 
     # 2. Write the deliverable onto the run branch as ONE commit.

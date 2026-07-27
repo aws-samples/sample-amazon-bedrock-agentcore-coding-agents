@@ -244,3 +244,21 @@ def test_error_shaped_tool_result_raises(monkeypatch) -> None:
                         lambda *a: {"content": [{"type": "text",
                                                  "text": "fixed the error handling"}]})
     assert github._tool(cfg, "get_file", {}) == "fixed the error handling"
+
+
+def test_a_duplicate_branch_422_is_success_not_a_failure() -> None:
+    """GitHub answers a duplicate ref with a BARE `422 Unprocessable Entity`; the words
+    "already exists" never appear. Matching only that phrase turned a success into a
+    failure: on a rerun `doctor` reported "could not confirm write access: ... 422" and
+    NOT READY on a repo it had prepared itself moments earlier, and `open_pr` would abort
+    a legitimate re-run of the same run id."""
+    import github
+
+    raw = ("create_branch: Error calling tool 'create_branch': Client error "
+           "'422 Unprocessable Entity' for url "
+           "'https://api.github.com/repos/o/r/git/refs'")
+    assert github._branch_already_exists(github.GatewayError(raw))
+    assert github._branch_already_exists(github.GatewayError("Reference already exists"))
+    # A real permission problem must NOT be swallowed as "it already exists".
+    assert not github._branch_already_exists(github.GatewayError("403 Forbidden"))
+    assert not github._branch_already_exists(github.GatewayError("404 Not Found"))
