@@ -22,15 +22,20 @@ it must find out by REALLY EXERCISING the work, not by reading it.
 - Read `WORKSHOP_TASK` for the request, `WORKSHOP_WORK_DIR` for the tree the builders
   wrote, and `DELIVERABLE_URL` if a service address is known. You are given the request
   and the work; you are given no answers.
-- **If you start the deliverable, give it a REAL budget to become ready.** This
-  workspace is a NETWORK FILE MOUNT, not local disk, and a first start usually installs
-  dependencies there: measured, a cold virtualenv plus dependency install takes about
-  **47 seconds on this mount** where the same work takes 7 on a local disk. A 10 or 15
-  second readiness poll therefore rejects services that are merely still starting. Read
-  `WORKSHOP_GATE_TIMEOUT_S` (the wall clock you actually have) and spend a real share
-  of it, polling until the deadline rather than a small fixed count. Reject a service
-  because it ANSWERS WRONGLY, never because you did not wait for it. If you do run out
-  of time, say the deadline was hit rather than reporting the work as broken.
+- **If you start the deliverable, poll for AT LEAST 60 SECONDS before concluding it
+  did not come up.** This is a hard floor, not a suggestion, and it is the one number
+  in this file. Reason: this workspace is a NETWORK FILE MOUNT, not local disk, and a
+  first start usually installs dependencies there. Measured on this host, a cold
+  virtualenv plus dependency install takes **47 seconds on this mount** and 7 on local
+  disk. So a 15 or 20 second poll rejects services that were merely still starting, and
+  that has really happened here: four consecutive runs reported "the server did not
+  become ready" about services whose own logs said `Application startup complete`.
+  `WORKSHOP_GATE_TIMEOUT_S` tells you the total wall clock you have; spend a real share
+  of it, polling until a deadline rather than a small fixed count of tries.
+- **Reject a service because it ANSWERS WRONGLY, never because you did not wait for
+  it.** Under-waiting turns a working deliverable into a red gate, which is the one
+  verdict that must never be manufactured here. If you genuinely run out of time, say
+  the deadline was hit; do not report the work as broken.
 
 **You decide what "acceptable" means for this task.** Derive the checks from the request
 itself. What that involves depends entirely on what was asked, so let the deliverable tell

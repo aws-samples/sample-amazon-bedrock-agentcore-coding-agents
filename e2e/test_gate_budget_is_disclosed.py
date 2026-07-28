@@ -116,6 +116,58 @@ def test_the_validator_steering_warns_about_the_mount() -> None:
     assert "answers wrongly" in lowered or "answers incorrectly" in lowered
 
 
+def test_the_steering_states_a_hard_MINIMUM_poll() -> None:
+    """Advice was not enough on its own.
+
+    After the budget was disclosed AND the mount slowness explained, a live run still
+    authored a 20s readiness poll. An agent weighing "spend a real share of the budget"
+    can reasonably land anywhere; a floor cannot be reasoned below. So the steering
+    carries one number.
+    """
+    path = os.path.join(_ROOT, "orchestrator", "harness",
+                        "claude-code-validator", "CLAUDE.md")
+    text = open(path, encoding="utf-8").read()
+    assert "AT LEAST 60 SECONDS" in text, (
+        "a soft 'spend a real share' left a live run choosing 20s; state a floor")
+
+
+def test_the_budget_exceeds_the_required_poll() -> None:
+    """A ceiling below the required floor would re-create the bug it was meant to fix.
+
+    The check must be able to wait its mandated 60s AND still have room to run real
+    assertions, otherwise the budget itself pushes checks to under-wait.
+    """
+    import reviewer
+
+    assert reviewer.GATE_TIMEOUT_S >= 180, (
+        f"{reviewer.GATE_TIMEOUT_S}s leaves too little after a 60s readiness poll")
+
+
+def test_the_budget_is_wirable_but_cannot_be_lowered_into_the_bug(monkeypatch) -> None:
+    """Operators may raise it for a slower environment; they may not floor it away."""
+    import importlib
+
+    import reviewer
+
+    monkeypatch.setenv("WORKSHOP_GATE_BUDGET_S", "600")
+    assert importlib.reload(reviewer).GATE_TIMEOUT_S == 600
+    monkeypatch.setenv("WORKSHOP_GATE_BUDGET_S", "5")
+    assert importlib.reload(reviewer).GATE_TIMEOUT_S == 180
+    monkeypatch.delenv("WORKSHOP_GATE_BUDGET_S")
+    importlib.reload(reviewer)
+
+
+def test_the_two_budget_names_are_distinct() -> None:
+    """One name for both directions would read as if a check sets its own deadline."""
+    source = open(os.path.join(_ORCH, "reviewer.py"), encoding="utf-8").read()
+    body = "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("#"))
+    assert "WORKSHOP_GATE_BUDGET_S" in body      # what an OPERATOR sets
+    assert "WORKSHOP_GATE_TIMEOUT_S" in body     # what the CHECK is told
+    assert 'environ.get("WORKSHOP_GATE_TIMEOUT_S")' not in body, (
+        "the check must not be able to raise the deadline it is judged against")
+
+
 def test_the_backend_skill_keeps_install_off_the_start_path() -> None:
     """The other half: a start command that installs first cannot become ready fast."""
     path = os.path.join(_ROOT, "harness-skills", "skills",

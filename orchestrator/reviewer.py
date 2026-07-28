@@ -81,7 +81,19 @@ class Verdict:
 
 
 # ------------------------------------------------------------------ the gate
-GATE_TIMEOUT_S = 120
+# The wall clock for the authored check. It has to cover the check's own readiness
+# poll PLUS every assertion it then makes, and on this host the readiness poll alone
+# can legitimately need ~47s: the workspace is an NFS mount and a deliverable's first
+# start usually creates a virtualenv and installs dependencies there (the same work
+# takes 7s on local disk). At 120s a check that waits the 60s its steering now
+# requires had barely a minute left for the actual checks, so the budget itself was
+# pushing checks to under-wait.
+#
+# Wirable through its OWN name, deliberately not WORKSHOP_GATE_TIMEOUT_S (that is what
+# the engine HANDS the check; one name for both directions would read as though a
+# check could extend its own deadline). Floored at 180s, because a budget below the
+# steering's required 60s poll plus real assertions would re-create the bug.
+GATE_TIMEOUT_S = max(180, int(os.environ.get("WORKSHOP_GATE_BUDGET_S") or 240))
 # How long a killed check's group gets to die before we stop waiting on it. Short on
 # purpose: this runs on the verdict path, and a wedged reap must not hold up the run.
 _GROUP_REAP_S = 5
