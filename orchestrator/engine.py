@@ -1464,7 +1464,20 @@ class Engine:
             "check that only probes an address it did not start can never pass, and "
             "it would report a working deliverable as broken. Pick the port yourself "
             "(an unused one) rather than assuming a default, and if you cannot start "
-            "it, print why and fail: that is a real finding, not a technicality."
+            "it, print why and fail: that is a real finding, not a technicality.\n\n"
+            # The floor is stated HERE as well as in the steering because the steering
+            # alone did not hold: with the mount slowness explained and the budget in
+            # the env, a live run still authored a 20s poll and red-gated a service
+            # whose own log said startup was complete. This is the last channel before
+            # the file is written, so it repeats the number rather than trusting that
+            # the earlier instruction won.
+            "WAIT LONG ENOUGH: poll for AT LEAST 60 SECONDS before concluding it did "
+            "not come up, and read `WORKSHOP_GATE_TIMEOUT_S` for the total wall clock "
+            "you have. This workspace is a network file mount, where a first start "
+            "that installs dependencies costs around 47 seconds (7 on local disk). A "
+            "short poll rejects services that were merely still starting, which is a "
+            "false verdict: reject work that ANSWERS WRONGLY, never work you did not "
+            "wait for."
             + feedback)
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
                                    _ACCEPTANCE_CHECK)

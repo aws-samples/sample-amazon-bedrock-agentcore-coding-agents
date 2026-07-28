@@ -20,7 +20,9 @@ Caller (SigV4) ──▶ AgentCore Gateway (IAM inbound)
 - Docker running locally
 - `jq` installed
 - `gh` CLI installed ([install guide](https://github.com/cli/cli#installation)) and authenticated (`gh auth login`)
-- `awscurl` for testing SigV4-signed requests: `pip install awscurl`
+- `awscurl` for testing SigV4-signed requests: `pip install awscurl`. Only the
+  VERIFY step needs it: without it `verify-gateway.sh` reports `SKIP` and leaves the
+  deploy's own verdict alone, because "I could not check it" is not "it did not work".
 - A **GitHub App** installed on your target repo/org (see Step 1 below)
 
 ## Quick Start

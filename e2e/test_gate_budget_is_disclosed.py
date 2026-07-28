@@ -157,6 +157,20 @@ def test_the_budget_is_wirable_but_cannot_be_lowered_into_the_bug(monkeypatch) -
     importlib.reload(reviewer)
 
 
+def test_the_dispatch_prompt_repeats_the_floor() -> None:
+    """The steering alone did not hold, so the last channel states it too.
+
+    With the mount slowness in its steering AND the budget in its env, a live run still
+    authored a 20s poll. The dispatch prompt is the final instruction before the file
+    is written, so it carries the number rather than assuming the earlier one won.
+    """
+    source = open(os.path.join(_ORCH, "engine.py"), encoding="utf-8").read()
+    body = "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("#"))
+    assert "AT LEAST 60 SECONDS" in body
+    assert "WORKSHOP_GATE_TIMEOUT_S" in body
+
+
 def test_the_two_budget_names_are_distinct() -> None:
     """One name for both directions would read as if a check sets its own deadline."""
     source = open(os.path.join(_ORCH, "reviewer.py"), encoding="utf-8").read()

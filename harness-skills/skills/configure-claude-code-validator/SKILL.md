@@ -72,13 +72,21 @@ credential-provider steps here: the validator has no vendor key.
 
 ## Step 3: The validator's job - author the check, not answer the task
 
-The validator receives three env vars the orchestrator sets:
+The validator receives these env vars the orchestrator sets. They are FACTS about the
+request and the environment; none of them says what a correct answer looks like.
 
 | Env var | Contents |
 |---|---|
 | `WORKSHOP_TASK` | the original request (what the user typed) |
 | `WORKSHOP_WORK_DIR` | path to the tree the builder roles wrote |
 | `DELIVERABLE_URL` | a live URL, when one exists (may be empty) |
+| `WORKSHOP_GATE_TIMEOUT_S` | the wall clock the check gets before it is killed |
+
+Size any readiness poll against that budget, and **never below 60 seconds**. The
+workspace is a network file mount: a deliverable's first start, which usually installs
+dependencies, measures ~47s there against 7s on local disk. Checks that allowed 15-20s
+produced red gates on services that were merely still starting. Reject work that
+ANSWERS WRONGLY, never work you did not wait for.
 
 With those inputs the validator's job is:
 
@@ -90,8 +98,9 @@ With those inputs the validator's job is:
      only the check knows what "running" means for this specific artifact).
    - Exit 0 to accept, non-zero to reject.
    - Print one line per check so the output is readable in the run log.
-3. Write that executable to a known path and declare it in `run.json` so the
-   engine knows what to execute.
+3. Write that executable as `acceptance_check` at the root of the workspace. The
+   engine picks it up by that name; there is nothing to declare (`run.json` belongs to
+   the BUILDERS, who use it to say how their deliverable starts).
 
 The engine runs the authored executable and reads its real exit code. That exit
 code IS the gate. Nothing else decides.
@@ -107,9 +116,15 @@ agent with its own container and steering is the only honest judge).
 
 ## Step 4: Run the gate
 
-The engine calls the validator role, which authors and runs the check. The validator
-signals completion by writing `run.json` with a `start` entrypoint and exiting with
-the appropriate code after running it.
+The engine calls the validator role, which AUTHORS the check and stops there. It does
+not run it and does not declare the deliverable's entrypoint: `run.json` (with `start`,
+and optional `port_env` / `health`) is written by the BUILDER roles, since only they
+know how their work starts. The engine then starts what it was told to start, polls
+what it was told to poll, runs the authored check, and reads its real exit code.
+
+Keeping those apart is the whole point. A validator that ran its own check would be
+grading and reporting in one breath, and the exit code the engine reads is the only
+verdict that counts.
 
 To observe the validator's output during development or to test the deployment:
 
