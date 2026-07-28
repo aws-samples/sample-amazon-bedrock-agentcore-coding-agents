@@ -86,6 +86,16 @@ is a real temptation. Resist it. A reviewer reads this as production work.
 
 - The service must actually start and serve, from a clean checkout, with an
   obvious entry point and a way to choose its port/address.
+- **Your start command must STAY IN THE FOREGROUND and keep serving until it is
+  killed.** Whatever checks your work will launch that command and then poll the
+  service, so a command that forks, backgrounds itself, or returns once the server
+  is "up" looks identical to a server that died: the poll finds nothing. Do not end
+  the start path with `&`, do not `nohup`/disown it, and do not exit after printing
+  a ready message. If your framework's runner can detach, use its foreground mode.
+- Honour the port you are given (an env var if one is set, otherwise your
+  documented default) rather than always binding a hardcoded one. Something that
+  probes your service will choose a free port to avoid collisions; if you ignore it
+  and bind your own, the probe polls an address nothing is listening on.
 - Bind to loopback by default for a local/dev server; do not expose it wider than
   the task needs.
 
@@ -123,7 +133,10 @@ you.
 
 ## Verify your own work before you hand it off
 
-- The server starts from a clean checkout and serves on a chosen port.
+- The server starts from a clean checkout and serves on a chosen port. Prove it the
+  way a checker will: run your start command, and from ANOTHER shell call the
+  service. If your command returned control before you could make that call, it
+  backgrounded itself and it will read as a dead service.
 - It imports the source of truth live; grep your own output for a copied constant
   or a duplicated formula and remove it.
 - Discovery lists exactly the intended capabilities; one real call returns the
