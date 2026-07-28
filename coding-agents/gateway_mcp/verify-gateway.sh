@@ -4,10 +4,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
+# A missing VERIFIER is not a broken GATEWAY, and reporting it as one sends the
+# attendee to debug a deploy that succeeded. `deploy-all.sh` already draws this line
+# for its GitHub preflight (unreachable GitHub prints SKIP and continues); the same
+# reasoning applies to our own tooling. So: say what could not be checked, name the
+# fix, and leave the deploy's own verdict alone. A gateway that ANSWERS WRONGLY still
+# fails below -- this only covers "nothing here could ask it".
 for command in awscurl jq; do
   command -v "$command" >/dev/null 2>&1 || {
-    echo "ERROR: ${command} is required to verify the Gateway." >&2
-    exit 1
+    echo "SKIP: cannot verify the Gateway from here: '${command}' is not on PATH." >&2
+    echo "      The gateway itself deployed; this step only CHECKS it." >&2
+    if [[ "$command" == "awscurl" ]]; then
+      echo "      Install it, then re-run ./verify-gateway.sh:" >&2
+      echo "        python3 -m pip install --user --break-system-packages awscurl" >&2
+      echo "      (If it is already installed, open a new terminal: it lives in" >&2
+      echo "       ~/.local/bin, which a login shell adds to PATH.)" >&2
+    fi
+    echo "      Deployed state: ${STATE_FILE}" >&2
+    exit 0
   }
 done
 
