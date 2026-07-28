@@ -96,6 +96,13 @@ is a real temptation. Resist it. A reviewer reads this as production work.
   documented default) rather than always binding a hardcoded one. Something that
   probes your service will choose a free port to avoid collisions; if you ignore it
   and bind your own, the probe polls an address nothing is listening on.
+- **Start fast: installing dependencies is setup, not startup.** Your workspace is a
+  network file mount, where a cold virtualenv plus dependency install measures around
+  47 seconds (7 on local disk). If your start command does that install first, every
+  second of it is spent before your service answers anything, and a checker polling
+  for readiness sees a service that never came up. Keep install in a separate setup
+  step, or make it a no-op when the dependencies are already present, so a second
+  start is immediate.
 - Bind to loopback by default for a local/dev server; do not expose it wider than
   the task needs.
 

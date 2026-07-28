@@ -187,12 +187,14 @@ def run_gate(run: Any) -> dict:
     correct answer looks like, so there is no pinned contract to consult and no
     stand-in grade to fall back to.
 
-    The executable is run from its own directory with three things in its
-    environment, and nothing else the engine knows: ``WORKSHOP_WORK_DIR`` (the tree
-    the builders wrote, so a check can inspect files), ``WORKSHOP_TASK`` (the request,
-    so a check can re-read what was asked), and ``DELIVERABLE_URL`` (a live URL when
-    one exists, with ``MCP_ENDPOINT_URL`` kept as a compatible alias). None of them
-    tells the check what to verify.
+    The executable is run from its own directory with a few facts in its environment,
+    and nothing else the engine knows: ``WORKSHOP_WORK_DIR`` (the tree the builders
+    wrote, so a check can inspect files), ``WORKSHOP_TASK`` (the request, so a check
+    can re-read what was asked), ``WORKSHOP_GATE_TIMEOUT_S`` (how long it has before
+    the wall clock kills it, so its own readiness poll can be sized against a real
+    budget instead of a guess), and ``DELIVERABLE_URL`` (a live URL when one exists,
+    with ``MCP_ENDPOINT_URL`` kept as a compatible alias). None of them tells the
+    check WHAT to verify or what a correct answer looks like.
 
     Fail-loud, with no exceptions: no authored check means NO PASS. A run that
     reaches the gate without one is a red gate with a reason, never a courtesy
@@ -220,9 +222,17 @@ def run_gate(run: Any) -> dict:
     work_dir = (getattr(run, "_review_work_dir", "")
                 or os.path.dirname(authored)
                 or getattr(run, "workdir", "") or "")
+    # GATE_TIMEOUT_S is a FACT about the environment, not a hint about the verdict, so
+    # handing it over changes nothing about what the check decides. Withholding it made
+    # checks guess: four live runs in a row failed on a readiness poll the author had
+    # budgeted 15-30s, while the deliverable's own start path spent 47s creating a venv
+    # and pip-installing ON THE S3 FILES NFS MOUNT (the same work takes 7s on local
+    # disk, so nothing the validator could read would tell it). Those were red gates on
+    # working services, which is the one failure this file must not manufacture.
     env = {**os.environ,
            "WORKSHOP_WORK_DIR": work_dir,
            "WORKSHOP_TASK": getattr(run, "task", "") or "",
+           "WORKSHOP_GATE_TIMEOUT_S": str(GATE_TIMEOUT_S),
            "DELIVERABLE_URL": url, "MCP_ENDPOINT_URL": url}
     try:
         os.chmod(authored, os.stat(authored).st_mode | 0o755)
