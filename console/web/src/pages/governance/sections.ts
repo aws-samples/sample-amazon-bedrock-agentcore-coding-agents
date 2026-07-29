@@ -18,11 +18,11 @@ export interface GovSection {
 }
 
 export const GOV_SECTIONS: GovSection[] = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard, sub: 'Fleet health at a glance', title: 'Governance', subtitle: "Every number is computed from this machine's real run ledger over the metrics API." },
-  { id: 'runtimes', label: 'Runtimes', icon: Cpu, sub: 'Deployed fleet & live probe', title: 'Runtimes', subtitle: 'The deployed AgentCore runtimes the fleet dispatches to: wiring, fleet size, and a live probe that runs a real job inside a runtime.' },
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard, sub: 'Fleet health at a glance', title: 'Governance', subtitle: "Every number is computed from this machine's run ledger over the metrics API." },
+  { id: 'runtimes', label: 'Runtimes', icon: Cpu, sub: 'Deployed fleet & live probe', title: 'Runtimes', subtitle: 'See the deployed AgentCore Runtimes, their wiring, fleet size, and the result of a one-line probe inside a Runtime.' },
   { id: 'sessions', label: 'Sessions', icon: ListTree, sub: 'Inventory, attribution & kill switch', title: 'Sessions', subtitle: 'Every Runtime session, its recorded submitter, and a kill switch. Click a row for evidence.' },
   { id: 'cost', label: 'Cost', icon: DollarSign, sub: 'Per-agent & per-user spend', title: 'Cost', subtitle: 'The per-user cost surface groups ledger records by agent or authenticated submitter.' },
-  { id: 'audit', label: 'Audit', icon: ScrollText, sub: 'Append-only ledger trail', title: 'Audit trail', subtitle: 'Every real ledger event as one auditable line. Nothing synthesized.' },
+  { id: 'audit', label: 'Audit', icon: ScrollText, sub: 'Append-only ledger trail', title: 'Audit trail', subtitle: 'Every recorded ledger event appears as one auditable line.' },
   { id: 'policies', label: 'Guardrails', icon: ShieldCheck, sub: 'Cedar rules the harness enforces', title: 'Guardrails', subtitle: 'The rule set the harness screens every action against, decided in code, not from a dashboard.' },
   { id: 'analyze', label: 'Analyze', icon: Sparkles, sub: 'Ask the model about this fleet', title: 'AI analysis', subtitle: 'Ask the orchestrator model about this fleet, grounded in the live governance snapshot.' },
 ];

@@ -12,7 +12,10 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(configure_deploy)
 
 
-def test_configure_wires_role_arns_execution_role_and_runtime_environment(tmp_path):
+def test_configure_wires_role_arns_execution_role_and_runtime_environment(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "human_review")
+    monkeypatch.setenv("WORKSHOP_FINAL_MERGE_POLICY", "auto")
     project = tmp_path / "CodingAgents" / "agentcore" / "agentcore.json"
     project.parent.mkdir(parents=True)
     project.write_text(json.dumps({
@@ -45,6 +48,8 @@ def test_configure_wires_role_arns_execution_role_and_runtime_environment(tmp_pa
     assert env["AGENTCORE_RUNTIME_CLAUDE_CODE_VALIDATOR"].endswith("/claude-code-validator")
     assert env["WORKSHOP_RUNTIME_BUCKET"] == "coding-agents-123456789012-us-west-2"
     assert env["WORKSHOP_GITHUB_STORE"] == "secretsmanager"
+    assert env["WORKSHOP_FINAL_MERGE_POLICY"] == "auto"
+    assert "WORKSHOP_MERGE_POLICY" not in env
 
     # The deploy target must be pinned to the workshop region: `agentcore deploy`
     # otherwise creates its default target in us-east-1 regardless of AWS_DEFAULT_REGION.

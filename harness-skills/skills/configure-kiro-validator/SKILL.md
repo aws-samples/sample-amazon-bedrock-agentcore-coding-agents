@@ -34,8 +34,9 @@ Claude Code) and does not build the frontend (that is Codex). Stay in lane.
 
 This is an autonomous, fire-and-forget pipeline. There is **no race, no
 winner, no fastest/cheapest ranking**: the three agents each do their role
-and the orchestrator composes one deliverable. Your job here is only to get
-the VALIDATOR slot deployed and pointed at the gate.
+and the orchestrator validates their combined candidate before queuing the
+builder PRs. Your job here is only to get the VALIDATOR slot deployed and
+pointed at the gate.
 
 ## Why a spec-driven agent fits validation
 
@@ -154,8 +155,8 @@ verify, don't assume.
   In-memory only, never on disk. No Codex Identity commands here.
 - The gate is **the authored executable**. Real execution decides; a model's
   opinion never overrides the exit code.
-- No race / no winner framing. The three agents are co-equal roles composed
-  into one deliverable by the orchestrator. Any cost figures are illustrative
+- No race / no winner framing. The three agents are co-equal roles integrated
+  through a gated role-PR queue. Any cost figures are illustrative
   orders of magnitude; use the workshop's own measured run metrics, never
   vendor "Nx cheaper" claims.
 - Extensibility note: to validate a different deliverable, the validator reads

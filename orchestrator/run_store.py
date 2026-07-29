@@ -27,12 +27,19 @@ bucket was unreachable.
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
+import threading
 import time
 from typing import Any
 
 _STATE_PREFIX = "orchestrator/run-state"   # S3 key prefix for the mirrored copy
+# A live engine refreshes active snapshots every 30 seconds. Four missed writes is
+# long enough to avoid declaring a slow S3 request dead, but short enough that a
+# recycled Runtime does not leave an attendee staring at "running" forever.
+ACTIVE_STALE_AFTER_S = int(os.environ.get(
+    "WORKSHOP_RUN_STATE_STALE_AFTER_S", "120"))
 
 
 def _local_dir(runs_dir: str) -> str:
@@ -76,7 +83,11 @@ def save(runs_dir: str, run_id: str, payload: dict[str, Any],
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2)
     try:
         os.makedirs(_local_dir(runs_dir), exist_ok=True)
-        tmp = _local_path(runs_dir, run_id) + ".tmp"
+        # A heartbeat and the terminal write can land together. Give each writer
+        # its own temporary path so one atomic replace cannot remove another
+        # thread's still-open temp file.
+        tmp = (_local_path(runs_dir, run_id)
+               + f".tmp.{os.getpid()}.{threading.get_ident()}")
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(body)
         # Atomic replace, so a reader never sees a half-written status.
@@ -121,6 +132,26 @@ def load(runs_dir: str, run_id: str) -> dict[str, Any] | None:
         return None
 
 
+def active_snapshot_is_stale(payload: dict[str, Any],
+                             now: float | None = None) -> bool:
+    """True when a persisted active run has stopped receiving heartbeats.
+
+    A coordinator Runtime can be recycled after the chat invocation returns. Its
+    worker thread disappears with the microVM, so the last honest state is
+    non-terminal even though no process can advance it. Treat that as an explicit
+    interruption instead of reporting "running" forever.
+    """
+    if payload.get("status") not in ("queued", "running"):
+        return False
+    saved_at = str(payload.get("_saved_at") or "")
+    try:
+        stamp = calendar.timegm(time.strptime(
+            saved_at, "%Y-%m-%dT%H:%M:%SZ"))
+    except (OverflowError, ValueError):
+        return False
+    return (now if now is not None else time.time()) - stamp > ACTIVE_STALE_AFTER_S
+
+
 def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
     """The most recent persisted runs, newest first.
 
@@ -129,8 +160,8 @@ def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
     every call is a cost the answer does not justify, and the local directory is
     what the console and the box actually read.
 
-    Ordered by MTIME, not by name. A run id is ``run_<HHMMSS>_<NNN>`` -- time of day
-    with no date -- so sorting the filenames puts last night's 23:59 run ahead of
+    Ordered by MTIME, not by name. A run id starts with ``run_<HHMMSS>`` -- time
+    of day with no date -- so sorting the filenames puts last night's 23:59 run ahead of
     this morning's 00:05 one, and "your most recent run" would name the wrong build
     for anyone whose session crosses midnight UTC.
     """

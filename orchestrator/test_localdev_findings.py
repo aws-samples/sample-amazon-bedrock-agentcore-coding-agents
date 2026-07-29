@@ -69,16 +69,18 @@ def test_a_passing_run_that_opened_a_pr_says_where_to_look():
     assert "pull request" in action.lower()
 
 
-def test_a_passing_run_whose_pr_never_opened_says_so():
-    """The build succeeded and the deliverable is stranded on a local branch.
-
-    This is NOT a fail_reason -- the build genuinely passed -- so it is readable only
-    from the PR result. Nothing in the payload flagged it at a glance before.
-    """
+def test_a_passing_offline_queue_explains_how_to_create_real_prs():
+    """A fixture pass must not imply that GitHub received role or final PRs."""
     pr = {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired. Deploy the gateway..."}
     action = engine.next_action("passed", None, pr, None)
-    assert "doctor" in action, action
-    assert "local branch" in action or "no PR" in action, action
+    assert "Gateway" in action, action
+    assert "submit a new run" in action, action
+    assert "role and final pull requests" in action, action
+
+    run = engine.Run(run_id="run_000000_701", task="t", agents=[], roles={})
+    run.status = "passed"
+    run.pr = pr
+    assert engine.public_result(run)["next_action"] == action
 
 
 def test_a_rejected_credential_on_a_passing_run_points_at_the_credential():
@@ -111,14 +113,6 @@ def test_pr_no_gateway_is_not_treated_as_a_failure_reason():
     assert 'fail_reason, "PR_NO_GATEWAY' not in src
     # And the advice must come from the passing arm, not the reason table.
     assert "PR_NO_GATEWAY" not in engine._NEXT_ACTION
-
-
-def test_public_result_carries_the_pr_aware_action():
-    run = engine.Run(run_id="run_000000_701", task="t", agents=[], roles={})
-    run.status = "passed"
-    run.pr = {"error": "PR_NO_GATEWAY: nope"}
-    payload = engine.public_result(run)
-    assert "doctor" in payload["next_action"], payload["next_action"]
 
 
 # ------------- 4. the local seam reported exit 0 for a CLI that died
@@ -232,7 +226,7 @@ def test_the_local_mount_readback_excludes_what_the_deployed_one_does():
 
         run = eng_mod.Run(run_id="run_000000_800", task="t",
                           agents=["claude-code"], roles={"claude-code": "backend"})
-        work = os.path.join(mount, run.run_id)
+        work = os.path.join(mount, run.runtime_subdir("claude-code"))
         os.makedirs(os.path.join(work, ".git", "hooks"), exist_ok=True)
         os.makedirs(os.path.join(work, "__pycache__"), exist_ok=True)
         with open(os.path.join(work, "server.py"), "w") as f:

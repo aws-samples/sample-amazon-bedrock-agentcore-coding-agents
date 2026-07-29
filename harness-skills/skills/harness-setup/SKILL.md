@@ -31,8 +31,9 @@ roles are unambiguous:
 
 Framing: this is an **autonomous, fire-and-forget** pipeline. The orchestrator handles the
 deterministic work (admission, context hydration, pre-flight, finalization); the three agents
-are the single agentic step fanned into three roles and composed into ONE deliverable. There
-is **no race, no winner, no fastest/cheapest ranking**: every agent has a job and does it.
+are the agentic step fanned into isolated roles, then integrated through an executable gate
+and role-PR queue. There is **no race, no winner, no fastest/cheapest ranking**: every agent
+has a job and does it.
 
 > Per-agent **model routing** is each agent's own concern (Sonnet for new tasks,
 > Haiku for read-only review, Opus opt-in for complex repos). The umbrella skill only confirms

@@ -13,15 +13,22 @@ Runtime, artifact, test contract, or GitHub credential is an explicit error.
    finalization around the selected work.
 4. `AgentCoreExecutor` sends each role to its deployed Runtime. It does not fall
    back to an in-process builder.
-5. `reviewer.py` runs the deterministic pytest floor, then an optional LLM judge.
-   A red floor can never pass. The exact pass token is
-   `LGTM: no changes needed`.
-6. `github.py` composes one branch and opens a real PR. If no GitHub credential
-   resolves, the PR step fails and `pr_url` remains null.
+5. Each builder gets an isolated checkout, unique work id, branch, and role PR
+   against the run's private integration branch.
+6. `reviewer.py` executes the validator-authored task-specific check, then runs
+   independent adversarial-verification and design/integration turns over the
+   integrated candidate. They are read-only, never reuse a maker conversation,
+   and can make a green gate stricter. A red executable can never pass. The exact
+   approval token is `LGTM: no changes needed`.
+7. `github.py` merges approved role PRs one at a time, rerunning the executable
+   gate after every merge, then opens one final integration PR to the default
+   branch. If no Gateway resolves, pre-flight fails before agent work.
 
-There is no race and no winner. Roles contribute different artifacts to one
-deliverable. One failed review allows one bounded reimplementation pass, then the
-run requires a human.
+There is no race and no conflict winner. Roles start independently against a shared
+contract. Red evidence buys one repair turn for the responsible existing role PR.
+Separately, when a declared dependency merges, its downstream owner gets one semantic
+integration turn against the real implementation even when Git rebases cleanly. The
+final PR supports either human review or guarded auto-merge.
 
 ## Main seams
 
@@ -31,12 +38,14 @@ run requires a human.
 | `presets.py` | Routing: which capabilities a request needs |
 | `chat.py` | Strands conversation and tool selection |
 | `role_graph.py` | The agent-execution schedule as a Strands graph |
+| `integration_plan.py` | Flexible shared contract and bounded repair routing |
+| `work_items.py` | Work ids, isolated patches, dependency order, candidate assembly |
 | `engine.py` | Five-phase lifecycle, state, compose, and finalization |
 | `executor.py` | Real AgentCore executor boundary |
 | `runtime_exec.py` | Command-shell dispatch and work-tree readback |
 | `runtime_stage.py` | Stage the harness skills onto S3 Files |
 | `runtime_config.py` | Resolve per-role Runtime ARN fleets or explicit dev URIs |
-| `reviewer.py` | Runs the validator's authored check; optional fail-open LLM judge |
+| `reviewer.py` | Runs the validator check plus the read-only adversarial/design panel |
 | `replay.py` | The run's narrative, for the PR body (reports, never judges) |
 | `github.py` | Gateway config resolution, PR creation, and the `doctor` preflight |
 | `run_store.py` | Durable run state, so a verdict outlives its session |
@@ -62,13 +71,17 @@ Other important settings:
 - `WORKSHOP_ROLES` selects which registered roles are served (an unknown id fails loud).
 - `WORKSHOP_RUNS_DIR` selects untracked run state.
 - `WORKSHOP_MAX_RUN_STATE` caps how many persisted run verdicts are kept.
-- `WORKSHOP_S3FILES_DIR` points the shared workspace at a local dir (the dev seam).
+- `WORKSHOP_S3FILES_DIR` points the S3 Files mount at a local dir (the dev seam).
 - `WORKSHOP_GITHUB_SETTINGS` isolates the GitHub settings file.
 - `GITHUB_GATEWAY_URL` and `GITHUB_REPO` wire the PR path; there is no token.
 - `WORKSHOP_RUNTIME_BUCKET` overrides the S3 staging bucket, and is where the
   deployed coordinator mirrors run state (its own filesystem dies with the microVM).
 - `WORKSHOP_BEDROCK_REGION` selects coordinator inference region.
-- `WORKSHOP_MERGE_POLICY` is `human_review` (default) or `auto`.
+- `WORKSHOP_REVIEW_MODEL` selects the default model for both independent panel
+  turns. `WORKSHOP_ADVERSARIAL_REVIEW_MODEL` and
+  `WORKSHOP_DESIGN_REVIEW_MODEL` can override either member.
+- `WORKSHOP_FINAL_MERGE_POLICY` is `human_review` (default) or `auto`.
+  `WORKSHOP_MERGE_POLICY` remains a compatibility alias.
 
 GitHub attributes a PR to the App installation whose token the MCP server minted
 for the call. Cognito identity baggage records who submitted the run. Those are
@@ -103,6 +116,6 @@ Settings or `runtime_config.py`. Start the console as described in
 [console/README.md](../console/README.md), open **Tasks**, and submit an
 outcome-oriented request.
 
-The run panel must show only roles chosen by the coordinator, per-role shell
-transcripts, the deterministic gate result, and a real `pr_url` after GitHub
-accepts the PR.
+The run panel must show only routed roles, their unique work ids and role PRs, the
+candidate digest, every executable checkpoint, both independent review-panel
+members, the private merge queue, and the real final `pr_url`.

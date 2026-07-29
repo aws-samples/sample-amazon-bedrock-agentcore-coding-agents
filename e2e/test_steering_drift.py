@@ -23,8 +23,6 @@ from __future__ import annotations
 import os
 import sys
 
-import pytest
-
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
 sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
@@ -65,34 +63,38 @@ def _baked(role_id: str) -> str:
     return direct   # nonexistent: the caller reports it as missing
 
 
-@pytest.mark.parametrize("role_id", _ROLE_IDS)
-def test_shipped_steering_exists(role_id):
+def test_shipped_steering_exists_for_every_registered_role():
     """The registry's steering path must actually resolve: the engine stages this file
     on every dispatch, so a missing one is a fail-loud run, not a cosmetic problem."""
-    path = _shipped(role_id)
-    assert os.path.isfile(path), f"{role_id}: no shipped steering at {path}"
-    assert os.path.getsize(path) > 200, f"{role_id}: steering at {path} is suspiciously empty"
+    for role_id in _ROLE_IDS:
+        path = _shipped(role_id)
+        assert os.path.isfile(path), f"{role_id}: no shipped steering at {path}"
+        assert os.path.getsize(path) > 200, (
+            f"{role_id}: steering at {path} is suspiciously empty")
 
 
-@pytest.mark.parametrize("role_id", _ROLE_IDS)
-def test_baked_steering_matches_the_shipped_source(role_id):
+def test_baked_steering_matches_the_shipped_source_for_every_role():
     """The image's copy must be byte-identical to the one source of truth.
 
     If this fails, run:
         cp orchestrator/harness/<role>/<file> coding-agents/<role>/<file>
     and REBUILD that role's image, because the container carries its own copy.
     """
-    baked = _baked(role_id)
-    if not os.path.isfile(baked):
-        pytest.skip(f"{role_id} has no baked harness dir (not built as an image)")
-    with open(_shipped(role_id), encoding="utf-8") as f:
-        want = f.read()
-    with open(baked, encoding="utf-8") as f:
-        got = f.read()
-    assert got == want, (
-        f"{role_id}: the baked steering has DRIFTED from "
-        f"orchestrator/harness/. The baked copy is what a deployed agent reads before "
-        f"the mount has steering, so this silently changes live behavior.")
+    compared = []
+    for role_id in _ROLE_IDS:
+        baked = _baked(role_id)
+        if not os.path.isfile(baked):
+            continue
+        with open(_shipped(role_id), encoding="utf-8") as f:
+            want = f.read()
+        with open(baked, encoding="utf-8") as f:
+            got = f.read()
+        assert got == want, (
+            f"{role_id}: the baked steering has DRIFTED from "
+            f"orchestrator/harness/. The baked copy is what a deployed agent reads "
+            "before the mount has steering, so this silently changes live behavior.")
+        compared.append(role_id)
+    assert compared, "no registered role has a baked steering copy"
 
 
 # Names from the deleted sample use case, plus the dead harness blocks. Any of these in
@@ -104,17 +106,17 @@ _FORBIDDEN = [
 ]
 
 
-@pytest.mark.parametrize("role_id", _ROLE_IDS)
-def test_steering_does_not_encode_the_deliverable(role_id):
+def test_steering_does_not_encode_the_deliverable_for_any_role():
     """Steering describes the ROLE. It must not name the retired sample, a fixed
     artifact filename, or a dead harness block whose parser no longer exists."""
-    for path in (_shipped(role_id), _baked(role_id)):
-        if not os.path.isfile(path):
-            continue
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
-        hits = [tok for tok in _FORBIDDEN if tok in text]
-        assert not hits, f"{path} still encodes the deliverable: {hits}"
+    for role_id in _ROLE_IDS:
+        for path in (_shipped(role_id), _baked(role_id)):
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            hits = [tok for tok in _FORBIDDEN if tok in text]
+            assert not hits, f"{path} still encodes the deliverable: {hits}"
 
 
 def test_the_checker_is_told_the_verdict_is_the_exit_code():
@@ -132,11 +134,39 @@ def test_the_checker_is_told_the_verdict_is_the_exit_code():
     assert "never edit" in text
 
 
-@pytest.mark.parametrize("role_id", roles.builder_ids())
-def test_builders_are_told_they_do_not_grade_themselves(role_id):
+def test_builders_are_told_they_do_not_grade_themselves():
     """Each maker must know a separate role decides acceptance, so it does not try to
     self-certify (or edit the check)."""
-    with open(_shipped(role_id), encoding="utf-8") as f:
-        text = f.read().lower()
-    assert "validator" in text
-    assert "exit code" in text or "gate" in text
+    for role_id in roles.builder_ids():
+        with open(_shipped(role_id), encoding="utf-8") as f:
+            text = f.read().lower()
+        assert "validator" in text, role_id
+        assert "exit code" in text or "gate" in text, role_id
+
+
+def test_roles_leave_git_and_github_delivery_to_the_coordinator():
+    """A role writes one tree; the coordinator alone assembles and publishes it.
+
+    A live Lab 1 opencode turn followed the old steering, initialized the shared
+    mount as a repository, tried to open a PR before GitHub existed, and printed a
+    temporary Runtime token while searching its environment. Pin both boundaries.
+    """
+    for role_id in _ROLE_IDS:
+        with open(_shipped(role_id), encoding="utf-8") as f:
+            text = " ".join(f.read().lower().split())
+        stale_instructions = (
+            "use them to branch",
+            "add the label `agent:",
+            "submit for human review only",
+            "gateway` mcp server connected",
+        )
+        hits = [instruction for instruction in stale_instructions
+                if instruction in text]
+        assert not hits, (
+            f"{role_id}: steering still delegates GitHub work: {hits}")
+        assert "do not initialize git" in text, role_id
+        assert "coordinator" in text and "pull request" in text, role_id
+        assert (
+            "do not inspect or print credential-bearing environment variables"
+            in text
+        ), role_id

@@ -65,7 +65,7 @@ export function AuditSection() {
       </div>
 
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">Real ledger feed · {source}</p>
+        <p className="text-sm text-muted-foreground">Ledger feed · {source}</p>
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter the trail…" className="h-8 w-56" />
       </div>
 

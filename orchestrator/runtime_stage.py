@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import time
-from typing import Any
+from typing import Any, Iterable
 
 _MOUNT_PREFIX = "agents/mnt/s3files"  # S3 key prefix that maps to /mnt/s3files
 
@@ -44,6 +45,33 @@ def skill_path(run_id: str) -> str:
     """The in-workspace path the staged module lives at (read by the backend
     agent reads its skill from). Read-only material for one run."""
     return os.path.join(mnt_root(), f"{run_id}-skill")
+
+
+def candidate_subdir(run_id: str) -> str:
+    """The immutable integration candidate prefix visible to every Runtime."""
+    return f"{run_id}-candidate"
+
+
+def candidate_path(run_id: str) -> str:
+    return os.path.join(mnt_root(), candidate_subdir(run_id))
+
+
+def base_subdir(run_id: str) -> str:
+    """The latest immutable integration base cloned into role checkouts."""
+    return f"{run_id}-base"
+
+
+def base_path(run_id: str) -> str:
+    return os.path.join(mnt_root(), base_subdir(run_id))
+
+
+def refresh_subdir(run_id: str, work_id: str) -> str:
+    """One owner-specific refresh seed after the integration branch advances."""
+    return f"{run_id}-refresh-{work_id}"
+
+
+def refresh_path(run_id: str, work_id: str) -> str:
+    return os.path.join(mnt_root(), refresh_subdir(run_id, work_id))
 
 
 def _bucket(region: str, account_id: str) -> str:
@@ -128,6 +156,137 @@ def _upload_tree(s3, bucket: str, local_dir: str, key_prefix: str) -> int:
     return n
 
 
+def copy_tree_files(source: str, destination: str, *,
+                    replace: bool = True,
+                    excluded_names: Iterable[str] = (
+                        "__pycache__", ".pytest_cache"),
+                    ) -> int:
+    """Copy file contents without metadata operations S3 Files may reject.
+
+    ``shutil.copytree`` delegates to ``copy2`` and therefore copies timestamps,
+    modes, and extended attributes after each file. S3 Files is an NFS surface
+    and can return errno 524 for those metadata calls even though the bytes were
+    written. A checkout needs the bytes and relative paths, not host ownership or
+    xattrs, so copy those explicitly and retry transient writes.
+    """
+    if not os.path.isdir(source):
+        raise RuntimeError(f"source directory does not exist: {source}")
+    excluded = set(excluded_names)
+    if replace:
+        shutil.rmtree(destination, ignore_errors=True)
+    os.makedirs(destination, exist_ok=True)
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(source):
+        dirnames[:] = sorted(d for d in dirnames if d not in excluded)
+        rel_dir = os.path.relpath(dirpath, source)
+        target_dir = (destination if rel_dir == "."
+                      else os.path.join(destination, rel_dir))
+        os.makedirs(target_dir, exist_ok=True)
+        for filename in sorted(filenames):
+            if filename in excluded or filename.endswith(".pyc"):
+                continue
+            src = os.path.join(dirpath, filename)
+            if os.path.islink(src):
+                raise RuntimeError(
+                    f"symbolic links are not portable Runtime input: {src}")
+            dest = os.path.join(target_dir, filename)
+            for attempt in range(3):
+                try:
+                    with open(src, "rb") as reader, open(dest, "wb") as writer:
+                        while True:
+                            chunk = reader.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            writer.write(chunk)
+                    break
+                except OSError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(1.0 * (attempt + 1))
+            try:
+                if stat.S_IMODE(os.stat(src).st_mode) & 0o111:
+                    os.chmod(dest, 0o755)
+            except OSError:
+                pass
+            count += 1
+    return count
+
+
+def _delete_prefix(s3, bucket: str, key_prefix: str) -> None:
+    """Delete an earlier candidate before uploading the next bounded round."""
+    token: str | None = None
+    while True:
+        kwargs: dict[str, Any] = {
+            "Bucket": bucket,
+            "Prefix": key_prefix.rstrip("/") + "/",
+        }
+        if token:
+            kwargs["ContinuationToken"] = token
+        page = s3.list_objects_v2(**kwargs)
+        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+        if not page.get("IsTruncated"):
+            return
+        token = page.get("NextContinuationToken")
+
+
+def stage_candidate(run_id: str, local_dir: str,
+                    region: str | None = None) -> int:
+    """Publish the exact integration candidate as immutable Runtime input.
+
+    A candidate is rebuilt after a repair round. The old prefix is removed first
+    so a deleted file from round one cannot survive into the tree the validator
+    inspects in round two.
+    """
+    if not os.path.isdir(local_dir):
+        raise RuntimeError(f"candidate directory does not exist: {local_dir}")
+    if os.environ.get("WORKSHOP_S3FILES_DIR"):
+        dest = candidate_path(run_id)
+        return copy_tree_files(local_dir, dest)
+    region = region or _s3_region()
+    account_id = _account_id(region)
+    bucket = _bucket(region, account_id)
+    s3 = _client(region)
+    key = f"{_MOUNT_PREFIX}/{candidate_subdir(run_id)}"
+    _delete_prefix(s3, bucket, key)
+    return _upload_tree(s3, bucket, local_dir, key)
+
+
+def stage_base(run_id: str, local_dir: str,
+               region: str | None = None) -> int:
+    """Publish the latest integration branch as immutable role input."""
+    if not os.path.isdir(local_dir):
+        raise RuntimeError(f"base directory does not exist: {local_dir}")
+    if os.environ.get("WORKSHOP_S3FILES_DIR"):
+        dest = base_path(run_id)
+        return copy_tree_files(local_dir, dest)
+    region = region or _s3_region()
+    account_id = _account_id(region)
+    bucket = _bucket(region, account_id)
+    s3 = _client(region)
+    key = f"{_MOUNT_PREFIX}/{base_subdir(run_id)}"
+    _delete_prefix(s3, bucket, key)
+    return _upload_tree(s3, bucket, local_dir, key)
+
+
+def stage_refresh(run_id: str, work_id: str, local_dir: str,
+                  region: str | None = None) -> int:
+    """Publish an owner-specific rebased checkout for one stale role PR."""
+    if not os.path.isdir(local_dir):
+        raise RuntimeError(f"refresh directory does not exist: {local_dir}")
+    if os.environ.get("WORKSHOP_S3FILES_DIR"):
+        dest = refresh_path(run_id, work_id)
+        return copy_tree_files(local_dir, dest)
+    region = region or _s3_region()
+    account_id = _account_id(region)
+    bucket = _bucket(region, account_id)
+    s3 = _client(region)
+    key = f"{_MOUNT_PREFIX}/{refresh_subdir(run_id, work_id)}"
+    _delete_prefix(s3, bucket, key)
+    return _upload_tree(s3, bucket, local_dir, key)
+
+
 def stage_skills(run_id: str, skill_dirs: list[str],
                  region: str | None = None) -> int:
     """Upload each harness skill dir to ``<run_id>-skill/skills/<name>``, the
@@ -146,9 +305,7 @@ def stage_skills(run_id: str, skill_dirs: list[str],
         n = 0
         for d in skill_dirs:
             dest = os.path.join(skill_path(run_id), "skills", os.path.basename(d))
-            shutil.copytree(d, dest, dirs_exist_ok=True,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            n += 1
+            n += copy_tree_files(d, dest)
         return n
     region = region or _s3_region()
     account_id = _account_id(region)

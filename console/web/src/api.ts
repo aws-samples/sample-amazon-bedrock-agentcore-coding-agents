@@ -98,6 +98,120 @@ export interface RunSummary {
   merge_state?: string | null;
 }
 
+export interface IntegrationBrief {
+  summary?: string;
+  shared_contract?: string[];
+  role_assignments?: Record<string, {
+    objective?: string;
+    provides?: string[];
+    consumes?: string[];
+  }>;
+  merge_order?: string[];
+  open_questions?: string[];
+}
+
+export interface WorkItem {
+  work_id: string;
+  agent: string;
+  role: string;
+  capability: string;
+  kind: 'builder' | 'checker';
+  branch: string;
+  base_branch: string;
+  state: string;
+  attempt: number;
+  pr?: {
+    pr_url?: string;
+    number?: number;
+    base?: string;
+    head?: string;
+    head_sha?: string;
+  };
+  merge_state?: string | null;
+  changed_files?: string[];
+  deleted_files?: string[];
+  stale?: boolean;
+  refreshes?: number;
+  dependency_refreshes?: number;
+}
+
+export interface IntegrationCandidate {
+  files?: string[];
+  owners?: Record<string, string[]>;
+  digest?: string;
+}
+
+export interface GateRecord {
+  sequence: number;
+  stage: string;
+  candidate_digest?: string;
+  passed: boolean;
+  summary?: string;
+  checks?: Array<{ check?: string; passed?: boolean; detail?: string }>;
+}
+
+export interface ReviewPanelEntry {
+  name: 'adversarial' | 'design' | string;
+  label?: string;
+  state: 'approved' | 'changes_requested' | 'abstained' | string;
+  model?: string;
+  reasons?: string[];
+  assessment?: string;
+  note?: string;
+}
+
+export interface MergeQueueEntry {
+  position: number;
+  work_id: string;
+  agent: string;
+  role: string;
+  pr_url?: string;
+  state: string;
+  sha?: string;
+  error?: string;
+}
+
+export interface RunDetail extends RunSummary {
+  fail_reason?: string | null;
+  agents?: string[];
+  roles?: Record<string, string>;
+  progress?: Array<{
+    agent: string;
+    role: string;
+    state: string;
+    latency_ms: number;
+    tokens: number;
+    cost_usd: number;
+    note: string;
+    engine: string;
+  }>;
+  work_items?: Record<string, WorkItem>;
+  integration_brief?: IntegrationBrief | null;
+  integration_base?: Record<string, unknown> | null;
+  integration_candidate?: IntegrationCandidate | null;
+  integration_conflicts?: Array<{
+    path?: string;
+    first_work_id?: string;
+    second_work_id?: string;
+    reason?: string;
+  }>;
+  integration_branch?: string | null;
+  merge_queue?: MergeQueueEntry[];
+  gate_history?: GateRecord[];
+  gate?: { passed: boolean; summary?: string; checks?: GateRecord['checks'] } | null;
+  review?: {
+    state?: string;
+    lgtm?: boolean;
+    round?: number;
+    reasons?: string[];
+    assessment?: string;
+    panels?: ReviewPanelEntry[];
+  } | null;
+  next_action?: string;
+  terminals?: Record<string, Array<{ cmd?: string; output?: string; text?: string }>>;
+  roleEvents?: Record<string, AgentEvent[]>;
+}
+
 // The starting points, from the ONE source (`presets.PRESETS`); the console renders
 // these rather than keeping its own copy, so the two cannot drift.
 export const listPresets = () =>
@@ -136,7 +250,7 @@ export const listRunsPaged = (limit: number, offset: number) =>
   ).then((r) => ({ runs: r.runs ?? [], total: r.total ?? 0, offset: r.offset ?? offset }));
 
 export const getRun = (runId: string) =>
-  get<RunSummary & Record<string, unknown>>(`/api/orchestrator/runs/${encodeURIComponent(runId)}`);
+  get<RunDetail>(`/api/orchestrator/runs/${encodeURIComponent(runId)}`);
 
 // The terminal verdict the orchestrator reports back: the real acceptance-gate result,
 // the review state, iterations, and the PR url (or null). Only valid once the run
@@ -146,12 +260,28 @@ export interface RunResult {
   run_id: string;
   status: string;
   gate?: { passed: boolean; checks?: Array<{ check?: string; passed?: boolean; detail?: string }> };
-  review?: { state?: string; lgtm?: boolean; round?: number; gate?: unknown; critique?: unknown } | null;
+  review?: {
+    state?: string;
+    lgtm?: boolean;
+    round?: number;
+    gate?: unknown;
+    reasons?: string[];
+    assessment?: string;
+    panels?: ReviewPanelEntry[];
+  } | null;
   pr_url?: string | null;
   merge_state?: string | null;
   iterations?: number;
   fail_reason?: string | null;
   route?: RunRoute | null;
+  work_items?: Record<string, WorkItem>;
+  integration_brief?: IntegrationBrief | null;
+  integration_candidate?: IntegrationCandidate | null;
+  integration_conflicts?: RunDetail['integration_conflicts'];
+  integration_branch?: string | null;
+  merge_queue?: MergeQueueEntry[];
+  gate_history?: GateRecord[];
+  next_action?: string;
 }
 
 export const getRunResult = (runId: string) =>
@@ -314,7 +444,7 @@ export const listSuggestions = () =>
 
 /* ---------------- Module 2: GitHub connection ---------------- */
 
-export type MergePolicy = 'human_review' | 'auto';
+export type FinalMergePolicy = 'human_review' | 'auto';
 
 // The GitHub connection is a GitHub App installation held inside the GitHub MCP
 // Gateway (never a PAT). Status reports the GATEWAY health, not a token: the
@@ -328,9 +458,10 @@ export interface GithubStatus {
   target?: string;
   region?: string;
   repo?: string;
+  default_branch?: string;
   tool_count?: number;
   workshop_repo?: string;
-  merge_policy?: MergePolicy;
+  final_merge_policy?: FinalMergePolicy;
   hint?: string;
   error?: string;
 }
@@ -340,20 +471,18 @@ export const getGithubStatus = () =>
 
 // Connect the PR destination: the attendee's template-derived repo (owner/name).
 // NO token. The gateway URL is normally wired by the workshop (env); the console
-// may also pass it explicitly. Sending only merge_policy (no repo) flips the
-// policy alone.
+// may also pass it explicitly.
 export const saveGithubCredential = (params: {
   repo: string;
   gateway_url?: string;
-  merge_policy?: MergePolicy;
+  final_merge_policy?: FinalMergePolicy;
 }) => post<GithubStatus>('/api/orchestrator/github', params);
 
 export const clearGithubCredential = () =>
   post<GithubStatus>('/api/orchestrator/github', { clear: true });
 
-// Flip ONLY the merge policy (auto vs human_review) without re-entering the repo.
-export const setMergePolicy = (merge_policy: MergePolicy) =>
-  post<GithubStatus>('/api/orchestrator/github', { merge_policy });
+export const setFinalMergePolicy = (final_merge_policy: FinalMergePolicy) =>
+  post<GithubStatus>('/api/orchestrator/github', { final_merge_policy });
 
 /* ---------------- Kiro API key (AgentCore Identity Token Vault) ---------------- */
 

@@ -106,7 +106,7 @@ export function CostSection() {
             <StatCard label="Projection" value={`By ${by}`} hint="forgiving dimension param" />
           </div>
 
-          <ChartCard title={`Cost by ${by}`} subtitle="Real token counts priced at published Bedrock rates.">
+          <ChartCard title={`Cost by ${by}`} subtitle="Token counts priced at published Bedrock rates.">
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={chart} margin={{ top: 8, right: 16, left: -12, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="2 4" stroke={theme.grid} />

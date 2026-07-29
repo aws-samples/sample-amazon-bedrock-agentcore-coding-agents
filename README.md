@@ -1,13 +1,20 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
-Run multiple coding agents (Claude Code, Claude Code validator, opencode) in parallel on
-Amazon Bedrock AgentCore Runtime, orchestrate them from one chat, and govern the fleet
-(identity, per-user cost, observability). Validation is agentic: the validator role
-authors an executable check for each specific deliverable and the engine runs it; its
-real exit code is the gate.
+Run Claude Code, a second Claude Code validator, and opencode on Amazon Bedrock
+AgentCore Runtime. Give the team one request and receive one checked pull request.
+
+Each builder works in a separate checkout and pull request. The validator writes an
+executable for that request, and the orchestrator runs it. A behavior review tries
+to break the combined result. A design review checks whether the parts fit together.
+Neither review sees a builder's conversation or edits a builder's code.
 
 This repo is the full workshop payload. Clone it and follow the workshop content; every
 step is reproducible with the CLI, starting from this one clone.
+
+> **Current project-language support:** Python and Node.js 22
+> (JavaScript/TypeScript). Add the required toolchain to
+> `orchestrator-agent/Dockerfile` before using another language, because that
+> container executes the validator's check.
 
 This repository is the single source of truth for all demo and harness **code**. The
 matching Workshop Studio teaching content (guided lab pages and the CloudFormation
@@ -16,18 +23,25 @@ repository directly into the box home, so the customer-reproducible path is exac
 `git clone` of this URL (which yields `~/sample-amazon-bedrock-agentcore-coding-agents`)
 followed by the CLI steps the workshop teaches.
 
-This repository is also a GitHub **template**. In Module 2 of the workshop you click
+This repository is also a GitHub **template**. In Lab 2 of the workshop you click
 **Use this template -> Create a new repository** to get your own isolated copy (no
-fork, no shared credentials): the S3 Files mount starts empty and the attendee types any
-request they like; the Module 2 pull request the orchestrator opens lands on that
-per-attendee repository through the GitHub App gateway.
+fork, no shared credentials). Each builder opens a role pull request against a
+temporary branch for the run. The validator's executable must pass for the combined
+work and after every role pull request merge. One final pull request then targets
+the repository's normal branch. The GitHub App authors every pull request.
+
+Builders begin independently from the same shared plan. After an earlier role pull
+request merges, a dependent builder gets one chance to inspect and use that work on
+its existing pull request. This catches cases where separate branches each worked
+but did not agree when combined. It is separate from the one repair allowed after a
+failed check or review finding.
 
 ## Layout
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
-  - `claude-code/` backend MCP-server builder (Claude Code, native Bedrock)
+  - `claude-code/` backend builder (Claude Code, native Bedrock)
   - `claude-code-validator/` acceptance-contract validator (Claude Code, native Bedrock; steered by an acceptance-contract CLAUDE.md that directs it to author an executable check whose exit code is the gate)
-  - `opencode/` frontend chatbot UI builder (opencode, native Bedrock)
+  - `opencode/` frontend builder (opencode, native Bedrock)
   - `kiro/` legacy restore path (hidden; kept restorable like `codex/`, not on any served roster)
 - `orchestrator/` the Strands orchestrator engine (routing, engine, executor, reviewer, github)
   - `orchestrator/roles.py` declares the served roster (`WORKSHOP_ROLES`-configurable); this is the single place role ids, kinds (builder/checker), and capabilities (backend/frontend/validator) live
@@ -45,12 +59,12 @@ The full suite is collected from this repo root:
 python3 -m pytest -q
 ```
 
-`pytest.ini` declares the `testpaths`; the root `conftest.py` isolates GitHub /
-runtime credentials so no test can read a real token or open a real pull request.
+`pytest.ini` declares the `testpaths`; the root `conftest.py` isolates GitHub and
+Runtime credentials so no test can read a token or open a pull request.
 
 ## When something is not working
 
-Both are read-only, collect no credentials, and are safe to re-run:
+Both collect no credentials and are safe to re-run:
 
 ```bash
 python3 orchestrator/github.py doctor   # can the GitHub App reach YOUR repo?
@@ -61,7 +75,9 @@ python3 orchestrator/diagnose.py <run_id>   # + that run's engine-log tail
 Run `doctor` BEFORE deploying the coordinator. The mistakes that cost the most time
 (an App installed on a different repository, a wrong owner in `GITHUB_REPO`) all pass
 a plain gateway health check and then fail when a build tries to write, after the
-agents have already run.
+agents have already run. `diagnose.py` is read-only. To prove write permission,
+`github.py doctor` idempotently prepares the `workshop/doctor` branch; it writes
+no file and opens no pull request.
 
 Every finished run also persists its verdict, so `run_status <run_id>` still answers
 from a NEW coordinator session, and `list_runs` finds it when the run id is lost.

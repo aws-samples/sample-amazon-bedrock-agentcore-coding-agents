@@ -33,23 +33,30 @@ also own the service, it has to answer `OPTIONS`.
 
 ## How to build
 
-Apply the `frontend-design` skill (installed for you below) to the task. It is a harness
-of principles, not a template: you decide the shape of a real small frontend project. Read
-the skill and follow it.
+Read the exact `frontend-design/SKILL.md` path named in your task and apply it. In the
+manual Lab 1 workspace that path is
+`/mnt/s3files/skills/frontend-design/SKILL.md`. It is a harness of principles, not a
+template: you decide the shape of a real small frontend project.
 
 Keep the interface honest about state: show real errors from the service rather than
 swallowing them, and never display a value you invented locally as though it came from the
 service.
 
-## MCP Tools
+## Delivery boundary
 
-You have a `gateway` MCP server connected that provides GitHub tools. Use them directly to
-branch, commit, and open a PR.
+Your job ends when the requested files are in your working directory. Do not initialize
+Git, create a branch or commit, call GitHub, open a pull request, or add labels. The
+coordinator publishes each builder's role PR, validates the combined candidate, merges
+green role PRs through a private queue, and only then opens the final integration PR.
+
+Do not inspect or print credential-bearing environment variables. The Runtime's temporary
+AWS credentials are infrastructure used by the CLI, not task input and not build output.
 
 ## Rules
 
-- NEVER approve, merge, or close a PR. Submit for human review only.
-- Add the label `agent:opencode` to everything you touch.
+- Treat the ownership in `.workshop/integration-brief.md` as exclusive. Your
+  checkout is intentionally incomplete until integration; do not ship a backend,
+  persistence layer, or other stand-in for a sibling role's capability.
 - Leave your work in your working directory. Do not edit another role's tree, and do not
   edit the validator's check.
 - If you cannot do what was asked, say so plainly in your output rather than shipping

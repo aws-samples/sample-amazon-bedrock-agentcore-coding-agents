@@ -260,8 +260,8 @@ BY_ID: dict[str, Role] = {r.id: r for r in REGISTRY}
 # thing that dispatches. It has no harness directory and no steering file.
 ORCHESTRATOR = "orchestrator"
 ORCHESTRATOR_DESCRIPTION = (
-    "Coordinates the build: routes a request to the right roles, composes their "
-    "work, runs the acceptance gate, and opens the PR.")
+    "Coordinates the build: routes a request, integrates isolated role PRs, runs "
+    "the executable gates, and opens the final PR.")
 
 
 class UnknownRole(KeyError):

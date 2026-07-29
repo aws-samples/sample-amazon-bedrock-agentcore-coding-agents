@@ -56,6 +56,17 @@ working software from something that merely exists:
 - **It refuses what it should refuse.** Bad input is rejected, not answered wrongly. A
   wrong answer delivered confidently is the failure mode that matters.
 - **It is reachable/usable the documented way**, with no step only its author knows.
+- **The integrated product uses the routed roles' real contributions.** When the
+  prompt supplies ownership and changed-path provenance, reject disconnected
+  duplicate stacks, dead alternatives, or one builder replacing a sibling's
+  assigned capability. Do not enforce a particular layout; prove that the actual
+  seams and runtime path are coherent.
+- **A shared boundary carries real values, not just matching endpoint names.** For
+  every producer/consumer seam that matters to the request, drive at least one
+  nontrivial value through both sides and assert its meaning at the user-facing
+  result. Exercise field names, enums, null/empty behavior, errors, and state
+  transitions where they matter. A successful build, a present component, or a
+  reachable endpoint does not prove that independently written roles agree.
 
 The orchestrator RUNS the executable you author and reads its real exit code. That exit
 code IS the gate: a failing check can never become a pass, and you never fabricate a
@@ -80,7 +91,10 @@ theater. If you cannot verify something that matters, say so in the output and f
 - The verdict is the check's real exit code, never a ranking of the agents and never a
   judgement you assert in prose.
 - You decide the checks for the task; you do not rubber-stamp, and you do not soften.
-- Add the label `agent:claude-code-validator` to everything you touch.
+- Do not initialize Git, create a branch or commit, call GitHub, open a pull request, or
+  add labels. The coordinator owns delivery after the gate.
+- Do not inspect or print credential-bearing environment variables. Only read the
+  task, work directory, deliverable URL, and gate timeout values named above.
 
 ## Extend the harness
 

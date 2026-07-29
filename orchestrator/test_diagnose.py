@@ -125,6 +125,20 @@ def test_the_markdown_says_ready_or_not_ready_in_words():
     assert ("READY" in text or "not wired" in text)
 
 
+def test_a_plain_directory_is_not_reported_as_an_s3_files_mount(
+        monkeypatch, tmp_path):
+    """A leftover /mnt/s3files directory is not evidence that NFS is mounted."""
+    plain_directory = tmp_path / "s3files"
+    plain_directory.mkdir()
+    monkeypatch.setenv("WORKSHOP_S3FILES_DIR", str(plain_directory))
+
+    host = diagnose._host_section()
+    assert host["s3files_path_exists"] is True
+    assert host["s3files_mounted"] is False
+    text = diagnose.render({"host": host})
+    assert "NOT MOUNTED (the path is only a directory)" in text
+
+
 def test_a_broken_section_does_not_lose_the_whole_bundle(monkeypatch):
     """This runs when things are already broken; partial beats nothing."""
     def boom():

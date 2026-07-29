@@ -20,9 +20,11 @@ the work.
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 import stat
 import sys
+import shutil
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
@@ -38,11 +40,97 @@ sys.exit(0 if ok else 1)
 """
 
 
+def test_supported_toolchains_cross_every_execution_boundary(
+        monkeypatch, tmp_path):
+    """The advertised languages and their build output reach the real gate."""
+    import runtime_exec
+    import runtime_stage
+
+    assert "node_modules" in runtime_exec._TREE_EXCLUDES
+    assert "dist" not in runtime_exec._TREE_EXCLUDES
+    assert "build" not in runtime_exec._TREE_EXCLUDES
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "dist").mkdir(parents=True)
+    (source / "dist" / "app.js").write_text("console.log('ready')\n")
+    monkeypatch.setattr(
+        shutil, "copystat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(524, "NFS")),
+    )
+    assert runtime_stage.copy_tree_files(
+        str(source), str(destination)) == 1
+    assert (destination / "dist" / "app.js").read_text() == (
+        "console.log('ready')\n")
+
+    candidate = tmp_path / "candidate"
+    (candidate / "dist").mkdir(parents=True)
+    (candidate / "dist" / "app.js").write_text("console.log('candidate')\n")
+    mount = tmp_path / "mount"
+    monkeypatch.setenv("WORKSHOP_S3FILES_DIR", str(mount))
+    monkeypatch.setattr(
+        shutil, "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(524, "NFS")),
+    )
+    checker_run = type("CheckerRun", (), {
+        "run_id": "run_nfs_checkout",
+        "candidate_dir": str(candidate),
+        "log": lambda *_args, **_kwargs: None,
+        "runtime_subdir": lambda _self, agent: f"work/{agent}",
+    })()
+    engine = importlib.import_module("engine")
+    eng = engine.Engine.__new__(engine.Engine)
+    eng.executor = type("Executor", (), {"name": "agentcore"})()
+    eng._prepare_checker_checkout(checker_run, "claude-code-validator")
+    staged = mount / "work" / "claude-code-validator" / "dist" / "app.js"
+    assert staged.read_text() == "console.log('candidate')\n"
+
+    validator = open(os.path.join(
+        _REPO, "coding-agents", "claude-code-validator", "Dockerfile"),
+        encoding="utf-8").read()
+    gate = open(os.path.join(_REPO, "orchestrator-agent", "Dockerfile"),
+                encoding="utf-8").read()
+    assert "node:22-slim" in validator and "node:22-slim" in gate
+    assert "python3" in validator and "python3" in gate
+
+    rule = engine._SUPPORTED_TOOLCHAINS_RULE.lower()
+    assert "python" in rule and "node.js 22" in rule
+    assert "javascript/typescript" in rule
+    for method in (engine.Engine._cli_backend_server,
+                   engine.Engine._cli_frontend_work):
+        assert "_SUPPORTED_TOOLCHAINS_RULE" in inspect.getsource(method)
+    validator_prompt = inspect.getsource(engine.Engine._cli_validator_authors_test)
+    assert "Node.js 22" in validator_prompt and "JavaScript/TypeScript" in validator_prompt
+
+
 def _run(agents):
     engine = importlib.import_module("engine")
     run = engine.Run(run_id="run_000000_771", task="build a service",
-                     agents=list(agents), roles=list(agents))
+                     agents=list(agents),
+                     roles={agent: agent for agent in agents})
     return engine, run
+
+
+def _assemble_candidate(engine, run, builder):
+    """Follow the production boundary: exact base + role patch -> candidate."""
+    import work_items
+
+    os.makedirs(run.integration_base_dir, exist_ok=True)
+    item = run.work_items.get("claude-code")
+    if item is None:
+        item = work_items.WorkItem.create(
+            run.run_id, "claude-code", "backend-builder", "backend",
+            token="gate-test")
+        run.work_items["claude-code"] = item
+    item_base = run.item_base_dir("claude-code")
+    os.makedirs(item_base, exist_ok=True)
+    candidate = work_items.assemble_candidate(
+        run.integration_base_dir,
+        [(item, item_base, builder)],
+        run.candidate_dir,
+        exclude=engine._work_patch_excluded,
+    )
+    run.integration_candidate = candidate.public()
 
 
 def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
@@ -68,6 +156,7 @@ def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
+        _assemble_candidate(engine, run, builder)
         staged = eng._gate_dir_check_path(run, authored)
 
         gate_dir = os.path.dirname(staged)
@@ -109,6 +198,7 @@ def test_a_sibling_resolving_check_passes_through_the_real_gate():
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
+        _assemble_candidate(engine, run, builder)
         run._acceptance_test_file = eng._gate_dir_check_path(run, authored)
         gate = reviewer.run_gate(run)
 
@@ -140,6 +230,7 @@ def test_a_genuinely_broken_deliverable_still_fails():
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
+        _assemble_candidate(engine, run, builder)
         run._acceptance_test_file = eng._gate_dir_check_path(run, authored)
         gate = reviewer.run_gate(run)
         assert gate["passed"] is False, gate
@@ -174,6 +265,7 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
+        _assemble_candidate(engine, run, builder)
         staged = eng._gate_dir_check_path(run, authored)
         gate_dir = os.path.dirname(staged)
         # Round 1's check started the service, which dropped state in the gate dir.
@@ -184,6 +276,7 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
         os.remove(os.path.join(builder, "server.py"))
         with open(os.path.join(builder, "server2.py"), "w") as f:
             f.write("# round 2\n")
+        _assemble_candidate(engine, run, builder)
         staged2 = eng._gate_dir_check_path(run, authored)
         gate_dir2 = os.path.dirname(staged2)
         assert not os.path.exists(os.path.join(gate_dir2, "issues.db")), (
@@ -199,6 +292,7 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
         # if that ordering is ever changed.
         with open(os.path.join(builder, "acceptance_check"), "w") as f:
             f.write("#!/bin/sh\necho stale round-1 check\nexit 0\n")
+        _assemble_candidate(engine, run, builder)
         staged3 = eng._gate_dir_check_path(run, authored)
         with open(staged3, encoding="utf-8") as f:
             body = f.read()
@@ -206,5 +300,4 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
             "the gate is about to run a stale check a builder carried back, not the "
             "one the validator authored this round")
     finally:
-        import shutil as _sh
-        _sh.rmtree(run.workdir, ignore_errors=True)
+        shutil.rmtree(run.workdir, ignore_errors=True)

@@ -143,6 +143,218 @@ def _rounds(run: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _review_panels(run: Any) -> list[dict[str, Any]]:
+    """Independent panel records already decided by reviewer.py.
+
+    Replay only normalizes the persisted public shape. It does not infer a missing
+    member, approval, or finding.
+    """
+    review = getattr(run, "review", None) or {}
+    panels = review.get("panels") if isinstance(review, dict) else None
+    return [row for row in (panels or []) if isinstance(row, dict)]
+
+
+def _append_review_panel(lines: list[str], run: Any) -> None:
+    """Append recorded adversarial/design evidence to a PR narrative."""
+    panels = _review_panels(run)
+    lines += [
+        "",
+        "## Two Independent Reviews",
+        "",
+    ]
+    if not panels:
+        lines.append("_No separate review was recorded for this run._")
+        return
+
+    lines += [
+        "| review | state | model | finding |",
+        "|---|---|---|---|",
+    ]
+    for panel in panels:
+        reasons = panel.get("reasons") or []
+        finding = (
+            str(reasons[0]) if reasons
+            else str(panel.get("note") or "No finding recorded.")
+        )
+        lines.append(
+            f"| {_cell(str(panel.get('label') or panel.get('name') or ''), 56)} "
+            f"| {_cell(str(panel.get('state') or 'unknown'), 28)} "
+            f"| `{_cell(str(panel.get('model') or 'unavailable'), 48)}` "
+            f"| {_cell(finding, 180)} |"
+        )
+
+    for panel in panels:
+        evidence = str(panel.get("assessment") or "").strip()
+        if not evidence:
+            continue
+        label = _cell(
+            str(panel.get("label") or panel.get("name") or "Review"), 72)
+        lines += [
+            "",
+            f"<details><summary>{label} evidence</summary>",
+            "",
+            evidence,
+            "",
+            "</details>",
+        ]
+
+    lines += [
+        "",
+        "Both reviews read the combined work without seeing a builder's "
+        "conversation or self-review. A finding stops the merge. If a review "
+        "cannot run, it records that fact. The validator's executable still has "
+        "to pass.",
+    ]
+
+
+def work_item_narrative(run: Any, item: Any) -> str:
+    """Initial body for one builder-owned PR. Reports scope; never judges it."""
+    brief = getattr(run, "integration_brief", None) or {}
+    assignment = (brief.get("role_assignments") or {}).get(item.agent, {})
+    changed = list(getattr(item, "changed_files", None) or [])
+    deleted = list(getattr(item, "deleted_files", None) or [])
+    lines = [
+        f"## {item.role}",
+        "",
+        f"This is the isolated `{item.capability}` work item for "
+        f"`{getattr(run, 'run_id', '')}`.",
+        "",
+        "## Request",
+        "",
+        "> " + str(getattr(run, "task", "") or "").replace("\n", "\n> "),
+        "",
+        "## Shared Plan",
+        "",
+    ]
+    lines.extend(
+        f"- {row}" for row in (brief.get("shared_contract") or []))
+    lines += [
+        "",
+        "## Ownership",
+        "",
+        str(assignment.get("objective") or item.role),
+        "",
+        f"- Work ID: `{item.work_id}`",
+        f"- Base: `{item.base_branch}` at `{str(item.base_sha or '')[:12]}`",
+        f"- Patch: `{str(item.patch_digest or '')[:12]}`",
+        "",
+        "## Changed Paths",
+        "",
+    ]
+    if changed or deleted:
+        lines.extend(f"- `{path}`" for path in changed)
+        lines.extend(f"- `{path}` (deleted)" for path in deleted)
+    else:
+        lines.append("_No changed paths were recorded._")
+    lines += [
+        "",
+        "The role worked in its own checkout. The combined work, the validator's "
+        "executed check, and each checked merge are posted as this run advances.",
+        "",
+        f"<sub>run `{getattr(run, 'run_id', '')}` · work `{item.work_id}`</sub>",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def gate_evidence_comment(
+    run: Any,
+    gate: dict[str, Any],
+    *,
+    stage: str,
+    candidate_digest: str = "",
+    assessment: str = "",
+) -> str:
+    """Evidence posted on role PR timelines as the queue advances."""
+    lines = [
+        f"### {stage}",
+        "",
+        f"Executed check: **{'PASSED' if gate.get('passed') else 'FAILED'}**",
+    ]
+    if candidate_digest:
+        lines.append(f"Combined version: `{candidate_digest[:12]}`")
+    if gate.get("summary"):
+        lines += ["", f"`{_cell(str(gate['summary']), 240)}`"]
+    lines += [
+        "",
+        "The validator wrote this check for the request. The orchestrator ran it "
+        "and used its exit code.",
+    ]
+    if assessment:
+        lines += ["", assessment.strip()]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def integration_narrative(run: Any) -> str:
+    """Final integration PR body: role PRs, gates, and queue evidence."""
+    brief = getattr(run, "integration_brief", None) or {}
+    items = [
+        item for item in (getattr(run, "work_items", None) or {}).values()
+        if getattr(item, "kind", "") == "builder"
+    ]
+    gates = list(getattr(run, "gate_history", None) or [])
+    queue = list(getattr(run, "merge_queue", None) or [])
+    lines = [
+        "## Request",
+        "",
+        "> " + str(getattr(run, "task", "") or "").replace("\n", "\n> "),
+        "",
+        "## Shared Plan",
+        "",
+    ]
+    lines.extend(f"- {row}" for row in brief.get("shared_contract") or [])
+    lines += [
+        "",
+        "## Role Pull Requests",
+        "",
+        "| role | work id | pull request | state |",
+        "|---|---|---|---|",
+    ]
+    for item in items:
+        pr = item.pr or {}
+        url = pr.get("pr_url")
+        link = f"[#{pr.get('number')}]({url})" if url else "_not available_"
+        lines.append(
+            f"| {_cell(item.role, 48)} | `{item.work_id}` | {link} | "
+            f"{item.merge_state or item.state} |")
+    lines += [
+        "",
+        "## Merge Checked Work",
+        "",
+    ]
+    if queue:
+        for row in queue:
+            lines.append(
+                f"- `{row.get('work_id', '')}`: {row.get('state', '')}"
+                + (f" at `{str(row.get('sha') or '')[:12]}`"
+                   if row.get("sha") else ""))
+    else:
+        lines.append("_No queue events were recorded._")
+    lines += [
+        "",
+        "## Checks Run",
+        "",
+        "| when | combined version | result | summary |",
+        "|---|---|---|---|",
+    ]
+    for row in gates:
+        lines.append(
+            f"| {_cell(str(row.get('stage') or ''), 60)} | "
+            f"`{str(row.get('candidate_digest') or '')[:12]}` | "
+            f"{'PASSED' if row.get('passed') else 'FAILED'} | "
+            f"{_cell(str(row.get('summary') or ''), 100)} |")
+    _append_review_panel(lines, run)
+    lines += [
+        "",
+        "Every role worked in a separate checkout and pull request. The "
+        "validator's check ran again after each merge. The behavior and design "
+        "reviews could stop a merge, but no model could change a failed check "
+        "into a pass.",
+        "",
+        f"<sub>run `{getattr(run, 'run_id', '')}` · final integration evidence</sub>",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def narrative(run: Any) -> str:
     """The PR body: what this run did, in order, for a reviewer who wasn't there.
 
@@ -195,7 +407,7 @@ def narrative(run: Any) -> str:
     parts.append(
         "\nThat gate is not a fixed test suite. A separate validator agent read "
         "this request, wrote one self-contained executable check for it, and the "
-        "orchestrator ran that file and used its real exit code as the verdict. "
+        "orchestrator ran that file and used its exit code as the verdict. "
         "Nothing in the system holds a reference answer for this task, so the "
         "check below is the only definition of \"correct\" this run had."
     )
@@ -209,47 +421,21 @@ def narrative(run: Any) -> str:
         parts.append(f"\n<details><summary>The check that ran</summary>\n\n"
                      f"```\n{excerpt}\n```{more}\n\n</details>")
 
-    # 3b. Where two roles wrote the SAME path. Compose keeps one copy at the root
-    #     and commits the other under CONFLICT-<role>/, which shows up in the diff
-    #     as a directory a reviewer cannot account for. A live PR shipped
-    #     CONFLICT-opencode/server.py with no mention of it anywhere, and the
-    #     reviewing agent called the difference cosmetic instead of noticing two
-    #     competing servers. Reported, never judged: this says what happened and
-    #     leaves whether it matters to the reviewer.
-    conflicts = list(getattr(run, "compose_conflicts", None) or [])
-    if conflicts:
-        n_c = len(conflicts)
-        parts.append(f"\n## {n_c} file{'' if n_c == 1 else 's'} written by more "
-                     "than one role\n")
-        parts.append(
-            "Two roles wrote the same path with different content. The engine kept "
-            "the more recently written copy at the root (the one the gate above "
-            "actually ran against) and committed the other under a `CONFLICT-` "
-            "directory so nothing is hidden from you. **Worth a look: the roles may "
-            "have duplicated work, and only the root copy was graded.**"
-        )
-        parts.append("\n| path | kept from | also written by | the other copy |")
-        parts.append("|---|---|---|---|")
-        for c in conflicts[:10]:
-            parts.append(
-                f"| `{_cell(c.get('path', '?'), 60)}` "
-                f"| `{_cell(c.get('kept_from') or '?', 40)}` "
-                f"| `{_cell(c.get('also_written_by') or '?', 40)}` "
-                f"| `{_cell(c.get('flagged_under', '?'), 70)}` |")
-        if len(conflicts) > 10:
-            parts.append(f"\n_({len(conflicts) - 10} more not listed.)_")
+    # 4. Who independently challenged the green executable result.
+    panel_lines: list[str] = []
+    _append_review_panel(panel_lines, run)
+    parts.append("\n" + "\n".join(panel_lines).lstrip())
 
-    # 4. The loop, but only when there WAS a loop. A one-round run saying
+    # 5. The loop, but only when there WAS a loop. A one-round run saying
     #    "1 round" is noise; a second round is the interesting event and needs its
     #    reason attached.
     iterations = int(getattr(run, "iterations", 0) or 0)
     if iterations > 1:
         parts.append(f"\n## Why there were {iterations} rounds\n")
         parts.append(
-            "The first round did not end approved, so the same roles were sent "
-            "back with the reasons as feedback and this branch was updated in "
-            "place (a re-implement round pushes new commits to the same pull "
-            "request rather than opening another one)."
+            "The first round did not end approved, so the evidence was routed "
+            "back to the responsible builders. They updated their existing role "
+            "pull requests; the validator then authored and ran a fresh check."
         )
         # `retry_reasons` and NOT `review`: review holds only the latest verdict, so on
         # a run that ended green it carries the APPROVAL notes. A live 2-round run
@@ -271,16 +457,15 @@ def narrative(run: Any) -> str:
                 parts.append(f"\n- round {i}: gate {rnd['detail']}"
                              + (f" (at {rnd['at_s']}s)" if rnd.get("at_s") else ""))
 
-    # 5. What a reviewer should do. The assessment lands as a separate comment
+    # 6. What a reviewer should do. The assessment lands as a separate comment
     #    (the App installation cannot APPROVE its own PR), so say where to look.
     parts.append("\n## What happens next\n")
     parts.append(
-        "A reviewer agent assesses this pull request and posts its verdict as a "
-        "comment below. An approving assessment ends with a literal token; a "
-        "changes-requested assessment sends the roles back around the loop once "
-        "and then hands off to a human. Merging is a human's decision unless this "
-        "workshop was explicitly switched to auto-merge, which never targets the "
-        "default branch."
+        "The role pull requests merge one at a time into a temporary branch. The "
+        "check runs after each merge. When every check and review passes, one "
+        "final pull request opens against the repository's normal branch. The "
+        "selected policy either leaves it for a person or merges that exact "
+        "reviewed version automatically."
     )
     parts.append(f"\n<sub>{getattr(run, 'run_id', 'run')} - built by a coding-agent "
                  "team on Amazon Bedrock AgentCore. This body is generated from the "

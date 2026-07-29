@@ -13,7 +13,8 @@ import base64
 import json
 import os
 import time
-from typing import List, Optional
+import urllib.parse
+from typing import Any, List, Optional
 
 import boto3
 import httpx
@@ -248,6 +249,52 @@ def add_labels(
 
 
 @mcp.tool()
+def ensure_labels(
+    owner: str, repo: str, issue_number: int, labels: List[dict[str, str]]
+) -> List[str]:
+    """Create missing labels, then add them to an issue or pull request.
+
+    ``labels`` is ``[{"name", "color", "description"}]``. Pull requests are
+    issues for the label API, so role/run/work ids can travel with every PR even
+    though the GitHub App installation is the account that authored it.
+    """
+    names: list[str] = []
+    with httpx.Client(timeout=30) as c:
+        for item in labels:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            names.append(name)
+            encoded = urllib.parse.quote(name, safe="")
+            hit = c.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/labels/{encoded}",
+                headers=_headers(),
+            )
+            if hit.status_code == 404:
+                created = c.post(
+                    f"{GITHUB_API}/repos/{owner}/{repo}/labels",
+                    headers=_headers(),
+                    json={
+                        "name": name,
+                        "color": str(item.get("color") or "6f7781").lstrip("#"),
+                        "description": str(item.get("description") or "")[:100],
+                    },
+                )
+                created.raise_for_status()
+            else:
+                hit.raise_for_status()
+        if not names:
+            return []
+        r = c.post(
+            f"{GITHUB_API}/repos/{owner}/{repo}/issues/{issue_number}/labels",
+            headers=_headers(),
+            json={"labels": names},
+        )
+        r.raise_for_status()
+        return [lbl["name"] for lbl in r.json()]
+
+
+@mcp.tool()
 def remove_label(owner: str, repo: str, issue_number: int, label: str) -> bool:
     """Remove a single label from an issue. Returns True on success."""
     with httpx.Client(timeout=30) as c:
@@ -259,6 +306,28 @@ def remove_label(owner: str, repo: str, issue_number: int, label: str) -> bool:
 
 
 # ---------------- File reads ----------------
+
+
+@mcp.tool()
+def get_repository(owner: str, repo: str) -> dict:
+    """Read repository metadata needed by the PR workflow.
+
+    The orchestrator reads ``default_branch`` to seed its run-private integration
+    branch and to target the final pull request. This tool never changes repository
+    settings.
+    """
+    with httpx.Client(timeout=30) as c:
+        r = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}",
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "default_branch": data["default_branch"],
+            "private": bool(data.get("private")),
+            "url": data["html_url"],
+        }
 
 
 @mcp.tool()
@@ -292,6 +361,30 @@ def list_files(owner: str, repo: str, path: str = "", ref: str = "main") -> List
         return [items["name"]]
 
 
+@mcp.tool()
+def get_repository_archive(owner: str, repo: str, ref: str = "main") -> dict:
+    """Return a credential-brokered tar.gz snapshot of one repository ref.
+
+    The installation token stays inside this Runtime. The coordinator receives
+    only repository bytes, stages them as an immutable base, and gives every
+    builder a separate writable checkout.
+    """
+    with httpx.Client(timeout=90, follow_redirects=True) as c:
+        r = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/tarball/{ref}",
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        body = r.content
+        if len(body) > 32 * 1024 * 1024:
+            raise RuntimeError(
+                "repository archive exceeds the 32 MiB workshop checkout limit")
+        return {
+            "format": "tar.gz",
+            "archive_base64": base64.b64encode(body).decode("ascii"),
+        }
+
+
 # ---------------- Git refs + commits ----------------
 
 
@@ -312,6 +405,192 @@ def create_branch(owner: str, repo: str, branch: str, from_branch: str = "main")
         )
         r.raise_for_status()
         return r.json()["ref"]
+
+
+@mcp.tool()
+def get_branch_head(owner: str, repo: str, branch: str) -> str:
+    """Return the commit SHA currently at a branch head."""
+    with httpx.Client(timeout=30) as c:
+        r = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        return r.json()["object"]["sha"]
+
+
+@mcp.tool()
+def reset_branch(owner: str, repo: str, branch: str,
+                 from_branch: str) -> dict:
+    """Reset a role-owned branch to the latest integration head.
+
+    This is used only for per-run work branches. It lets the owning role refresh
+    a stale PR without exposing the GitHub App credential to the role Runtime.
+    """
+    if branch == from_branch:
+        raise ValueError("refusing to reset a branch onto itself")
+    with httpx.Client(timeout=30) as c:
+        source = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{from_branch}",
+            headers=_headers(),
+        )
+        source.raise_for_status()
+        sha = source.json()["object"]["sha"]
+        target = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+            headers=_headers(),
+        )
+        if target.status_code == 404:
+            made = c.post(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/refs",
+                headers=_headers(),
+                json={"ref": f"refs/heads/{branch}", "sha": sha},
+            )
+            made.raise_for_status()
+        else:
+            target.raise_for_status()
+            moved = c.patch(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                headers=_headers(),
+                json={"sha": sha, "force": True},
+            )
+            moved.raise_for_status()
+        return {"branch": branch, "base": from_branch, "sha": sha}
+
+
+@mcp.tool()
+def commit_changes(
+    owner: str,
+    repo: str,
+    branch: str,
+    files: List[dict[str, str]],
+    deletions: List[str],
+    message: str,
+    expected_parent: str = "",
+    from_branch: str = "",
+) -> dict:
+    """Commit additions/edits/deletions and move one role branch atomically.
+
+    ``files`` carries base64 bytes as ``{"path", "content_base64"}``. The
+    expected-parent compare prevents a stale writer from silently replacing a
+    branch that changed after its owner refreshed it. When ``from_branch`` is
+    supplied, build directly on its current head and move ``branch`` only after
+    the new commit exists. This avoids briefly making an open PR identical to its
+    base, which GitHub may interpret as a closed PR.
+    """
+    if from_branch and branch == from_branch:
+        raise ValueError("refusing to commit a branch onto itself")
+    with httpx.Client(timeout=90) as c:
+        target = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+            headers=_headers(),
+        )
+        target_exists = target.status_code != 404
+        if target_exists:
+            target.raise_for_status()
+            current_head = target.json()["object"]["sha"]
+        else:
+            current_head = ""
+        if expected_parent and current_head != expected_parent:
+            raise RuntimeError(
+                f"STALE_BRANCH:{branch} expected {expected_parent}, "
+                f"found {current_head or 'missing'}")
+
+        if from_branch:
+            source = c.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{from_branch}",
+                headers=_headers(),
+            )
+            source.raise_for_status()
+            parent_sha = source.json()["object"]["sha"]
+        else:
+            if not target_exists:
+                raise RuntimeError(f"BRANCH_NOT_FOUND:{branch}")
+            parent_sha = current_head
+        parent = c.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/commits/{parent_sha}",
+            headers=_headers(),
+        )
+        parent.raise_for_status()
+        base_tree = parent.json()["tree"]["sha"]
+
+        entries: list[dict[str, Any]] = []
+        for item in files:
+            raw = base64.b64decode(str(item["content_base64"]), validate=True)
+            blob = c.post(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/blobs",
+                headers=_headers(),
+                json={
+                    "content": base64.b64encode(raw).decode("ascii"),
+                    "encoding": "base64",
+                },
+            )
+            blob.raise_for_status()
+            entries.append({
+                "path": item["path"],
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob.json()["sha"],
+            })
+        entries.extend({
+            "path": path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": None,
+        } for path in deletions)
+        if not entries:
+            return {
+                "sha": parent_sha,
+                "base_sha": parent_sha,
+                "changed": False,
+            }
+
+        tree = c.post(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/trees",
+            headers=_headers(),
+            json={"base_tree": base_tree, "tree": entries},
+        )
+        tree.raise_for_status()
+        commit = c.post(
+            f"{GITHUB_API}/repos/{owner}/{repo}/git/commits",
+            headers=_headers(),
+            json={
+                "message": message,
+                "tree": tree.json()["sha"],
+                "parents": [parent_sha],
+            },
+        )
+        commit.raise_for_status()
+        commit_sha = commit.json()["sha"]
+
+        if target_exists:
+            latest = c.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+                headers=_headers(),
+            )
+            latest.raise_for_status()
+            latest_head = latest.json()["object"]["sha"]
+            if latest_head != current_head:
+                raise RuntimeError(
+                    f"STALE_BRANCH:{branch} expected {current_head}, "
+                    f"found {latest_head}")
+            moved = c.patch(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                headers=_headers(),
+                json={"sha": commit_sha, "force": bool(from_branch)},
+            )
+        else:
+            moved = c.post(
+                f"{GITHUB_API}/repos/{owner}/{repo}/git/refs",
+                headers=_headers(),
+                json={"ref": f"refs/heads/{branch}", "sha": commit_sha},
+            )
+        moved.raise_for_status()
+        return {
+            "sha": commit_sha,
+            "base_sha": parent_sha,
+            "changed": True,
+        }
 
 
 @mcp.tool()
@@ -446,21 +725,32 @@ def merge_pull_request(
     repo: str,
     number: int,
     merge_method: str = "squash",
+    head_sha: str = "",
 ) -> dict:
     """Merge a pull request (`merge_method`: merge | squash | rebase).
 
-    Returns {merged: bool, sha}. Used by the orchestrator's `auto` merge policy to
-    squash-close a run PR into its integration branch. The caller enforces the
-    "never merge into the default branch" invariant; this tool merges whatever PR
-    number it is given.
+    Returns {merged: bool, sha}. The orchestrator uses this for reviewed role PRs
+    into a run-private integration branch and, when configured, for the final green
+    integration PR into the default branch. The caller verifies base/head policy
+    and pins ``head_sha``; this tool merges the supplied PR number.
     """
     with httpx.Client(timeout=30) as c:
+        payload = {"merge_method": merge_method}
+        if head_sha:
+            payload["sha"] = head_sha
         r = c.put(
             f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}/merge",
             headers=_headers(),
-            json={"merge_method": merge_method},
+            json=payload,
         )
-        r.raise_for_status()
+        if r.is_error:
+            try:
+                detail = r.json().get("message") or r.text
+            except (ValueError, AttributeError):
+                detail = r.text
+            raise RuntimeError(
+                f"GitHub merge rejected PR #{number} "
+                f"({r.status_code}): {detail[:300]}")
         d = r.json()
         return {"merged": bool(d.get("merged")), "sha": d.get("sha", "")}
 

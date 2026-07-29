@@ -159,6 +159,50 @@ def test_the_round_comment_exists_because_a_body_cannot_be_rewritten():
     assert "passed" in note
 
 
+def test_final_pr_reports_both_independent_panel_members_and_findings():
+    run = _run(
+        review={
+            "state": "approved",
+            "panels": [
+                {
+                    "name": "adversarial",
+                    "label": "Behavior review",
+                    "state": "approved",
+                    "model": "model-a",
+                    "reasons": [],
+                    "assessment": "Traced the API status value into the UI.",
+                },
+                {
+                    "name": "design",
+                    "label": "Design review",
+                    "state": "changes_requested",
+                    "model": "model-b",
+                    "reasons": ["The restart path drops persisted filters."],
+                    "assessment": "Persistence ownership is incomplete.",
+                },
+            ],
+        },
+        work_items={},
+        integration_brief={"shared_contract": []},
+        gate_history=[{
+            "stage": "full candidate",
+            "candidate_digest": "abc123",
+            "passed": True,
+            "summary": "all probes passed",
+        }],
+        merge_queue=[],
+    )
+    body = replay.integration_narrative(run)
+    assert "Two Independent Reviews" in body
+    assert "Behavior review" in body
+    assert "Design review" in body
+    assert "The restart path drops persisted filters." in body
+    assert (
+        "without seeing a builder's conversation or self-review"
+        in body
+    )
+
+
 def test_a_retry_with_no_recorded_reasons_says_so_rather_than_implying_none():
     run = _run(iterations=2,
                retry_reasons=[{"round": 1, "gate_summary": "", "reasons": []}])
@@ -220,8 +264,8 @@ def test_one_file_is_not_reported_as_1_files():
     assert engine._files(1) == "1 file"
     assert engine._files(6) == "6 files"
     src = open(engine.__file__, encoding="utf-8").read()
-    for phrase in ("built the backend side of this request",
-                   "built the interface this request asked for"):
+    for phrase in ("prepared the backend role patch",
+                   "prepared the frontend role patch"):
         line = next(ln for ln in src.splitlines() if phrase in ln and "role.note" in ln)
         assert "_files(" in line, (
             f"this note goes on the pull request but hardcodes the plural, so a "
@@ -288,7 +332,8 @@ def test_the_engine_uses_the_narrative_as_the_pr_body():
     """A body that is never wired up is documentation, not a feature."""
     engine_src = open(os.path.join(os.path.dirname(replay.__file__), "engine.py"),
                       encoding="utf-8").read()
-    assert "replay.narrative(run)" in engine_src, (
-        "engine.py does not pass the narrative to open_pr, so the PR body is not it")
+    assert "replay.integration_narrative(run)" in engine_src, (
+        "engine.py does not pass the queue evidence narrative to the final "
+        "integration PR")
     assert "Automated build for:" not in engine_src, (
         "the old two-line PR body is still there")

@@ -1,24 +1,15 @@
-"""GitHub finalization through the GitHub MCP Gateway (no PAT anywhere).
+"""GitHub role-PR queue through the GitHub MCP Gateway (no PAT anywhere).
 
 The workshop's final goal is a pull request on the attendee's own GitHub. In this
 model the ONLY GitHub credential is a **GitHub App installation**, held inside the
 GitHub MCP Runtime that fronts an IAM-authenticated AgentCore Gateway. The
-orchestrator is still the finalization actor (compose -> acceptance gate -> reviewer
-LGTM -> one PR -> optional auto-merge, all in engine.py), but instead of pushing a
-run branch with a fine-grained token it calls the Gateway's GitHub MCP tools over
-SigV4:
-
-  * ``create_branch``       open the run branch off the base
-  * ``put_file``            write each composed deliverable file onto that branch
-  * ``create_pull_request`` open the PR with the run's narrative as the body
-                            (``replay.py``; write-once, there is no
-                            ``update_pull_request`` tool)
-  * ``comment_on_issue``    post the reviewer verdict as a PR comment (a PR is an
-                            issue for the comments endpoint, so this works even
-                            when the App installation authored the PR -- unlike an
-                            APPROVE review, which GitHub forbids on your own PR)
-  * ``merge_pull_request``  squash-merge the run branch (auto policy only, and
-                            never into the default branch, by construction)
+The orchestrator gives every builder a branch and PR against a run-private
+integration branch. It publishes each patch atomically, comments executable
+evidence on the role PRs, and merges reviewed heads through a queue. After every
+role merge the validator authors and runs a fresh executable check. Only the
+fully validated integration branch opens a human-review PR to the repository's
+current default branch. The Gateway reads that branch; this module never changes
+repository settings.
 
 The credential LADDER is now a Gateway config, not a token:
 
@@ -40,10 +31,14 @@ only on the signing path.
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.error
@@ -60,10 +55,8 @@ _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO_ROOT, ".runs"
 # back-compat with the e2e GitHub-leak isolation fixture.)
 _SETTINGS = os.environ.get("WORKSHOP_GITHUB_SETTINGS",
                            os.path.join(_RUNS_DIR, "github_gateway.local.json"))
-# merge_policy is persisted in its OWN tiny file (it holds no secret), kept
-# separate from the gateway config so the auto-merge decision resolves the same
-# way no matter where the gateway URL / repo came from.
-_MERGE_POLICY_FILE = os.path.join(_RUNS_DIR, "merge_policy.local.json")
+_FINAL_MERGE_POLICY_FILE = os.path.join(
+    _RUNS_DIR, "final_merge_policy.local.json")
 _COMPOSED = os.path.join(_RUNS_DIR, "composed")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -71,9 +64,6 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 # The Gateway target name the deploy script creates (deploy-gateway.sh:
 # TARGET_NAME="GitHubMCP"). Gateway namespaces every tool as ``<target>___<tool>``.
 _DEFAULT_TARGET = "GitHubMCP"
-# A fresh "Use this template" repo defaults to ``main``; overridable in config.
-_DEFAULT_BASE = "main"
-
 # The canonical workshop TEMPLATE repository: the public code repo itself is a
 # GitHub template. Attendees click "Use this template" on it to get an ISOLATED
 # per-attendee working repo (no fork, no shared credential). Override with
@@ -96,15 +86,11 @@ def _git_env() -> dict:
     return env
 
 
-# --- merge_policy (unchanged across the migration; carries no secret) ---------
-# After the SEPARATE reviewer emits LGTM, what may the orchestrator do with the
-# approved run branch?
-#   "human_review" (DEFAULT, fail-closed): open the PR and STOP. A human merges.
-#   "auto"        : after LGTM, the orchestrator MAY squash-merge the run branch
-#                  into a stable INTEGRATION branch (never the default branch).
-MERGE_POLICIES = ("human_review", "auto")
-_DEFAULT_MERGE_POLICY = "human_review"
-INTEGRATION_BRANCH = "workshop/integration"
+# Idempotent branch used only to prove the GitHub App can write before a build.
+# Actual work always uses ``workshop/runs/<run_id>/integration``.
+DOCTOR_BRANCH = "workshop/doctor"
+FINAL_MERGE_POLICIES = ("human_review", "auto")
+_DEFAULT_FINAL_MERGE_POLICY = "human_review"
 
 
 # --- Gateway config resolution ------------------------------------------------
@@ -167,7 +153,7 @@ def _discover_gateway_url() -> str:
 def _gateway_config() -> dict | None:
     """Resolve the gateway config down the ladder, or None when nothing is wired.
 
-    Returns ``{gateway_url, repo, target, region, default_branch, source}`` when a
+    Returns ``{gateway_url, repo, target, region, source}`` when a
     gateway URL AND a target repo are both known; otherwise None. The gateway URL
     resolves: ``GITHUB_GATEWAY_URL`` env -> the Settings file -> AUTO-DISCOVERED from
     the gateway deploy's ``.deployed-state.json``. The repo resolves: ``GITHUB_REPO``
@@ -194,7 +180,6 @@ def _gateway_config() -> dict | None:
         "repo": repo,
         "target": target,
         "region": (file.get("region") or _region_from_url(gateway_url)),
-        "default_branch": (file.get("default_branch") or _DEFAULT_BASE),
         "source": source,
     }
 
@@ -220,10 +205,9 @@ def _sigv4_headers(url: str, body: bytes, region: str) -> dict[str, str]:
 _RPC_ID = 0
 _RPC_ID_LOCK = threading.Lock()
 
-# One transient network failure must not cost an attendee their pull request. The PR
-# path makes one call per deliverable FILE (see open_pr), so a build that wrote a dozen
-# files rolls a dozen dice; without a retry, a single reset or 503 anywhere in that loop
-# left the run `passed` with `pr_url` null and nothing to re-run.
+# One transient network failure must not cost an attendee a role or integration PR.
+# The queue performs several archive, branch, commit, comment, and merge calls, so a
+# single reset or 503 must receive a bounded transport retry.
 _RPC_ATTEMPTS = 3
 _RPC_BACKOFF_S = 2.0
 # Retry ONLY what is genuinely transient. A 4xx is the gateway or GitHub telling us the
@@ -325,48 +309,76 @@ def _tools_list(cfg: dict, timeout: float = 15.0) -> list[dict]:
     return result.get("tools", result) if isinstance(result, dict) else result
 
 
-# --- merge_policy -------------------------------------------------------------
+def repository_default_branch(cfg: dict | None = None) -> str:
+    """Read the target repository's default branch through the GitHub App.
 
-def _coerce_merge_policy(value: str | None) -> str:
-    v = (value or "").strip().lower()
-    return v if v in MERGE_POLICIES else _DEFAULT_MERGE_POLICY
+    There is deliberately no guessed fallback. A wrong target branch can make a
+    valid build open or merge the wrong pull request, so an old Gateway that cannot
+    read repository metadata must fail pre-flight and be redeployed.
+    """
+    resolved = cfg or _gateway_config()
+    if not resolved:
+        raise GatewayError("no GitHub MCP Gateway wired")
+    owner, repo_name = _repo_parts(resolved)
+    info = _tool(
+        resolved,
+        "get_repository",
+        {"owner": owner, "repo": repo_name},
+        timeout=20.0,
+    )
+    branch = (
+        str(info.get("default_branch") or "").strip()
+        if isinstance(info, dict) else ""
+    )
+    if not branch:
+        raise GatewayError(
+            "get_repository returned no default_branch; redeploy the Gateway")
+    return branch
 
 
-def _save_policy_file(policy: str) -> None:
+# --- Final PR policy ----------------------------------------------------------
+
+def _coerce_final_merge_policy(value: str | None) -> str:
+    candidate = (value or "").strip().lower()
+    return (candidate if candidate in FINAL_MERGE_POLICIES
+            else _DEFAULT_FINAL_MERGE_POLICY)
+
+
+def _save_final_merge_policy(policy: str) -> None:
     os.makedirs(_RUNS_DIR, exist_ok=True)
-    with open(_MERGE_POLICY_FILE, "w", encoding="utf-8") as f:
-        json.dump({"merge_policy": policy}, f)
+    with open(_FINAL_MERGE_POLICY_FILE, "w", encoding="utf-8") as f:
+        json.dump({"final_merge_policy": policy}, f)
 
 
-def merge_policy() -> str:
-    """The active merge_policy: ``WORKSHOP_MERGE_POLICY`` env -> the Settings-pane
-    policy file -> the fail-closed default ``human_review``."""
-    env = os.environ.get("WORKSHOP_MERGE_POLICY")
+def final_merge_policy() -> str:
+    """How the already-green final PR finishes: human review or auto-merge."""
+    env = (os.environ.get("WORKSHOP_FINAL_MERGE_POLICY")
+           or os.environ.get("WORKSHOP_MERGE_POLICY"))
     if env is not None:
-        return _coerce_merge_policy(env)
+        return _coerce_final_merge_policy(env)
     try:
-        with open(_MERGE_POLICY_FILE, encoding="utf-8") as f:
-            return _coerce_merge_policy(json.load(f).get("merge_policy"))
+        with open(_FINAL_MERGE_POLICY_FILE, encoding="utf-8") as f:
+            return _coerce_final_merge_policy(
+                json.load(f).get("final_merge_policy"))
     except (OSError, ValueError):
-        return _DEFAULT_MERGE_POLICY
+        return _DEFAULT_FINAL_MERGE_POLICY
 
 
-def set_merge_policy(value: str | None) -> dict[str, Any]:
-    """Flip ONLY the merge_policy, leaving the gateway config untouched."""
-    _save_policy_file(_coerce_merge_policy(value))
+def set_final_merge_policy(value: str | None) -> dict[str, Any]:
+    """Change only the final PR policy; role PRs always use the merge queue."""
+    _save_final_merge_policy(_coerce_final_merge_policy(value))
     return status()
 
 
 # --- Settings surface (the console + terminal write here) ---------------------
 
 def save_settings(repo: str, gateway_url: str | None = None,
-                  merge_policy: str | None = None) -> dict[str, Any]:
+                  final_policy: str | None = None) -> dict[str, Any]:
     """Persist the Settings-pane gateway connection (ladder rung 2). NO token.
 
     ``repo`` is the attendee's template-derived repository ``owner/name`` (where
     the PR lands). ``gateway_url`` is normally wired by the workshop (env), so the
-    console may omit it; when present it is saved too. ``merge_policy`` rides on
-    the same surface: omitted/unknown -> the fail-closed ``human_review``.
+    console may omit it; when present it is saved too.
     """
     repo = (repo or "").strip()
     if not _REPO_RE.match(repo):
@@ -376,7 +388,8 @@ def save_settings(repo: str, gateway_url: str | None = None,
     gateway_url = (gateway_url or "").strip()
     if gateway_url:
         file["gateway_url"] = gateway_url
-    policy = _coerce_merge_policy(merge_policy)
+    if final_policy is not None:
+        _save_final_merge_policy(_coerce_final_merge_policy(final_policy))
     os.makedirs(_RUNS_DIR, exist_ok=True)
     try:
         os.chmod(_RUNS_DIR, 0o700)
@@ -385,13 +398,11 @@ def save_settings(repo: str, gateway_url: str | None = None,
     with open(_SETTINGS, "w", encoding="utf-8") as f:
         json.dump(file, f)
     os.chmod(_SETTINGS, 0o600)
-    _save_policy_file(policy)
     return status()
 
 
 def clear_settings() -> dict[str, Any]:
-    """Disconnect: remove the gateway config file (merge_policy stays; it is an
-    independent, secret-free preference the attendee can toggle any time)."""
+    """Disconnect by removing the local Gateway configuration."""
     try:
         os.remove(_SETTINGS)
     except OSError:
@@ -406,26 +417,29 @@ def status() -> dict[str, Any]:
     cfg = _gateway_config()
     if not cfg:
         return {"connected": False, "mode": "local", "workshop_repo": WORKSHOP_REPO,
-                "connection_method": "gateway", "merge_policy": merge_policy(),
+                "connection_method": "gateway",
+                "final_merge_policy": final_merge_policy(),
                 "hint": f"Use the '{WORKSHOP_REPO}' template to create your own repo, "
                         "then set GITHUB_GATEWAY_URL + GITHUB_REPO (or paste your "
                         "owner/repo in Settings once the workshop wires the gateway). "
-                        "Until then the PR step fails loud: a run composes the branch "
-                        "locally but opens no PR (pr_url stays null)."}
+                        "Until then pre-flight fails before any builder runs."}
     try:
         tools = _tools_list(cfg)
         names = [t.get("name", "") for t in tools] if isinstance(tools, list) else []
+        default_branch = repository_default_branch(cfg)
     except GatewayError as exc:
         return {"connected": False, "mode": "gateway", "connection_method": "gateway",
                 "gateway_url": cfg["gateway_url"], "target": cfg["target"],
                 "repo": cfg["repo"], "workshop_repo": WORKSHOP_REPO,
-                "merge_policy": merge_policy(),
+                "final_merge_policy": final_merge_policy(),
                 "error": f"gateway health check failed: {exc}"}
     return {"connected": True, "mode": "gateway", "connection_method": "gateway",
             "gateway_url": cfg["gateway_url"], "target": cfg["target"],
             "repo": cfg["repo"], "workshop_repo": WORKSHOP_REPO,
-            "region": cfg["region"], "merge_policy": merge_policy(),
-            "source": cfg["source"], "tool_count": len(names)}
+            "region": cfg["region"], "source": cfg["source"],
+            "default_branch": default_branch,
+            "final_merge_policy": final_merge_policy(),
+            "tool_count": len(names)}
 
 
 def doctor() -> dict[str, Any]:
@@ -442,10 +456,9 @@ def doctor() -> dict[str, Any]:
     setup as its own step, with a named result per check, so a broken install is a
     30-second answer rather than a failed run.
 
-    READ-ONLY. It resolves config, lists the gateway's tools, and asks the App to
-    read the target repository through the same signed path a build uses. It creates
-    no branch, writes no file, and opens no pull request, so it is safe to run
-    repeatedly and it cannot leave anything behind on the attendee's repo.
+    It resolves config, lists the gateway's tools, reads the target repository, and
+    idempotently prepares ``workshop/doctor`` to prove write permission. It writes no
+    file and opens no pull request, so it is safe to run repeatedly.
 
     Returns ``{ok, checks: [{check, passed, detail}], hint}``: ``ok`` only when every
     check passed.
@@ -469,7 +482,7 @@ def doctor() -> dict[str, Any]:
                if cfg else "no gateway URL and/or repo is wired"):
         return done("Export GITHUB_GATEWAY_URL and GITHUB_REPO (the Broker GitHub "
                     "Tools page, step 6), or paste owner/repo in console Settings. "
-                    "Until then a build composes locally and opens no PR.")
+                    "Until then pre-flight stops before any builder runs.")
     add("repo_shape", bool(_REPO_RE.match(cfg["repo"])),
         f"repo is {cfg['repo']!r}")
 
@@ -483,20 +496,25 @@ def doctor() -> dict[str, Any]:
                     "the Runtime or its target is not READY yet.")
     add("gateway_reachable", True, f"{len(names)} tool(s) discoverable")
 
-    # The three tools the PR path actually calls. A gateway that answers but does
-    # not expose these cannot open a pull request, and that is worth naming now.
-    need = ("create_branch", "put_file", "create_pull_request", "list_files")
+    # Every tool the role-PR queue calls. A stale Gateway may answer tools/list
+    # while still lacking the archive, atomic branch update, label, or merge calls.
+    need = (
+        "create_branch",
+        "get_repository",
+        "get_repository_archive",
+        "get_branch_head",
+        "reset_branch",
+        "commit_changes",
+        "create_pull_request",
+        "comment_on_issue",
+        "ensure_labels",
+        "merge_pull_request",
+        "list_files",
+    )
     missing = [t for t in need
                if not any(n.endswith(f"___{t}") or n == t for n in names)]
-    # put_files is NOT in `need`: a gateway deployed before it exists still opens a
-    # perfectly good PR, just as one commit per file. So report it rather than fail on
-    # it, and say what the attendee will see either way.
-    has_batch = any(n.endswith("___put_files") or n == "put_files" for n in names)
     add("pr_tools_present", not missing,
-        ("create_branch + put_file + create_pull_request exposed"
-         + (" (put_files too: the deliverable lands as ONE commit)" if has_batch
-            else " (no put_files on this gateway: the deliverable will land as one "
-                 "commit PER FILE; redeploy the gateway for a single commit)"))
+        "checkout + branch + atomic change + PR + label + comment + merge tools exposed"
         if not missing else f"missing from the gateway: {', '.join(missing)}")
 
     # The check that catches the real Lab 2 mistake: can the App READ this repo?
@@ -504,15 +522,16 @@ def doctor() -> dict[str, Any]:
     # reach the gateway fine and only fail when a build tries to write.
     owner, _, repo_name = cfg["repo"].partition("/")
     try:
+        default_branch = repository_default_branch(cfg)
         # list_files at the repo root, on the resolved default branch: the
         # cheapest call that requires the installation to actually have this
         # repository, and it is the same tool set a build uses.
         _tool(cfg, "list_files",
               {"owner": owner, "repo": repo_name, "path": "",
-               "ref": cfg["default_branch"]}, timeout=20.0)
+               "ref": default_branch}, timeout=20.0)
         add("app_can_reach_repo", True,
             f"the App installation can read {cfg['repo']} "
-            f"({cfg['default_branch']})")
+            f"({default_branch})")
     except GatewayError as exc:
         reason = str(exc)
         lowered = reason.lower()
@@ -537,29 +556,28 @@ def doctor() -> dict[str, Any]:
     # tools are all listed, the repo is visible -- and then fails at `create_branch`
     # AFTER a ten-minute build. So probe a write here, while it is still cheap.
     #
-    # The probe creates the INTEGRATION BRANCH the auto-merge path uses anyway, which
-    # makes it litter-free: `create_branch` is idempotent ("already exists" is success),
-    # the gateway exposes no delete, and this branch is a legitimate part of the repo
-    # rather than a stray `doctor-test-123`.
+    # The stable probe branch is deliberately separate from every run-private
+    # integration branch. `create_branch` is idempotent and the Gateway exposes no
+    # branch delete operation.
     try:
         _tool(cfg, "create_branch",
-              {"owner": owner, "repo": repo_name, "branch": INTEGRATION_BRANCH,
-               "from_branch": cfg["default_branch"]}, timeout=20.0)
+              {"owner": owner, "repo": repo_name, "branch": DOCTOR_BRANCH,
+               "from_branch": default_branch}, timeout=20.0)
         add("app_can_write_repo", True,
             f"the App can create a branch on {cfg['repo']} "
-            f"(prepared {INTEGRATION_BRANCH})")
+            f"(prepared {DOCTOR_BRANCH})")
     except GatewayError as exc:
         reason = str(exc)
         lowered = reason.lower()
         if _branch_already_exists(exc):
             add("app_can_write_repo", True,
-                f"{INTEGRATION_BRANCH} already exists, so the App can write")
+                f"{DOCTOR_BRANCH} already exists, so the App can write")
         elif "403" in lowered or "forbidden" in lowered or "permission" in lowered:
             add("app_can_write_repo", False,
                 "the App can READ the repo but not write to it (403). In the App's "
-                "settings, set Repository permissions -> Contents: Read and write AND "
-                "Pull requests: Read and write, then re-install the App so the new "
-                "permissions take effect.")
+                "settings, set Repository permissions -> Contents, Issues, and Pull "
+                "requests to Read and write, then re-install the App so the new "
+                "permissions take effect. Metadata remains Read-only.")
             return done("Grant the App write access before deploying the coordinator: "
                         "otherwise the build runs for ten minutes and only then fails "
                         "at the pull-request step.")
@@ -575,57 +593,18 @@ def doctor() -> dict[str, Any]:
 # --- Compose base -------------------------------------------------------------
 
 def ensure_compose_base() -> dict[str, Any]:
-    """Compose into a LOCAL scratch repo (no external clone).
+    """Describe where the local evidence commit is recorded.
 
-    In the gateway model there is no token to authenticate a clone of the
-    attendee's private repo, and none is needed: the PR is the set of deliverable
-    files ADDED on a new branch, written straight to the attendee's repo via the
-    gateway's put_file at open_pr time. So compose stays entirely local and
-    offline here; open_pr publishes it. Never raises.
+    The queue itself operates on the attendee repository through the Gateway.
+    This scratch repository exists only for the console's final diff view and
+    never substitutes for a GitHub pull request.
     """
     cfg = _gateway_config()
     if not cfg:
-        return {"mode": "local", "reason": "no gateway wired: composing into a local scratch repo"}
+        return {"mode": "local",
+                "reason": "no gateway wired: recording only a local evidence diff"}
     return {"mode": "gateway", "repo": cfg["repo"], "source": cfg["source"],
-            "reason": "gateway wired: composing locally, publishing via put_file at PR time"}
-
-
-# --- The PR path (create_branch + put_file + create_pull_request) --------------
-
-def _composed_files(branch: str) -> list[str]:
-    """The repo-relative paths the compose commit introduced on ``branch``.
-
-    The compose base is an empty scratch repo, so the branch's commit contains
-    exactly this run's deliverable: each routed role's own tree under its own
-    directory, at the paths the AGENTS chose, plus the validator's authored check at
-    the root. Nothing here knows those names in advance."""
-    r = subprocess.run(
-        ["git", "-C", _COMPOSED, "show", "--pretty=format:", "--name-only", branch],
-        capture_output=True, text=True, timeout=20, env=_git_env())
-    if r.returncode != 0:
-        return []
-    return [line for line in r.stdout.splitlines() if line.strip()]
-
-
-def _read_composed(branch: str, path: str) -> str | None:
-    r = subprocess.run(["git", "-C", _COMPOSED, "show", f"{branch}:{path}"],
-                       capture_output=True, text=True, timeout=20, env=_git_env())
-    return r.stdout if r.returncode == 0 else None
-
-
-def _ensure_integration_branch(cfg: dict, default_branch: str) -> str | None:
-    """Return a stable integration branch auto-merge may squash-close into,
-    creating it off the default branch tip if absent. Auto-merge targets THIS
-    branch, never the default branch, so the invariant holds structurally."""
-    try:
-        _tool(cfg, "create_branch",
-              {"owner": cfg["repo"].split("/")[0], "repo": cfg["repo"].split("/")[1],
-               "branch": INTEGRATION_BRANCH, "from_branch": default_branch})
-    except GatewayError as exc:
-        # Already existing is success; anything else is a real failure.
-        if not _branch_already_exists(exc):
-            return None
-    return INTEGRATION_BRANCH
+            "reason": "gateway queue active; recording a local evidence diff"}
 
 
 def _branch_already_exists(exc: Exception) -> bool:
@@ -635,151 +614,456 @@ def _branch_already_exists(exc: Exception) -> bool:
     server forwards httpx's message, which does NOT contain the words "already exists".
     Matching only that phrase made a SUCCESS look like a failure: on a rerun, `doctor`
     reported "could not confirm write access: ... 422" and NOT READY on a repo it had
-    itself prepared moments earlier, and `open_pr` would abort a legitimate re-run of
-    the same run id. 422 on the refs endpoint has exactly one cause here, since the ref
-    name and the base sha are both ours.
+    itself prepared moments earlier. 422 on the refs endpoint has exactly one cause
+    here, since the ref name and the base sha are both ours.
     """
     low = str(exc).lower()
     return ("already exists" in low or "reference already exists" in low
             or "422" in low)
 
 
-def _publish_files(cfg: dict, owner: str, repo_name: str, branch: str,
-                   files: list[str], message: str) -> str:
-    """Write every deliverable file to ``branch`` as ONE commit. Returns "" or an error.
+_ARCHIVE_COMPRESSED_LIMIT = 32 * 1024 * 1024
+_ARCHIVE_EXPANDED_LIMIT = 128 * 1024 * 1024
+_ARCHIVE_FILE_LIMIT = 5000
 
-    The Contents API commits PER FILE, so a 38-file deliverable arrived as 38 commits
-    each titled "run_x: <path>": a log that describes our transport instead of the
-    change, and no single commit a reviewer can read as "the deliverable". The gateway's
-    ``put_files`` builds one tree and one commit instead.
 
-    Falls back to per-file ``put_file`` ONLY when the deployed gateway predates
-    ``put_files`` (an attendee who deployed it earlier in the lab). That is a real
-    version skew, not an error-hiding fallback: the deliverable still lands, just as
-    several commits, and the reason is logged rather than swallowed.
-    """
-    payload = []
-    for path in files:
-        content = _read_composed(branch, path)
-        if content is None:
-            continue
-        payload.append({"path": path, "content": content})
-    if not payload:
-        return "composed branch has no readable files to publish"
+def _repo_parts(cfg: dict) -> tuple[str, str]:
+    owner, _, repo_name = cfg["repo"].partition("/")
+    return owner, repo_name
+
+
+def _extract_repository_archive(encoded: str, destination: str) -> int:
+    """Safely materialize the Gateway-brokered repository snapshot."""
     try:
-        _tool(cfg, "put_files", {"owner": owner, "repo": repo_name, "branch": branch,
-                                 "files": payload, "message": message}, timeout=120.0)
-        return ""
-    except GatewayError as exc:
-        if not _is_unknown_tool(exc):
-            return f"gateway put_files failed: {exc}"
-    # Version skew: this gateway has no put_files. One commit per file, as before.
-    for item in payload:
-        try:
-            _tool(cfg, "put_file",
-                  {"owner": owner, "repo": repo_name, "branch": branch,
-                   "path": item["path"], "content": item["content"],
-                   "message": f"{message} ({item['path']})"})
-        except GatewayError as exc:
-            return f"gateway put_file failed for {item['path']}: {exc}"
-    return ""
+        raw = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise GatewayError(f"repository archive is not valid base64: {exc}") from exc
+    if len(raw) > _ARCHIVE_COMPRESSED_LIMIT:
+        raise GatewayError("repository archive exceeds the compressed size limit")
+
+    scratch = destination + f".tmp-{os.getpid()}-{threading.get_ident()}"
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.makedirs(scratch, exist_ok=True)
+    count = total = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                # GitHub archives have one generated top-level directory. Strip it
+                # and reject anything that could escape the destination.
+                name = member.name.replace("\\", "/")
+                parts = name.split("/", 1)
+                if len(parts) != 2 or not parts[1]:
+                    continue
+                rel = parts[1]
+                rel_parts = rel.split("/")
+                if rel.startswith("/") or any(p in ("", ".", "..")
+                                              for p in rel_parts):
+                    raise GatewayError(
+                        f"repository archive contains an unsafe path: {rel!r}")
+                count += 1
+                total += int(member.size or 0)
+                if count > _ARCHIVE_FILE_LIMIT or total > _ARCHIVE_EXPANDED_LIMIT:
+                    raise GatewayError(
+                        "repository archive exceeds the expanded checkout limit")
+                source = archive.extractfile(member)
+                if source is None:
+                    continue
+                dest = os.path.join(scratch, *rel_parts)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    shutil.copyfileobj(source, f)
+                if member.mode & 0o111:
+                    os.chmod(dest, os.stat(dest).st_mode | 0o111)
+        shutil.rmtree(destination, ignore_errors=True)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        os.replace(scratch, destination)
+        return count
+    except Exception:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
 
 
-def _is_unknown_tool(exc: Exception) -> bool:
-    """True when the gateway does not expose the tool we asked for (version skew),
-    as opposed to the tool running and failing."""
-    low = str(exc).lower()
-    return ("unknown tool" in low or "tool not found" in low
-            or "no such tool" in low or "not a valid tool" in low
-            or ("does not exist" in low and "tool" in low))
-
-
-def open_pr(run: Any, body_md: str) -> dict[str, Any]:
-    """Publish the composed run branch to the attendee repo via the gateway and
-    open the PR. Returns {pr_url} or {error}. Fails LOUD (real-only): no gateway
-    -> PR_NO_GATEWAY, pr_url stays null, never a fake URL."""
+def snapshot_branch(branch: str, destination: str) -> dict[str, Any]:
+    """Read one private branch through the Gateway into a local checkout."""
     cfg = _gateway_config()
     if not cfg:
-        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired. Deploy the "
-                "gateway (coding-agents/gateway_mcp) and set GITHUB_GATEWAY_URL + "
-                "GITHUB_REPO (or paste your owner/repo in Settings), then re-run to "
-                "open a real PR. The composed run branch is local-only until the "
-                "gateway is wired; it is never published as a fake PR."}
-    branch = run.composed_branch
-    if not branch or not os.path.isdir(os.path.join(_COMPOSED, ".git")):
-        return {"error": "no composed branch to publish"}
-    owner, _, repo_name = cfg["repo"].partition("/")
-    default_branch = cfg["default_branch"]
-
-    # Base-branch policy (the "never auto-merge to main" guarantee, by construction):
-    #   human_review -> PR targets the repo's default branch; a human merges to it.
-    #   auto         -> PR targets a stable INTEGRATION branch the orchestrator may
-    #                   squash-merge into; the default branch is never touched.
-    if merge_policy() == "auto":
-        base = _ensure_integration_branch(cfg, default_branch)
-        if base is None:
-            return {"error": "could not prepare the integration branch for auto-merge"}
-    else:
-        base = default_branch
-
-    files = _composed_files(branch)
-    if not files:
-        return {"error": "composed branch has no files to publish"}
-
-    # 1. Create the run branch off the base.
+        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
+    owner, repo_name = _repo_parts(cfg)
     try:
-        _tool(cfg, "create_branch", {"owner": owner, "repo": repo_name,
-                                     "branch": branch, "from_branch": base})
+        head = _tool(
+            cfg, "get_branch_head",
+            {"owner": owner, "repo": repo_name, "branch": branch},
+            timeout=30.0,
+        )
+        payload = _tool(
+            cfg, "get_repository_archive",
+            {"owner": owner, "repo": repo_name, "ref": branch},
+            timeout=120.0,
+        )
+        encoded = payload.get("archive_base64", "") if isinstance(
+            payload, dict) else ""
+        files = _extract_repository_archive(encoded, destination)
+    except (GatewayError, OSError, tarfile.TarError) as exc:
+        return {"error": f"repository checkout failed: {exc}"}
+    return {
+        "branch": branch,
+        "sha": str(head),
+        "files": files,
+        "repo": cfg["repo"],
+        "source": cfg["source"],
+    }
+
+
+def prepare_run_integration(branch: str, destination: str) -> dict[str, Any]:
+    """Create one run-scoped integration branch and clone its private snapshot."""
+    cfg = _gateway_config()
+    if not cfg:
+        return {
+            "error": "PR_NO_GATEWAY: this workflow opens role pull requests before "
+                     "validation, so the GitHub MCP Gateway must be wired first. "
+                     "Run `python3 orchestrator/github.py doctor`.",
+        }
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        default_branch = repository_default_branch(cfg)
+        _tool(
+            cfg, "create_branch",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "branch": branch,
+                "from_branch": default_branch,
+            },
+            timeout=30.0,
+        )
     except GatewayError as exc:
         if not _branch_already_exists(exc):
-            return {"error": f"gateway create_branch failed: {exc}"}
-
-    # 2. Write the deliverable onto the run branch as ONE commit.
-    err = _publish_files(cfg, owner, repo_name, branch, files,
-                         f"{run.run_id}: {run.task.splitlines()[0][:72]}")
-    if err:
-        return {"error": err}
-
-    # 3. Open the PR with the run's narrative as the body (the caller passes it).
-    title = f"{run.run_id}: {run.task[:80]}"
-    try:
-        pr = _tool(cfg, "create_pull_request",
-                   {"owner": owner, "repo": repo_name, "title": title,
-                    "head": branch, "base": base, "body": body_md})
-    except GatewayError as exc:
-        # A PR for this head may already exist from a prior attempt; surface it.
-        return {"error": f"gateway create_pull_request failed: {exc}"}
-    if not isinstance(pr, dict) or "url" not in pr:
-        return {"error": f"gateway create_pull_request returned no url: {pr!r}"}
-    return {"pr_url": pr["url"], "number": pr.get("number"), "base": base,
-            "default_branch": default_branch, "source": cfg["source"]}
+            return {"error": f"integration branch creation failed: {exc}"}
+    snapshot = snapshot_branch(branch, destination)
+    if not snapshot.get("error"):
+        snapshot["default_branch"] = default_branch
+    return snapshot
 
 
-def update_pr(run: Any) -> dict[str, Any]:
-    """Push the freshly-composed deliverable files onto the run's EXISTING PR
-    branch (the re-implement round of the review loop), as ONE commit, so the round
-    reads as a single "re-implement round 2" change rather than one commit per file.
-    The open pull request updates in place. Returns {updated, files} | {error}."""
+def _item_labels(run: Any, item: Any) -> list[dict[str, str]]:
+    return [
+        {
+            "name": f"run:{run.run_id}",
+            "color": "0969da",
+            "description": "AgentCore workshop run id",
+        },
+        {
+            "name": f"role:{item.capability}",
+            "color": "8250df",
+            "description": "Coding-agent role",
+        },
+        {
+            "name": f"work:{item.work_id}",
+            "color": "1f883d",
+            "description": "Isolated coding-agent work id",
+        },
+    ]
+
+
+def publish_work_item(run: Any, item: Any, body_md: str) -> dict[str, Any]:
+    """Create or refresh one role-owned branch and its existing pull request."""
     cfg = _gateway_config()
     if not cfg:
-        return {"error": "no gateway wired"}
-    branch = run.composed_branch
-    if not branch or not os.path.isdir(os.path.join(_COMPOSED, ".git")):
-        return {"error": "no composed branch to publish"}
-    owner, _, repo_name = cfg["repo"].partition("/")
-    files = _composed_files(branch)
-    if not files:
-        return {"error": "composed branch has no files to publish"}
-    err = _publish_files(
-        cfg, owner, repo_name, branch, files,
-        f"{run.run_id}: re-implement round {getattr(run, 'iterations', '?')}")
-    if err:
-        return {"error": err}
-    return {"updated": True, "files": files}
+        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
+    patch = getattr(item, "_patch", None)
+    if patch is None:
+        return {"error": f"WORK_PATCH_MISSING:{item.work_id}"}
+    if not patch.changes:
+        return {"error": f"ROLE_PRODUCED_NO_CHANGE:{item.work_id}"}
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        files = [{
+            "path": path,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+        } for path, content in patch.changes.items() if content is not None]
+        deletions = [path for path, content in patch.changes.items()
+                     if content is None]
+        committed = _tool(
+            cfg, "commit_changes",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "branch": item.branch,
+                "files": files,
+                "deletions": deletions,
+                "message": (
+                    f"{run.run_id} {item.work_id}: {item.role} "
+                    f"round {max(1, item.attempt)}"
+                ),
+                "expected_parent": item.head_sha or "",
+                "from_branch": item.base_branch,
+            },
+            timeout=120.0,
+        )
+        item.base_sha = (committed.get("base_sha", "")
+                         if isinstance(committed, dict) else "")
+        item.head_sha = (committed.get("sha", "")
+                         if isinstance(committed, dict) else str(committed))
+        replaced_pr = None
+        if item.pr:
+            current = _tool(
+                cfg, "get_issue",
+                {
+                    "owner": owner,
+                    "repo": repo_name,
+                    "issue_number": item.pr["number"],
+                },
+                timeout=30.0,
+            )
+            state = (current.get("state", "")
+                     if isinstance(current, dict) else "")
+            if state != "open":
+                replaced_pr = dict(item.pr)
+                item.pr = None
+        if not item.pr:
+            opened = _tool(
+                cfg, "create_pull_request",
+                {
+                    "owner": owner,
+                    "repo": repo_name,
+                    "title": f"[{item.capability}] {run.task.splitlines()[0][:72]}",
+                    "head": item.branch,
+                    "base": item.base_branch,
+                    "body": body_md,
+                },
+                timeout=30.0,
+            )
+            if not isinstance(opened, dict) or "url" not in opened:
+                return {
+                    "error": f"role PR returned no URL: {opened!r}",
+                    "head_sha": item.head_sha,
+                }
+            item.pr = {
+                "pr_url": opened["url"],
+                "number": opened.get("number"),
+                "base": item.base_branch,
+                "head": item.branch,
+                "source": cfg["source"],
+            }
+            if replaced_pr:
+                item.pr["replaces"] = replaced_pr.get("pr_url")
+        labels = _tool(
+            cfg, "ensure_labels",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "issue_number": item.pr["number"],
+                "labels": _item_labels(run, item),
+            },
+            timeout=30.0,
+        )
+        item.pr["labels"] = labels
+        item.pr["head_sha"] = item.head_sha
+        item.state = "in_review"
+        item.stale = False
+        return dict(item.pr)
+    except GatewayError as exc:
+        return {
+            "error": f"role PR publish failed for {item.work_id}: {exc}",
+            "pr_url": (item.pr or {}).get("pr_url"),
+            "number": (item.pr or {}).get("number"),
+        }
+
+
+def comment_on_work_item(item: Any, body_md: str) -> dict[str, Any]:
+    """Post gate/review/refresh evidence on a role's existing PR."""
+    cfg = _gateway_config()
+    number = (getattr(item, "pr", None) or {}).get("number")
+    if not cfg:
+        return {"skipped": "local mode (no gateway wired)"}
+    if not number:
+        return {"skipped": f"{item.work_id} has no PR number"}
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        response = _tool(
+            cfg, "comment_on_issue",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "issue_number": number,
+                "body": body_md,
+            },
+        )
+    except GatewayError as exc:
+        return {"error": f"gateway comment failed: {exc}"}
+    return {
+        "reviewed": True,
+        "review_url": response.get("url", "") if isinstance(response, dict) else "",
+    }
+
+
+def merge_work_item(run: Any, item: Any) -> dict[str, Any]:
+    """Squash one green role PR into this run's private integration branch."""
+    cfg = _gateway_config()
+    pr = getattr(item, "pr", None) or {}
+    if not cfg:
+        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
+    if pr.get("base") != run.integration_branch:
+        return {
+            "error": f"refusing to merge {item.work_id}: base "
+                     f"{pr.get('base')!r} is not {run.integration_branch!r}",
+        }
+    number = pr.get("number")
+    if not number:
+        return {"error": f"{item.work_id} has no PR number"}
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        response = _tool(
+            cfg, "merge_pull_request",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "number": number,
+                "merge_method": "squash",
+                "head_sha": item.head_sha or "",
+            },
+            timeout=60.0,
+        )
+    except GatewayError as exc:
+        return {"error": f"role PR merge failed: {exc}"}
+    if not isinstance(response, dict) or not response.get("merged"):
+        return {"error": f"role PR merge did not complete: {response!r}"}
+    item.merge_state = "merged"
+    item.state = "merged"
+    return {"merged": True, "sha": response.get("sha", "")}
+
+
+def open_integration_pr(run: Any, body_md: str) -> dict[str, Any]:
+    """Open the final evidence PR from the validated run branch to default."""
+    cfg = _gateway_config()
+    if not cfg:
+        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        default_branch = repository_default_branch(cfg)
+        pinned_branch = str(
+            getattr(run, "final_base_branch", None) or default_branch)
+        if pinned_branch != default_branch:
+            return {
+                "error": "final integration PR refused: repository default branch "
+                         f"changed from {pinned_branch!r} to {default_branch!r} "
+                         "during the run",
+            }
+        head_sha = str(_tool(
+            cfg, "get_branch_head",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "branch": run.integration_branch,
+            },
+            timeout=30.0,
+        ))
+        opened = _tool(
+            cfg, "create_pull_request",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "title": f"[integration] {run.task.splitlines()[0][:72]}",
+                "head": run.integration_branch,
+                "base": pinned_branch,
+                "body": body_md,
+            },
+            timeout=30.0,
+        )
+    except GatewayError as exc:
+        return {"error": f"final integration PR failed: {exc}"}
+    if not isinstance(opened, dict) or "url" not in opened:
+        return {"error": f"final integration PR returned no URL: {opened!r}"}
+    result = {
+        "pr_url": opened["url"],
+        "number": opened.get("number"),
+        "base": pinned_branch,
+        "head": run.integration_branch,
+        "head_sha": head_sha,
+        "default_branch": pinned_branch,
+        "source": cfg["source"],
+    }
+    try:
+        labels = _tool(
+            cfg, "ensure_labels",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "issue_number": result["number"],
+                "labels": [
+                    {
+                        "name": f"run:{run.run_id}",
+                        "color": "0969da",
+                        "description": "AgentCore workshop run id",
+                    },
+                    {
+                        "name": "integration",
+                        "color": "cf222e",
+                        "description": "Validated multi-role integration",
+                    },
+                    {
+                        "name": "gate:green",
+                        "color": "1f883d",
+                        "description": "Executable acceptance gate passed",
+                    },
+                ],
+            },
+        )
+        result["labels"] = labels
+    except GatewayError as exc:
+        result["error"] = f"final PR opened but labels failed: {exc}"
+    return result
+
+
+def merge_integration_pr(run: Any) -> dict[str, Any]:
+    """Auto-merge the already-green final PR to the default branch.
+
+    The reviewed head SHA is mandatory. A stale or protected PR fails and remains
+    open for a person; this function never bypasses branch protection.
+    """
+    cfg = _gateway_config()
+    pr = getattr(run, "pr", None) or {}
+    if not cfg:
+        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
+    try:
+        default_branch = repository_default_branch(cfg)
+    except GatewayError as exc:
+        return {"error": f"cannot read repository default branch: {exc}"}
+    if pr.get("base") != default_branch:
+        return {
+            "error": "refusing final auto-merge: PR does not target the "
+                     f"default branch {default_branch!r}",
+        }
+    if pr.get("head") != getattr(run, "integration_branch", None):
+        return {"error": "refusing final auto-merge: unexpected PR head branch"}
+    number = pr.get("number")
+    head_sha = str(pr.get("head_sha") or "")
+    if not number or not head_sha:
+        return {"error": "final auto-merge requires a PR number and reviewed head SHA"}
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        response = _tool(
+            cfg, "merge_pull_request",
+            {
+                "owner": owner,
+                "repo": repo_name,
+                "number": number,
+                "merge_method": "squash",
+                "head_sha": head_sha,
+            },
+            timeout=60.0,
+        )
+    except GatewayError as exc:
+        return {"error": f"final PR auto-merge failed: {exc}"}
+    if not isinstance(response, dict) or not response.get("merged"):
+        return {"error": f"final PR auto-merge did not complete: {response!r}"}
+    return {"merged": True, "sha": response.get("sha", "")}
 
 
 def post_review(run: Any, body_md: str) -> dict[str, Any]:
-    """Post the reviewer verdict as a PR COMMENT via the gateway (the bot
+    """Post the review-panel verdict as a PR COMMENT via the gateway (the bot
     Assessment analog). A PR is an issue for the comments endpoint, so this works
     even when the App installation authored the PR -- unlike an APPROVE review,
     which GitHub rejects on your own PR (HTTP 422). Returns {reviewed} | {skipped}
@@ -800,35 +1084,6 @@ def post_review(run: Any, body_md: str) -> dict[str, Any]:
         return {"error": f"gateway comment failed: {exc}"}
     url = resp.get("url", "") if isinstance(resp, dict) else ""
     return {"reviewed": True, "review_url": url}
-
-
-def merge_pr(run: Any) -> dict[str, Any]:
-    """Squash-merge the run's PR into its integration branch via the gateway.
-    Returns {merged, sha} | {skipped} | {error}; never fakes success.
-
-    Defense in depth: refuses to merge a PR whose base is the repo's default
-    branch, so auto-merge can never close into the default branch even if the base
-    was somehow set wrong."""
-    cfg = _gateway_config()
-    if not cfg:
-        return {"skipped": "local mode (no gateway wired)"}
-    pr = getattr(run, "pr", None) or {}
-    number = pr.get("number")
-    if not number:
-        return {"skipped": "no PR number to merge"}
-    base, default_branch = pr.get("base"), pr.get("default_branch")
-    if base and default_branch and base == default_branch:
-        return {"skipped": f"auto-merge never targets the default branch ({default_branch})"}
-    owner, _, repo_name = cfg["repo"].partition("/")
-    try:
-        resp = _tool(cfg, "merge_pull_request",
-                     {"owner": owner, "repo": repo_name,
-                      "number": number, "merge_method": "squash"})
-    except GatewayError as exc:
-        return {"error": f"gateway merge failed: {exc}"}
-    if isinstance(resp, dict) and resp.get("merged"):
-        return {"merged": True, "sha": resp.get("sha", "")}
-    return {"error": f"merge did not complete: {resp!r}"}
 
 
 # --- CLI ----------------------------------------------------------------------

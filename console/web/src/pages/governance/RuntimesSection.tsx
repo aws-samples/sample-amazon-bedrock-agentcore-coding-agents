@@ -57,7 +57,7 @@ export function RuntimesSection() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <StatCard accent label="Executor" value={status.executor} hint="real-only dispatch" delay={0} />
+        <StatCard accent label="Executor" value={status.executor} hint="AgentCore dispatch" delay={0} />
         <StatCard label="Roles wired" value={`${wiredCount} / ${status.roles.length}`} hint="have a deployed runtime" delay={60} />
         <StatCard label="Fleet instances" value={String(totalInstances)} hint="across all roles" delay={120} />
       </div>
@@ -65,7 +65,7 @@ export function RuntimesSection() {
       <p className="text-sm text-muted-foreground">
         Each role dispatches to its own deployed AgentCore Runtime. Wiring is read from the same
         config the orchestrator uses; <span className="font-medium text-foreground">Probe</span> runs a
-        real one-line job inside the runtime to confirm it executes. A live, billable check.
+        one-line job inside the Runtime to confirm it executes. This check uses the configured model.
       </p>
 
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">

@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
   Badge,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Button,
   Card,
   CardContent,
@@ -12,13 +20,13 @@ import {
 } from '@foxl/ui';
 import {
   GithubStatus,
-  MergePolicy,
+  FinalMergePolicy,
   RuntimeStatus,
   KiroStatus,
   clearGithubCredential,
   getGithubStatus,
   saveGithubCredential,
-  setMergePolicy,
+  setFinalMergePolicy,
   getKiroStatus,
   saveKiroKey,
   clearKiroKey,
@@ -47,6 +55,9 @@ export function SettingsPage() {
   const [clearing, setClearing] = useState(false);
   const [repo, setRepo] = useState('');
   const [formError, setFormError] = useState('');
+  const [policySaving, setPolicySaving] = useState(false);
+  const [policyError, setPolicyError] = useState('');
+  const [confirmAuto, setConfirmAuto] = useState(false);
 
   const applyStatus = (s: GithubStatus) => {
     setStatus(s);
@@ -91,21 +102,29 @@ export function SettingsPage() {
       const next = await clearGithubCredential();
       setStatus(next);
       setRepo('');
-    } catch {
-      // status unchanged on error
+    } catch (err: unknown) {
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : 'Could not disconnect the repository. Check the Gateway and try again.',
+      );
     } finally {
       setClearing(false);
     }
   }
 
-  const [policySaving, setPolicySaving] = useState(false);
-  async function handlePolicy(next: MergePolicy) {
-    if (policySaving || status?.merge_policy === next) return;
+  async function handleFinalPolicy(next: FinalMergePolicy) {
+    if (policySaving || status?.final_merge_policy === next) return;
+    setPolicyError('');
     setPolicySaving(true);
     try {
-      setStatus(await setMergePolicy(next));
-    } catch {
-      // status unchanged on error
+      setStatus(await setFinalMergePolicy(next));
+    } catch (err: unknown) {
+      setPolicyError(
+        err instanceof Error
+          ? err.message
+          : 'Could not update the final PR policy. Check the console service and try again.',
+      );
     } finally {
       setPolicySaving(false);
     }
@@ -115,10 +134,10 @@ export function SettingsPage() {
     <div className="animate-enter-up mx-auto w-full max-w-3xl px-6 py-10 space-y-6">
       <div className="space-y-1">
         <div className="eyebrow">Configuration</div>
-        <h1 className="text-2xl font-semibold tracking-[-0.02em]">Settings</h1>
+        <h1 className="text-2xl font-semibold">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Point runs at your repository. The GitHub MCP Gateway opens the pull request;
-          no personal access token is ever stored here.
+          Point runs at your repository. The GitHub MCP Gateway opens the role and
+          final pull requests; no personal access token is ever stored here.
         </p>
       </div>
 
@@ -139,43 +158,59 @@ export function SettingsPage() {
             )}
           </div>
           <CardDescription>
-            A run opens its pull request through an IAM-authenticated AgentCore Gateway
-            backed by a GitHub App, so no token lives in the console. Set the repository
-            the PR lands in. Until the gateway answers, runs compose locally and the PR
-            url stays empty.
+            The Gateway opens one pull request per builder against a run-specific
+            integration branch. The queue merges only reviewed heads and reruns the
+            executable gate after every merge. The final integration pull request
+            targets your default branch for human review or guarded auto-merge.
           </CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-5">
           {loading && (
-            <p className="text-sm text-muted-foreground">Loading status...</p>
+            <p className="text-sm text-muted-foreground" aria-live="polite">Loading status…</p>
           )}
 
           {!loading && status?.connected && (
-            <div className="rounded-md border bg-muted/40 px-4 py-3 space-y-1 text-sm">
-              <div className="flex items-center gap-2">
+            <div className="space-y-1 rounded-md border bg-muted/40 px-4 py-3 text-sm">
+              <div className="flex min-w-0 items-start gap-2">
                 <span className="text-muted-foreground w-24 shrink-0">Repository</span>
-                <span className="font-mono font-medium">{status.repo}</span>
+                <span className="min-w-0 break-all font-mono font-medium" translate="no">
+                  {status.repo}
+                </span>
               </div>
+              {status.default_branch && (
+                <div className="flex min-w-0 items-start gap-2">
+                  <span className="text-muted-foreground w-24 shrink-0">Final base</span>
+                  <span className="min-w-0 break-all font-mono text-xs" translate="no">
+                    {status.default_branch}
+                  </span>
+                </div>
+              )}
               {status.gateway_url && (
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-start gap-2">
                   <span className="text-muted-foreground w-24 shrink-0">Gateway</span>
-                  <span className="font-mono text-xs text-muted-foreground truncate">
+                  <span
+                    className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+                    translate="no"
+                    title={status.gateway_url}
+                  >
                     {status.gateway_url}
                   </span>
                 </div>
               )}
               {status.target && (
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-start gap-2">
                   <span className="text-muted-foreground w-24 shrink-0">MCP target</span>
-                  <span className="font-mono text-xs">{status.target}</span>
+                  <span className="min-w-0 break-all font-mono text-xs" translate="no">
+                    {status.target}
+                  </span>
                 </div>
               )}
             </div>
           )}
 
           {!loading && status?.error && (
-            <p className="text-sm text-destructive">{status.error}</p>
+            <p className="text-sm text-destructive" role="alert">{status.error}</p>
           )}
 
           {!loading && !status?.connected && status?.hint && (
@@ -188,10 +223,13 @@ export function SettingsPage() {
                 <Label htmlFor="github-repo">Repository</Label>
                 <Input
                   id="github-repo"
+                  name="github-repo"
                   type="text"
-                  placeholder="owner/repo"
+                  placeholder="owner/repository…"
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
                   disabled={saving || status?.source === 'environment'}
                 />
                 <p className="text-xs text-muted-foreground">
@@ -211,13 +249,13 @@ export function SettingsPage() {
               )}
 
               {formError && (
-                <p className="text-sm text-destructive">{formError}</p>
+                <p className="text-sm text-destructive" role="alert">{formError}</p>
               )}
 
               {status?.source !== 'environment' && (
                 <div className="flex items-center gap-3">
                   <Button type="submit" disabled={saving}>
-                    {saving ? 'Saving...' : status?.connected ? 'Update' : 'Connect'}
+                    {saving ? 'Saving…' : status?.connected ? 'Update Repository' : 'Connect Repository'}
                   </Button>
                   {status?.connected && (
                     <Button
@@ -226,7 +264,7 @@ export function SettingsPage() {
                       disabled={clearing}
                       onClick={handleClear}
                     >
-                      {clearing ? 'Disconnecting...' : 'Disconnect'}
+                      {clearing ? 'Disconnecting…' : 'Disconnect'}
                     </Button>
                   )}
                 </div>
@@ -238,51 +276,90 @@ export function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <div className="eyebrow">Workflow</div>
+          <div className="eyebrow">Final pull request</div>
           <div className="flex items-center gap-2">
-            <CardTitle>Merge policy</CardTitle>
+            <CardTitle>Default Branch Merge</CardTitle>
             {status && (
-              <Badge variant={status.merge_policy === 'auto' ? 'default' : 'secondary'} className="text-xs">
-                {status.merge_policy === 'auto' ? 'auto-merge on' : 'human review'}
+              <Badge
+                variant={status.final_merge_policy === 'auto' ? 'default' : 'secondary'}
+                className="text-xs"
+              >
+                {status.final_merge_policy === 'auto' ? 'Auto-merge' : 'Human review'}
               </Badge>
             )}
           </div>
           <CardDescription>
-            How a run finishes after the reviewer approves. Auto-merge posts a bot approval and
-            squash-merges into the <code className="font-mono">workshop/integration</code> branch,
-            never your default branch. Off by default.
+            Role pull requests first merge into a temporary branch for the run.
+            This setting applies only to the checked final pull request that
+            targets your repository's normal branch.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {(['human_review', 'auto'] as const).map((policy) => {
-              const active = (status?.merge_policy ?? 'human_review') === policy;
-              return (
-                <button
-                  key={policy}
-                  type="button"
-                  disabled={policySaving}
-                  onClick={() => handlePolicy(policy)}
-                  className={`rounded-lg border p-3 text-left text-sm transition ${
-                    active
-                      ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                      : 'border-border hover:bg-accent'
-                  } disabled:opacity-60`}
-                >
-                  <div className="font-medium">
-                    {policy === 'auto' ? 'Auto-merge' : 'Human review'}
-                  </div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    {policy === 'auto'
-                      ? 'Bot approves, squash-merges to integration. Fully autonomous.'
-                      : 'Open the PR and stop. A human merges. (Default.)'}
-                  </div>
-                </button>
-              );
-            })}
+          <div
+            role="group"
+            aria-label="Final pull request policy"
+            className="inline-grid w-full grid-cols-2 rounded-md border border-border p-1 sm:w-auto"
+          >
+            <button
+              type="button"
+              disabled={policySaving}
+              aria-pressed={(status?.final_merge_policy ?? 'human_review') === 'human_review'}
+              onClick={() => void handleFinalPolicy('human_review')}
+              className={`min-h-10 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                (status?.final_merge_policy ?? 'human_review') === 'human_review'
+                  ? 'bg-foreground text-background'
+                  : 'hover:bg-accent'
+              }`}
+            >
+              Human Review
+            </button>
+            <button
+              type="button"
+              disabled={policySaving}
+              aria-pressed={status?.final_merge_policy === 'auto'}
+              onClick={() => setConfirmAuto(true)}
+              className={`min-h-10 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                status?.final_merge_policy === 'auto'
+                  ? 'bg-foreground text-background'
+                  : 'hover:bg-accent'
+              }`}
+            >
+              Auto-Merge
+            </button>
           </div>
+          <p className="mt-3 max-w-xl text-xs text-muted-foreground">
+            Auto-merge uses the exact version that passed review and still follows
+            branch protection. If GitHub rejects it, the final pull request stays
+            open for a person.
+          </p>
+          {policyError && (
+            <p className="mt-3 text-sm text-destructive" role="alert">
+              {policyError}
+            </p>
+          )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={confirmAuto} onOpenChange={setConfirmAuto}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Auto-Merge Final Pull Requests?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Future runs will merge the checked final pull request into the
+              repository's normal branch without waiting for a person.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={policySaving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={policySaving}
+              onClick={() => void handleFinalPolicy('auto')}
+            >
+              Enable Auto-Merge
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <RuntimesCard />
     </div>
@@ -305,7 +382,7 @@ function RuntimesCard() {
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState('');
-  // Kiro's API key lives in the Token Vault, NOT on the runtime ARN — so it is
+  // Kiro's API key lives in the Token Vault, NOT on the runtime ARN, so it is
   // attached to an ALREADY-wired Kiro runtime separately (the event pre-creates the
   // Kiro runtime; the attendee only adds the ksk_ key). We track its presence to
   // show "key set / no key" on the wired Kiro instance and to drive the inline
@@ -348,7 +425,7 @@ function RuntimesCard() {
   }, []);
 
   // Attach (or replace) the Kiro API key on the already-wired Kiro runtime. This
-  // does NOT touch the ARN — it stores the ksk_ key in the Token Vault so the
+  // does NOT touch the ARN. It stores the ksk_ key in the Token Vault so the
   // pre-created runtime can authenticate with no redeploy.
   async function saveKiro(arn: string) {
     const key = kiroKeyDraft.trim();
@@ -452,7 +529,11 @@ function RuntimesCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {loading && <p className="text-sm text-muted-foreground">Loading runtimes...</p>}
+        {loading && (
+          <p className="text-sm text-muted-foreground" aria-live="polite">
+            Loading runtimes…
+          </p>
+        )}
         {!loading && status?.roles.map((r) => {
           // A role is a FLEET: instances[] is every deployed runtime wired to it
           // (env fleets are comma-separated; settings fleets grow via "add").
@@ -464,7 +545,7 @@ function RuntimesCard() {
             <div key={r.role} className="space-y-2 rounded-lg border border-border p-3">
               <div className="flex items-center gap-2">
                 <AgentIcon agentId={r.role} size={16} />
-                <Label className="font-medium">{roleName(r.role)}</Label>
+                <span className="font-medium">{roleName(r.role)}</span>
                 <span className="font-mono text-[11px] text-muted-foreground">{r.role}</span>
                 {r.wired ? (
                   <Badge variant="secondary" className="text-xs">{isEnv ? 'env var' : 'console'}</Badge>
@@ -492,9 +573,10 @@ function RuntimesCard() {
                               disabled={busy === inst.arn}
                               onClick={() => { setAddOpen(null); removeInstance(r.role, inst.arn); }}
                               title="Remove this runtime"
-                              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                              aria-label={`Remove ${roleName(r.role)} runtime`}
+                              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             >
-                              <X className="size-3.5" />
+                              <X aria-hidden="true" className="size-3.5" />
                             </button>
                           )}
                         </div>
@@ -503,17 +585,19 @@ function RuntimesCard() {
                           descOpen === inst.arn ? (
                             <div className="flex items-center gap-2">
                               <Input
-                                placeholder="What this instance does (used to route tasks)"
+                                name={`description-${r.role}`}
+                                aria-label={`${roleName(r.role)} runtime description`}
+                                placeholder="Describe what this instance handles…"
                                 value={descDrafts[inst.arn] ?? ''}
                                 onChange={(e) => setDescDrafts((d) => ({ ...d, [inst.arn]: e.target.value }))}
                                 disabled={busy === inst.arn}
                                 className="text-xs"
-                                autoFocus
+                                autoComplete="off"
                               />
                               <Button type="button" variant="outline" size="sm"
                                 disabled={busy === inst.arn}
                                 onClick={async () => { await saveDescription(r.role, inst.arn); setDescOpen(null); }}>
-                                {busy === inst.arn ? '...' : 'Save'}
+                                {busy === inst.arn ? 'Saving…' : 'Save'}
                               </Button>
                               <Button type="button" variant="ghost" size="sm" onClick={() => setDescOpen(null)}>
                                 Cancel
@@ -534,7 +618,7 @@ function RuntimesCard() {
                               onClick={() => setDescOpen(inst.arn)}
                               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                             >
-                              <Plus className="size-3" /> Add description
+                              <Plus aria-hidden="true" className="size-3" /> Add description
                             </button>
                           )
                         )}
@@ -549,18 +633,20 @@ function RuntimesCard() {
                             <div className="flex items-center gap-2">
                               <Input
                                 type="password"
-                                placeholder="ksk_..."
+                                name="kiro-api-key"
+                                aria-label="Kiro API key"
+                                placeholder="ksk_…"
                                 value={kiroKeyDraft}
                                 onChange={(e) => setKiroKeyDraft(e.target.value)}
                                 disabled={busy === inst.arn}
                                 className="font-mono text-xs"
                                 autoComplete="off"
-                                autoFocus
+                                spellCheck={false}
                               />
                               <Button type="button" variant="outline" size="sm"
                                 disabled={busy === inst.arn || !kiroKeyDraft.trim()}
                                 onClick={() => saveKiro(inst.arn)}>
-                                {busy === inst.arn ? '...' : 'Save'}
+                                {busy === inst.arn ? 'Saving…' : 'Save'}
                               </Button>
                               <Button type="button" variant="ghost" size="sm"
                                 onClick={() => { setKiroKeyOpen(false); setKiroKeyDraft(''); }}>
@@ -593,7 +679,7 @@ function RuntimesCard() {
                               onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(true); }}
                               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                             >
-                              <Plus className="size-3" /> Add API key <span className="text-muted-foreground/70">(stored in Token Vault)</span>
+                              <Plus aria-hidden="true" className="size-3" /> Add API key <span className="text-muted-foreground/70">(stored in Token Vault)</span>
                             </button>
                           )
                         )}
@@ -623,7 +709,7 @@ function RuntimesCard() {
                       onClick={() => setAddOpen(r.role)}
                       className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                     >
-                      <Plus className="size-3" /> Add agent
+                      <Plus aria-hidden="true" className="size-3" /> Add agent
                     </button>
                   ))}
                 </div>
@@ -644,7 +730,7 @@ function RuntimesCard() {
             </div>
           );
         })}
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
       </CardContent>
     </Card>
   );
@@ -670,48 +756,60 @@ function AgentForm({
   onCancel?: () => void;
 }) {
   const isKiro = role === 'kiro';
+  const arnId = `runtime-${role}-arn`;
+  const descriptionId = `runtime-${role}-description`;
+  const apiKeyId = `runtime-${role}-api-key`;
   return (
     <div className="space-y-2 rounded-md border border-border/60 bg-muted/10 p-2.5">
       <div className="space-y-1">
-        <Label className="text-xs">Runtime ARN or dev URL</Label>
+        <Label htmlFor={arnId} className="text-xs">Runtime ARN or dev URL</Label>
         <Input
-          placeholder="https:// or arn:aws:bedrock-agentcore:..."
+          id={arnId}
+          name={arnId}
+          placeholder="arn:aws:bedrock-agentcore:…"
           value={arn}
           onChange={(e) => onArn(e.target.value)}
           disabled={busy}
           className="text-sm"
-          autoFocus
+          autoComplete="off"
+          spellCheck={false}
         />
       </div>
       {role !== 'orchestrator' && (
         <div className="space-y-1">
-          <Label className="text-xs">Description <span className="text-muted-foreground">(optional, used to route tasks)</span></Label>
+          <Label htmlFor={descriptionId} className="text-xs">Description <span className="text-muted-foreground">(optional, used to route tasks)</span></Label>
           <Input
-            placeholder="What this agent does"
+            id={descriptionId}
+            name={descriptionId}
+            placeholder="Describe what this agent handles…"
             value={desc}
             onChange={(e) => onDesc(e.target.value)}
             disabled={busy}
             className="text-xs"
+            autoComplete="off"
           />
         </div>
       )}
       {isKiro && (
         <div className="space-y-1">
-          <Label className="text-xs">Kiro API key <span className="text-muted-foreground">(stored in Token Vault)</span></Label>
+          <Label htmlFor={apiKeyId} className="text-xs">Kiro API key <span className="text-muted-foreground">(stored in Token Vault)</span></Label>
           <Input
+            id={apiKeyId}
+            name={apiKeyId}
             type="password"
-            placeholder="ksk_..."
+            placeholder="ksk_…"
             value={apiKey}
             onChange={(e) => onApiKey(e.target.value)}
             disabled={busy}
             className="font-mono text-xs"
             autoComplete="off"
+            spellCheck={false}
           />
         </div>
       )}
       <div className="flex items-center gap-2 pt-0.5">
         <Button type="button" size="sm" disabled={busy || !arn.trim()} onClick={onSubmit}>
-          {busy ? '...' : submitLabel}
+          {busy ? 'Working…' : submitLabel}
         </Button>
         {onCancel && (
           <Button type="button" variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>

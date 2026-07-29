@@ -61,7 +61,7 @@ export function OnboardingModal() {
 
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Settings className="size-3.5 shrink-0" />
-          <span>Settings: GitHub Gateway, runtimes, merge policy.</span>
+          <span>Settings: GitHub Gateway, runtimes, final PR policy.</span>
         </div>
 
         <div className="flex items-center justify-between">

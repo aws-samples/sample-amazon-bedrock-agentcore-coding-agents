@@ -132,3 +132,43 @@ def test_a_missing_bucket_never_breaks_a_run():
         else:
             os.environ["WORKSHOP_RUNTIME_BUCKET"] = prior
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_persisted_heartbeats_distinguish_interrupted_and_live_runs(monkeypatch):
+    """A recycled Runtime must not say running forever or kill a fresh heartbeat."""
+    chat = importlib.import_module("chat")
+    run_store = importlib.import_module("run_store")
+    stale = {
+        "run_id": "run_stale_001",
+        "task": "build a small service",
+        "status": "running",
+        "phase": "agent_execution",
+        "progress": [],
+        "pr": None,
+        "pr_url": None,
+        "_saved_at": "2000-01-01T00:00:00Z",
+    }
+    fresh = {
+        "run_id": "run_live_001",
+        "status": "running",
+        "phase": "agent_execution",
+        "progress": [{"agent": "claude-code", "state": "running"}],
+        "_saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    monkeypatch.setattr(chat.ENGINE, "get", lambda _run_id: None)
+    snapshots = {stale["run_id"]: stale, fresh["run_id"]: fresh}
+    monkeypatch.setattr(
+        run_store, "load", lambda _root, run_id: snapshots[run_id])
+    tools = {getattr(t, "tool_name", None) or getattr(t, "__name__", ""): t
+             for t in chat.build_tools()}
+    fn = getattr(tools["run_status"], "original_function", None) or tools["run_status"]
+
+    interrupted = json.loads(fn(stale["run_id"]))
+    assert interrupted["status"] == "needs_human"
+    assert interrupted["fail_reason"] == "COORDINATOR_SESSION_INTERRUPTED"
+    assert "SAME request" in interrupted["next_action"]
+    assert interrupted["task"] == stale["task"]
+
+    live = json.loads(fn(fresh["run_id"]))
+    assert live["status"] == "running"
+    assert live["source"] == "persisted"

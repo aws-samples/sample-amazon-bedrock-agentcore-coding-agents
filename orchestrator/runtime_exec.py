@@ -622,9 +622,14 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
 # 4.6MB node_modules from an agent that ran `npm install`) broke a live run's tree
 # read-back outright. Kept as a small explicit list rather than a heuristic: the
 # engine must not start guessing which of the agent's files matter.
+#
+# `dist` and `build` are deliberately NOT here. A live validator checked a frontend's
+# pre-built `client/dist`, which existed on the shared workspace, but the transfer
+# silently dropped it and manufactured a red gate. Those names can be the artifact a
+# role chose to deliver, so the engine cannot classify them as caches.
 _TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
                   ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next",
-                  "dist", "build", ".cache")
+                  ".cache")
 
 
 def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
@@ -726,6 +731,40 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
                 pass
         time.sleep(2.0 * (attempt + 1))
     return prev or {}
+
+
+def clone_runtime_tree(runtime_arn: str, source_subdir: str, dest_subdir: str,
+                       region: str | None = None) -> None:
+    """Clone immutable mounted input into a role's fresh writable checkout.
+
+    No GitHub credential enters the Runtime. The coordinator stages the source
+    through S3 Files, then this command copies it to the role's unique work id.
+    """
+    for label, value in (("source", source_subdir), ("destination", dest_subdir)):
+        if (not value or os.path.isabs(value)
+                or ".." in value.replace("\\", "/").split("/")):
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: unsafe {label} Runtime subdirectory")
+    source = f"/mnt/s3files/{source_subdir}"
+    dest = f"/mnt/s3files/{dest_subdir}"
+    nonce = uuid.uuid4().hex[:12]
+    command = (
+        "set -eu; "
+        f"test -d {shlex.quote(source)}; "
+        f"rm -rf {shlex.quote(dest)}; "
+        f"mkdir -p {shlex.quote(dest)}; "
+        f"cp -R --no-preserve=all "
+        f"{shlex.quote(source)}/. {shlex.quote(dest)}/; "
+        f"echo CLONE_READY_{nonce}\n"
+    )
+    sid = "rexclone-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+    result = asyncio.run(_drive_shell(
+        runtime_arn, command, region_for(runtime_arn, region),
+        None, 120.0, sid))
+    if result.get("exit") != 0 or f"CLONE_READY_{nonce}" not in result.get("raw", ""):
+        raise RoleExecutionError(
+            "ROLE_EXECUTION_ERROR: the Runtime could not clone the integration "
+            f"candidate into {dest_subdir}; output: {result.get('raw', '')[-400:]}")
 
 
 def _live_session_for(agent_id: str, runtime_arn: str,

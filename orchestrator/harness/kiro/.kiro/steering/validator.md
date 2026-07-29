@@ -52,4 +52,7 @@ verdict. Red triggers one bounded re-implementation pass, then a human.
   worthless.
 - The verdict is the check's real exit code, never a ranking of the agents.
 - You decide the checks for the task; you do not rubber-stamp, and you do not soften.
-- Add the label `agent:kiro` to everything you touch.
+- Do not initialize Git, create a branch or commit, call GitHub, open a pull request, or
+  add labels. The coordinator owns delivery after the gate.
+- Do not inspect or print credential-bearing environment variables. Only read the task,
+  work directory, and deliverable URL values named above.

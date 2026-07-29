@@ -7,8 +7,9 @@ content pages, in content order, against a real `console/server.py` process
 If a step here breaks, a page in content/ is telling attendees to do something
 that doesn't work.
 
-Local engine mode (offline test double, no LLM); the same machinery the workshop
-grades with. Run: python3 -m pytest e2e/test_attendee_flow.py -q
+The test server uses the explicit FixtureExecutor, so this suite checks the HTTP
+journey without contacting a model, Runtime, or GitHub. AgentCore and GitHub are
+proved separately by the live workshop traverse.
 """
 
 from __future__ import annotations
@@ -148,6 +149,7 @@ def test_stage2_submit_watch_and_review(console, cookie):
 
     for _ in range(120):                          # local mode: well under 2 min
         _, r = _req(console, "GET", f"/api/orchestrator/runs/{rid}", headers=cookie)
+        assert "final_base_branch" in r
         if r["status"] in ("passed", "failed", "needs_human"):
             break
         time.sleep(1)
@@ -156,12 +158,21 @@ def test_stage2_submit_watch_and_review(console, cookie):
     _, res = _req(console, "GET", f"/api/orchestrator/runs/{rid}/result", headers=cookie)
     assert res["gate"]["passed"] is True
     assert res["review"]["lgtm"] is True          # "LGTM: no changes needed"
-    # Builders first, checker last, read from the registry rather than pinned as a
-    # roster literal: the ORDER is the invariant, while who is on the team is the
-    # roster's business (and is configurable).
-    import roles as _roles
-    assert res["composed_from"] == [
-        _roles.get(a).role_name for a in _roles.roster_ids()]
+    items = res["work_items"]
+    builder_items = [
+        item for item in items.values() if item["kind"] == "builder"
+    ]
+    assert len({item["work_id"] for item in items.values()}) == len(items)
+    assert all(
+        item["base_branch"] == res["integration_branch"]
+        for item in builder_items
+    )
+    assert all(item["merge_state"] == "merged" for item in builder_items)
+    assert all(row["state"] == "merged" for row in res["merge_queue"])
+    assert len(res["gate_history"]) == len(builder_items) + 1
+    assert all(row["passed"] for row in res["gate_history"])
+    assert res["pr_url"] is None
+    assert res["merge_state"] != "merged"
 
     _, terms = _req(console, "GET", f"/api/orchestrator/runs/{rid}/terminals",
                     headers=cookie)
@@ -174,8 +185,20 @@ def test_settings_github_card_round_trip(console, cookie):
     card validates the repo shape and clears cleanly (local store in tests)."""
     with pytest.raises(HTTPError) as e:
         _req(console, "POST", "/api/orchestrator/github",
-             {"token": "ghp_x", "repo": "not-a-repo"}, headers=cookie)
+             {"repo": "not-a-repo"}, headers=cookie)
     assert e.value.code == 400                    # owner/name enforced
+
+    _, policy = _req(
+        console, "POST", "/api/orchestrator/github",
+        {"final_merge_policy": "auto"}, headers=cookie)
+    assert policy["final_merge_policy"] == "auto"
+    assert policy["connected"] is False
+
+    _, closed = _req(
+        console, "POST", "/api/orchestrator/github",
+        {"final_merge_policy": "not-a-policy"}, headers=cookie)
+    assert closed["final_merge_policy"] == "human_review"
+
     code, st = _req(console, "POST", "/api/orchestrator/github", {"clear": True},
                     headers=cookie)
     assert code == 200                            # a clean clear is a 200, not a 4xx

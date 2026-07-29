@@ -41,27 +41,32 @@ def _read(name: str) -> str:
         return fh.read()
 
 
-@pytest.mark.parametrize("module", _REGIONAL_MODULES)
-def test_no_hardcoded_region_default(module: str) -> None:
+def test_no_regional_module_hardcodes_a_region_default() -> None:
     """No regional module may carry a region literal as a fallback.
 
     Comments are stripped first: the fix's own explanation naturally mentions
     us-west-2, and matching prose would make this test pass or fail on wording
     rather than on behaviour.
     """
-    src = _read(module)
-    code = "\n".join(
-        line.split("#", 1)[0] for line in src.splitlines())
-    # Also drop docstrings, which explain the history for the same reason.
-    code = re.sub(r'""".*?"""', "", code, flags=re.S)
-    code = re.sub(r"'''.*?'''", "", code, flags=re.S)
-    found = {m for m in re.findall(r"[\"']((?:us|eu|ap|sa|ca|me|af)-[a-z]+-\d)[\"']", code)}
-    found -= {r for (mod, r) in _ALLOWED if mod == module}
-    assert not found, (
-        f"{module} hardcodes region(s) {sorted(found)} in CODE. A region literal is "
-        "a guess that is silently wrong everywhere else: derive it from the resource "
-        "ARN (runtime_exec.region_for) or from the ambient AWS_REGION, and let boto3 "
-        "resolve its own chain when neither says.")
+    violations = {}
+    for module in _REGIONAL_MODULES:
+        src = _read(module)
+        code = "\n".join(
+            line.split("#", 1)[0] for line in src.splitlines())
+        # Also drop docstrings, which explain the history for the same reason.
+        code = re.sub(r'""".*?"""', "", code, flags=re.S)
+        code = re.sub(r"'''.*?'''", "", code, flags=re.S)
+        found = {
+            match for match in re.findall(
+                r"[\"']((?:us|eu|ap|sa|ca|me|af)-[a-z]+-\d)[\"']", code)
+        }
+        found -= {region for (allowed_module, region) in _ALLOWED
+                  if allowed_module == module}
+        if found:
+            violations[module] = sorted(found)
+    assert not violations, (
+        f"regional modules hardcode region defaults in code: {violations}. "
+        "Derive the region from the resource ARN or ambient AWS configuration.")
 
 
 def test_region_for_prefers_the_arn_over_any_caller_default() -> None:

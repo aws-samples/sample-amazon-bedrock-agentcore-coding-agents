@@ -13,18 +13,21 @@ in two layers that make one loop:
     fallback would be this repository deciding correctness, which is the thing
     the design forbids. A red gate can never pass, and nothing fabricates a
     verdict.
-  * The LLM ASSESSMENT reviews the artifacts the way a senior engineer reviews
-    a pull request, and the engine posts it DIRECTLY on the GitHub PR as an
-    Assessment comment (approve / request changes). It is FAIL-OPEN: with no
-    model reachable it abstains and the gate stands. It can withhold approval
-    on a green gate; it can never turn a red gate green.
+  * The REVIEW PANEL runs two independent model turns over the integrated
+    artifacts. An adversarial reviewer tries to falsify the green result at
+    runtime and across producer/consumer boundaries. A design reviewer checks
+    ownership, integration, operability, and maintainability. Either may request
+    changes. Both members must finish before a merge can proceed. An unavailable
+    member is recorded and blocks the queue instead of inventing evidence or
+    sending builders to repair an infrastructure failure. A panel can withhold
+    approval on a green gate; it can never turn a red gate green.
 
-Approve ends the run (the auto merge policy may then squash-merge). Request
-changes loops: the engine re-dispatches the routed roles with the assessment's
-reasons as feedback and UPDATES THE SAME pull request, bounded by
+Approve admits the candidate to the run's private merge queue. Request changes
+routes evidence to the responsible existing role pull requests, bounded by
 ``MAX_REVIEW_ROUNDS``, then hands to a human. The exact pass token
 ``LGTM: no changes needed`` closes an approving assessment, so approval is a
-literal, checkable string, never a vibe.
+literal, checkable string, never a vibe. Every role merge is gated again, and
+only the final integration pull request targets the default branch.
 """
 
 from __future__ import annotations
@@ -46,7 +49,12 @@ LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
 # so editing this number actually changes behavior.
 MAX_REVIEW_ROUNDS = 1
 
-_RUN_BRANCH = re.compile(r"^run/(run_[0-9]{6}_[0-9]{3})$")
+# New runs use a random 48-bit suffix so two coordinator sessions started in the
+# same second cannot share a branch or workspace. Keep the old form readable so
+# existing pull requests remain reviewable.
+_RUN_BRANCH = re.compile(
+    r"^run/(run_[0-9]{6}_(?:[0-9]{3}|[0-9a-f]{12}))$"
+)
 
 
 def branch_run_id(branch: str | None) -> str | None:
@@ -71,13 +79,16 @@ class Verdict:
     gate: dict | None = None        # the acceptance-gate result (real execution)
     assessment: str = ""            # the Assessment markdown posted on the PR
     reasons: list[str] = field(default_factory=list)  # feedback for the loop
+    panels: list[dict[str, Any]] = field(default_factory=list)
+    review_unavailable: bool = False
     lgtm: bool = False
     round: int = 1
 
     def public(self) -> dict[str, Any]:
         return {"state": self.state, "lgtm": self.lgtm, "round": self.round,
                 "gate": self.gate, "reasons": self.reasons,
-                "assessment": self.assessment}
+                "assessment": self.assessment, "panels": self.panels,
+                "review_unavailable": self.review_unavailable}
 
 
 # ------------------------------------------------------------------ the gate
@@ -308,38 +319,300 @@ def run_gate(run: Any) -> dict:
         "output": (out or "")[-4000:]}
 
 
-# ------------------------------------------------------- the LLM assessment
-# The judge model is wirable (same surface as the orchestrator's own model id),
-# defaulting to a fast mid-tier Claude; the review is a read, not a build.
-JUDGE_MODEL = os.environ.get("WORKSHOP_REVIEW_MODEL", "claude-sonnet-4-6")
-
-_JUDGE_SYSTEM = (
-    "You are a meticulous senior engineer reviewing a pull request opened by a "
-    "multi-agent coding system. The deliverable ALREADY passed an acceptance check "
-    "that a separate validator agent wrote for this specific task and that was "
-    "executed for real; you respect that result and never contradict it. Your job "
-    "is what a check like that misses: wrong logic despite a green run, security "
-    "problems, dead or copied code, work that does not actually answer the request, "
-    "and real quality defects. You do NOT rewrite code.\n"
-    "Reply with STRICT JSON only:\n"
-    '{"approve": true|false, "reasons": ["..."], "assessment": "<markdown>"}\n'
-    "The assessment markdown is the review COMMENT posted on the PR. Format it "
-    "exactly like a human bot review:\n"
-    "**Assessment**: Approve   (or: Request changes)\n\n"
-    "<one short paragraph: what the change does and why it is (not) shippable>\n\n"
-    "<details><summary>Review notes</summary>\n\n- bullet per finding with a "
-    "verdict emoji\n\n</details>\n"
-    "Be decisive; approve when the gate is green and you see no real defect."
+# ---------------------------------------------------- independent review panel
+# The panel models are independently wirable. At an event the backend model is the
+# strongest Bedrock-native model known to be enabled, so use it unless the operator
+# explicitly picks a cheaper review model. Two separate turns and system prompts are
+# load-bearing: neither builder's conversation or self-assessment is reused.
+_REVIEW_MODEL = (
+    os.environ.get("WORKSHOP_REVIEW_MODEL")
+    or os.environ.get("WORKSHOP_CLAUDE_MODEL")
+    or "claude-sonnet-4-6"
 )
+ADVERSARIAL_REVIEW_MODEL = os.environ.get(
+    "WORKSHOP_ADVERSARIAL_REVIEW_MODEL", _REVIEW_MODEL)
+DESIGN_REVIEW_MODEL = os.environ.get(
+    "WORKSHOP_DESIGN_REVIEW_MODEL", _REVIEW_MODEL)
+
+_PANEL_RESPONSE_CONTRACT = (
+    "Reply with STRICT JSON only:\n"
+    '{"approve": true|false, "reasons": ["..."], '
+    '"work_item_evidence": {"<work id>": "<specific usage evidence>"}, '
+    '"assessment": "<concise markdown findings>"}\n'
+    "An approval must identify concrete usage evidence for EVERY routed builder "
+    "work id. Evidence must say how that contribution participates in the "
+    "integrated product; a changed-file list alone is not evidence. If you cannot "
+    "establish use for one work id, request changes instead of guessing. Be "
+    "decisive and report only defects that affect correctness, security, "
+    "operability, integration, or maintainability."
+)
+
+_ADVERSARIAL_SYSTEM = (
+    "You are the adversarial verification member of an independent pull-request "
+    "review panel. The makers are not allowed to grade their own work. A separate "
+    "validator-authored executable is green, but your job is to try to falsify that "
+    "result from the task, shared contract, and integrated artifacts. Trace at "
+    "least one nontrivial value through each producer/consumer boundary. Compare "
+    "field names, enums, null semantics, errors, and state transitions on both "
+    "sides. Look for edge cases, persistence failures, security defects, dead "
+    "paths, and checks that prove only existence or build success. Do not demand a "
+    "particular framework, filename, or layout, and do not rewrite the code.\n\n"
+    + _PANEL_RESPONSE_CONTRACT
+)
+
+_DESIGN_SYSTEM = (
+    "You are the design and integration member of an independent pull-request "
+    "review panel. The makers are not allowed to grade their own work. Review the "
+    "integrated product as a senior staff engineer: verify that role ownership is "
+    "exclusive, every contribution is used, the shared contract is coherent, and "
+    "there is one operable runtime path rather than disconnected parallel stacks. "
+    "Assess data ownership, failure handling, migration compatibility, deployment "
+    "and restart behavior, accessibility where relevant, and whether the design is "
+    "maintainable at the requested scope. Do not demand a particular framework, "
+    "filename, or layout, and do not rewrite the code.\n\n"
+    + _PANEL_RESPONSE_CONTRACT
+)
+
+class _JudgeEvidenceError(ValueError):
+    """A reachable judge tried to approve without proving every contribution."""
+
+
+def _builder_work_ids(run: Any) -> list[str]:
+    return [
+        str(item.work_id)
+        for item in (getattr(run, "work_items", None) or {}).values()
+        if getattr(item, "kind", "") == "builder"
+    ]
+
+
+def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
+    """Validate reviewer JSON and make its per-work-item evidence visible on the PR."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("reviewer response contains no JSON object")
+    parsed = json.loads(text[start:end + 1])
+    if not isinstance(parsed, dict) or "approve" not in parsed:
+        raise ValueError("reviewer response has no approve verdict")
+
+    raw_evidence = parsed.get("work_item_evidence")
+    evidence = {
+        str(work_id): str(detail).strip()
+        for work_id, detail in (
+            raw_evidence.items() if isinstance(raw_evidence, dict) else []
+        )
+        if str(detail).strip()
+    }
+    approve = bool(parsed.get("approve"))
+    missing = [
+        work_id for work_id in required_work_ids
+        if not evidence.get(work_id)
+    ]
+    if approve and missing:
+        raise _JudgeEvidenceError(
+            "approval omitted concrete integration evidence for "
+            + ", ".join(missing)
+        )
+
+    assessment = str(parsed.get("assessment") or "").strip()
+    if evidence and "<summary>Integration evidence</summary>" not in assessment:
+        rows = [
+            f"- `{work_id}`: {evidence[work_id]}"
+            for work_id in required_work_ids
+            if evidence.get(work_id)
+        ]
+        rows.extend(
+            f"- `{work_id}`: {detail}"
+            for work_id, detail in evidence.items()
+            if work_id not in required_work_ids
+        )
+        assessment = (
+            assessment.rstrip()
+            + "\n\n<details><summary>Integration evidence</summary>\n\n"
+            + "\n".join(rows)
+            + "\n\n</details>"
+        ).strip()
+
+    return {
+        "approve": approve,
+        "reasons": [str(r) for r in (parsed.get("reasons") or [])][:5],
+        "work_item_evidence": evidence,
+        "assessment": assessment,
+    }
+
+
+def _panel_record(name: str, label: str, model: str, *,
+                  state: str = "abstained", note: str = "") -> dict[str, Any]:
+    return {
+        "name": name,
+        "label": label,
+        "state": state,
+        "model": model,
+        "reasons": [],
+        "assessment": "",
+        "note": note,
+    }
+
+
+def _run_panel_turn(
+    llm_module: Any,
+    *,
+    name: str,
+    label: str,
+    model: str,
+    system: str,
+    base_prompt: str,
+    required_work_ids: list[str],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Run one independent panel turn with one bounded JSON repair."""
+    record = _panel_record(name, label, model)
+    prior_text = ""
+    prior_error = ""
+    had_response = False
+    for attempt in range(2):
+        prompt = base_prompt
+        if attempt:
+            if had_response:
+                prompt += (
+                    "\n\nYOUR PREVIOUS PANEL RESPONSE WAS INCOMPLETE.\n"
+                    f"Validation error: {prior_error}\n"
+                    "Return the complete strict JSON object. An approval needs "
+                    "specific usage evidence for every one of these work ids: "
+                    f"{json.dumps(required_work_ids)}.\n\n"
+                    f"Previous response:\n{prior_text}"
+                )
+            else:
+                prompt += (
+                    "\n\nTHE FIRST MODEL CALL DID NOT COMPLETE.\n"
+                    "Retry the review from the supplied evidence and return only "
+                    "the complete strict JSON object."
+                )
+        try:
+            out = llm_module.invoke(
+                model, prompt, system=system, max_tokens=2400)
+        except Exception as exc:  # noqa: BLE001 (record the model boundary)
+            prior_error = f"model invocation unavailable ({type(exc).__name__})"
+            if not attempt:
+                continue
+            record["note"] = prior_error
+            return record, None
+
+        record["model"] = str(out.get("model_id") or model)
+        prior_text = (out.get("text") or "").strip()
+        had_response = True
+        try:
+            parsed = _parse_judge_response(prior_text, required_work_ids)
+        except ValueError as exc:
+            prior_error = str(exc)
+            if not attempt:
+                continue
+            if isinstance(exc, _JudgeEvidenceError):
+                parsed = {
+                    "approve": False,
+                    "reasons": [prior_error],
+                    "work_item_evidence": {},
+                    "assessment": (
+                        "Could not establish concrete usage evidence for every "
+                        "routed builder contribution."
+                    ),
+                }
+            else:
+                record["note"] = (
+                    "response remained invalid after one repair attempt")
+                return record, None
+
+        record["state"] = (
+            "approved" if parsed.get("approve") else "changes_requested")
+        record["reasons"] = list(parsed.get("reasons") or [])
+        record["assessment"] = str(parsed.get("assessment") or "")
+        return record, parsed
+    return record, None  # pragma: no cover - both attempts return above
+
+
+def _combine_panel(
+    gate: dict,
+    records: list[dict[str, Any]],
+    decisions: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Combine independent opinions; findings and missing reviews block the queue."""
+    all_abstained = not decisions
+    unavailable = [
+        record for record in records
+        if record.get("state") == "abstained"
+    ]
+    approve = (
+        bool(decisions)
+        and not unavailable
+        and all(decision.get("approve") for _name, decision in decisions)
+    )
+
+    reasons = [
+        f"{name}: {reason}"
+        for name, decision in decisions
+        for reason in (decision.get("reasons") or [])
+    ][:8]
+    reasons.extend(
+        f"{record['name']}: review unavailable"
+        + (f" ({record['note']})" if record.get("note") else "")
+        for record in unavailable
+    )
+    reasons = reasons[:8]
+    if not approve and not reasons:
+        reasons = [
+            f"{record['name']}: requested changes"
+            for record in records
+            if record.get("state") == "changes_requested"
+        ]
+
+    if unavailable:
+        summary = (
+            "The validator's executable passed, but every required review did not "
+            "finish. The queue is blocked without sending builders back to change "
+            "code for a review-service failure."
+        )
+    elif approve:
+        summary = (
+            "The validator's executable passed. Both available reviews approved "
+            "the combined work."
+        )
+    else:
+        summary = (
+            "The executable passed, but a review found a problem. The responsible "
+            "role pull request must be updated and checked again."
+        )
+
+    sections: list[str] = []
+    for record in records:
+        body = str(record.get("assessment") or "").strip()
+        if not body:
+            body = str(record.get("note") or "No review output was available.")
+        sections.append(
+            f"<details><summary>{record['label']}: "
+            f"{str(record['state']).replace('_', ' ')}</summary>\n\n"
+            f"{body}\n\n"
+            f"Model: `{record.get('model') or 'unavailable'}`\n\n"
+            "</details>"
+        )
+    state = "Approve" if approve else "Request changes"
+    return {
+        "approve": approve,
+        "reasons": reasons,
+        "assessment": (
+            f"**Assessment**: {state}\n\n{summary}\n\n"
+            + "\n\n".join(sections)
+        ),
+        "panels": records,
+        "all_abstained": all_abstained,
+        "review_unavailable": bool(unavailable),
+        "gate_summary": gate.get("summary"),
+    }
 
 
 def _default_judge(run: Any, gate: dict) -> dict | None:
-    """The LLM judge: one model call over the artifacts + gate result.
+    """Run an adversarial verification turn and a design/integration turn.
 
-    FAIL-OPEN: returns ``None`` (abstain) whenever a model cannot be reached
-    (no credentials, no access, or any transport error), so offline/unit runs
-    behave exactly like the gate alone. Returns
-    ``{"approve": bool, "reasons": [...], "assessment": md}`` when it ran.
+    Each turn sees the same immutable candidate but has separate steering and no
+    maker conversation. A request-changes verdict blocks the queue. An unreachable
+    member is recorded and also blocks the queue.
     """
     # A run whose work came from the offline test double has nothing to review: the
     # files say so themselves. Abstaining is the honest answer, and it keeps the
@@ -350,39 +623,100 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
     try:
         import llm  # noqa: PLC0415 (lazy; offline tests never import boto3)
     except Exception:
-        return None
+        records = [
+            _panel_record(
+                "adversarial", "Behavior review",
+                ADVERSARIAL_REVIEW_MODEL, note="review module unavailable"),
+            _panel_record(
+                "design", "Design review",
+                DESIGN_REVIEW_MODEL, note="review module unavailable"),
+        ]
+        return _combine_panel(gate, records, [])
     if not llm.available():
-        return None
+        records = [
+            _panel_record(
+                "adversarial", "Behavior review",
+                ADVERSARIAL_REVIEW_MODEL, note="no model credentials available"),
+            _panel_record(
+                "design", "Design review",
+                DESIGN_REVIEW_MODEL, note="no model credentials available"),
+        ]
+        return _combine_panel(gate, records, [])
 
     parts: list[str] = [f"Task: {getattr(run, 'task', '')!r}",
                         f"acceptance gate passed: {gate.get('passed')}",
                         f"gate: {json.dumps(gate.get('checks', []))[:2000]}"]
-    # Hand the judge every deliverable artifact it can read: the backend server,
-    # the authored acceptance test, and each file of the UI project.
+    try:
+        import integration_plan  # noqa: PLC0415
+        context = integration_plan.review_context(
+            getattr(run, "integration_brief", None) or {},
+            (getattr(run, "work_items", None) or {}).values(),
+        )
+        parts.append(
+            "Recorded integration ownership and provenance:\n"
+            + json.dumps(context, indent=2))
+    except Exception:
+        pass
+    # Hand the judge the run's actual changed artifacts before any unchanged base
+    # files. The complete changed-path inventory above remains visible even when a
+    # large generated project exceeds the content excerpt budget.
     for label, path in _artifact_files(run):
         if path and os.path.isfile(path):
             with open(path, encoding="utf-8", errors="replace") as f:
-                parts.append(f"--- {label} ---\n{f.read()[:6000]}")
-    prompt = ("Review this pull request's deliverable and decide whether it is "
-              "correct and shippable.\n\n" + "\n\n".join(parts))
-    try:
-        out = llm.invoke(JUDGE_MODEL, prompt, system=_JUDGE_SYSTEM, max_tokens=1500)
-    except Exception:
-        return None  # fail-open: a judge outage never blocks the deterministic gate
-    text = (out.get("text") or "").strip()
-    try:
-        start, end = text.find("{"), text.rfind("}")
-        parsed = json.loads(text[start:end + 1]) if start != -1 and end != -1 else {}
-    except Exception:
-        return None
-    if not isinstance(parsed, dict) or "approve" not in parsed:
-        return None
-    return {"approve": bool(parsed.get("approve")),
-            "reasons": [str(r) for r in (parsed.get("reasons") or [])][:5],
-            "assessment": str(parsed.get("assessment") or "").strip()}
+                parts.append(f"--- {label} ---\n{f.read()[:3000]}")
+    base_prompt = (
+        "Independently review this integrated pull-request candidate. Do not trust "
+        "a builder's self-assessment or infer success from the green gate alone.\n\n"
+        + "\n\n".join(parts)
+    )
+    required_work_ids = _builder_work_ids(run)
+    specs = [
+        (
+            "adversarial", "Behavior review",
+            ADVERSARIAL_REVIEW_MODEL, _ADVERSARIAL_SYSTEM,
+        ),
+        (
+            "design", "Design review",
+            DESIGN_REVIEW_MODEL, _DESIGN_SYSTEM,
+        ),
+    ]
+    records: list[dict[str, Any]] = []
+    decisions: list[tuple[str, dict[str, Any]]] = []
+    for name, label, model, system in specs:
+        record, decision = _run_panel_turn(
+            llm,
+            name=name,
+            label=label,
+            model=model,
+            system=system,
+            base_prompt=base_prompt,
+            required_work_ids=required_work_ids,
+        )
+        records.append(record)
+        if decision is not None:
+            decisions.append((name, decision))
+
+    logger = getattr(run, "log", None)
+    if callable(logger):
+        logger("review panel: " + ", ".join(
+            f"{record['name']}={record['state']}" for record in records))
+    return _combine_panel(gate, records, decisions)
 
 
-_MAX_JUDGE_FILES = 40
+_MAX_JUDGE_FILES = 48
+
+
+def _spread(paths: list[str]) -> list[str]:
+    """Sample both ends of an agent-chosen tree instead of one name-sorted prefix."""
+    out: list[str] = []
+    left, right = 0, len(paths) - 1
+    while left <= right:
+        out.append(paths[left])
+        left += 1
+        if left <= right:
+            out.append(paths[right])
+            right -= 1
+    return out
 
 
 def _artifact_files(run: Any) -> list[tuple[str, str]]:
@@ -395,8 +729,9 @@ def _artifact_files(run: Any) -> list[tuple[str, str]]:
     had not read. It also labelled one of them `mcp_server.py`, a filename this
     design abolished.
 
-    So walk each role's own directory, exactly as compose does: whatever the roles
-    wrote IS the deliverable, and the reviewer must see it to review it.
+    Review the exact assembled candidate, not the independent role clones. A role
+    checkout includes its private base and may be stale; only ``candidate_dir`` is
+    the tree the executable gate actually inspected.
     """
     files: list[tuple[str, str]] = []
     authored = getattr(run, "_acceptance_test_file", None)
@@ -404,63 +739,88 @@ def _artifact_files(run: Any) -> list[tuple[str, str]]:
         files.append(("the validator's authored acceptance check", authored))
 
     seen = {os.path.abspath(authored)} if authored else set()
-    for agent_id in (getattr(run, "agents", None) or []):
-        try:
-            root = run.roledir(agent_id)
-        except Exception:  # noqa: BLE001 (a run without a workdir has no files)
-            continue
-        if not os.path.isdir(root):
-            continue
-        # The harness (steering + installed skills) is OUR text, not the agent's
-        # work. Showing it to the judge spends prompt on instructions it already
-        # has and invites it to review the workshop instead of the deliverable.
-        skip = {"CLAUDE.md", "AGENTS.md"}
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = sorted(d for d in dirnames
-                                 if not d.startswith(".") and d != "__pycache__"
-                                 and not (dirpath == root and d == "skills"))
-            for fn in sorted(filenames):
-                if dirpath == root and fn in skip:
-                    continue
-                full = os.path.join(dirpath, fn)
-                if os.path.abspath(full) in seen:
-                    continue
-                seen.add(os.path.abspath(full))
-                rel = os.path.relpath(full, root)
-                files.append((f"{agent_id}/{rel}", full))
-                if len(files) >= _MAX_JUDGE_FILES:
-                    # Bounded so one enormous tree cannot blow the prompt. Say so
-                    # rather than truncating silently: the judge is fail-open, and
-                    # a partial read must not look like a complete one.
-                    files.append((f"NOTE: only the first {_MAX_JUDGE_FILES} files "
-                                  "of the deliverable are shown", ""))
-                    return files
+    root = (getattr(run, "_review_work_dir", "")
+            or getattr(run, "candidate_dir", "") or "")
+    if not os.path.isdir(root):
+        return files
+
+    items = [
+        item for item in (getattr(run, "work_items", None) or {}).values()
+        if getattr(item, "kind", "") == "builder"
+    ]
+    queues = [
+        (item, _spread(sorted(getattr(item, "changed_files", None) or [])))
+        for item in items
+    ]
+    while any(paths for _item, paths in queues) and len(files) < _MAX_JUDGE_FILES:
+        for item, paths in queues:
+            if not paths or len(files) >= _MAX_JUDGE_FILES:
+                continue
+            rel = paths.pop(0)
+            full = os.path.join(root, *rel.replace("\\", "/").split("/"))
+            if not os.path.isfile(full) or os.path.abspath(full) in seen:
+                continue
+            seen.add(os.path.abspath(full))
+            files.append((
+                f"{item.work_id} ({item.capability}) changed {rel}",
+                full,
+            ))
+
+    if len(files) >= _MAX_JUDGE_FILES:
+        files.append((
+            f"NOTE: changed-path contents were capped at {_MAX_JUDGE_FILES}; "
+            "the complete per-role inventory is in the provenance above",
+            "",
+        ))
+        return files
+
+    # Older/read-only runs may not carry work-item provenance. Fill the remaining
+    # budget from the assembled candidate so those reviews still see real code.
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".") and d != "__pycache__")
+        for fn in sorted(filenames):
+            full = os.path.join(dirpath, fn)
+            if os.path.abspath(full) in seen:
+                continue
+            seen.add(os.path.abspath(full))
+            rel = os.path.relpath(full, root)
+            files.append((f"integration-candidate/{rel}", full))
+            if len(files) >= _MAX_JUDGE_FILES:
+                files.append((
+                    f"NOTE: artifact contents were capped at {_MAX_JUDGE_FILES}; "
+                    "the complete changed-path inventory is in the provenance above",
+                    "",
+                ))
+                return files
     return files
 
 
 def _abstained_assessment(gate: dict, approve: bool) -> str:
-    """The deterministic assessment used when the LLM judge abstains: a short,
+    """The deterministic assessment used when the review panel abstains: a short,
     honest summary of the gate. Never invents review findings."""
     line = gate.get("summary") or ("green" if gate.get("passed") else "red")
     if approve:
         return ("**Assessment**: Approve\n\n"
-                f"The validator-authored acceptance test passed ({line}). "
-                "No LLM reviewer was reachable, so the deterministic gate stands "
-                "as the verdict.")
+                f"The validator's executable passed ({line}). "
+                "The behavior and design reviews were unavailable, so their "
+                "status is recorded and the executable result still applies.")
     return ("**Assessment**: Request changes\n\n"
-            f"The acceptance gate is red ({line}); see the failing checks. "
-            "A red gate can never be approved.")
+            f"The executable failed ({line}). See the failing checks. "
+            "A failed executable cannot be approved.")
 
 
 def assess(run: Any, gate: dict, round_no: int,
            judge: Any = _default_judge) -> Verdict:
-    """One review round: take the gate result, layer the LLM assessment, and
+    """One review round: take the gate result, layer the independent panel, and
     return the verdict whose markdown the engine posts on the PR.
 
     The ``judge`` is injectable (tests pass a fake or ``None`` to disable it);
-    it defaults to the real LLM judge, which is FAIL-OPEN, so a missing model
-    never changes the deterministic verdict. A red gate is never assessed as
-    approvable; a green gate may still get changes requested.
+    it defaults to two separate, read-only model turns. Both must finish before a
+    green gate can be approved. A missing member is recorded without fabricating a
+    finding or asking a builder to repair the outage. A red gate is never assessed
+    as approvable; a green gate may still get changes requested.
     """
     verdict = Verdict(round=round_no, gate=gate)
     if not gate.get("passed"):
@@ -476,13 +836,30 @@ def assess(run: Any, gate: dict, round_no: int,
         try:
             jv = judge(run, gate)
         except Exception:
-            jv = None  # fail-open at the call site too
+            jv = None
     if jv is None:
-        verdict.lgtm = True
-        verdict.assessment = _abstained_assessment(gate, approve=True)
+        if getattr(run, "_offline_double", False):
+            # Fixture runs test engine plumbing without an external model. This
+            # branch is unreachable in the shipped AgentCore executor.
+            verdict.lgtm = True
+            verdict.assessment = _abstained_assessment(gate, approve=True)
+        else:
+            records = [
+                _panel_record(
+                    "adversarial", "Behavior review",
+                    ADVERSARIAL_REVIEW_MODEL, note="review call unavailable"),
+                _panel_record(
+                    "design", "Design review",
+                    DESIGN_REVIEW_MODEL, note="review call unavailable"),
+            ]
+            jv = _combine_panel(gate, records, [])
+            verdict.lgtm = False
     else:
         verdict.lgtm = bool(jv.get("approve"))
+    if jv is not None:
         verdict.reasons = list(jv.get("reasons") or [])
+        verdict.panels = list(jv.get("panels") or [])
+        verdict.review_unavailable = bool(jv.get("review_unavailable"))
         verdict.assessment = (jv.get("assessment")
                               or _abstained_assessment(gate, verdict.lgtm))
     verdict.state = "approved" if verdict.lgtm else "changes_requested"

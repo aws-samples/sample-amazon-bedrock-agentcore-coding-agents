@@ -116,7 +116,7 @@ export function SessionDetailPanel({ session, onClose }: { session: SessionRow |
                     label="Static creds on agent"
                     value={identity.static_credentials_on_agent ? 'present' : 'none'}
                     good={!identity.static_credentials_on_agent}
-                    note="brokered, never stored"
+                    note="kept outside the agent"
                   />
                   <AttestTile
                     icon={<GitPullRequest className="size-3.5" />}

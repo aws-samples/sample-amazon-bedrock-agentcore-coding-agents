@@ -96,5 +96,6 @@ def test_engine_and_steering_agree_on_the_two_cases() -> None:
     assert "resubmit" not in cap and "same request again" not in cap
     # ...while the role-failure arm must.
     assert "same request again" in role or "resubmit" in role
-    # And a red gate is never reported as having opened a PR.
-    assert "no pull request" in cap
+    # Role PRs retain evidence, but a red gate can never publish the final PR.
+    assert "no final integration pull request" in cap
+    assert "existing role pull requests" in cap

@@ -20,6 +20,7 @@ from engine import (  # noqa: E402
     TERMINAL,
     Engine,
     Run,
+    _new_run_id,
     public_diff,
     public_result,
     public_run,
@@ -48,7 +49,13 @@ def _wait_terminal(run, timeout_s: float = 60.0):
     return run
 
 
-def test_happy_path_runs_the_real_gate_and_composes():
+def test_run_ids_do_not_collide_across_coordinator_instances():
+    run_ids = {_new_run_id() for _ in range(100)}
+    assert len(run_ids) == 100
+    assert all(len(run_id.rsplit("_", 1)[-1]) == 12 for run_id in run_ids)
+
+
+def test_happy_path_runs_the_real_gate_and_composes(monkeypatch):
     """The MACHINERY, end to end: every routed role produced files, the validator's
     authored check ran as a real subprocess and its real exit code decided, and the
     result composed into a real commit.
@@ -58,9 +65,22 @@ def test_happy_path_runs_the_real_gate_and_composes():
     assertion about content would only be testing the test double, and an assertion
     about the LLM verdict would make the suite depend on a live judge's opinion.
     """
+    task = "exercise the engine happy path without grading fixture content"
+    review_calls = []
+    real_assess = __import__("reviewer").assess
+
+    def counted_assess(*args, **kwargs):
+        if args[0].task == task:
+            review_calls.append(args[1].get("summary"))
+        return real_assess(*args, **kwargs)
+
+    monkeypatch.setattr("engine.reviewer.assess", counted_assess)
     engine = _engine()
-    run = _wait_terminal(engine.submit("Convert the module to an MCP server", ALL_AGENTS))
+    run = _wait_terminal(engine.submit(task, ALL_AGENTS))
     result = public_result(run)
+    assert result["phase"] == run.phase
+    assert {r["agent"] for r in result["progress"]} == set(run.agents)
+    assert all(r["state"] == "done" for r in result["progress"])
     # the gate is one real execution whose exit code decided
     assert result["gate"]["passed"] is True
     assert result["gate"]["checks"] and all(c["passed"] for c in result["gate"]["checks"])
@@ -83,6 +103,181 @@ def test_happy_path_runs_the_real_gate_and_composes():
     # local mode invokes no model for the roles: usage is zero, never inferred
     for r in run.progress.values():
         assert r.estimated is False and r.tokens == 0 and r.latency_ms >= 0
+    # The first dependency is merged, then the next owner gets one real semantic
+    # refresh against that implementation. A clean Git rebase is not enough.
+    builders = [
+        item for item in run.work_items.values()
+        if item.kind == "builder"
+    ]
+    ordered = sorted(builders, key=lambda item: len(item.depends_on))
+    assert [item.attempt for item in ordered] == [1, 2]
+    assert ordered[1].refreshes == 1
+    assert any(
+        "SEMANTIC INTEGRATION REFRESH" in event["message"]
+        for event in run.events
+    )
+    # The validator still authors and runs one executable at every queue
+    # checkpoint, but a byte-identical candidate is not sent through a duplicate
+    # code review after the semantic owner turn.
+    assert len(run.gate_history) == len(builders) + 1
+    assert len(review_calls) == 1, [
+        (row["stage"], row["candidate_digest"])
+        for row in run.gate_history
+    ]
+    engine.shutdown()
+
+
+def test_role_pr_merge_queue_revalidates_after_every_merge(monkeypatch):
+    review_calls = []
+    real_assess = __import__("reviewer").assess
+    fixture = FixtureExecutor()
+    fixture_produce = fixture.produce
+
+    def counted_assess(*args, **kwargs):
+        review_calls.append((args[1].get("summary"), args[2]))
+        return real_assess(*args, **kwargs)
+
+    def conflicting_first_turn(run, agent_id, role):
+        path = fixture_produce(run, agent_id, role)
+        if agent_id in ("claude-code", "opencode"):
+            shared = os.path.join(run.roledir(agent_id), "shared-manifest.txt")
+            content = (
+                f"independent {agent_id}\n"
+                if run.iterations == 1
+                else "integrated backend and frontend\n"
+            )
+            with open(shared, "w", encoding="utf-8") as f:
+                f.write(content)
+        return path
+
+    monkeypatch.setattr("engine.reviewer.assess", counted_assess)
+    monkeypatch.setattr(fixture, "produce", conflicting_first_turn)
+    engine = Engine(executor_obj=fixture)
+    run = _wait_terminal(
+        engine.submit("build any useful tool", ALL_AGENTS), timeout_s=120)
+    builders = [
+        item for item in run.work_items.values()
+        if item.kind == "builder"
+    ]
+
+    assert len({item.work_id for item in builders}) == len(builders)
+    assert all(item.merge_state == "merged" for item in builders)
+    assert len(run.merge_queue) == len(builders)
+    assert [row["state"] for row in run.merge_queue] == [
+        "merged" for _ in builders]
+    # One full-candidate gate, then one real executable gate after each merge.
+    assert len(run.gate_history) == len(builders) + 1
+    assert all(row["passed"] for row in run.gate_history)
+    assert run.gate_history[-1]["stage"].startswith("after merge")
+    # The initial shared-path conflict gets one real owner reconciliation.
+    ordered = sorted(builders, key=lambda item: len(item.depends_on))
+    assert ordered[0].attempt == 1
+    assert ordered[-1].refreshes >= 2
+    assert ordered[-1].attempt == 2
+    assert any(
+        row.get("responsible_agents") == [ordered[-1].agent]
+        for row in run.retry_reasons
+    )
+    # Conflict repair already based the later role on its dependency's exact
+    # patch, so the queue does not spend a redundant third turn.
+    assert len(review_calls) == 1
+    engine.shutdown()
+
+    review_calls.clear()
+    fixture = FixtureExecutor()
+    fixture_produce = fixture.produce
+
+    def conflict_created_by_gate_repair(run, agent_id, role):
+        path = fixture_produce(run, agent_id, role)
+        if agent_id == "opencode":
+            shared = os.path.join(run.roledir(agent_id), "shared-after-repair.txt")
+            content = (
+                "frontend contract\n"
+                if run.iterations == 1
+                else "integrated persistence and frontend contract\n"
+            )
+            with open(shared, "w", encoding="utf-8") as f:
+                f.write(content)
+        elif agent_id == "claude-code" and run.iterations == 2:
+            shared = os.path.join(run.roledir(agent_id), "shared-after-repair.txt")
+            with open(shared, "w", encoding="utf-8") as f:
+                f.write("backend persistence repair\n")
+        return path
+
+    monkeypatch.setattr(fixture, "produce", conflict_created_by_gate_repair)
+    monkeypatch.setattr(
+        "engine.integration_plan.select_repair_agents",
+        lambda *_args, **_kwargs: (
+            ["claude-code"], "the red executable check names backend persistence"),
+    )
+    repair_engine = Engine(executor_obj=fixture)
+    repaired = _wait_terminal(
+        repair_engine.submit(
+            "build any useful tool",
+            ALL_AGENTS,
+            {"fail_first_check": True},
+        ),
+        timeout_s=120,
+    )
+    repaired_builders = [
+        item for item in repaired.work_items.values()
+        if item.kind == "builder"
+    ]
+    repaired_order = sorted(
+        repaired_builders, key=lambda item: len(item.depends_on))
+    assert repaired.status == "passed"
+    assert [row["passed"] for row in repaired.gate_history] == [
+        False, True, True, True]
+    assert [item.attempt for item in repaired_order] == [2, 2]
+    assert any(
+        row.get("responsible_agents") == [repaired_order[0].agent]
+        for row in repaired.retry_reasons
+    )
+    assert any(
+        row.get("stage") == "integration conflict"
+        and row.get("responsible_agents") == [repaired_order[1].agent]
+        for row in repaired.retry_reasons
+    )
+    repair_engine.shutdown()
+
+
+def test_review_outage_blocks_the_queue_without_rebuilding(monkeypatch):
+    """A reviewer outage is infrastructure, not a reason to rewrite green work."""
+    import reviewer
+
+    def unavailable(_run, gate, round_no):
+        return reviewer.Verdict(
+            state="changes_requested",
+            gate=gate,
+            round=round_no,
+            reasons=["design: review unavailable"],
+            panels=[{
+                "name": "design",
+                "label": "Design review",
+                "state": "abstained",
+                "model": "test-model",
+                "reasons": [],
+                "assessment": "",
+                "note": "model invocation unavailable",
+            }],
+            review_unavailable=True,
+        )
+
+    monkeypatch.setattr("engine.reviewer.assess", unavailable)
+    engine = _engine()
+    run = _wait_terminal(
+        engine.submit("build any useful tool", ALL_AGENTS), timeout_s=120)
+
+    assert run.status == "needs_human"
+    assert run.fail_reason == "REVIEW_UNAVAILABLE"
+    assert run.iterations == 1
+    assert run.merge_queue == []
+    assert all(
+        item.attempt == 1
+        for item in run.work_items.values()
+        if item.kind == "builder"
+    )
+    assert "retry the review" in public_result(run)["next_action"].lower()
     engine.shutdown()
 
 
@@ -273,6 +468,13 @@ def test_bounded_iteration_retries_then_passes():
     )
     assert run.iterations == 2 <= MAX_ITERATIONS
     assert run.status == "passed"
+    builders = [
+        item for item in run.work_items.values()
+        if item.kind == "builder"
+    ]
+    ordered = sorted(builders, key=lambda item: len(item.depends_on))
+    assert [item.attempt for item in ordered] == [2, 3]
+    assert ordered[1].dependency_refreshes == 1
     warns = [e for e in run.events if e["level"] == "warn"]
     assert any("changes requested" in e["message"] for e in warns)
     engine.shutdown()

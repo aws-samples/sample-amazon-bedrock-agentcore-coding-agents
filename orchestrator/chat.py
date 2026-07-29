@@ -95,14 +95,23 @@ their stack and features, or says "just build it", dispatch immediately.
 - Focused single-role job (rebuild the UI, patch the backend): call the matching \
 dispatch_* tool. It returns a run id immediately and the build runs in the \
 background. State that it started and which agent owns it.
-- Full build that must be composed and graded: call run_build(task). Every role on \
-your roster works, their output composes into one deliverable, the checker's \
-authored check gates it, and a separate review pass posts an assessment on the pull \
-request. Pass the user's request text VERBATIM as task. It can be ANY request: \
+- Full build that must be integrated and graded: call run_build(task). Every builder \
+gets an isolated work id and role PR. Their patches form a candidate, the checker's \
+authored executable gates it, and a private merge queue reruns that gate before a \
+final PR can target the default branch. Pass the user's request text VERBATIM as task. \
+It can be ANY request: \
 nothing classifies it and nothing maps it to a sample, so there is no wording to \
 get right.
 If the user has no idea yet, call list_presets() and offer one; those are example \
 starting points, not a limit on what can be built.
+
+## Explicit preset command
+The console and CLI accept `preset=<id>` as a concise build request. When the \
+user's message has exactly that form, it is already unambiguous: call \
+`run_build(task="", preset="<id>")` immediately. Do not call `list_presets`, \
+describe the preset, or ask a clarifying question first. This applies to any id \
+the user supplies; the tool and routing layer validate it and fail loud if it does \
+not exist.
 
 ## Reading back a run you did not start
 run_status(run_id) answers for runs from EARLIER sessions too: the engine persists \
@@ -116,16 +125,17 @@ fail reason, so it already knows which of the two very different `needs_human` c
 you are in. FOLLOW IT rather than deciding for yourself.
 
 Do NOT try to "finish it yourself" by dispatching individual roles, hand-composing
-files, or dispatching the validator alone: those paths do not compose the deliverable
-or open the PR the way run_build does, and a review with no PR to review just fails
-`NO_RUN_TO_REVIEW`.
+files, or dispatching the validator alone: those paths do not create the integration
+candidate, run the merge queue, or open the final PR the way run_build does, and a
+review with no PR to review just fails `NO_RUN_TO_REVIEW`.
 
 The two cases, because they have OPPOSITE recoveries:
 
 * A role produced nothing (`ROLE_EXECUTION_ERROR`, `ROLE_TOTAL_FAILURE`,
-  `ARTIFACT_TRANSFER_ERROR`). Nothing was judged, so the work is unproven rather
-  than rejected. Call run_build ONCE more with the SAME task text, and say you are
-  resubmitting.
+  `ARTIFACT_TRANSFER_ERROR`), or the coordinator Runtime was recycled mid-build
+  (`COORDINATOR_SESSION_INTERRUPTED`). Nothing was judged, so the work is unproven
+  rather than rejected. Call run_build ONCE more with the SAME task text, and say
+  you are resubmitting.
 * The gate stayed RED on real work (`ITERATION_CAP`). The roles built something and
   the validator's own check rejected it, twice, having already had its bounded
   re-implement round. Resubmitting here is not recovery, it is the unbounded loop the
@@ -246,8 +256,9 @@ def build_tools() -> list:
     @tool
     def run_build(task: str, preset: str = "") -> str:
         """Start a FULL build of ANY request. Every role on the roster works, their
-        output composes into one deliverable, the checker's authored check gates it,
-        and the reviewer posts its assessment on the pull request. Returns immediately
+        isolated role pull requests enter a private integration queue, the checker
+        authors and executes a gate for the candidate after every merge, and one
+        final integration pull request collects the evidence. Returns immediately
         with a run id; the build runs in the background.
 
         Pass the user's request text VERBATIM as task. It can be anything at all:
@@ -265,8 +276,9 @@ def build_tools() -> list:
 
     @tool
     def run_status(run_id: str) -> str:
-        """Read back the current verdict for a run id a dispatch_*/run_build tool
-        returned: status, gate result, review state, and the PR URL if one opened.
+        """Read back the current state for a run id a dispatch_*/run_build tool
+        returned: phase, per-role progress, gate result, review state, and the PR URL
+        if one opened.
 
         Answers for a run this session did not submit, by reading the state the
         engine persisted when the run reached a terminal state. Without that, a
@@ -279,6 +291,18 @@ def build_tools() -> list:
         # Not live here: fall back to the durable record.
         saved = _run_store.load(_engine._RUNS_DIR, run_id)
         if saved is not None:
+            if _run_store.active_snapshot_is_stale(saved):
+                reason = "COORDINATOR_SESSION_INTERRUPTED"
+                return json.dumps({
+                    **saved,
+                    "status": "needs_human",
+                    "fail_reason": reason,
+                    "next_action": _engine.next_action(
+                        "needs_human", reason, saved.get("pr"),
+                        saved.get("pr_url"),
+                        saved.get("integration_conflicts")),
+                    "source": "persisted",
+                })
             return json.dumps({**saved, "source": "persisted"})
         recent = [r.get("run_id") for r in
                   _run_store.recent(_engine._RUNS_DIR, limit=5) if r.get("run_id")]

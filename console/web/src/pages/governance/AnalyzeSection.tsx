@@ -75,7 +75,7 @@ export function AnalyzeSection() {
       .join('\n') || '  - (none recorded)';
     const active = sessions.filter((s) => s.claude_running).length;
     return [
-      'You are reviewing a live AgentCore coding-agent fleet. Here is its current governance snapshot (real telemetry):',
+      'You are reviewing an AgentCore coding-agent fleet. Here is its current governance snapshot:',
       `- Active sessions: ${dash.active_sessions} of ${dash.runs_total} total`,
       `- Fleet p95 latency: ${fmtSeconds(dash.p95_latency_ms)}`,
       `- Running sessions right now: ${active}`,
@@ -201,7 +201,7 @@ export function AnalyzeSection() {
           <div className="mx-auto flex h-full max-w-xl flex-col items-center justify-center text-center">
             <p className="text-sm text-muted-foreground">
               Ask the orchestrator model to read this fleet's cost, sessions, and posture. It answers
-              over the real numbers. A question never starts a build.
+              over the recorded numbers. A question never starts a build.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               {SUGGESTED.map((p, i) => (

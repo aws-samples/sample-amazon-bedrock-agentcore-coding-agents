@@ -2,8 +2,8 @@
 
 Stage 2 has attendees read ``reviewer.py`` after the router: the pass token, the
 one-bounded-pass rule, the strict branch-suffix guard, the executable acceptance
-gate, and the fail-open LLM assessment. These tests pin that contract, unit-tested
-without a model:
+gate, and the required independent reviews. These tests pin that contract,
+unit-tested without a model:
 
     python3 -m pytest orchestrator/test_reviewer.py -v
 
@@ -14,10 +14,13 @@ deterministic units that need no server, so the loop is fast.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
 import time
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -27,6 +30,7 @@ from reviewer import (  # noqa: E402
     Verdict,
     branch_run_id,
 )
+from work_items import WorkItem  # noqa: E402
 
 
 class _FakeRun:
@@ -56,6 +60,10 @@ class _FakeRun:
 # ----------------------------------------------------- the strict branch-suffix guard
 def test_branch_run_id_maps_a_run_branch_back_to_its_run():
     assert branch_run_id("run/run_103512_004") == "run_103512_004"
+    assert (
+        branch_run_id("run/run_103512_a1b2c3d4e5f6")
+        == "run_103512_a1b2c3d4e5f6"
+    )
 
 
 def test_branch_run_id_refuses_lookalikes():
@@ -149,11 +157,13 @@ def test_verdict_public_shape():
     v = Verdict(state="approved", lgtm=True, round=1,
                 gate={"passed": True, "checks": []})
     pub = v.public()
-    assert set(pub) == {"state", "lgtm", "round", "gate", "reasons", "assessment"}
+    assert set(pub) == {
+        "state", "lgtm", "round", "gate", "reasons", "assessment", "panels",
+        "review_unavailable"}
     assert pub["lgtm"] is True
 
 
-# ------------------------------------------------- the assessment (fail-open LLM)
+# ------------------------------------------------------- the required review panel
 _GREEN_GATE = {"passed": True, "checks": [
     {"check": "acceptance_test_authored", "passed": True, "detail": "green"}],
     "summary": "all checks green"}
@@ -175,44 +185,171 @@ def test_red_gate_is_never_assessed_approvable():
     assert "Request changes" in v.assessment
 
 
-def test_judge_abstain_leaves_the_green_gate_standing():
-    """FAIL-OPEN: no model reachable -> the deterministic gate is the verdict,
-    and the assessment says so honestly."""
-    v = reviewer.assess(_FakeRun(), _GREEN_GATE, 1, judge=lambda *a: None)
-    assert v.lgtm is True
-    assert v.state == "approved"
-    assert LGTM_TOKEN in v.assessment
+def test_judge_outage_blocks_merge_without_inventing_a_finding():
+    """A green executable is not enough when the required reviews did not run."""
+    for judge in (
+        lambda *args: None,
+        lambda *args: (_ for _ in ()).throw(RuntimeError("boom")),
+    ):
+        verdict = reviewer.assess(_FakeRun(), _GREEN_GATE, 1, judge=judge)
+        assert verdict.lgtm is False
+        assert verdict.state == "changes_requested"
+        assert verdict.review_unavailable is True
+        assert len(verdict.panels) == 2
+        assert all(row["state"] == "abstained" for row in verdict.panels)
+        assert LGTM_TOKEN not in verdict.assessment
 
 
-def test_judge_can_withhold_approval_on_a_green_gate():
-    v = reviewer.assess(
+def test_judge_controls_green_gate_and_reads_each_role_patch(tmp_path):
+    withheld = reviewer.assess(
         _FakeRun(), _GREEN_GATE, 1,
         judge=lambda *a: {"approve": False,
                           "reasons": ["off-by-one in the price rounding"],
                           "assessment": "**Assessment**: Request changes\n\nrounding bug"})
-    assert v.lgtm is False
-    assert v.state == "changes_requested"
-    assert "rounding" in " ".join(v.reasons)
-    assert LGTM_TOKEN not in v.assessment
+    assert withheld.lgtm is False
+    assert withheld.state == "changes_requested"
+    assert "rounding" in " ".join(withheld.reasons)
+    assert LGTM_TOKEN not in withheld.assessment
 
-
-def test_judge_approval_carries_the_exact_pass_token():
-    """An approving assessment always ends with the literal token, even when the
-    model's own markdown forgot it: approval is checkable, never a paraphrase."""
-    v = reviewer.assess(
+    approved = reviewer.assess(
         _FakeRun(), _GREEN_GATE, 1,
         judge=lambda *a: {"approve": True, "reasons": [],
                           "assessment": "**Assessment**: Approve\n\nclean, well-scoped"})
-    assert v.lgtm is True
-    assert v.assessment.startswith("**Assessment**: Approve")
-    assert LGTM_TOKEN in v.assessment
+    assert approved.lgtm is True
+    assert approved.assessment.startswith("**Assessment**: Approve")
+    assert LGTM_TOKEN in approved.assessment
+
+    candidate = tmp_path / "candidate"
+    (candidate / "api").mkdir(parents=True)
+    (candidate / "web").mkdir()
+    (candidate / "api" / "service.py").write_text("print('api')\n")
+    (candidate / "web" / "app.tsx").write_text("export default App\n")
+    backend = WorkItem.create(
+        "run_1", "claude-code", "backend-builder", "backend", token="back")
+    frontend = WorkItem.create(
+        "run_1", "opencode", "frontend-builder", "frontend", token="front")
+    checker = WorkItem.create(
+        "run_1", "claude-code-validator", "acceptance-validator", "validator",
+        kind="checker", token="check")
+    backend.changed_files = ["api/service.py"]
+    frontend.changed_files = ["web/app.tsx"]
+    checker.changed_files = ["acceptance_check"]
+    run = _FakeRun()
+    run.candidate_dir = str(candidate)
+    run.work_items = {
+        backend.agent: backend,
+        frontend.agent: frontend,
+        checker.agent: checker,
+    }
+    labels = [label for label, _path in reviewer._artifact_files(run)]
+    assert any(backend.work_id in label and "api/service.py" in label
+               for label in labels)
+    assert any(frontend.work_id in label and "web/app.tsx" in label
+               for label in labels)
+    assert not any(checker.work_id in label for label in labels)
 
 
-def test_judge_crash_is_fail_open():
-    v = reviewer.assess(_FakeRun(), _GREEN_GATE, 1,
-                        judge=lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert v.lgtm is True
-    assert LGTM_TOKEN in v.assessment
+def test_judge_approval_requires_usage_evidence_for_every_builder():
+    backend = WorkItem.create(
+        "run_1", "claude-code", "backend-builder", "backend", token="back")
+    frontend = WorkItem.create(
+        "run_1", "opencode", "frontend-builder", "frontend", token="front")
+    required = [backend.work_id, frontend.work_id]
+    incomplete = (
+        '{"approve":true,"reasons":[],"work_item_evidence":{'
+        f'"{backend.work_id}":"UI calls its issue API"'
+        '},"assessment":"**Assessment**: Approve\\n\\nLooks good"}'
+    )
+    with pytest.raises(reviewer._JudgeEvidenceError, match=frontend.work_id):
+        reviewer._parse_judge_response(incomplete, required)
+
+    complete = reviewer._parse_judge_response(
+        '{"approve":true,"reasons":[],"work_item_evidence":{'
+        f'"{backend.work_id}":"The running API owns persistence",'
+        f'"{frontend.work_id}":"The browser calls that API over the shared boundary"'
+        '},"assessment":"**Assessment**: Approve\\n\\nIntegrated"}',
+        required,
+    )
+    assert complete["approve"] is True
+    assert all(work_id in complete["assessment"] for work_id in required)
+
+
+def test_adversarial_and_design_panel_are_independent_and_one_finding_blocks(
+        monkeypatch, tmp_path):
+    """A green executable is evidence, not permission for the panel to agree."""
+    import llm
+
+    candidate = tmp_path / "candidate"
+    (candidate / "api").mkdir(parents=True)
+    (candidate / "web").mkdir()
+    (candidate / "api" / "activity.js").write_text(
+        "return {detail: {before: oldValue, after: newValue}}\n")
+    (candidate / "web" / "activity.jsx").write_text(
+        "render(activity.detail.from, activity.detail.to)\n")
+    backend = WorkItem.create(
+        "run_1", "claude-code", "backend-builder", "backend", token="back")
+    frontend = WorkItem.create(
+        "run_1", "opencode", "frontend-builder", "frontend", token="front")
+    backend.changed_files = ["api/activity.js"]
+    frontend.changed_files = ["web/activity.jsx"]
+    run = _FakeRun(task="show activity changes")
+    run.candidate_dir = str(candidate)
+    run.integration_brief = {
+        "summary": "Share activity values across API and UI.",
+        "shared_contract": ["detail carries before and after values"],
+        "role_assignments": {
+            backend.agent: {"objective": "produce activity data"},
+            frontend.agent: {"objective": "render activity data"},
+        },
+        "merge_order": [backend.agent, frontend.agent],
+    }
+    run.work_items = {backend.agent: backend, frontend.agent: frontend}
+
+    calls = []
+
+    def invoke(model, prompt, system=None, max_tokens=0):
+        calls.append({"model": model, "prompt": prompt, "system": system})
+        if "adversarial verification member" in system:
+            return {
+                "model_id": "adversarial-model",
+                "text": json.dumps({
+                    "approve": False,
+                    "reasons": [
+                        "API emits detail.before/after while the UI reads "
+                        "detail.from/to, so real values disappear."
+                    ],
+                    "work_item_evidence": {},
+                    "assessment": "The producer and consumer disagree.",
+                }),
+            }
+        return {
+            "model_id": "design-model",
+            "text": json.dumps({
+                "approve": True,
+                "reasons": [],
+                "work_item_evidence": {
+                    backend.work_id: "API produces the activity payload.",
+                    frontend.work_id: "UI renders the activity payload.",
+                },
+                "assessment": "The role split and runtime path are coherent.",
+            }),
+        }
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "invoke", invoke)
+    panel = reviewer._default_judge(run, _GREEN_GATE)
+    assert len(calls) == 2
+    assert calls[0]["system"] != calls[1]["system"]
+    assert panel["approve"] is False
+    assert [row["state"] for row in panel["panels"]] == [
+        "changes_requested", "approved"]
+
+    verdict = reviewer.assess(
+        run, _GREEN_GATE, 1, judge=lambda *_args: panel)
+    assert verdict.state == "changes_requested"
+    assert "before/after" in " ".join(verdict.reasons)
+    assert {row["name"] for row in verdict.panels} == {
+        "adversarial", "design"}
 
 
 def test_reasons_feed_the_reimplement_loop():

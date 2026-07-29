@@ -29,11 +29,14 @@ import github  # noqa: E402
 
 _CFG = {"gateway_url": "https://gw.example/mcp", "repo": "me/my-repo",
         "target": "GitHubMCP", "region": "us-west-2",
-        "default_branch": "main", "source": "env"}
+        "source": "env"}
 
 _ALL_TOOLS = [{"name": f"GitHubMCP___{t}"} for t in
-              ("create_branch", "put_file", "create_pull_request",
-               "list_files", "comment_on_issue")]
+              ("create_branch", "get_repository", "get_repository_archive",
+               "get_branch_head",
+               "reset_branch", "commit_changes", "create_pull_request",
+               "list_files", "comment_on_issue", "ensure_labels",
+               "merge_pull_request")]
 
 
 def _wire(monkeypatch, tools=None, tool_fn=None, cfg=_CFG):
@@ -42,6 +45,8 @@ def _wire(monkeypatch, tools=None, tool_fn=None, cfg=_CFG):
                         lambda c, timeout=15.0: _ALL_TOOLS if tools is None else tools)
     if tool_fn is None:
         def tool_fn(c, tool, args, timeout=30.0):
+            if tool == "get_repository":
+                return {"default_branch": "main"}
             return ["README.md", "server.py"]
     monkeypatch.setattr(github, "_tool", tool_fn)
 
@@ -109,30 +114,32 @@ def test_a_gateway_missing_the_pr_tools_is_reported(monkeypatch):
     r = github.doctor()
     assert r["ok"] is False
     detail = _failed(r)["pr_tools_present"]
-    for t in ("create_branch", "put_file", "create_pull_request"):
+    for t in ("create_branch", "commit_changes", "create_pull_request",
+              "merge_pull_request"):
         assert t in detail, detail
 
 
 def test_the_doctor_is_idempotent_and_leaves_no_litter(monkeypatch):
     """Safe to run repeatedly on a real repo. NOT the same as "read-only".
 
-    It deliberately performs ONE write: creating the integration branch. Reading a repo
+    It deliberately performs ONE write: creating the doctor branch. Reading a repo
     does not prove the App may write to it, and a beginner leaving "Pull requests" on
     read-only passes every read check and then fails at `create_branch` after a
     ten-minute build. So the write is probed here, while it is cheap.
 
     What must still hold: no content is written, nothing is opened or merged, and the one
-    branch it touches is the integration branch the auto-merge path creates anyway
-    (`create_branch` treats "already exists" as success), so re-running changes nothing
-    and leaves no stray `doctor-test-*` behind.
+    branch it touches is the stable `workshop/doctor` probe (`create_branch` treats
+    "already exists" as success), so re-running changes nothing.
     """
     called: list[str] = []
 
     def record(c, tool, args, timeout=30.0):
         called.append(tool)
+        if tool == "get_repository":
+            return {"default_branch": "main"}
         if tool == "create_branch":
-            assert args["branch"] == github.INTEGRATION_BRANCH, (
-                f"doctor created a branch other than the integration branch: {args}")
+            assert args["branch"] == github.DOCTOR_BRANCH, (
+                f"doctor created a branch other than the doctor branch: {args}")
             return "ok"
         return ["README.md"]
     _wire(monkeypatch, tool_fn=record)
@@ -151,6 +158,8 @@ def test_a_read_only_app_permission_is_caught_before_the_coordinator_deploys(mon
     visible) and the failure lands at `create_branch` AFTER a build has run its agents.
     """
     def forbidden(c, tool, args, timeout=30.0):
+        if tool == "get_repository":
+            return {"default_branch": "main"}
         if tool == "create_branch":
             raise github.GatewayError("gateway HTTP 403: Resource not accessible by "
                                       "integration")
@@ -159,13 +168,15 @@ def test_a_read_only_app_permission_is_caught_before_the_coordinator_deploys(mon
     r = github.doctor()
     assert r["ok"] is False
     detail = _failed(r)["app_can_write_repo"]
-    assert "Contents" in detail and "Pull requests" in detail, detail
+    assert all(name in detail for name in ("Contents", "Issues", "Pull requests")), detail
     assert "re-install" in detail, "must say the App needs re-installing to take effect"
 
 
-def test_an_already_existing_integration_branch_is_success(monkeypatch):
-    """Second and later runs: the branch is already there, which PROVES write access."""
+def test_an_already_existing_doctor_branch_is_success(monkeypatch):
+    """Second and later checks: the branch exists, which proves write access."""
     def exists(c, tool, args, timeout=30.0):
+        if tool == "get_repository":
+            return {"default_branch": "main"}
         if tool == "create_branch":
             raise github.GatewayError("422: Reference already exists")
         return ["README.md"]

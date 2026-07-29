@@ -32,8 +32,6 @@ import importlib.util
 import os
 from pathlib import Path
 
-import pytest
-
 _CODE_ROOT = Path(__file__).resolve().parents[1]
 _CODING_AGENTS = _CODE_ROOT / "coding-agents"
 
@@ -97,32 +95,36 @@ def _load_deploy_module_mountless(role: str):
             p.unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize("role", _HARNESS_ROLES)
-def test_mountless_s3files_resources_are_valid_arns(role):
+def test_mountless_s3files_resources_are_valid_arns():
     """A mountless (empty-AP) deploy must yield only real ARNs / ``*`` resources."""
-    mod = _load_deploy_module_mountless(role)
-    assert hasattr(mod, "_s3files_policy_resources"), (
-        f"{role}/deploy.py must route the S3Files statement through "
-        "_s3files_policy_resources() so a mountless deploy never emits empty ARNs")
-    # Force the mountless branch regardless of any real infra.config on disk.
-    mod.S3FILES_AP_ARN = ""
-    resources = mod._s3files_policy_resources()
-    assert resources, f"{role}: mountless S3Files resources must be non-empty"
-    for r in resources:
-        assert r and isinstance(r, str), f"{role}: empty/invalid resource {r!r}"
-        assert r == "*" or r.startswith("arn:"), (
-            f"{role}: resource {r!r} is neither an ARN nor '*' "
-            "(IAM put_role_policy would reject it as MalformedPolicyDocument)")
+    for role in _HARNESS_ROLES:
+        mod = _load_deploy_module_mountless(role)
+        assert hasattr(mod, "_s3files_policy_resources"), (
+            f"{role}/deploy.py must route the S3Files statement through "
+            "_s3files_policy_resources() so a mountless deploy never emits empty "
+            "ARNs")
+        # Force the mountless branch regardless of any real infra.config on disk.
+        mod.S3FILES_AP_ARN = ""
+        resources = mod._s3files_policy_resources()
+        assert resources, f"{role}: mountless S3Files resources must be non-empty"
+        for resource in resources:
+            assert resource and isinstance(resource, str), (
+                f"{role}: empty/invalid resource {resource!r}")
+            assert resource == "*" or resource.startswith("arn:"), (
+                f"{role}: resource {resource!r} is neither an ARN nor '*' "
+                "(IAM put_role_policy would reject it as MalformedPolicyDocument)")
 
 
-@pytest.mark.parametrize("role", _HARNESS_ROLES)
-def test_ap_scoped_s3files_resources_when_mounted(role):
+def test_ap_scoped_s3files_resources_when_mounted():
     """When the access point IS known, resources scope to that AP + its file system."""
-    mod = _load_deploy_module_mountless(role)
     ap = ("arn:aws:s3files:us-west-2:123456789012:"
           "file-system/fs-abc/access-point/ap-xyz")
-    mod.S3FILES_AP_ARN = ap
-    resources = mod._s3files_policy_resources()
-    assert ap in resources, f"{role}: the AP ARN itself must be granted when mounted"
-    for r in resources:
-        assert r.startswith("arn:"), f"{role}: mounted resource {r!r} must be an ARN"
+    for role in _HARNESS_ROLES:
+        mod = _load_deploy_module_mountless(role)
+        mod.S3FILES_AP_ARN = ap
+        resources = mod._s3files_policy_resources()
+        assert ap in resources, (
+            f"{role}: the AP ARN itself must be granted when mounted")
+        for resource in resources:
+            assert resource.startswith("arn:"), (
+                f"{role}: mounted resource {resource!r} must be an ARN")

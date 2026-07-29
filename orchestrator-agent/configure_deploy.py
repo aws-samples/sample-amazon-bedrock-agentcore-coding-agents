@@ -98,6 +98,11 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
         )
 
     arns = _runtime_arns(source_root)
+    final_merge_policy = (
+        os.environ.get("WORKSHOP_FINAL_MERGE_POLICY")
+        or os.environ.get("WORKSHOP_MERGE_POLICY")
+        or "human_review"
+    )
     env = {
         # One AGENTCORE_RUNTIME_<ROLE> per served role, keyed the way
         # runtime_config._env_key derives it, so the coordinator finds every role
@@ -107,7 +112,7 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
         "PERUSER_ROLE_ARN": peruser_role,
         "GITHUB_GATEWAY_URL": os.environ.get("GITHUB_GATEWAY_URL", ""),
         "GITHUB_REPO": os.environ.get("GITHUB_REPO", ""),
-        "WORKSHOP_MERGE_POLICY": os.environ.get("WORKSHOP_MERGE_POLICY", "human_review"),
+        "WORKSHOP_FINAL_MERGE_POLICY": final_merge_policy,
         "WORKSHOP_BEDROCK_REGION": region,
         "WORKSHOP_EXECUTOR": "agentcore",
         "WORKSHOP_GITHUB_SECRET": "agentcore/workshop/github-connection",

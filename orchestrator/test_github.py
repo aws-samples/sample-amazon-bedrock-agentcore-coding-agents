@@ -1,522 +1,315 @@
-"""github.py tests: the GATEWAY config ladder + the MCP-tool PR path, no network.
-
-The GitHub credential model is a GitHub App installation held inside the GitHub
-MCP Gateway, never a PAT. These tests exercise the config ladder (no gateway ->
-local mode) and the connected PR path by mocking the ONE network boundary: the
-SigV4-signed JSON-RPC call to the gateway (``github._gateway_rpc``). No real
-gateway, App, or repo is ever touched (protects the e2e PR-leak hazard).
-
-    python3 -m pytest orchestrator/test_github.py -v
-"""
+"""GitHub Gateway tests for role PRs, the merge queue, and the final PR."""
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
-import subprocess
 import sys
+import tarfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import github  # noqa: E402
+import work_items  # noqa: E402
 
-
-def _clear_env(monkeypatch):
-    for k in ("GITHUB_GATEWAY_URL", "GITHUB_REPO", "GITHUB_GATEWAY_TARGET",
-              "WORKSHOP_MERGE_POLICY"):
-        monkeypatch.delenv(k, raising=False)
-
-
-def _sandbox(monkeypatch, tmp_path):
-    """No env config, config/policy files under tmp: pure local mode."""
-    _clear_env(monkeypatch)
-    monkeypatch.setattr(github, "_SETTINGS", str(tmp_path / "github_gateway.local.json"))
-    monkeypatch.setattr(github, "_RUNS_DIR", str(tmp_path))
-    monkeypatch.setattr(github, "_MERGE_POLICY_FILE", str(tmp_path / "merge_policy.local.json"))
-
-
-# ---- local mode (no gateway wired) ------------------------------------------
-
-def test_status_local_mode_advertises_the_template_repo(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    s = github.status()
-    assert s["connected"] is False and s["mode"] == "local"
-    assert s["connection_method"] == "gateway"
-    # the template repo attendees "Use this template" from
-    assert s["workshop_repo"] == github.WORKSHOP_REPO
-    assert "template" in s["hint"].lower()
-
-
-def test_ensure_compose_base_is_local_without_a_gateway(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    base = github.ensure_compose_base()
-    # never raises; composes locally, publishes via the gateway later
-    assert base["mode"] == "local" and "no gateway" in base["reason"]
-
-
-def test_open_pr_fails_loud_without_a_gateway(monkeypatch, tmp_path):
-    """Real-only contract: with no gateway wired the PR step FAILS LOUD
-    (PR_NO_GATEWAY), never a benign skip or a fake url. pr_url stays null."""
-    _sandbox(monkeypatch, tmp_path)
-
-    class _Run:
-        composed_branch = "run/run_x"
-        run_id = "run_x"
-        task = "t"
-    out = github.open_pr(_Run(), "report")
-    assert "skipped" not in out
-    assert out.get("error", "").startswith("PR_NO_GATEWAY")
-
-
-# ---- Settings surface (no token; only repo + optional gateway_url) ----------
-
-def test_save_settings_validates_repo_shape(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    assert "error" in github.save_settings("not-a-repo")
-    # a well-formed repo saves without a token; status() health-checks the gateway
-    # (which is unwired here, so connected stays False, but no error on save).
-    out = github.save_settings("octocat/my-repo")
-    assert "error" not in out
-    saved = json.loads(open(github._SETTINGS).read())
-    assert saved["repo"] == "octocat/my-repo"
-
-
-def test_save_settings_persists_gateway_url_and_repo(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    gw = "https://bedrock-agentcore.us-west-2.amazonaws.com/gateways/gw-abc/mcp"
-    github.save_settings("octocat/my-repo", gateway_url=gw)
-    cfg = github._gateway_config()
-    assert cfg is not None
-    assert cfg["repo"] == "octocat/my-repo" and cfg["gateway_url"] == gw
-    assert cfg["region"] == "us-west-2" and cfg["source"] == "settings"
-
-
-def test_clear_settings_disconnects_but_keeps_merge_policy(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    github.save_settings("octocat/my-repo", merge_policy="auto")
-    assert github.merge_policy() == "auto"
-    github.clear_settings()
-    assert github._gateway_config() is None
-    # merge_policy is an independent, secret-free preference: it survives disconnect
-    assert github.merge_policy() == "auto"
-
-
-# ---- gateway transport helpers ----------------------------------------------
 
 _GW = "https://bedrock-agentcore.us-west-2.amazonaws.com/gateways/gw-abc/mcp"
 
 
-def _wire_gateway(monkeypatch, tmp_path, repo="octocat/critter-lab", policy=None):
-    """Put a gateway on the ENV rung and point composed/ at a real git repo whose
-    branch carries deliverable files, so open_pr's guards pass offline."""
+def _clear_env(monkeypatch):
+    for key in (
+        "GITHUB_GATEWAY_URL",
+        "GITHUB_REPO",
+        "GITHUB_GATEWAY_TARGET",
+        "WORKSHOP_FINAL_MERGE_POLICY",
+        "WORKSHOP_MERGE_POLICY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def _sandbox(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(
+        github, "_SETTINGS", str(tmp_path / "github_gateway.local.json"))
+    monkeypatch.setattr(github, "_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        github, "_FINAL_MERGE_POLICY_FILE",
+        str(tmp_path / "final_merge_policy.local.json"))
+
+
+def _wire(monkeypatch, tmp_path, repo="octocat/critter-lab"):
     _sandbox(monkeypatch, tmp_path)
     monkeypatch.setenv("GITHUB_GATEWAY_URL", _GW)
     monkeypatch.setenv("GITHUB_REPO", repo)
-    if policy:
-        monkeypatch.setenv("WORKSHOP_MERGE_POLICY", policy)
-    composed = tmp_path / "composed"
-    monkeypatch.setattr(github, "_COMPOSED", str(composed))
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
-    subprocess.run(["git", "init", "-q", "-b", "main", str(composed)], check=True)
-    subprocess.run(["git", "-C", str(composed), "commit", "-q", "--allow-empty",
-                    "-m", "init"], check=True, env=env)
-    # A NEUTRAL composed tree. github.py publishes whatever the commit carries, at
-    # whatever paths the agents chose, so the fixture must not imply a layout: these
-    # names are arbitrary on purpose, including a nested one.
-    (composed / "a.txt").write_text("first file\n")
-    nested = composed / "sub" / "dir"
-    nested.mkdir(parents=True)
-    (nested / "b.txt").write_text("nested file\n")
-    subprocess.run(["git", "-C", str(composed), "checkout", "-q", "-B", "run/run_x"],
-                   check=True, env=env)
-    subprocess.run(["git", "-C", str(composed), "add", "-A"], check=True, env=env)
-    subprocess.run(["git", "-C", str(composed), "commit", "-qm", "compose"],
-                   check=True, env=env)
-    return composed
-
-
-class _Run:
-    def __init__(self, branch="run/run_x", run_id="run_x", task="convert the module"):
-        self.composed_branch = branch
-        self.run_id = run_id
-        self.task = task
 
 
 def _fake_gateway(monkeypatch, handler):
-    """Replace the ONLY network boundary: the signed JSON-RPC call. `handler(method,
-    tool, arguments)` returns the tool result (or raises github.GatewayError)."""
     def _rpc(cfg, method, params, timeout=30.0):
         if method == "tools/list":
             return handler("tools/list", None, {})
-        name = params["name"]  # "<target>___<tool>"
-        tool = name.split("___", 1)[1]
-        return handler("tools/call", tool, params.get("arguments", {}))
+        name = params["name"]
+        return handler(
+            "tools/call", name.split("___", 1)[1],
+            params.get("arguments", {}))
     monkeypatch.setattr(github, "_gateway_rpc", _rpc)
 
 
-# ---- status health via tools/list -------------------------------------------
-
-def test_status_connected_reports_gateway_health(monkeypatch, tmp_path):
-    _wire_gateway(monkeypatch, tmp_path)
-    _fake_gateway(monkeypatch, lambda m, t, a: {"tools": [
-        {"name": "GitHubMCP___create_branch"}, {"name": "GitHubMCP___put_file"},
-        {"name": "GitHubMCP___create_pull_request"}]})
-    s = github.status()
-    assert s["connected"] is True and s["mode"] == "gateway"
-    assert s["connection_method"] == "gateway"
-    assert s["repo"] == "octocat/critter-lab" and s["target"] == "GitHubMCP"
-    assert s["tool_count"] == 3
-    assert "token" not in json.dumps(s).lower() or "token_tail" not in s
+def _archive(files: dict[str, bytes]) -> str:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path, content in files.items():
+            info = tarfile.TarInfo(f"repo-sha/{path}")
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def test_status_reports_unhealthy_gateway(monkeypatch, tmp_path):
-    _wire_gateway(monkeypatch, tmp_path)
-
-    def _boom(m, t, a):
-        raise github.GatewayError("403: not signed")
-    _fake_gateway(monkeypatch, _boom)
-    s = github.status()
-    assert s["connected"] is False and s["mode"] == "gateway"
-    assert "health check failed" in s["error"]
-
-
-# ---- the PR path (create_branch + put_file + create_pull_request) -----------
-
-def test_open_pr_success_publishes_via_gateway_tools(monkeypatch, tmp_path):
-    """open_pr creates the branch, publishes the deliverable as ONE commit, and opens
-    the PR, all via gateway MCP tools. human_review -> PR targets the default branch.
-
-    One commit, not one per file: the Contents API commits per PUT, so a 38-file
-    deliverable arrived on a live PR as 38 commits each titled "run_x: <path>" -- a log
-    describing our transport instead of the change.
-    """
-    _wire_gateway(monkeypatch, tmp_path)
-    calls = []
-
-    def _handler(method, tool, args):
-        calls.append((tool, args))
-        if tool == "create_branch":
-            assert args["from_branch"] == "main"  # human_review base
-            return "refs/heads/run/run_x"
-        if tool == "put_files":
-            return "abc123"
-        if tool == "create_pull_request":
-            assert args["head"] == "run/run_x" and args["base"] == "main"
-            assert "LGTM" in args["body"]
-            return {"number": 7, "url": "https://github.com/octocat/critter-lab/pull/7"}
-        raise AssertionError(f"unexpected tool {tool}")
-    _fake_gateway(monkeypatch, _handler)
-
-    out = github.open_pr(_Run(), "## review\nLGTM: no changes needed")
-    assert out["pr_url"] == "https://github.com/octocat/critter-lab/pull/7"
-    assert out["number"] == 7 and out["base"] == "main" and out["source"] == "environment"
-    # EXACTLY ONE write call, carrying EVERY file with its relative path preserved.
-    writes = [a for (t, a) in calls if t in ("put_files", "put_file")]
-    assert len(writes) == 1, [t for (t, _) in calls]
-    assert {f["path"] for f in writes[0]["files"]} == {"a.txt", "sub/dir/b.txt"}
-    # And the message names the run, not a path.
-    assert "run_x" in writes[0]["message"]
-
-
-def test_open_pr_falls_back_per_file_on_a_gateway_without_put_files(
+def test_settings_keep_repository_and_final_policy_separate_and_fail_closed(
         monkeypatch, tmp_path):
-    """An attendee who deployed the gateway before put_files existed must still get a
-    PR. That is version skew, not error hiding: the deliverable lands, as several
-    commits."""
-    _wire_gateway(monkeypatch, tmp_path)
+    _sandbox(monkeypatch, tmp_path)
+    status = github.status()
+    assert status["connected"] is False
+    assert status["workshop_repo"] == github.WORKSHOP_REPO
+    assert status["final_merge_policy"] == "human_review"
+    assert "pre-flight" in status["hint"]
+    assert "error" in github.save_settings("not-a-repo")
+
+    github.save_settings(
+        "octocat/my-repo", gateway_url=_GW, final_policy="auto")
+    assert github._gateway_config()["repo"] == "octocat/my-repo"
+    assert github.final_merge_policy() == "auto"
+    github.clear_settings()
+    assert github._gateway_config() is None
+    assert github.final_merge_policy() == "auto"
+
+    github.save_settings("octocat/my-repo", gateway_url=_GW)
+    github.set_final_merge_policy("auto")
+    assert github._load_config_file()["repo"] == "octocat/my-repo"
+    github.set_final_merge_policy("not-a-policy")
+    assert github.final_merge_policy() == "human_review"
+    assert github._load_config_file()["repo"] == "octocat/my-repo"
+
+
+def test_status_reports_gateway_health(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
+    _fake_gateway(monkeypatch, lambda method, tool, args: (
+        {"default_branch": "trunk"}
+        if tool == "get_repository"
+        else {"tools": [{"name": "GitHubMCP___create_pull_request"}]}))
+    status = github.status()
+    assert status["connected"] is True
+    assert status["repo"] == "octocat/critter-lab"
+    assert status["default_branch"] == "trunk"
+    assert status["final_merge_policy"] == "human_review"
+
+
+def test_prepare_run_integration_snapshots_private_branch(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
     calls = []
 
-    def _handler(method, tool, args):
-        calls.append((tool, args.get("path")))
-        if tool == "create_branch":
-            return "refs/heads/run/run_x"
-        if tool == "put_files":
-            raise github.GatewayError("Unknown tool: GitHubMCP___put_files")
-        if tool == "put_file":
-            return "abc123"
-        if tool == "create_pull_request":
-            return {"number": 8, "url": "https://github.com/octocat/critter-lab/pull/8"}
-        raise AssertionError(f"unexpected tool {tool}")
-    _fake_gateway(monkeypatch, _handler)
-
-    out = github.open_pr(_Run(), "## review\nLGTM: no changes needed")
-    assert out["number"] == 8
-    put = [p for (t, p) in calls if t == "put_file"]
-    assert set(put) == {"a.txt", "sub/dir/b.txt"}, put
-
-
-def test_open_pr_does_not_hide_a_real_put_files_failure(monkeypatch, tmp_path):
-    """Only an UNKNOWN-TOOL error may fall back. A put_files that ran and failed must
-    surface, never quietly retry file by file and look like success."""
-    _wire_gateway(monkeypatch, tmp_path)
-    calls = []
-
-    def _handler(method, tool, args):
+    def handler(method, tool, args):
         calls.append(tool)
+        if tool == "get_repository":
+            return {"default_branch": "trunk"}
         if tool == "create_branch":
-            return "refs/heads/run/run_x"
-        if tool == "put_files":
-            raise github.GatewayError("put_files: 403 Forbidden")
-        raise AssertionError(f"must not reach {tool}")
-    _fake_gateway(monkeypatch, _handler)
-
-    out = github.open_pr(_Run(), "body")
-    assert "403" in out["error"] and "put_files" in out["error"]
-    assert "put_file" not in calls and "create_pull_request" not in calls
-
-
-def test_open_pr_auto_mode_targets_integration_branch_not_main(monkeypatch, tmp_path):
-    """auto mode: the PR base is the stable integration branch (created off the
-    default branch if missing), never the default branch. Structural guarantee."""
-    _wire_gateway(monkeypatch, tmp_path, policy="auto")
-    seen = {"branches": []}
-
-    def _handler(method, tool, args):
-        if tool == "create_branch":
-            seen["branches"].append(args["branch"])
-            return f"refs/heads/{args['branch']}"
-        if tool in ("put_files", "put_file"):
-            return "sha"
-        if tool == "create_pull_request":
-            assert args["base"] == github.INTEGRATION_BRANCH, "auto PR must NOT target main"
-            return {"number": 8, "url": "https://github.com/octocat/critter-lab/pull/8"}
-        raise AssertionError(f"unexpected tool {tool}")
-    _fake_gateway(monkeypatch, _handler)
-
-    out = github.open_pr(_Run(), "report")
-    assert out["base"] == github.INTEGRATION_BRANCH and out["default_branch"] == "main"
-    assert github.INTEGRATION_BRANCH in seen["branches"]  # integration branch ensured
-
-
-def test_open_pr_reports_gateway_failure_honestly(monkeypatch, tmp_path):
-    """A gateway tool failure is surfaced as an error, never a fake url."""
-    _wire_gateway(monkeypatch, tmp_path)
-
-    def _handler(method, tool, args):
-        if tool == "create_branch":
-            raise github.GatewayError("500: internal")
-        raise AssertionError("should not proceed past create_branch")
-    _fake_gateway(monkeypatch, _handler)
-    out = github.open_pr(_Run(), "report")
-    assert "error" in out and "create_branch" in out["error"]
-
-
-def test_open_pr_tolerates_existing_branch(monkeypatch, tmp_path):
-    """Re-running a run whose branch already exists is idempotent: create_branch's
-    'already exists' is swallowed and the PR still opens."""
-    _wire_gateway(monkeypatch, tmp_path)
-
-    def _handler(method, tool, args):
-        if tool == "create_branch":
-            raise github.GatewayError("422: Reference already exists")
-        if tool in ("put_files", "put_file"):
-            return "sha"
-        if tool == "create_pull_request":
-            return {"number": 9, "url": "https://github.com/octocat/critter-lab/pull/9"}
+            assert args["from_branch"] == "trunk"
+            return "refs/heads/" + args["branch"]
+        if tool == "get_branch_head":
+            return "abc123"
+        if tool == "get_repository_archive":
+            return {"archive_base64": _archive({
+                "README.md": b"base\n",
+                "src/app.py": b"print('base')\n",
+            })}
         raise AssertionError(f"unexpected {tool}")
-    _fake_gateway(monkeypatch, _handler)
-    out = github.open_pr(_Run(), "report")
-    assert out["number"] == 9
+
+    _fake_gateway(monkeypatch, handler)
+    destination = tmp_path / "checkout"
+    result = github.prepare_run_integration(
+        "workshop/runs/run-1/integration", str(destination))
+    assert result["sha"] == "abc123"
+    assert result["default_branch"] == "trunk"
+    assert (destination / "src" / "app.py").read_text() == "print('base')\n"
+    assert calls == [
+        "get_repository", "create_branch", "get_branch_head",
+        "get_repository_archive"]
 
 
-# ---- merge_policy ladder -----------------------------------------------------
+def test_role_pr_publish_is_atomic_binary_safe_and_labeled(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
+    base = tmp_path / "base"
+    work = tmp_path / "work"
+    base.mkdir()
+    work.mkdir()
+    (base / "old.txt").write_text("remove\n")
+    (work / "new.bin").write_bytes(b"\x00\xff")
+    item = work_items.WorkItem.create(
+        "run_1", "opencode", "frontend-builder", "frontend", token="front")
+    work_items.diff_trees(item, str(base), str(work))
 
-def test_merge_policy_ladder_fail_closed(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    assert github.merge_policy() == "human_review"
-    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
-    assert github.merge_policy() == "auto"
-    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "YOLO")
-    assert github.merge_policy() == "human_review"
+    class Run:
+        run_id = "run_1"
+        task = "build a UI"
+
+    seen = {}
+    commit_calls = []
+    pr_calls = []
+
+    def handler(method, tool, args):
+        if tool == "commit_changes":
+            commit_calls.append(args)
+            seen["commit"] = args
+            return {
+                "sha": f"head-sha-{len(commit_calls)}",
+                "base_sha": "base-sha",
+                "changed": True,
+            }
+        if tool == "create_pull_request":
+            pr_calls.append(args)
+            seen["pr"] = args
+            return {"number": 17, "url": "https://github.test/pull/17"}
+        if tool == "get_issue":
+            return {"number": 17, "state": "open"}
+        if tool == "ensure_labels":
+            seen["labels"] = [row["name"] for row in args["labels"]]
+            return seen["labels"]
+        raise AssertionError(f"unexpected {tool}")
+
+    _fake_gateway(monkeypatch, handler)
+    result = github.publish_work_item(Run(), item, "body")
+    assert result["pr_url"].endswith("/17")
+    assert seen["pr"]["base"] == item.base_branch
+    assert seen["commit"]["expected_parent"] == ""
+    assert seen["commit"]["from_branch"] == item.base_branch
+    assert seen["commit"]["deletions"] == ["old.txt"]
+    assert base64.b64decode(
+        seen["commit"]["files"][0]["content_base64"]) == b"\x00\xff"
+    assert seen["labels"] == [
+        "run:run_1", "role:frontend", f"work:{item.work_id}"]
+
+    item.attempt = 2
+    refreshed = github.publish_work_item(Run(), item, "refreshed body")
+    assert refreshed["number"] == 17
+    assert len(pr_calls) == 1, "an open role PR was replaced during refresh"
+    assert commit_calls[1]["expected_parent"] == "head-sha-1"
+    assert item.head_sha == "head-sha-2"
 
 
-def test_save_settings_persists_merge_policy(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    github.save_settings("octocat/repo", merge_policy="auto")
-    assert github.merge_policy() == "auto"
-    github.save_settings("octocat/repo")  # omitted -> fail-closed
-    assert github.merge_policy() == "human_review"
+def test_role_merge_targets_private_integration_and_pins_reviewed_head(
+        monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
+    item = work_items.WorkItem.create(
+        "run_1", "claude-code", "backend-builder", "backend", token="back")
+    item.pr = {"number": 18, "base": item.base_branch}
+    item.head_sha = "reviewed-head"
 
+    class Run:
+        integration_branch = item.base_branch
 
-def test_set_merge_policy_flips_without_touching_the_config(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    github.save_settings("octocat/repo")
-    github.set_merge_policy("auto")
-    assert github.merge_policy() == "auto"
-    # the gateway config (repo) survives a policy-only flip
-    assert github._load_config_file()["repo"] == "octocat/repo"
-    github.set_merge_policy("nonsense")
-    assert github.merge_policy() == "human_review"
-
-
-# ---- post_review (PR comment, not APPROVE) + merge_pr ------------------------
-
-def test_post_review_posts_a_pr_comment(monkeypatch, tmp_path):
-    """post_review posts the verdict as a PR COMMENT via comment_on_issue -- which
-    works even when the App installation authored the PR (an APPROVE review would
-    422 on your own PR)."""
-    _wire_gateway(monkeypatch, tmp_path)
     seen = {}
 
-    def _handler(method, tool, args):
-        if tool == "comment_on_issue":
-            seen["number"] = args["issue_number"]
-            seen["body"] = args["body"]
-            return {"url": "https://github.com/octocat/critter-lab/pull/8#comment-1"}
-        raise AssertionError(f"unexpected {tool}")
-    _fake_gateway(monkeypatch, _handler)
+    def handler(method, tool, args):
+        assert tool == "merge_pull_request"
+        seen.update(args)
+        return {"merged": True, "sha": "merged-sha"}
 
-    run = _Run()
-    run.pr = {"number": 8}
-    out = github.post_review(run, "## Critique\nLGTM: no changes needed")
-    assert out["reviewed"] is True
-    assert seen["number"] == 8 and "LGTM: no changes needed" in seen["body"]
+    _fake_gateway(monkeypatch, handler)
+    assert github.merge_work_item(Run(), item)["merged"] is True
+    assert seen["head_sha"] == "reviewed-head"
+    assert seen["merge_method"] == "squash"
+    assert item.merge_state == "merged"
 
 
-def test_post_review_skips_without_a_gateway(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    run = _Run()
-    run.pr = {"number": 8}
-    assert "skipped" in github.post_review(run, "report")
+def test_final_auto_merge_refuses_an_unexpected_base(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
+
+    class Run:
+        integration_branch = "workshop/runs/run-1/integration"
+        pr = {
+            "number": 21,
+            "base": "release",
+            "head": integration_branch,
+            "head_sha": "reviewed-integration-head",
+        }
+
+    def handler(method, tool, args):
+        if tool == "get_repository":
+            return {"default_branch": "main"}
+        raise AssertionError("merge must not be called")
+
+    _fake_gateway(monkeypatch, handler)
+    assert "refusing" in github.merge_integration_pr(Run())["error"]
 
 
-def test_merge_pr_squash_merges_into_integration(monkeypatch, tmp_path):
-    _wire_gateway(monkeypatch, tmp_path)
+def _run_fixture_with_final_pr(
+        monkeypatch, tmp_path, policy: str, *, merge_success: bool = True):
+    import engine
+    from fixture_executor import FixtureExecutor
 
-    def _handler(method, tool, args):
+    _wire(monkeypatch, tmp_path)
+    monkeypatch.setenv("WORKSHOP_FINAL_MERGE_POLICY", policy)
+    final_url = "https://github.test/pull/99"
+    calls = {"pull_requests": [], "merges": []}
+
+    def handler(method, tool, args):
+        if method == "tools/list":
+            return {"tools": []}
+        if tool == "get_repository":
+            return {"default_branch": "main"}
+        if tool == "get_branch_head":
+            return "reviewed-final-head"
+        if tool == "create_pull_request":
+            calls["pull_requests"].append(args)
+            return {"number": 99, "url": final_url}
+        if tool == "ensure_labels":
+            return [row["name"] for row in args["labels"]]
         if tool == "merge_pull_request":
-            assert args["merge_method"] == "squash" and args["number"] == 8
-            return {"merged": True, "sha": "cafef00d"}
+            calls["merges"].append(args)
+            return {"merged": merge_success,
+                    "sha": "main-head" if merge_success else ""}
         raise AssertionError(f"unexpected {tool}")
-    _fake_gateway(monkeypatch, _handler)
 
-    run = _Run()
-    run.pr = {"number": 8, "base": github.INTEGRATION_BRANCH, "default_branch": "main"}
-    out = github.merge_pr(run)
-    assert out["merged"] is True and out["sha"] == "cafef00d"
-
-
-def test_merge_pr_refuses_to_merge_into_default_branch(monkeypatch, tmp_path):
-    """Defense in depth: refuses a PR whose base IS the default branch, so
-    auto-merge can never close into main even if the base was set wrong."""
-    _wire_gateway(monkeypatch, tmp_path)
-
-    def _handler(method, tool, args):
-        raise AssertionError("merge attempted despite default-branch base!")
-    _fake_gateway(monkeypatch, _handler)
-    run = _Run()
-    run.pr = {"number": 8, "base": "main", "default_branch": "main"}
-    out = github.merge_pr(run)
-    assert "skipped" in out and "default branch" in out["skipped"]
+    _fake_gateway(monkeypatch, handler)
+    instance = engine.Engine(executor_obj=FixtureExecutor())
+    run = instance.submit(
+        "Build a service and interface",
+        ["claude-code", "claude-code-validator", "opencode"])
+    deadline = time.monotonic() + 120
+    while run.status not in engine.TERMINAL:
+        assert time.monotonic() < deadline, f"stuck in {run.status}/{run.phase}"
+        time.sleep(0.2)
+    return instance, run, calls
 
 
-def test_merge_pr_skips_without_a_gateway(monkeypatch, tmp_path):
-    _sandbox(monkeypatch, tmp_path)
-    run = _Run()
-    run.pr = {"number": 8, "base": "x", "default_branch": "main"}
-    assert "skipped" in github.merge_pr(run)
-
-
-# ---- the ENGINE wires open_pr after LGTM (the auto-open PR contract) ---------
-# After the reviewer returns LGTM on an engine run, _finalize calls github.open_pr
-# and surfaces its url as run.pr_url. Exercised offline: a gateway on the env rung
-# so open_pr proceeds; the gateway JSON-RPC boundary mocked; compose is real.
-
-def test_engine_opens_pr_automatically_after_lgtm(monkeypatch, tmp_path):
-    import engine  # noqa: PLC0415
-    from fixture_executor import FixtureExecutor  # noqa: PLC0415
-
-    _sandbox(monkeypatch, tmp_path)
-    monkeypatch.setenv("GITHUB_GATEWAY_URL", _GW)
-    monkeypatch.setenv("GITHUB_REPO", "octocat/critter-lab")
-    pr_url = "https://github.com/octocat/critter-lab/pull/42"
-
-    def _handler(method, tool, args):
-        if method == "tools/list":
-            return {"tools": []}
-        if tool == "create_branch":
-            return "refs/heads/" + args["branch"]
-        if tool in ("put_files", "put_file"):
-            return "sha"
-        if tool == "create_pull_request":
-            return {"number": 42, "url": pr_url}
-        if tool == "comment_on_issue":
-            return {"url": pr_url + "#comment"}
-        raise AssertionError(f"unexpected {tool}")
-    _fake_gateway(monkeypatch, _handler)
-
-    captured: dict = {}
-    real_open_pr = github.open_pr
-
-    def _spy(run, report_md):
-        captured["called"] = True
-        captured["report"] = report_md
-        return real_open_pr(run, report_md)
-    monkeypatch.setattr(github, "open_pr", _spy)
-    monkeypatch.setattr(engine.github, "open_pr", _spy)
-
-    eng = engine.Engine(executor_obj=FixtureExecutor())
-    try:
-        run = eng.submit("Convert the module to a remote MCP server with tests "
-                         "+ a chatbot UI", ["claude-code", "claude-code-validator", "opencode"])
-        deadline = __import__("time").monotonic() + 90
-        while run.status not in engine.TERMINAL:
-            assert __import__("time").monotonic() < deadline, f"stuck in {run.status}"
-            __import__("time").sleep(0.2)
-        assert run.status == "passed", (run.status, run.fail_reason)
-        assert captured.get("called") is True, "engine did not call github.open_pr after LGTM"
-        assert run.pr_url == pr_url
-        assert (run.pr or {}).get("pr_url") == pr_url
-        # The PR body is the run's NARRATIVE (replay.py): what was asked, which
-        # roles ran, and what the gate proved. The reviewer's verdict (with the
-        # exact LGTM token) is posted separately as an Assessment comment.
-        body = captured["report"]
-        assert "## What was requested" in body
-        assert "## What proved it" in body
-        assert "claude-code" in body and "opencode" in body
-        assert (run.review or {}).get("lgtm") is True
-        assert "LGTM: no changes needed" in (run.review or {}).get("assessment", "")
-    finally:
-        eng.shutdown()
-
-
-def test_result_payload_surfaces_pr_url_after_auto_open(monkeypatch, tmp_path):
-    import engine  # noqa: PLC0415
-    from fixture_executor import FixtureExecutor  # noqa: PLC0415
-
-    _sandbox(monkeypatch, tmp_path)
-    monkeypatch.setenv("GITHUB_GATEWAY_URL", _GW)
-    monkeypatch.setenv("GITHUB_REPO", "octocat/critter-lab")
-    pr_url = "https://github.com/octocat/critter-lab/pull/99"
-
-    def _handler(method, tool, args):
-        if method == "tools/list":
-            return {"tools": []}
-        if tool == "create_branch":
-            return "refs/heads/" + args["branch"]
-        if tool in ("put_files", "put_file"):
-            return "sha"
-        if tool == "create_pull_request":
-            return {"number": 99, "url": pr_url}
-        if tool == "comment_on_issue":
-            return {"url": pr_url + "#comment"}
-        raise AssertionError(f"unexpected {tool}")
-    _fake_gateway(monkeypatch, _handler)
-
-    eng = engine.Engine(executor_obj=FixtureExecutor())
-    try:
-        run = eng.submit("Convert the module to a remote MCP server with tests "
-                         "+ a chatbot UI", ["claude-code", "claude-code-validator", "opencode"])
-        deadline = __import__("time").monotonic() + 90
-        while run.status not in engine.TERMINAL:
-            assert __import__("time").monotonic() < deadline, f"stuck in {run.status}"
-            __import__("time").sleep(0.2)
-        assert run.status == "passed", (run.status, run.fail_reason)
-        res = engine.public_result(run)
-        assert res["pr_url"] == pr_url, res
-        assert (res.get("pr") or {}).get("pr_url") == pr_url, res["pr"]
-        assert res["merge_state"] == "human_review", res["merge_state"]
-        assert res["pr"].get("source") == "environment", res["pr"]
-    finally:
-        eng.shutdown()
+def test_engine_final_pr_policy_matrix_is_guarded(monkeypatch, tmp_path):
+    scenarios = [
+        ("human_review", True, "passed", "human_review", 0),
+        ("auto", True, "passed", "merged", 1),
+        ("auto", False, "needs_human", "human_review", 1),
+    ]
+    for index, (policy, merge_success, status, merge_state, merge_count) in \
+            enumerate(scenarios):
+        instance, run, calls = _run_fixture_with_final_pr(
+            monkeypatch, tmp_path / f"scenario-{index}", policy,
+            merge_success=merge_success)
+        try:
+            assert run.status == status, run.fail_reason
+            assert run.merge_state == merge_state
+            assert run.pr_url == "https://github.test/pull/99"
+            assert calls["pull_requests"][0]["head"] == run.integration_branch
+            assert calls["pull_requests"][0]["base"] == "main"
+            assert run.pr["head_sha"] == "reviewed-final-head"
+            assert len(calls["merges"]) == merge_count
+            assert len(run.gate_history) == 3
+            if calls["merges"]:
+                assert calls["merges"][0]["head_sha"] == "reviewed-final-head"
+                assert calls["merges"][0]["merge_method"] == "squash"
+            if not merge_success:
+                assert run.fail_reason.startswith("FINAL_MERGE_ERROR:")
+                assert run.iterations == 1, (
+                    "a final merge failure restarted the build loop")
+        finally:
+            instance.shutdown()

@@ -16,18 +16,17 @@ Three design decisions define this engine:
     Strands coordinator clarify an ambiguous request and choose dispatch tools.
     ``router.py`` provides the versioned registry and advisory route ladder used
     by ``run_build``. Only selected roles are dispatched.
-  * **A separate reviewer whose verdict lands on the PR** (``reviewer.py``). The build
-    side never approves its own work: finalization runs the validator-authored
-    acceptance test (a real execution, real exit code), opens or updates the pull
-    request, and the judge posts an Assessment comment ON that PR: approve
-    (closing with the exact pass token ``LGTM: no changes needed``) or request
-    changes, which loops the routed roles through one bounded re-implement pass
-    that updates the same PR.
-  * **A real PR at the end** (``github.py``). When the attendee connects GitHub,
-    the composed run branch is pushed to their fork and the PR opens with the
-    run's own narrative as its body (``replay.py``). Without credentials the PR
-    field carries a typed error and ``pr_url`` stays null. A local diagnostic
-    branch is never presented as a PR.
+  * **A separate checker and reviewer** (``reviewer.py``). The build side never
+    approves its own work: the validator authors an executable check for the
+    assembled candidate and real execution supplies the gate verdict. The reviewer
+    then posts its Assessment on the responsible role PRs. A red gate or requested
+    change returns only the responsible roles through one bounded repair pass.
+  * **A role-PR merge queue and final PR** (``github.py``). Each builder owns an
+    isolated branch and PR against a run-private integration branch. Green heads
+    merge one at a time, with a newly authored executable gate after every merge.
+    The fully validated integration branch then opens the final PR to the default
+    branch. Without credentials the PR field carries a typed error and ``pr_url``
+    stays null.
 
 Every role works in its own container directory and leaves a TERMINAL TRANSCRIPT:
 ``/bin/sh`` commands with their output (installing its harness by writing the
@@ -62,10 +61,10 @@ Run it (always via the HTTP shell, ``connection_api.py``):
 
 from __future__ import annotations
 
-import filecmp
 import getpass
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -94,6 +93,18 @@ _MAX_WORK_DIRS = int(os.environ.get("WORKSHOP_MAX_WORK_DIRS", "40"))
 # How much of a run's event log rides along in its persisted state. The tail is where
 # a failure is; the head is admission noise. Bounded so a status file stays a few KB.
 _PERSIST_LOG_TAIL = 60
+# Active runs need a durable pulse too. Without it a Runtime recycle kills the
+# daemon worker and leaves no evidence that the persisted "running" state is stale.
+_PERSIST_HEARTBEAT_S = float(os.environ.get(
+    "WORKSHOP_RUN_STATE_HEARTBEAT_S", "30"))
+
+
+def _new_run_id() -> str:
+    """Return a readable id unique across coordinator sessions and processes."""
+    return (
+        f"run_{time.strftime('%H%M%S', time.gmtime())}_"
+        f"{secrets.token_hex(6)}"
+    )
 
 
 def _prune_work_dirs(keep: int) -> None:
@@ -124,6 +135,7 @@ sys.path.insert(0, _HERE)
 import harness_config  # noqa: E402
 import executor  # noqa: E402
 import github  # noqa: E402
+import integration_plan  # noqa: E402
 import llm  # noqa: E402  (model-id alias resolution for the runtime dispatch)
 import policy  # noqa: E402  (the guardrail every role command is screened against)
 import replay  # noqa: E402  (the run's story, for the PR body: reports, never judges)
@@ -132,6 +144,7 @@ import presets  # noqa: E402
 import role_graph  # noqa: E402  (the agent-execution phase as a Strands graph)
 import run_store  # noqa: E402  (durable run state: a verdict outlives its session)
 import roles  # noqa: E402  (the ONE declarative roster)
+import work_items as _work_items  # noqa: E402  (isolated role checkouts + candidate)
 
 # Frozen contract enums (API_CONTRACT.md): the engine's public vocabulary.
 PHASES = ["admission", "context_hydration", "pre_flight", "agent_execution", "finalization"]
@@ -141,6 +154,11 @@ TERMINAL = {"passed", "failed", "needs_human"}
 # orchestrator's MAX_REVIEW_ROUNDS (one re-implement pass): the cap is the
 # initial build round plus that many re-implement rounds.
 MAX_ITERATIONS = 1 + reviewer.MAX_REVIEW_ROUNDS
+# A role may also receive one later turn when its declared dependency actually
+# lands in the integration branch. That is not another red-gate repair cycle; it
+# is the bounded semantic rebase a human developer performs after an upstream PR
+# merges. Keeping the budgets separate prevents either loop from multiplying.
+MAX_DEPENDENCY_REFRESHES = 1
 
 # Per-role CLI hard timeout (a single coding-agent CLI dispatch inside its deployed
 # Runtime). AGENT_EXECUTION_TIMEOUT_S (below) is the outer net; this kills one
@@ -226,8 +244,8 @@ _ACCEPTANCE_CHECK = "acceptance_check"
 # engine itself put there or that running the code produced. A deliverable that
 # genuinely needs seed data ships the code or the migration that creates it, which
 # is what a reviewer can actually read.
-_COMPOSE_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache",
-                      ".ruff_cache", ".mypy_cache", "skills"}
+_COMPOSE_SKIP_DIRS = {"__pycache__", ".git", ".workshop", "node_modules",
+                      ".pytest_cache", ".ruff_cache", ".mypy_cache", "skills"}
 _COMPOSE_SKIP_NAMES = {"CLAUDE.md", "AGENTS.md", ".DS_Store"}
 # NFS silly-rename stubs: when a process deletes a file it still has open, the
 # S3 Files (NFS) mount keeps it as `.nfsXXXXXXXX` until the handle closes. A live
@@ -274,6 +292,11 @@ def _gate_excluded(rel: str) -> bool:
     # Not a withheld file so much as not a file at all: see _COMPOSE_SKIP_PREFIXES.
     return name in _COMPOSE_SKIP_NAMES or name.startswith(_COMPOSE_SKIP_PREFIXES)
 
+
+def _work_patch_excluded(rel: str) -> bool:
+    """Files that are coordination/runtime material rather than a role change."""
+    return _compose_excluded(rel) or rel == _ACCEPTANCE_CHECK
+
 # What builders are told about runnability. Not a layout and not a filename: a
 # property of good work, stated once. The engine never reads the answer.
 _RUNNABLE_RULE = (
@@ -281,6 +304,16 @@ _RUNNABLE_RULE = (
     "no manual setup, and say plainly in your output how to start it (the exact "
     "command). A separate validator will start it that way to check it, and a human "
     "will read the same instruction in the pull request.\n")
+
+# An execution fact, not a preference about the deliverable. The authored check runs
+# inside the coordinator image, so a builder choosing a toolchain that is absent there
+# manufactures an infrastructure red gate. Keep this in sync with
+# orchestrator-agent/Dockerfile and the customer-facing caveat.
+_SUPPORTED_TOOLCHAINS_RULE = (
+    "EXECUTION ENVIRONMENT: the shipped acceptance runtime provides Python and "
+    "Node.js 22 (JavaScript/TypeScript). Choose within those toolchains for this "
+    "workshop; another language requires its toolchain to be added to the coordinator "
+    "image first.\n")
 
 # What builders are told about SCOPE. Still not a layout and not a filename: it
 # constrains the CRAFT, not the shape. Needed because the gate only asks "does it
@@ -298,9 +331,10 @@ _SCOPE_RULE = (
     "manifest your ecosystem expects.\n"
     "- Split the concerns the task actually has into separate modules with real "
     "names. One file holding everything is a prototype.\n"
-    "- Cover EVERY feature the request names, and honour its non-functional asks "
-    "literally (if data must survive a restart, an in-memory dict is a failure even "
-    "when the checks pass in one process).\n"
+    "- Cover EVERY feature the shared brief assigns to YOUR role, and honour its "
+    "non-functional asks literally (if data must survive a restart, an in-memory "
+    "dict is a failure even when the checks pass in one process). The combined team "
+    "owns the full request; do not duplicate a sibling's assignment in your patch.\n"
     "You still choose the language, the framework, the files, and the structure. "
     "This constrains the standard of the work, not its shape.\n")
 
@@ -521,6 +555,21 @@ class Run:
     iterations: int = 0
     fail_reason: str | None = None
     progress: dict[str, RoleResult] = field(default_factory=dict)
+    # Every routed role gets a unique work id and Runtime checkout. Builder items
+    # also map to independent GitHub branches and pull requests; the checker item
+    # remains isolated but never authors a code PR.
+    work_items: dict[str, _work_items.WorkItem] = field(default_factory=dict)
+    integration_brief: dict | None = None
+    integration_base: dict | None = None
+    integration_candidate: dict | None = None
+    integration_conflicts: list[dict] = field(default_factory=list)
+    integration_branch: str | None = None
+    # Read once from GitHub when the run-private integration branch is created.
+    # The final PR must target this same repository default branch; the workflow
+    # never changes the repository setting.
+    final_base_branch: str | None = None
+    merge_queue: list[dict] = field(default_factory=list)
+    gate_history: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     gate: dict | None = None
     route: dict | None = None              # the routing verdict (preset, rule, agents, ...)
@@ -537,18 +586,10 @@ class Run:
     # the console renders as live tool calls + reasoning (not the raw transcript).
     role_events: dict[str, list[dict]] = field(default_factory=dict)
     pr_url: str | None = None              # real PR when GitHub is connected; null locally
-    merge_state: str | None = None         # auto-merge outcome: merged | skipped:... | error:... | null
+    merge_state: str | None = None         # queue_complete | human_review | merged | null
     user_identity: dict = field(default_factory=dict)  # Cognito baggage: {user_id, user_email, user_name}
     composed_branch: str | None = None     # real local git branch holding the composed change
     composed_commit: str | None = None     # real commit sha of the composed artifacts
-    # Paths TWO roles both wrote with different content. Compose keeps the newer
-    # file at the root and the loser under CONFLICT-<role>/, which lands in the
-    # PR as a directory a reviewer cannot explain unless we say so. Recorded here
-    # so the PR narrative can report it: a live PR shipped
-    # CONFLICT-opencode/server.py with no mention of it anywhere on the PR, and
-    # the LLM reviewer dismissed it as cosmetic instead of flagging two competing
-    # servers.
-    compose_conflicts: list[dict] = field(default_factory=list)
     artifact_endpoint: str | None = None
     # A read-only review run points the target's authored check at the TARGET's work.
     _review_work_dir: str | None = None
@@ -558,12 +599,16 @@ class Run:
     # Loop-engineering: the validator AUTHORS its own acceptance test against the
     # live endpoint each run (Compartment-2 generate-verify), rather than running a
     # pinned contract. The engine runs THIS file and reads its real exit code, so
-    # the fail-loud spine holds (real execution, never a fabricated pass). Null on the
-    # fixture/offline path, which keeps the shipped grading contract as its floor.
+    # the fail-loud spine holds (real execution, never a fabricated pass). The
+    # test-only fixture supplies its own executable through the same seam.
     _acceptance_test_file: str | None = None
     _explicit_agents: bool = False
     _preset_req: str | None = None   # a starting point, if one was chosen
     _review_target: str | None = None      # run_id under review (review/pr-v1 only)
+    _integration_brief_md: str = ""
+    _active_builders: set[str] | None = field(default=None, repr=False)
+    _refresh_context: str = ""
+    _reviewed_candidate_digest: str | None = None
     # Which executor drives this run ("agentcore" shipped | "fixture" test). It
     # decides WHERE a role's coding-agent CLI runs, and therefore what belongs in
     # the per-agent terminal: on the shipped path the agent's terminal is its REAL
@@ -583,6 +628,28 @@ class Run:
         d = os.path.join(self.workdir, f"role-{agent}")
         os.makedirs(d, exist_ok=True)
         return d
+
+    @property
+    def candidate_dir(self) -> str:
+        """The exact merged tree the independent validator inspects and checks."""
+        return os.path.join(self.workdir, "integration-candidate")
+
+    @property
+    def integration_base_dir(self) -> str:
+        """Latest private integration-branch snapshot used by the merge queue."""
+        return os.path.join(self.workdir, "integration-base")
+
+    def item_base_dir(self, agent: str) -> str:
+        """Immutable local copy of the exact base one builder received."""
+        item = self.work_items.get(agent)
+        suffix = item.work_id if item is not None else agent
+        return os.path.join(self.workdir, f"base-{suffix}")
+
+    def runtime_subdir(self, agent: str) -> str:
+        """The role's unique writable checkout on the shared Runtime mount."""
+        item = self.work_items.get(agent)
+        return (item.runtime_subdir(self.run_id)
+                if item is not None else f"{self.run_id}/work/{agent}")
 
     def _term_lane(self, agent: str) -> str:
         """Which terminal lane a ``term()`` transcript is recorded under.
@@ -720,10 +787,7 @@ class Engine:
         self.executor = executor_obj if executor_obj is not None else executor.from_env()
         self._runs: dict[str, Run] = {}
         self._lock = threading.Lock()
-        self._counter = 0
-        # short per-engine prefix so run ids stay unique across restarts
-        # (the ledger is append-only and outlives any single engine process)
-        self._epoch = time.strftime("%H%M%S", time.gmtime())
+        self._persist_lock = threading.Lock()
         self._engine_log(f"executor: {self.executor.name}")
 
     # ---------------------------------------------------------------- submit
@@ -739,9 +803,8 @@ class Engine:
         except Exception:
             identity = {}
         with self._lock:
-            self._counter += 1
             run = Run(
-                run_id=f"run_{self._epoch}_{self._counter:03d}",
+                run_id=_new_run_id(),
                 task=task,
                 agents=list(agents) if agents else [],
                 roles={},
@@ -754,7 +817,9 @@ class Engine:
             run._executor_name = getattr(self.executor, "name", "fixture")
             run._t0 = time.monotonic()
             self._runs[run.run_id] = run
+        self._persist_run(run)
         threading.Thread(target=self._drive, args=(run,), daemon=True).start()
+        threading.Thread(target=self._heartbeat, args=(run,), daemon=True).start()
         return run
 
     def get(self, run_id: str) -> Run | None:
@@ -762,6 +827,42 @@ class Engine:
 
     def list(self) -> list[Run]:
         return list(self._runs.values())
+
+    def _persist_run(self, run: Run) -> None:
+        """Write one current checkpoint, serialized against the heartbeat."""
+        saved = {
+            **public_result(run),
+            "task": run.task,
+            "agents": list(run.agents),
+            "roles": dict(run.roles),
+            "created_at": run.created_at,
+            "options": dict(run.options),
+            "preset": run._preset_req,
+            "user_identity": dict(run.user_identity),
+            "work_items": {
+                agent: item.public()
+                for agent, item in run.work_items.items()
+            },
+            "integration_brief": dict(run.integration_brief or {}),
+            "integration_base": dict(run.integration_base or {}),
+            "integration_candidate": dict(run.integration_candidate or {}),
+            "integration_conflicts": list(run.integration_conflicts),
+            "integration_branch": run.integration_branch,
+            "final_base_branch": run.final_base_branch,
+            "merge_queue": list(run.merge_queue),
+            "gate_history": list(run.gate_history),
+            "events": (run.events or [])[-_PERSIST_LOG_TAIL:],
+        }
+        with self._persist_lock:
+            run_store.save(_RUNS_DIR, run.run_id, saved, run.log)
+
+    def _heartbeat(self, run: Run) -> None:
+        """Refresh an active run's durable snapshot until it becomes terminal."""
+        while run.status in ("queued", "running"):
+            time.sleep(max(1.0, _PERSIST_HEARTBEAT_S))
+            if run.status not in ("queued", "running"):
+                return
+            self._persist_run(run)
 
     # ----------------------------------------------------------- the blueprint
     def _drive(self, run: Run) -> None:
@@ -773,8 +874,57 @@ class Engine:
             # Bounded iteration around the agentic step + the review (~2 rounds).
             while True:
                 run.iterations += 1
-                if not self._execute(run):
-                    return
+                begin_next_round = False
+                while not self._execute(run):
+                    if run.fail_reason != "INTEGRATION_CONFLICT":
+                        return
+                    targets = self._integration_conflict_repair_agents(run)
+                    starts_repair_round = run.iterations < MAX_ITERATIONS
+                    can_reconcile_in_round = (
+                        run.iterations == MAX_ITERATIONS
+                        and all(
+                            run.work_items[agent].attempt < MAX_ITERATIONS
+                            for agent in targets
+                        )
+                    )
+                    if not starts_repair_round and not can_reconcile_in_round:
+                        return
+
+                    reasons = [
+                        f"{c.get('path')}: {c.get('reason')}"
+                        for c in run.integration_conflicts
+                    ]
+                    run.retry_reasons.append({
+                        "round": run.iterations,
+                        "stage": "integration conflict",
+                        "gate_summary": "integration candidate could not merge",
+                        "reasons": reasons,
+                    })
+                    run.status = "running"
+                    run.fail_reason = None
+                    run._active_builders = (
+                        self._prepare_integration_conflict_repair(run))
+                    run.retry_reasons[-1]["responsible_agents"] = sorted(
+                        run._active_builders)
+                    boundary = (
+                        "one bounded repair turn"
+                        if starts_repair_round
+                        else "one reconciliation turn in the current repair round"
+                    )
+                    run.log(
+                        "integration conflict -> the later owner receives the "
+                        f"earlier patch and gets {boundary}: "
+                        + ", ".join(sorted(run._active_builders)),
+                        "warn",
+                    )
+                    if starts_repair_round:
+                        begin_next_round = True
+                        break
+                    # A gate-directed repair can make a previously clean later
+                    # work item stale. Reconcile that owner in the SAME bounded
+                    # round rather than spending an unbounded third review cycle.
+                if begin_next_round:
+                    continue
                 if self._finalize(run):
                     return  # terminal (passed, failed, or needs_human)
         except Exception as exc:  # the engine guarantee: never strand a run
@@ -784,29 +934,24 @@ class Engine:
             if run.status in ("queued", "running"):  # safety net
                 run.status = "failed"
                 run.fail_reason = run.fail_reason or "ENGINE_STALL"
+            # Two-bucket terminal model: a deterministic failure stays
+            # `failed` (resubmit won't help); a transient one is re-graded to
+            # `needs_human` so a human can resume rather than just see "failed".
+            # Do this BEFORE persistence so a later session reads the same verdict
+            # the live caller saw.
+            if run.status == "failed" and not _is_permanent(run.fail_reason):
+                run.status = "needs_human"
+                run.log(f"transient failure ({run.fail_reason}) -> needs_human "
+                        "(a human can resume; resubmit may succeed)", "warn")
             # Persist the verdict where a LATER session can still read it. In the
             # `finally` deliberately: every exit path (passed, failed,
             # needs_human, engine error, stall) has to leave an answer behind, and
             # the one that matters most is the failure an attendee wants to ask
             # about after their session expired. Never raises; see run_store.
             try:
-                # The tail of the run's own log rides along, because a verdict
-                # without it answers "what happened" but not "why". It is NOT added
-                # to public_result: that is the API contract the console renders, and
-                # the log is already on the live run there. This is the durable copy
-                # for the run whose session is gone (diagnose.py reads it).
-                saved = {**public_result(run),
-                         "events": (run.events or [])[-_PERSIST_LOG_TAIL:]}
-                run_store.save(_RUNS_DIR, run.run_id, saved, run.log)
+                self._persist_run(run)
             except Exception as exc:  # noqa: BLE001 (history is not the verdict)
                 run.log(f"run state not persisted: {exc}", "warn")
-            # Two-bucket terminal model: a deterministic failure stays
-            # `failed` (resubmit won't help); a transient one is re-graded to
-            # `needs_human` so a human can resume rather than just see "failed".
-            if run.status == "failed" and not _is_permanent(run.fail_reason):
-                run.status = "needs_human"
-                run.log(f"transient failure ({run.fail_reason}) -> needs_human "
-                        "(a human can resume; resubmit may succeed)", "warn")
             # The engine starts NOTHING, so there is nothing here to stop. If the
             # deliverable needs to run, the validator's authored check starts it, and
             # `reviewer.run_gate` tears that whole process group down when the check
@@ -849,6 +994,17 @@ class Engine:
         run.route = route.public()
         run.roles = {a: ROLE_BY_AGENT[a] for a in run.agents}
         run.progress = {a: RoleResult(agent=a, role=run.roles[a]) for a in run.agents}
+        run.work_items = {}
+        for agent_id in run.agents:
+            registered = roles.get(agent_id)
+            run.work_items[agent_id] = _work_items.WorkItem.create(
+                run.run_id,
+                agent_id,
+                run.roles[agent_id],
+                registered.capability,
+                kind=registered.kind,
+            )
+        run.integration_branch = _work_items.integration_branch(run.run_id)
         # Recompute the active count from the source of truth (no drifting counter).
         active = self.active_count(exclude=run.run_id)
         if active >= self.max_concurrent:
@@ -856,6 +1012,8 @@ class Engine:
             run.log(f"admission rejected: {active} runs active (limit {self.max_concurrent})", "error")
             return False
         run.log(f"admitted + routed: {route.rule} -> agents {run.agents}")
+        run.log("isolated work allocated: " + ", ".join(
+            f"{agent}={item.work_id}" for agent, item in run.work_items.items()))
         return True
 
     # Phase 2, deterministic, real file reads. Hydration reads the task spec, the
@@ -878,7 +1036,26 @@ class Engine:
                 run.status, run.fail_reason = "failed", f"HARNESS_MISSING:{agent_id}"
                 run.log(f"context hydration failed: no harness file for {agent_id}", "error")
                 return False
+        builders = [
+            item for item in run.work_items.values()
+            if item.kind == roles.BUILDER
+        ]
+        try:
+            run.integration_brief = integration_plan.create(
+                run.task,
+                builders,
+                offline_fixture=(self.executor.name == "fixture"),
+            )
+            run._integration_brief_md = integration_plan.markdown(
+                run.task, run.integration_brief, builders)
+        except integration_plan.IntegrationPlanError as exc:
+            run.status, run.fail_reason = "failed", str(exc)
+            run.log(f"context hydration failed: {exc}", "error")
+            return False
         run.log("hydrated harness: " + ", ".join(harness))
+        run.log(
+            "shared integration contract prepared; merge order: "
+            + " -> ".join((run.integration_brief or {}).get("merge_order") or []))
         return True
 
     # Phase 3, deterministic, fail-closed (the pre-flight discipline)
@@ -918,8 +1095,103 @@ class Engine:
                 run.status, run.fail_reason = "failed", reason
                 run.log(f"pre-flight failed fast: {reason}", "error")
                 return False
+        if not (run.route and run.route.get("read_only")):
+            if not self._prepare_integration_base(run):
+                return False
         run.log("pre-flight green: every routed role has steering and a wired runtime")
         return True
+
+    def _prepare_integration_base(self, run: Run) -> bool:
+        """Create the private run branch and seed every isolated builder checkout."""
+        os.makedirs(run.workdir, exist_ok=True)
+        if self.executor.name == "fixture":
+            shutil.rmtree(run.integration_base_dir, ignore_errors=True)
+            os.makedirs(run.integration_base_dir, exist_ok=True)
+            run.integration_base = {
+                "mode": "fixture",
+                "branch": run.integration_branch,
+                "sha": "fixture-empty-base",
+                "files": 0,
+            }
+        elif self.executor.name == "agentcore":
+            snapshot = github.prepare_run_integration(
+                run.integration_branch or "", run.integration_base_dir)
+            if snapshot.get("error"):
+                run.status = "failed"
+                run.fail_reason = (
+                    "PR_PREFLIGHT_ERROR:" + str(snapshot["error"]))
+                run.log(
+                    f"pre-flight failed before agent work: {snapshot['error']}",
+                    "error",
+                )
+                return False
+            run.integration_base = dict(snapshot)
+            run.final_base_branch = str(
+                snapshot.get("default_branch") or "") or None
+        else:
+            run.status, run.fail_reason = "failed", _NO_PRODUCER_ERROR
+            return False
+
+        coordination = os.path.join(run.integration_base_dir, ".workshop")
+        os.makedirs(coordination, exist_ok=True)
+        with open(os.path.join(coordination, "integration-brief.md"),
+                  "w", encoding="utf-8") as f:
+            f.write(run._integration_brief_md)
+
+        builders = [
+            item for item in run.work_items.values()
+            if item.kind == roles.BUILDER
+        ]
+        for item in builders:
+            item_base = run.item_base_dir(item.agent)
+            shutil.rmtree(item_base, ignore_errors=True)
+            shutil.copytree(run.integration_base_dir, item_base)
+            item.base_sha = str((run.integration_base or {}).get("sha") or "")
+            item.base_digest = _work_items.tree_digest(
+                item_base, exclude=_compose_excluded)
+
+        if self.executor.name == "fixture":
+            for item in builders:
+                dest = run.roledir(item.agent)
+                shutil.rmtree(dest, ignore_errors=True)
+                shutil.copytree(run.item_base_dir(item.agent), dest)
+        else:
+            self._stage_builder_checkouts(run, builders)
+        run._active_builders = {item.agent for item in builders}
+        run.log(
+            f"integration base ready on {run.integration_branch}: "
+            f"{(run.integration_base or {}).get('files', 0)} file(s); "
+            f"{len(builders)} isolated checkout(s) seeded")
+        return True
+
+    def _stage_builder_checkouts(
+        self, run: Run, builders: list[_work_items.WorkItem]
+    ) -> None:
+        """Put one immutable base into S3 Files, then clone it per work id."""
+        import runtime_stage  # noqa: PLC0415
+
+        staged = runtime_stage.stage_base(run.run_id, run.integration_base_dir)
+        run.log(f"integration base staged for Runtime builders ({staged} files)")
+        if os.environ.get("WORKSHOP_S3FILES_DIR"):
+            source = runtime_stage.base_path(run.run_id)
+            for item in builders:
+                dest = os.path.join(
+                    runtime_stage.mnt_root(), run.runtime_subdir(item.agent))
+                runtime_stage.copy_tree_files(source, dest)
+            return
+
+        import runtime_config  # noqa: PLC0415
+        import runtime_exec  # noqa: PLC0415
+
+        for item in builders:
+            hit = runtime_config.pick(item.agent)
+            if not hit:
+                raise RuntimeError(f"RUNTIME_NOT_WIRED:{item.agent}")
+            runtime_exec.clone_runtime_tree(
+                hit[0],
+                runtime_stage.base_subdir(run.run_id),
+                run.runtime_subdir(item.agent),
+            )
 
     def _review_target(self, run: Run) -> Run | None:
         """Resolve the run a review workflow inspects: explicit option, else the most
@@ -949,8 +1221,9 @@ class Engine:
         """Run ``agent_id``'s CLI INSIDE its deployed AgentCore Runtime.
 
         Dispatches over the command shell via ``runtime_exec`` against the role's
-        wired runtime ARN; the agent works in ``/mnt/s3files/<run_id>``. Raises if
-        the role has no wired runtime: fail loud, never local.
+        wired runtime ARN; the agent works in its unique
+        ``/mnt/s3files/<run_id>/work/<work_id>`` checkout. Raises if the role has
+        no wired runtime: fail loud, never local.
 
         ``artifact_rel`` names ONE file to read back and require, and is used only
         where a filename is genuinely part of the contract: the validator's authored
@@ -969,9 +1242,10 @@ class Engine:
                 f"(set AGENTCORE_RUNTIME_{agent_id.replace('-', '_').upper()} or wire "
                 "it in Settings); real-only dispatch has no local fallback")
         arn = hit[0]
+        run_subdir = run.runtime_subdir(agent_id)
         role.engine = "agentcore"
         run.term(agent_id, f"echo 'dispatching to {arn.split('/')[-1]} on AgentCore "
-                           f"Runtime; it builds in /mnt/s3files/{run.run_id} and "
+                           f"Runtime; it builds in /mnt/s3files/{run_subdir} and "
                            "writes its artifact there'")
         t0 = time.monotonic()
         collected: list[str] = []
@@ -998,7 +1272,7 @@ class Engine:
             try:
                 result = runtime_exec.run_in_runtime(
                     runtime_arn=arn, agent_id=agent_id, prompt=prompt,
-                    run_subdir=run.run_id, artifact_rel=artifact_rel,
+                    run_subdir=run_subdir, artifact_rel=artifact_rel,
                     model=llm.resolve(model),
                     region=runtime_exec.region_for(arn),
                     on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
@@ -1088,10 +1362,23 @@ class Engine:
                 feedback = ("\n\nPrevious round's review REQUESTED CHANGES on the "
                             "pull request. Address each point:\n"
                             + "\n".join(f"- {d}" for d in failed))
+        if run.iterations > 1 and run.integration_conflicts:
+            feedback += (
+                "\n\nThe integration queue rejected overlapping changes. Resolve "
+                "these paths within your own checkout without discarding the other "
+                "role's responsibility:\n"
+                + "\n".join(
+                    f"- {c.get('path')}: {c.get('reason')}"
+                    for c in run.integration_conflicts))
+        if run._refresh_context:
+            feedback += "\n\n" + run._refresh_context
         # The dispatched role, not a fixed id: role.agent is whichever role the
         # roster serves for this capability, and its default model is the registry's.
         agent_id = role.agent
         model = self._role_model(run, agent_id, roles.get(agent_id).default_model)
+        assignment = (
+            (run.integration_brief or {}).get("role_assignments") or {}
+        ).get(agent_id, {})
         # Read-only material for the run is staged at <run_id>-skill/; the agent works
         # in its own writable <run_id>/ workdir (set as cwd by runtime_exec). Name the
         # paths the agent will actually see in its container.
@@ -1100,20 +1387,28 @@ class Engine:
         prompt = (
             "You are the backend implementer role in a multi-agent build. Read "
             "CLAUDE.md in this directory for your role, and read the "
+            "shared `.workshop/integration-brief.md` before changing code. It "
+            "defines the boundary you share with the other builders, not an "
+            "implementation you must copy. Read the "
             f"`{staged}/skills/backend-engineering/SKILL.md` harness staged for this "
             "run (also baked at ~/skills/backend-engineering/SKILL.md) and apply it.\n\n"
             f"THE REQUEST: {run.task}\n\n"
+            "YOUR EXCLUSIVE ASSIGNMENT:\n"
+            f"{json.dumps(assignment, indent=2)}\n\n"
+            "Implement that assignment and its side of the shared contract. Your "
+            "isolated checkout is not supposed to contain the other builders' work; "
+            "do not make it standalone by adding their capability.\n\n"
             "Decide everything else yourself: the language, the framework, the files, "
             "the structure, the protocol. Nobody has prescribed a shape. Read the "
             f"request carefully; any material it refers to is staged read-only under "
             f"{staged} . Write your work in THIS directory (it is yours), and use as "
             "many files as the job deserves.\n\n"
             + _SCOPE_RULE + "\n"
+            + _SUPPORTED_TOOLCHAINS_RULE
             + _RUNNABLE_RULE
             + "\nDo not leave a long-running server in the foreground of your own "
               "session; finish your turn." + feedback)
-        result = self._runtime_cli(run, agent_id, role, prompt, model)
-        self._require_work(run, agent_id, result)
+        self._runtime_cli(run, agent_id, role, prompt, model)
         run.term(agent_id, "ls -la")
 
     def _cli_frontend_work(self, run: Run, endpoint: str, role: RoleResult) -> str:
@@ -1129,16 +1424,53 @@ class Engine:
         model = self._role_model(run, agent_id, roles.get(agent_id).default_model)
         import runtime_stage  # noqa: PLC0415 (lazy; the wirable mount root)
         staged = runtime_stage.skill_path(run.run_id)
-        backend = (f"A backend for this run is live at {endpoint} , and you can call "
-                   "it while you work.\n"
-                   if endpoint else
-                   "No backend is running for this run.\n")
+        assignment = (
+            (run.integration_brief or {}).get("role_assignments") or {}
+        ).get(agent_id, {})
+        backend_owner = next((
+            item for item in run.work_items.values()
+            if item.kind == roles.BUILDER
+            and item.agent != agent_id
+            and item.capability == "backend"
+        ), None)
+        if endpoint:
+            backend = (
+                f"A backend for this run is live at {endpoint}, and you can call "
+                "it while you work.\n")
+        elif backend_owner:
+            backend = (
+                f"The `{backend_owner.role}` work item "
+                f"`{backend_owner.work_id}` owns the backend and is building it in "
+                "parallel. It is not live in your isolated checkout. Build against "
+                "the shared contract; do not add a substitute backend, persistence "
+                "layer, or second full-stack implementation to your submitted tree.\n")
+        else:
+            backend = (
+                "No separate backend builder was routed. Follow your assignment in "
+                "the shared brief; do not invent a service unless that assignment "
+                "requires one.\n")
+        conflict_feedback = ""
+        if run.iterations > 1 and run.integration_conflicts:
+            conflict_feedback = (
+                "\n\nThe integration queue rejected overlapping changes. Resolve "
+                "these paths within your own checkout without discarding the other "
+                "role's responsibility:\n"
+                + "\n".join(
+                    f"- {c.get('path')}: {c.get('reason')}"
+                    for c in run.integration_conflicts))
+        if run._refresh_context:
+            conflict_feedback += "\n\n" + run._refresh_context
         prompt = (
             "You are the frontend builder role in a multi-agent build. Read "
             "AGENTS.md in this directory for your role, and read the "
+            "shared `.workshop/integration-brief.md` before changing code. It "
+            "defines the boundary you share with the other builders, not an "
+            "implementation you must copy. Read the "
             f"`{staged}/skills/frontend-design/SKILL.md` harness staged for this run "
             "and apply it.\n\n"
             f"THE REQUEST: {run.task}\n\n"
+            "YOUR EXCLUSIVE ASSIGNMENT:\n"
+            f"{json.dumps(assignment, indent=2)}\n\n"
             + backend +
             "Decide everything yourself: the files, the structure, the framework, the "
             "styling, the interactions. Nobody has prescribed a shape or a filename. "
@@ -1157,9 +1489,10 @@ class Engine:
             "or the backend's own error; never compute an answer locally and never "
             "invent one to fill a gap.\n\n"
             + _SCOPE_RULE + "\n"
-            + _RUNNABLE_RULE)
-        result = self._runtime_cli(run, agent_id, role, prompt, model)
-        self._require_work(run, agent_id, result)
+            + _SUPPORTED_TOOLCHAINS_RULE
+            + _RUNNABLE_RULE
+            + conflict_feedback)
+        self._runtime_cli(run, agent_id, role, prompt, model)
         run.term(agent_id, "ls -la")
 
     def _read_work_tree(self, run: Run, agent_id: str) -> int:
@@ -1183,6 +1516,7 @@ class Engine:
         the same file rather than between two roles.
         """
         dest_root = run.roledir(agent_id)
+        runtime_subdir = run.runtime_subdir(agent_id)
         if self.executor.name == "agentcore":
             import runtime_config  # noqa: PLC0415
             import runtime_exec  # noqa: PLC0415
@@ -1196,12 +1530,12 @@ class Engine:
                 # request, so an inflated count hides a role that produced nothing.
                 import runtime_stage  # noqa: PLC0415
                 import runtime_exec  # noqa: PLC0415
-                src = os.path.join(runtime_stage.mnt_root(), run.run_id)
+                src = os.path.join(runtime_stage.mnt_root(), runtime_subdir)
                 if os.path.isdir(src):
                     self._clear_transferred(dest_root)
-                    shutil.copytree(
-                        src, dest_root, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns(*runtime_exec._TREE_EXCLUDES))
+                    runtime_stage.copy_tree_files(
+                        src, dest_root, replace=False,
+                        excluded_names=runtime_exec._TREE_EXCLUDES)
             else:
                 hit = runtime_config.pick(agent_id)
                 if hit:
@@ -1210,7 +1544,7 @@ class Engine:
                         # the ARN. Passing an env default here is what made every
                         # read-back fail outside us-west-2.
                         tree = runtime_exec.read_tree_from_runtime(
-                            hit[0], run.run_id, ".")
+                            hit[0], runtime_subdir, ".")
                     except Exception as exc:  # noqa: BLE001 (reported, then counted)
                         run.log(f"{agent_id}: work tree read-back failed: {exc}", "warn")
                         tree = {}
@@ -1229,7 +1563,7 @@ class Engine:
                         listing = ""
                         try:
                             listing = runtime_exec.list_tree_in_runtime(
-                                hit[0], run.run_id)
+                                hit[0], runtime_subdir)
                         except Exception:  # noqa: BLE001 (best effort probe)
                             listing = ""
                         if listing.strip():
@@ -1239,7 +1573,7 @@ class Engine:
                                     "warn")
                             try:
                                 tree = runtime_exec.read_tree_from_runtime(
-                                    hit[0], run.run_id, ".")
+                                    hit[0], runtime_subdir, ".")
                             except Exception as exc:  # noqa: BLE001
                                 run.log(f"{agent_id}: read-back retry failed: {exc}",
                                         "warn")
@@ -1384,7 +1718,7 @@ class Engine:
                         # attendee being told their agent did nothing, so it must
                         # not share the defaulting mistake it exists to catch.
                         listing = runtime_exec.list_tree_in_runtime(
-                            hit[0], run.run_id) or ""
+                            hit[0], run.runtime_subdir(agent_id)) or ""
                 except Exception:  # noqa: BLE001 (diagnostic only)
                     listing = ""
             if listing.strip():
@@ -1399,6 +1733,275 @@ class Engine:
                 f"ROLE_EXECUTION_ERROR: {agent_id} finished but wrote no files, so "
                 f"there is nothing to review or run{suffix}")
         return n
+
+    def _require_item_change(self, run: Run, agent_id: str) -> int:
+        """Require a non-empty patch against the exact base this builder received."""
+        self._read_work_tree(run, agent_id)
+        item = run.work_items[agent_id]
+        patch = _work_items.diff_trees(
+            item,
+            run.item_base_dir(agent_id),
+            run.roledir(agent_id),
+            exclude=_work_patch_excluded,
+        )
+        if not patch.changes:
+            raise RuntimeError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} finished but changed nothing "
+                f"relative to integration base {str(item.base_sha or '')[:12]}; "
+                "the cloned repository itself is not evidence of role work")
+        run.log(
+            f"{agent_id}: patch ready ({len(patch.changed_files)} write(s), "
+            f"{len(patch.deleted_files)} deletion(s), "
+            f"digest {patch.digest[:12]})")
+        return len(patch.changes)
+
+    def _publish_active_work_items(self, run: Run) -> None:
+        """Publish builder patches before the checker inspects their candidate."""
+        active = (
+            run._active_builders
+            if run._active_builders is not None
+            else {
+                item.agent for item in run.work_items.values()
+                if item.kind == roles.BUILDER
+            }
+        )
+        for item in _work_items.dependency_order(
+                item for item in run.work_items.values()
+                if item.kind == roles.BUILDER):
+            if item.agent not in active:
+                continue
+            if self.executor.name == "fixture":
+                item.state = "in_review"
+                item.stale = False
+                item.pr = item.pr or {
+                    "skipped": "offline fixture (no GitHub side effect)",
+                    "base": item.base_branch,
+                    "head": item.branch,
+                }
+                continue
+            result = github.publish_work_item(
+                run, item, replay.work_item_narrative(run, item))
+            if result.get("error"):
+                raise RuntimeError(
+                    f"ROLE_PR_PUBLISH_ERROR:{item.work_id}: {result['error']}")
+            run.log(
+                f"{item.role}: role PR ready {result.get('pr_url')} "
+                f"({item.work_id})")
+
+    def _assemble_integration_candidate(self, run: Run) -> None:
+        """Build the exact tree the checker will inspect from isolated role work.
+
+        This is a merge operation, not a verdict. Disjoint paths combine, identical
+        shared paths coalesce, and different bytes at one path fail as an explicit
+        integration conflict. No timestamp or roster order chooses a winner.
+        """
+        builders = [
+            item for item in run.work_items.values()
+            if item.kind == roles.BUILDER
+        ]
+        ordered = _work_items.dependency_order(builders)
+        try:
+            candidate = _work_items.assemble_candidate(
+                run.integration_base_dir,
+                [
+                    (item, run.item_base_dir(item.agent),
+                     run.roledir(item.agent))
+                    for item in ordered
+                    if item.merge_state != "merged"
+                ],
+                run.candidate_dir,
+                exclude=_work_patch_excluded,
+            )
+        except _work_items.IntegrationConflict as exc:
+            run.integration_candidate = None
+            run.integration_conflicts = list(exc.conflicts)
+            run.log(
+                "integration candidate rejected: "
+                + ", ".join(c["path"] for c in exc.conflicts[:8]),
+                "warn",
+            )
+            raise
+        run.integration_conflicts = []
+        run.integration_candidate = candidate.public()
+        run.log(
+            f"integration candidate assembled from {len(ordered)} isolated "
+            f"checkout(s): {len(candidate.files)} file(s)")
+
+    def _stage_refreshed_work_item(
+        self,
+        run: Run,
+        item: _work_items.WorkItem,
+        seed: str,
+    ) -> int:
+        """Replace one owner's Runtime checkout with a prepared refresh tree."""
+        dest = run.roledir(item.agent)
+        shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(seed, dest)
+        local_count = sum(
+            len(files) for _root, _dirs, files in os.walk(dest))
+        if self.executor.name == "fixture":
+            return local_count
+
+        import runtime_stage  # noqa: PLC0415
+
+        staged = runtime_stage.stage_refresh(run.run_id, item.work_id, seed)
+        if os.environ.get("WORKSHOP_S3FILES_DIR"):
+            source = runtime_stage.refresh_path(run.run_id, item.work_id)
+            runtime_dest = os.path.join(
+                runtime_stage.mnt_root(), run.runtime_subdir(item.agent))
+            runtime_stage.copy_tree_files(source, runtime_dest)
+            return staged
+
+        import runtime_config  # noqa: PLC0415
+        import runtime_exec  # noqa: PLC0415
+
+        hit = runtime_config.pick(item.agent)
+        if not hit:
+            raise RuntimeError(f"RUNTIME_NOT_WIRED:{item.agent}")
+        runtime_exec.clone_runtime_tree(
+            hit[0],
+            runtime_stage.refresh_subdir(run.run_id, item.work_id),
+            run.runtime_subdir(item.agent),
+        )
+        return staged
+
+    def _integration_conflict_repair_agents(self, run: Run) -> set[str]:
+        """Return the later merge-order owner for every current conflict."""
+        ordered = self._builder_items(run)
+        by_id = {item.work_id: item for item in ordered}
+        position = {
+            item.work_id: index for index, item in enumerate(ordered)
+        }
+        target_ids: set[str] = set()
+        for conflict in run.integration_conflicts:
+            participants = [
+                work_id
+                for work_id in (
+                    conflict.get("first_work_id"),
+                    conflict.get("second_work_id"),
+                )
+                if work_id in position
+            ]
+            if participants:
+                target_ids.add(max(participants, key=position.__getitem__))
+        if not target_ids:
+            raise RuntimeError(
+                "INTEGRATION_CONFLICT_OWNER_UNKNOWN: no conflicting work id "
+                "belongs to this run")
+        return {by_id[work_id].agent for work_id in target_ids}
+
+    def _prepare_integration_conflict_repair(self, run: Run) -> set[str]:
+        """Give each later conflicting owner the earlier owners' actual patches.
+
+        Builders still start independently. Once that honest parallel attempt
+        exposes a shared-file conflict, rerunning both against the same old base
+        cannot resolve it: neither role can see the bytes it must preserve. The
+        merge order already names the human-style dependency. Build a provisional
+        base from the non-conflicting predecessors, carry the later owner's clean
+        changes forward, and leave both versions of conflicting paths as evidence
+        for that owner to reconcile. The provisional tree is context, never a
+        verdict; the independent validator still authors and runs the only gate.
+        """
+        ordered = self._builder_items(run)
+        position = {
+            item.work_id: index for index, item in enumerate(ordered)
+        }
+        target_agents = self._integration_conflict_repair_agents(run)
+
+        staged_rows: list[str] = []
+        active: set[str] = set()
+        for item in ordered:
+            if item.agent not in target_agents:
+                continue
+            preceding = ordered[:position[item.work_id]]
+            if not preceding:
+                raise RuntimeError(
+                    f"INTEGRATION_CONFLICT_ORDER_INVALID:{item.work_id}")
+
+            provisional = os.path.join(
+                run.workdir, f"conflict-base-{item.work_id}")
+            _work_items.assemble_candidate(
+                run.integration_base_dir,
+                [
+                    (
+                        predecessor,
+                        run.item_base_dir(predecessor.agent),
+                        run.roledir(predecessor.agent),
+                    )
+                    for predecessor in preceding
+                    if predecessor.merge_state != "merged"
+                ],
+                provisional,
+                exclude=_work_patch_excluded,
+            )
+            self._write_integration_brief(run, provisional)
+
+            seed = os.path.join(
+                run.workdir, f"conflict-refresh-{item.work_id}")
+            conflicts = _work_items.prepare_refresh_checkout(
+                item,
+                run.item_base_dir(item.agent),
+                run.roledir(item.agent),
+                provisional,
+                seed,
+                exclude=_work_patch_excluded,
+            )
+            self._write_integration_brief(run, seed)
+
+            item_base = run.item_base_dir(item.agent)
+            shutil.rmtree(item_base, ignore_errors=True)
+            shutil.copytree(provisional, item_base)
+            item.base_digest = _work_items.tree_digest(
+                item_base, exclude=_work_patch_excluded)
+            staged = self._stage_refreshed_work_item(run, item, seed)
+            staged_rows.append(
+                f"{item.work_id}: {staged} files, "
+                f"{len(conflicts)} shared-path conflict(s)")
+            active.add(item.agent)
+
+        run._refresh_context = (
+            "INTEGRATION CONFLICT REPAIR: your checkout now contains every "
+            "earlier role's actual patch plus your prior non-conflicting work. "
+            "Inspect that implementation and reconcile the listed shared paths. "
+            "Your previous versions are under `.workshop/prior-work`; preserve "
+            "both roles' assigned outcomes, then update this same work item and "
+            "pull request. Do not restart the project from the old base."
+        )
+        run.log("conflict repair checkouts staged: " + "; ".join(staged_rows))
+        return active
+
+    def _prepare_checker_checkout(self, run: Run, agent_id: str) -> None:
+        """Give the checker a writable clone of the immutable candidate."""
+        import runtime_stage  # noqa: PLC0415
+
+        if self.executor.name == "fixture":
+            dest = run.roledir(agent_id)
+            shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(run.candidate_dir, dest)
+            return
+        if self.executor.name != "agentcore":
+            raise RuntimeError(_NO_PRODUCER_ERROR)
+
+        staged = runtime_stage.stage_candidate(run.run_id, run.candidate_dir)
+        run.log(f"integration candidate staged for Runtime validation "
+                f"({staged} files)")
+        dest_subdir = run.runtime_subdir(agent_id)
+        if os.environ.get("WORKSHOP_S3FILES_DIR"):
+            dest = os.path.join(runtime_stage.mnt_root(), dest_subdir)
+            runtime_stage.copy_tree_files(
+                runtime_stage.candidate_path(run.run_id), dest)
+            return
+
+        import runtime_config  # noqa: PLC0415
+        import runtime_exec  # noqa: PLC0415
+        hit = runtime_config.pick(agent_id)
+        if not hit:
+            raise RuntimeError(f"RUNTIME_NOT_WIRED:{agent_id}")
+        runtime_exec.clone_runtime_tree(
+            hit[0],
+            runtime_stage.candidate_subdir(run.run_id),
+            dest_subdir,
+        )
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
                                     role: RoleResult) -> str:
@@ -1432,26 +2035,46 @@ class Engine:
                               "working software is the worst outcome available to you: "
                               "the builders will be sent to change code that was "
                               "already correct.")
+        if run._refresh_context:
+            feedback += (
+                "\n\nThe integration branch advanced during the merge queue. "
+                "Inspect the refreshed candidate as it exists now; do not assume "
+                "the prior check is still correct.")
         live = (f"The deliverable is running at {endpoint} .\n"
                 if endpoint else
                 "The deliverable does not expose a running service this round.\n")
+        integration_context = integration_plan.review_context(
+            run.integration_brief or {},
+            self._builder_items(run),
+        )
         prompt = (
             "You are the validator role in a multi-agent build, and you are the "
             "checker in a maker-checker pair. Read CLAUDE.md in this directory for "
             "your role.\n\n"
             f"THE REQUEST the other roles were given: {run.task}\n\n"
             + live +
+            "TEAM INTEGRATION CONTEXT (recorded facts, not an answer key):\n"
+            f"{json.dumps(integration_context, indent=2)}\n\n"
             "AUTHOR the acceptance check for this deliverable and save it as "
             f"`./{_ACCEPTANCE_CHECK}` in this directory: ONE self-contained "
             "EXECUTABLE file, starting with a shebang line, in whatever language you "
-            "judge fits (anything installed in this container works).\n\n"
+            "judge fits. The environment where the engine runs it matches this "
+            "container's supported runtimes: Python and Node.js 22 "
+            "(JavaScript/TypeScript).\n\n"
             "YOU decide what 'acceptable' means for this request. Nobody has given "
             "you a checklist, a contract, or a list of required checks, because only "
-            "you have seen this particular task. Read the request, look at what was "
-            "actually built in the shared workspace, and encode the checks that would "
+            "you have seen this particular task. Read the request, inspect the "
+            "integration candidate cloned into this checkout, and encode the checks "
+            "that would "
             "convince a skeptical engineer that the request was met. Prefer evidence "
             "over assumption: probe the running deliverable over the wire where it "
-            "can prove something, and inspect the files where it cannot.\n\n"
+            "can prove something, and inspect the files where it cannot. This is a "
+            "team integration gate: verify one coherent product uses the routed "
+            "builders' assigned contributions through the shared seams. Reject "
+            "disconnected duplicate stacks, dead alternative implementations, or "
+            "one builder replacing a sibling's ownership merely because that path "
+            "happens to run. Do not demand a particular framework, path, or file "
+            "count; judge the actual request, ownership, and behavior.\n\n"
             "Contract for your file: exit 0 to accept and nonzero to reject; print "
             "one line per check so a human can read what you verified; read the "
             "deliverable's URL from the `DELIVERABLE_URL` env var"
@@ -1487,27 +2110,12 @@ class Engine:
         return self._gate_dir_check_path(run, test_path)
 
     def _gate_dir_check_path(self, run: Run, authored: str) -> str:
-        """Reunite the authored check with the work it was authored BESIDE.
+        """Run the authored check beside the exact candidate it inspected.
 
-        Every role shares ONE directory in the runtime workspace
-        (``/mnt/s3files/<run_id>``), so the validator writes its check next to the
-        builders' files and naturally addresses them as siblings: a check that does
-        ``os.path.dirname(__file__) + "/server.py"``, or plain ``./server.py``, is
-        correct where it was written. The engine then reads each role's tree back
-        into a SEPARATE ``role-<agent>`` directory (which compose needs, so each
-        role's contribution is attributable), and that split leaves the check alone
-        in the validator's directory with the deliverable one level away.
-
-        Running it there fails every file and import check and starts no service, so
-        a CORRECT deliverable is graded RED and the loop burns its bounded retry to
-        ``needs_human``. Verified on a live event box: the same check scored 0/4 in
-        the validator's directory and 45/0 beside the work.
-
-        So build one gate directory that looks like the workspace the check was
-        authored in: every role's files, plus the check at its root. The per-role
-        dirs are untouched (compose still attributes each file to its author), and
-        the gate stays exactly what it was: run THAT executable, read its real exit
-        code. Nothing here inspects or grades the work.
+        Builders no longer share a writable tree. The validator received a clone of
+        ``run.candidate_dir`` and wrote its check there, so the host gate reconstructs
+        that same shape: candidate files plus the authored executable. It never
+        re-merges role directories on the verdict path.
         """
         gate_dir = os.path.join(run.workdir, "gate")
         # REBUILD it, never add to it. A re-implement round runs this again, and a
@@ -1517,29 +2125,11 @@ class Engine:
         # `issues.db` (created when the check STARTED the service) sitting here for
         # round 2.
         shutil.rmtree(gate_dir, ignore_errors=True)
-        os.makedirs(gate_dir, exist_ok=True)
-        for agent_id in run.agents:
-            src = run.roledir(agent_id)
-            if not os.path.isdir(src):
-                continue
-            for dirpath, dirnames, filenames in os.walk(src):
-                dirnames[:] = [d for d in dirnames if d not in _COMPOSE_SKIP_DIRS]
-                for fn in filenames:
-                    rel = os.path.relpath(os.path.join(dirpath, fn), src)
-                    # The gate uses a NARROWER exclusion than compose, on purpose.
-                    # Compose also drops things that are merely ugly in a pull
-                    # request (a database the service created), but the gate must
-                    # see the workspace the check was authored against: a check
-                    # that opens an existing database, or reads a file the service
-                    # wrote, would fail on work that is fine. Only OUR harness is
-                    # withheld here, plus a stale check a builder read back from
-                    # the shared mount, which must not shadow the one the validator
-                    # authored this round (copied in below).
-                    if _gate_excluded(rel) or rel == _ACCEPTANCE_CHECK:
-                        continue
-                    dest = os.path.join(gate_dir, rel)
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    shutil.copy2(os.path.join(dirpath, fn), dest)
+        if not os.path.isdir(run.candidate_dir):
+            raise RuntimeError(
+                "INTEGRATION_CANDIDATE_MISSING: validator authored a check but the "
+                "candidate tree is unavailable")
+        shutil.copytree(run.candidate_dir, gate_dir)
         staged = os.path.join(gate_dir, os.path.basename(authored))
         shutil.copy2(authored, staged)
         os.chmod(staged, os.stat(staged).st_mode | 0o755)
@@ -1549,17 +2139,19 @@ class Engine:
 
     def _write_validator_report(self, run: Run, role: RoleResult,
                                 grade_tail: str) -> None:
-        """FIXTURE-ONLY role artifact: a deterministic note that the offline
-        grading floor ran (the shipped path's validator AUTHORS
-        acceptance_test.py instead; verdicts live on the PR, not in files)."""
+        """Write a fixture-only trace note for the offline plumbing test.
+
+        The shipped path never calls this: its validator authors the executable
+        gate, and verdict evidence lands on the PR rather than in a report file.
+        """
         report_path = os.path.join(run.roledir(_validator_agent()), "validation_report.md")
         if self.executor.name == "fixture":
             with open(report_path, "w", encoding="utf-8") as f:
-                f.write("validation report: the grading contract ran; "
-                        "see the grading output above.\n")
+                f.write("validation report: the fixture executable ran; "
+                        "see its output above.\n")
             run.add_event(_validator_agent(), {"kind": "text",
                                    "text": "[validator] wrote validation_report.md "
-                                           "(deterministic, from the grading output)"})
+                                           "(fixture trace only)"})
             return
         raise RuntimeError(_NO_PRODUCER_ERROR)
 
@@ -1672,12 +2264,19 @@ class Engine:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
             # RAISES on an empty tree, whatever produced it: a builder that wrote
             # nothing is a role failure, never a builder that "built" something.
-            n = self._require_tree_nonempty(run, role.agent)
-            role.note = f"built the backend side of this request ({_files(n)})"
-            run.log(f"backend: wrote {n} files; the validator's check decides whether "
-                    "they answer the request")
+            n = self._require_item_change(run, role.agent)
+            role.note = f"prepared the backend role patch ({_files(n)})"
+            run.log(f"backend: prepared {n} change(s); the validator's check "
+                    "decides whether they answer the request")
 
         def validator(role: RoleResult) -> None:
+            # Builders worked in isolated checkouts. Assemble their changes before
+            # the checker sees them, then clone that immutable candidate into the
+            # checker's own writable work id. A merge conflict is structural and
+            # fails loud; the validator never grades a winner the engine guessed.
+            self._publish_active_work_items(run)
+            self._assemble_integration_candidate(run)
+            self._prepare_checker_checkout(run, role.agent)
             install_harness(role.agent)
             # The checker in the maker-checker pair. It AUTHORS the acceptance check
             # for this deliverable; the engine executes that file in finalization and
@@ -1692,8 +2291,9 @@ class Engine:
                 run._acceptance_test_file = self._cli_validator_authors_test(
                     run, endpoint.get("url", ""), role)
             elif self.executor.name == "fixture":
-                run._acceptance_test_file = self.executor.produce(
-                    run, role.agent, role)
+                authored = self.executor.produce(run, role.agent, role)
+                run._acceptance_test_file = self._gate_dir_check_path(
+                    run, authored)
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
             role.note = "authored the acceptance check for this deliverable"
@@ -1715,10 +2315,10 @@ class Engine:
                 self.executor.produce(run, role.agent, role)
             else:
                 raise RuntimeError(_NO_PRODUCER_ERROR)
-            n = self._require_tree_nonempty(run, role.agent)
-            role.note = f"built the interface this request asked for ({_files(n)})"
-            run.log(f"frontend: wrote {n} files; the validator's check decides whether "
-                    "they answer the request")
+            n = self._require_item_change(run, role.agent)
+            role.note = f"prepared the frontend role patch ({_files(n)})"
+            run.log(f"frontend: prepared {n} change(s); the validator's check "
+                    "decides whether they answer the request")
 
         # Which closure runs for a role, keyed by its CAPABILITY (registry), not by a
         # role-name string. A name typo or rename used to fall through to the default
@@ -1737,6 +2337,10 @@ class Engine:
 
             def _run_role() -> None:
                 t0 = time.monotonic()
+                item = run.work_items.get(agent_id)
+                if item is not None:
+                    item.attempt += 1
+                    item.state = "working"
                 # Re-establish the recorded user context on this worker thread. The run captured
                 # it at admission (run.user_identity), but a ContextVar does not cross
                 # the threading.Thread boundary, so without this the dispatch
@@ -1766,8 +2370,12 @@ class Engine:
                     local_work = work[capability]
                     self.executor.dispatch(run, agent_id, role, local_work)
                     role.state = "done"
+                    if item is not None:
+                        item.state = "done"
                 except Exception as exc:
                     role.state, role.note = "error", f"{type(exc).__name__}: {exc}"
+                    if item is not None:
+                        item.state = "error"
                     run.log(f"{role.role} errored: {exc}", "error")
                 finally:
                     # No join to release: a FAILED builder still counts as finished to
@@ -1793,9 +2401,22 @@ class Engine:
 
             return _run_role
 
-        # Mark every routed role as started BEFORE the graph runs, so the run view shows
-        # the real routed set immediately rather than filling in as nodes fire.
-        for agent_id in run.agents:
+        active_builders = (
+            run._active_builders
+            if run._active_builders is not None
+            else {
+                item.agent for item in run.work_items.values()
+                if item.kind == roles.BUILDER
+            }
+        )
+        execution_agents = [
+            agent_id for agent_id in run.agents
+            if (roles.get(agent_id).kind == roles.CHECKER
+                or agent_id in active_builders)
+        ]
+        # Mark every role in THIS round as started before the graph runs. Builders
+        # not selected for repair keep their completed result and unchanged PR.
+        for agent_id in execution_agents:
             r = run.progress[agent_id]
             r.state = "working"
             r.last_beat = time.monotonic()      # first heartbeat = role started
@@ -1806,7 +2427,7 @@ class Engine:
         # hand-rolled thread join.
         try:
             graph, _nodes = role_graph.build_graph(
-                list(run.agents), lambda a: _make_dispatch(run.progress[a], a),
+                execution_agents, lambda a: _make_dispatch(run.progress[a], a),
                 execution_timeout=max(1.0, deadline - time.monotonic()))
             role_graph.run_graph(graph)
         except Exception as exc:                # noqa: BLE001
@@ -1842,12 +2463,15 @@ class Engine:
             # attendee actually reads.
             if all("ARTIFACT_TRANSFER_ERROR" in (r.note or "") for r in errored):
                 reason = "ARTIFACT_TRANSFER_ERROR"
+            elif any("INTEGRATION_CONFLICT" in (r.note or "") for r in errored):
+                reason = "INTEGRATION_CONFLICT"
             run.status, run.fail_reason = "failed", reason
             if total:
                 run.log(f"agent execution: ALL {len(errored)} routed roles failed "
                         "-> systemic failure (harness or environment)", "error")
             return False
-        run.log(f"agent execution complete: {len(run.agents)} role(s) done, "
+        run.log(f"agent execution complete: {len(execution_agents)} role(s) ran "
+                f"this round, "
                 "artifacts ready for review")
         return True
 
@@ -1868,9 +2492,9 @@ class Engine:
         run._acceptance_test_file = getattr(target, "_acceptance_test_file", None)
         run.composed_branch = target.composed_branch
         # The check inspects the TARGET's work, not this review run's empty workdir.
-        run._review_work_dir = target.workdir
+        run._review_work_dir = target.candidate_dir
         # A review of offline-double work is itself a review of a stub; carry the mark
-        # so the LLM reviewer abstains rather than judging something that implements
+        # so the review panel abstains rather than judging something that implements
         # nothing. Never set on a real dispatch.
         run._offline_double = getattr(target, "_offline_double", False)
         run.artifact_endpoint = getattr(target, "artifact_endpoint", "") or ""
@@ -1904,153 +2528,563 @@ class Engine:
         run.log(f"review execution: target {target.run_id}, re-running its authored check")
         return True
 
-    # Phase 5, deterministic, but a SEPARATE PEN: the review orchestrator owns
-    # the verdict (gate + assessment + LGTM token); the build engine only reacts.
-    def _finalize(self, run: Run) -> bool:
-        """Returns True when the run reached a terminal state, False to iterate.
+    def _builder_items(self, run: Run, *, pending_only: bool = False
+                       ) -> list[_work_items.WorkItem]:
+        items = _work_items.dependency_order(
+            item for item in run.work_items.values()
+            if item.kind == roles.BUILDER)
+        if pending_only:
+            return [item for item in items if item.merge_state != "merged"]
+        return items
 
-        The verify-iterate loop, on the pull request itself:
-
-          1. GATE: the validator-authored acceptance test executes for real
-             and its exit code decides. Red gate -> no PR work; loop or hand to a human.
-          2. PR: on a green gate the deliverable is composed and the pull
-             request opens (round 1) or its branch is UPDATED in place (a
-             re-implement round pushes new commits to the same PR).
-          3. ASSESSMENT: the judge (separate pen; LLM, fail-open) reviews the
-             deliverable and its verdict is posted DIRECTLY on the PR as an
-             Assessment comment. Approve ends the run (auto policy may then
-             squash-merge). Request-changes loops the routed roles with the
-             judge's reasons as feedback, bounded by MAX_REVIEW_ROUNDS.
-        """
-        run.phase = "finalization"
-        run.log(f"gate: running the validator's authored check (round {run.iterations})")
-        gate = reviewer.run_gate(run)
+    def _record_gate(self, run: Run, gate: dict, stage: str) -> None:
         run.gate = gate
+        digest = str((run.integration_candidate or {}).get("digest") or "")
+        row = {
+            "sequence": len(run.gate_history) + 1,
+            "stage": stage,
+            "candidate_digest": digest,
+            "passed": bool(gate.get("passed")),
+            "summary": gate.get("summary") or "",
+            "checks": list(gate.get("checks") or []),
+        }
+        run.gate_history.append(row)
+        run.log(
+            f"executable gate {stage}: "
+            f"{'green' if row['passed'] else 'RED'} "
+            f"({row['summary']})")
 
-        read_only = bool(run.route and run.route.get("read_only"))
-        verdict = None
-        if gate.get("passed") and not read_only:
-            # Green gate: land the work on the PR FIRST, then review it there,
-            # exactly like a human team (code up for review before the verdict).
-            try:
-                self._compose_commit(run)
-                run.log(f"gate green ({gate.get('summary','')}) -> composed commit "
-                        f"{(run.composed_commit or '')[:10]} on {run.composed_branch}")
-            except Exception as exc:
-                run.log(f"compose commit skipped: {exc}", "warn")
-            if run.pr_url:
-                # A re-implement round: same PR, updated branch.
-                update = github.update_pr(run)
-                if update.get("error"):
-                    run.log(f"PR update failed: {update['error']}", "warn")
-                else:
-                    run.log(f"PR branch updated in place: {run.pr_url} "
-                            f"(round {run.iterations})")
-                    # New commits appeared on a branch a reviewer may already have
-                    # read, with nothing on the timeline saying why. The body cannot
-                    # be rewritten (the gateway exposes no update_pull_request), so
-                    # the round's story goes on as a comment, which is where an
-                    # update belongs anyway.
-                    said = github.post_review(run, replay.round_comment(run))
-                    if said.get("error"):
-                        run.log(f"round note not posted: {said['error']}", "warn")
-            else:
-                # The body is the run's own story (replay.py): which roles ran, what
-                # the validator chose to assert, and why a second round happened.
-                # A reviewer arriving from a notification cannot reach the engine log
-                # or the coordinator session, so if the loop is not legible here it is
-                # not legible at all. Generated from the run record, and reporting
-                # only: it reads the gate's verdict, it never contributes to it.
-                run.pr = github.open_pr(run, replay.narrative(run))
-                if run.pr.get("pr_url"):
-                    run.pr_url = run.pr["pr_url"]
-                    run.log(f"PR opened for real: {run.pr_url} (credential source: "
-                            f"{run.pr.get('source')})")
-                elif run.pr.get("error"):
-                    run.log(f"PR open failed: {run.pr['error']}", "warn")
-                else:
-                    run.log(f"PR skipped: {run.pr.get('skipped', 'local mode')}")
+    def _comment_work_items(
+        self,
+        run: Run,
+        items: list[_work_items.WorkItem],
+        body: str,
+    ) -> None:
+        if self.executor.name == "fixture":
+            return
+        for item in items:
+            posted = github.comment_on_work_item(item, body)
+            if posted.get("error"):
+                run.log(
+                    f"{item.work_id}: PR evidence comment failed: "
+                    f"{posted['error']}", "warn")
 
-            # The judge reviews the deliverable ON the PR (separate pen).
-            verdict = reviewer.assess(run, gate, run.iterations)
-            run.review = verdict.public()
-            if run.pr_url:
-                posted = github.post_review(run, verdict.assessment)
-                run.pr["review"] = posted
-                run.log("assessment posted on the PR: "
-                        f"{verdict.state} ({posted.get('review_url') or posted.get('skipped') or posted.get('error')})")
-        elif gate.get("passed") and read_only:
-            # Read-only review workflow: assess the TARGET run's deliverable and
-            # post the assessment on ITS pull request; never compose a new one.
-            verdict = reviewer.assess(run, gate, run.iterations)
-            run.review = verdict.public()
-            target = self._runs.get(run._review_target) if run._review_target else None
-            if target is not None and getattr(target, "pr_url", None):
-                run.pr = dict(getattr(target, "pr", None) or {})
-                posted = github.post_review(run, verdict.assessment)
-                run.log(f"review assessment posted on {target.run_id}'s PR: "
-                        f"{posted.get('review_url') or posted.get('skipped') or posted.get('error')}")
-            else:
-                run.log(f"review APPROVED for {run._review_target} "
-                        "(no PR to comment on; verdict recorded on the run)")
-        else:
-            run.review = {"state": "changes_requested", "lgtm": False,
-                          "round": run.iterations, "gate": gate,
-                          "reasons": [c["detail"] for c in gate.get("checks", [])
-                                      if not c.get("passed")][:5]}
-
-        if verdict is not None and verdict.lgtm:
-            if run.pr_url and github.merge_policy() == "auto":
-                # The fully-autonomous tail (opt-in, fail-closed default
-                # human_review): the judge already approved ON the PR, so
-                # squash-merge into the integration branch. github enforces
-                # "never the default branch"; the judge stays the sole approver.
-                merged = github.merge_pr(run)
-                run.pr["merge"] = merged
-                run.merge_state = ("merged" if merged.get("merged")
-                                   else f"skipped:{merged['skipped']}" if merged.get("skipped")
-                                   else f"error:{merged.get('error', 'unknown')}")
-                run.log(f"auto-merge: {run.merge_state}")
-            elif run.pr_url:
-                run.merge_state = "human_review"
-                run.log("merge_policy=human_review: PR left open for a human to merge")
-            # status flips terminal ONLY after compose+journal are written, so a
-            # poller that sees "passed" always sees the full result (no race).
-            run.status = "passed"
-            self._ledger(run)
-            return True
-
-        # Not approved: loop (bounded) or hand to a human. The judge's reasons
-        # ride into the next round as feedback (run.review["reasons"]).
-        if run.iterations >= MAX_ITERATIONS:
-            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
-            # Say whether a PR actually exists. A RED gate never reaches compose or
-            # open_pr, so on the common path there is NO pull request, and telling the
-            # attendee "the PR stays open with the assessment" sends them looking for
-            # something that was never created. Only claim it when pr_url is real.
+    def _assess_candidate(
+        self,
+        run: Run,
+        gate: dict,
+        stage: str,
+    ) -> bool:
+        """Run the reviewer initially and again only when candidate code changes."""
+        digest = str((run.integration_candidate or {}).get("digest") or "")
+        prior_approved = bool(
+            run.review and run.review.get("state") == "approved")
+        if (gate.get("passed") and prior_approved
+                and digest == run._reviewed_candidate_digest):
             run.log(
-                f"changes still requested after {run.iterations} rounds -> needs_human"
-                + (f" (the PR stays open with the assessment: {run.pr_url})"
-                   if run.pr_url else
-                   " (no pull request was opened: the gate never went green, so there "
-                   "is nothing to publish; the failing lines are in gate.summary)"),
-                "warn")
-            self._ledger(run)
-            return True
-        why = (gate.get("summary") or "assessment requested changes")
-        # Remember WHY this round was sent back, here and now. `run.review` holds only
-        # the LATEST verdict, so by the time the PR narrative is written it has been
-        # overwritten by the round that passed: a live 2-round run rendered "what came
-        # back as feedback" and then listed round 2's approval notes, which reads as
-        # the opposite of what happened. This is the only point where the causal fact
-        # exists, so it is captured rather than reconstructed.
+                f"reviewer not rerun at {stage}: candidate {digest[:12]} "
+                "is byte-identical to the last approved candidate")
+            assessment = (
+                "**Assessment**: unchanged candidate\n\n"
+                "The executable gate was rerun after the merge. The candidate "
+                "digest is unchanged, so the code reviewer was not run again."
+            )
+            approved = True
+        else:
+            verdict = reviewer.assess(run, gate, run.iterations)
+            run.review = verdict.public()
+            run._reviewed_candidate_digest = digest
+            assessment = verdict.assessment
+            approved = verdict.lgtm
+            if verdict.review_unavailable:
+                run.status = "needs_human"
+                run.fail_reason = "REVIEW_UNAVAILABLE"
+                run.log(
+                    f"required review unavailable for candidate {digest[:12]}; "
+                    "the merge queue is blocked without a builder repair",
+                    "warn",
+                )
+            run.log(
+                f"review panel {verdict.state} candidate {digest[:12]} at {stage}")
+
+        body = replay.gate_evidence_comment(
+            run, gate, stage=stage, candidate_digest=digest,
+            assessment=assessment)
+        self._comment_work_items(run, self._builder_items(run), body)
+        return approved
+
+    def _route_repair(
+        self,
+        run: Run,
+        gate: dict,
+        *,
+        eligible: list[_work_items.WorkItem] | None = None,
+        stage: str,
+    ) -> None:
+        eligible = eligible if eligible is not None else self._builder_items(
+            run, pending_only=True)
+        selected, rationale = integration_plan.select_repair_agents(
+            run.task,
+            run.integration_brief or {},
+            eligible,
+            {
+                "stage": stage,
+                "gate": gate,
+                "review": run.review or {},
+                "integration_conflicts": run.integration_conflicts,
+            },
+            offline_fixture=(self.executor.name == "fixture"),
+        )
+        allowed = {item.agent for item in eligible}
+        run._active_builders = {agent for agent in selected if agent in allowed}
+        reasons = list((run.review or {}).get("reasons") or [])
+        if not reasons:
+            reasons = [
+                c.get("detail", "")
+                for c in gate.get("checks", [])
+                if not c.get("passed")
+            ]
         run.retry_reasons.append({
             "round": run.iterations,
+            "stage": stage,
             "gate_summary": gate.get("summary") or "",
-            "reasons": list((run.review or {}).get("reasons") or []),
+            "reasons": reasons,
+            "responsible_agents": sorted(run._active_builders),
+            "routing": rationale,
         })
-        run.log(f"changes requested ({why}) -> one bounded re-implement pass "
-                "updating the same PR", "warn")
+        run._refresh_context = (
+            f"REPAIR ROUND for {stage}. The executable/panel evidence was:\n"
+            + "\n".join(f"- {reason}" for reason in reasons[:8])
+            + f"\nRouting rationale: {rationale}\n"
+            "Update this existing work item against its current integration base; "
+            "do not replace another role's ownership."
+        )
+        targets = [
+            item for item in eligible
+            if item.agent in run._active_builders
+        ] or eligible
+        self._comment_work_items(
+            run,
+            targets,
+            replay.gate_evidence_comment(
+                run, gate, stage=f"{stage}: repair requested",
+                candidate_digest=str(
+                    (run.integration_candidate or {}).get("digest") or ""),
+                assessment=(run.review or {}).get("assessment", "")),
+        )
+        run.log(
+            f"{stage}: bounded repair routed to "
+            f"{', '.join(sorted(run._active_builders)) or 'validator only'} "
+            f"({rationale})", "warn")
+
+    def _write_integration_brief(self, run: Run, root: str) -> None:
+        coordination = os.path.join(root, ".workshop")
+        os.makedirs(coordination, exist_ok=True)
+        with open(os.path.join(coordination, "integration-brief.md"),
+                  "w", encoding="utf-8") as f:
+            f.write(run._integration_brief_md)
+
+    def _merge_work_item_locally(
+        self, run: Run, item: _work_items.WorkItem
+    ) -> dict[str, Any]:
+        """Fixture-only private-branch merge; exercises queue structure offline."""
+        destination = os.path.join(
+            run.workdir, f"merged-{item.work_id}")
+        candidate = _work_items.assemble_candidate(
+            run.integration_base_dir,
+            [(item, run.item_base_dir(item.agent), run.roledir(item.agent))],
+            destination,
+            exclude=_work_patch_excluded,
+        )
+        shutil.rmtree(run.integration_base_dir, ignore_errors=True)
+        os.replace(destination, run.integration_base_dir)
+        self._write_integration_brief(run, run.integration_base_dir)
+        item.merge_state = "merged"
+        item.state = "merged"
+        return {"merged": True, "sha": candidate.digest}
+
+    def _merge_work_item(
+        self, run: Run, item: _work_items.WorkItem
+    ) -> dict[str, Any]:
+        if self.executor.name == "fixture":
+            result = self._merge_work_item_locally(run, item)
+            run.integration_base = {
+                "mode": "fixture",
+                "branch": run.integration_branch,
+                "sha": result["sha"],
+                "files": sum(
+                    1
+                    for dirpath, _dirs, filenames in os.walk(
+                        run.integration_base_dir)
+                    for filename in filenames
+                    if not _work_patch_excluded(os.path.relpath(
+                        os.path.join(dirpath, filename),
+                        run.integration_base_dir).replace(os.sep, "/"))
+                ),
+            }
+            return result
+
+        result = github.merge_work_item(run, item)
+        if result.get("error"):
+            return result
+        next_base = run.integration_base_dir + ".next"
+        snapshot = github.snapshot_branch(
+            run.integration_branch or "", next_base)
+        if snapshot.get("error"):
+            return {
+                "error": "role PR merged but integration snapshot failed: "
+                         + str(snapshot["error"]),
+            }
+        shutil.rmtree(run.integration_base_dir, ignore_errors=True)
+        os.replace(next_base, run.integration_base_dir)
+        self._write_integration_brief(run, run.integration_base_dir)
+        run.integration_base = dict(snapshot)
+        return result
+
+    def _refresh_pending_work(
+        self,
+        run: Run,
+        pending: list[_work_items.WorkItem],
+        merged_item: _work_items.WorkItem,
+    ) -> list[_work_items.WorkItem]:
+        """Rebase pending PRs and return owners that need a real agent turn.
+
+        Textually clean is not the same as integrated. When a work item's declared
+        dependency just merged, its owner gets one bounded semantic refresh against
+        the actual implementation even if Git found no conflict. Other pending PRs
+        still rebase mechanically. A real path conflict also goes back to its owner.
+        """
+        latest_sha = str((run.integration_base or {}).get("sha") or "")
+        latest_digest = _work_items.tree_digest(
+            run.integration_base_dir, exclude=_work_patch_excluded)
+        conflict_rows: list[str] = []
+        semantic_rows: list[str] = []
+        active: list[_work_items.WorkItem] = []
+        for item in pending:
+            previous_base_digest = item.base_digest or _work_items.tree_digest(
+                run.item_base_dir(item.agent), exclude=_work_patch_excluded)
+            dependency_advanced = (
+                merged_item.work_id in item.depends_on
+                and previous_base_digest != latest_digest
+            )
+            seed = os.path.join(run.workdir, f"refresh-{item.work_id}")
+            conflicts = _work_items.prepare_refresh_checkout(
+                item,
+                run.item_base_dir(item.agent),
+                run.roledir(item.agent),
+                run.integration_base_dir,
+                seed,
+                exclude=_work_patch_excluded,
+            )
+            self._write_integration_brief(run, seed)
+            item_base = run.item_base_dir(item.agent)
+            shutil.rmtree(item_base, ignore_errors=True)
+            shutil.copytree(run.integration_base_dir, item_base)
+            item.base_sha = latest_sha
+            item.base_digest = _work_items.tree_digest(
+                item_base, exclude=_work_patch_excluded)
+            conflict_rows.extend(
+                f"{item.work_id}: {row['path']}" for row in conflicts)
+
+            staged = self._stage_refreshed_work_item(run, item, seed)
+            run.log(
+                f"{item.work_id}: refreshed checkout staged ({staged} files)")
+            if conflicts or dependency_advanced:
+                if (dependency_advanced
+                        and item.dependency_refreshes >=
+                        MAX_DEPENDENCY_REFRESHES):
+                    item.state = "blocked"
+                    item.merge_state = "blocked"
+                    raise RuntimeError(
+                        f"MERGE_QUEUE_REFRESH_CAP:{item.work_id}: more than "
+                        f"{MAX_DEPENDENCY_REFRESHES} dependency integration "
+                        "refresh was requested")
+                allowed_attempts = (
+                    MAX_ITERATIONS + MAX_DEPENDENCY_REFRESHES
+                    if dependency_advanced else MAX_ITERATIONS
+                )
+                if item.attempt >= allowed_attempts:
+                    item.state = "blocked"
+                    item.merge_state = "blocked"
+                    raise RuntimeError(
+                        f"MERGE_QUEUE_REFRESH_CAP:{item.work_id}: integration "
+                        "still needs an owner turn after the bounded "
+                        f"{allowed_attempts} attempts")
+                active.append(item)
+                if dependency_advanced:
+                    item.dependency_refreshes += 1
+                    semantic_rows.append(
+                        f"{item.work_id}: dependency {merged_item.work_id} merged")
+                continue
+
+            patch = _work_items.diff_trees(
+                item,
+                item_base,
+                run.roledir(item.agent),
+                exclude=_work_patch_excluded,
+            )
+            if not patch.changes:
+                raise RuntimeError(
+                    f"MERGE_QUEUE_EMPTY_REFRESH:{item.work_id}: the role patch "
+                    "became empty after an earlier merge")
+            if self.executor.name == "fixture":
+                item.state = "in_review"
+                item.stale = False
+            else:
+                result = github.publish_work_item(
+                    run, item, replay.work_item_narrative(run, item))
+                if result.get("error"):
+                    raise RuntimeError(
+                        f"ROLE_PR_REFRESH_ERROR:{item.work_id}: "
+                        f"{result['error']}")
+            run.log(
+                f"{item.work_id}: clean refresh published without rerunning "
+                f"{item.agent} ({len(patch.changes)} change(s))")
+
+        context: list[str] = []
+        if semantic_rows:
+            context.append(
+                "SEMANTIC INTEGRATION REFRESH: the work item you depend on is now "
+                "merged into this checkout. A clean Git rebase does not prove that "
+                "the product is connected. Inspect the actual merged contribution, "
+                "wire your assigned outcome to it through the shared contract, and "
+                "remove any stand-in, copied service, or duplicate implementation "
+                "of that role. This is your one bounded dependency refresh:\n- "
+                + "\n- ".join(semantic_rows)
+            )
+        if conflict_rows:
+            context.append(
+                "MERGE QUEUE CONFLICT: an earlier role PR was merged. Your "
+                "checkout contains the latest integration plus every prior "
+                "change that rebased cleanly. Re-read "
+                "`.workshop/integration-brief.md` and "
+                "`.workshop/refresh.json`, inspect the merged implementation, "
+                "and reconcile these shared paths. Your prior versions are under "
+                "`.workshop/prior-work`:\n- "
+                + "\n- ".join(conflict_rows)
+            )
+        run._refresh_context = "\n\n".join(context)
+        if semantic_rows:
+            run.log(
+                "SEMANTIC INTEGRATION REFRESH: "
+                + "; ".join(semantic_rows)
+                + "; the owning role will inspect the merged dependency",
+                "warn",
+            )
+        return active
+
+    def _queue_checkpoint(
+        self,
+        run: Run,
+        pending: list[_work_items.WorkItem],
+        stage: str,
+        *,
+        active_builders: list[_work_items.WorkItem],
+    ) -> bool:
+        run._active_builders = {item.agent for item in active_builders}
+        if not self._execute(run):
+            run.status = "needs_human"
+            run.fail_reason = run.fail_reason or "MERGE_QUEUE_EXECUTION_ERROR"
+            return False
+        run.phase = "finalization"
+        gate = reviewer.run_gate(run)
+        self._record_gate(run, gate, stage)
+        # The executable is newly authored and run at every checkpoint. The code
+        # reviewer is narrower: it runs again only when this refreshed candidate's
+        # digest differs from the candidate it already approved.
+        approved = self._assess_candidate(run, gate, stage)
+        if approved:
+            run._refresh_context = ""
+            return True
+        if run.fail_reason == "REVIEW_UNAVAILABLE":
+            return False
+        if run.iterations >= MAX_ITERATIONS:
+            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
+            return False
+
+        self._route_repair(run, gate, eligible=pending, stage=stage)
+        run.iterations += 1
+        run.status, run.fail_reason = "running", None
+        if not self._execute(run):
+            run.status = "needs_human"
+            run.fail_reason = run.fail_reason or "MERGE_QUEUE_REPAIR_ERROR"
+            return False
+        run.phase = "finalization"
+        repaired_gate = reviewer.run_gate(run)
+        repaired_stage = f"{stage}: repair"
+        self._record_gate(run, repaired_gate, repaired_stage)
+        approved = self._assess_candidate(
+            run, repaired_gate, repaired_stage)
+        run._refresh_context = ""
+        if not approved and run.fail_reason != "REVIEW_UNAVAILABLE":
+            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
+        return approved
+
+    def _run_merge_queue(self, run: Run) -> bool:
+        ordered = self._builder_items(run)
+        if not run.merge_queue:
+            run.merge_queue = [{
+                "position": index,
+                "work_id": item.work_id,
+                "agent": item.agent,
+                "role": item.role,
+                "pr_url": (item.pr or {}).get("pr_url"),
+                "state": "waiting",
+            } for index, item in enumerate(ordered, start=1)]
+
+        for item in ordered:
+            row = next(
+                entry for entry in run.merge_queue
+                if entry["work_id"] == item.work_id)
+            row["state"] = "merging"
+            run.log(f"merge queue: merging {item.work_id} into "
+                    f"{run.integration_branch}")
+            merged = self._merge_work_item(run, item)
+            if merged.get("error"):
+                row["state"] = "blocked"
+                row["error"] = merged["error"]
+                run.status = "needs_human"
+                run.fail_reason = "MERGE_QUEUE_BLOCKED:" + str(merged["error"])
+                return False
+            row["state"] = "merged"
+            row["sha"] = merged.get("sha", "")
+            pending = [
+                candidate for candidate in ordered
+                if candidate.merge_state != "merged"
+            ]
+            if pending:
+                try:
+                    active_builders = self._refresh_pending_work(
+                        run, pending, item)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("MERGE_QUEUE_REFRESH_CAP:"):
+                        raise
+                    blocked_work_id = str(exc).split(":", 2)[1]
+                    blocked_row = next(
+                        (entry for entry in run.merge_queue
+                         if entry["work_id"] == blocked_work_id),
+                        None,
+                    )
+                    if blocked_row is not None:
+                        blocked_row["state"] = "blocked"
+                        blocked_row["error"] = str(exc)
+                    run.status = "needs_human"
+                    run.fail_reason = str(exc)
+                    run.log(str(exc), "warn")
+                    return False
+            else:
+                active_builders = []
+                run._refresh_context = (
+                    "FINAL REMOTE CHECK: all role PRs are now merged into the "
+                    "private integration branch. Re-author the executable check "
+                    "against this exact snapshot."
+                )
+            stage = f"after merge {item.work_id}"
+            if not self._queue_checkpoint(
+                    run, pending, stage,
+                    active_builders=active_builders):
+                return False
+
+        self._compose_commit(run)
+        run.pr = github.open_integration_pr(
+            run, replay.integration_narrative(run))
+        if run.pr.get("pr_url"):
+            run.pr_url = run.pr["pr_url"]
+            if github.final_merge_policy() == "auto":
+                merged = github.merge_integration_pr(run)
+                run.pr["merge"] = merged
+                if merged.get("merged"):
+                    run.merge_state = "merged"
+                    run.log(
+                        f"final integration PR auto-merged to "
+                        f"{run.pr.get('default_branch')}: {run.pr_url}")
+                else:
+                    run.merge_state = "human_review"
+                    run.status = "needs_human"
+                    run.fail_reason = (
+                        "FINAL_MERGE_ERROR:" + str(
+                            merged.get("error") or "merge did not complete"))
+                    run.log(
+                        f"final PR remains open for human review: "
+                        f"{run.fail_reason}", "warn")
+                    self._ledger(run)
+                    return False
+            else:
+                run.merge_state = "human_review"
+                run.log(
+                    f"final integration PR opened: {run.pr_url}; default branch "
+                    "left for human review")
+        elif self.executor.name == "fixture" and run.pr.get("error"):
+            # Offline tests have no gateway. The queue and real subprocess gates
+            # still run; only the external side effect is absent.
+            run.merge_state = "queue_complete"
+        else:
+            run.status = "needs_human"
+            run.fail_reason = (
+                "FINAL_PR_ERROR:" + str(
+                    run.pr.get("error") or "no pull request URL returned"))
+            return False
+        run.status = "passed"
+        self._ledger(run)
+        return True
+
+    # Phase 5: executable gate, reviewer, private merge queue, final evidence PR.
+    def _finalize(self, run: Run) -> bool:
+        """Return True at a terminal state, False for one bounded repair round."""
+        run.phase = "finalization"
+        run.log(
+            f"gate: running the validator's authored check "
+            f"(round {run.iterations})")
+        gate = reviewer.run_gate(run)
+
+        read_only = bool(run.route and run.route.get("read_only"))
+        if read_only:
+            run.gate = gate
+            verdict = reviewer.assess(run, gate, run.iterations)
+            run.review = verdict.public()
+            target = self._runs.get(
+                run._review_target) if run._review_target else None
+            if target is not None and target.pr_url:
+                run.pr = dict(target.pr or {})
+                github.post_review(run, verdict.assessment)
+            if verdict.lgtm:
+                run.status = "passed"
+                self._ledger(run)
+                return True
+            if verdict.review_unavailable:
+                run.status, run.fail_reason = (
+                    "needs_human", "REVIEW_UNAVAILABLE")
+                self._ledger(run)
+                return True
+            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
+            self._ledger(run)
+            return True
+
+        stage = f"full candidate round {run.iterations}"
+        self._record_gate(run, gate, stage)
+        approved = self._assess_candidate(run, gate, stage)
+        if approved:
+            # The queue always leaves a terminal outcome: passed, or needs_human
+            # with the blocking role/final PR still open. Returning False here
+            # would restart the whole build loop after a GitHub merge failure.
+            self._run_merge_queue(run)
+            return True
+        if run.fail_reason == "REVIEW_UNAVAILABLE":
+            self._ledger(run)
+            return True
+
+        if run.iterations >= MAX_ITERATIONS:
+            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
+            run.log(
+                f"changes still requested after {run.iterations} rounds; "
+                "role PRs retain the executable evidence", "warn")
+            self._ledger(run)
+            return True
+
+        self._route_repair(run, gate, stage=stage)
+        run.log(
+            "changes requested -> one bounded repair updates only the "
+            "responsible role PRs", "warn")
         return False
 
     # The composed repo is shared by every run; git allows one writer at a time
@@ -2060,13 +3094,11 @@ class Engine:
     _COMPOSE_LEASE = _Lease(COMPOSE_LEASE_STUCK_S)
 
     def _compose_commit(self, run: Run) -> None:
-        """Compose the dispatched roles' artifacts into ONE real git commit.
+        """Record the validated integration candidate in one local evidence commit.
 
-        The commit carries whatever the routed roles wrote, at the paths THEY chose,
-        each role's tree under its own directory, plus the validator's authored
-        check. The engine adds no layout of its own. The commit on a per-run branch
-        is the local equivalent of finalization's PR, and the exact branch github.py
-        pushes when connected.
+        GitHub already holds the role PRs and run integration branch. This separate
+        scratch commit powers the console's Changes view and carries the validator's
+        authored check; it is never pushed as a substitute PR.
         """
         Engine._COMPOSE_LEASE.acquire(run.run_id)
         try:
@@ -2076,12 +3108,8 @@ class Engine:
 
     def _compose_commit_locked(self, run: Run) -> None:
         repo = os.path.join(_RUNS_DIR, "composed")
-        # Gateway model: compose the deliverable into a LOCAL scratch repo here;
-        # there is no token to clone the attendee's private repo and none is needed.
-        # github.open_pr() later publishes this branch's files into the attendee's
-        # template-derived repo via the GitHub MCP Gateway (create_branch +
-        # put_file). ensure_compose_base() only reports whether a gateway is wired;
-        # it never clones and never fails here.
+        # The Gateway queue operates directly on the attendee repo. This local
+        # scratch repo is only durable evidence for the console and diagnostics.
         base = github.ensure_compose_base()
         run.compose_base = base
         run.log(f"compose base: {base.get('mode')}"
@@ -2101,11 +3129,8 @@ class Engine:
         # run's tip) and clean the work tree BEFORE writing this run's files. If a
         # branch were cut from HEAD (the last run's commit), a run whose deliverable
         # is byte-identical to the prior run would produce an EMPTY diff, and both
-        # this run's Changes tab AND github.py's PR path (_composed_files uses
-        # `git show --name-only`, which lists only files a commit CHANGES vs its
-        # parent) would drop those files. Rooting at the empty base makes each
-        # commit's diff == exactly its own deliverable set, the invariant
-        # github.py's docstring already assumes.
+        # this run's Changes tab would drop those files. Rooting at the empty base
+        # makes each commit's diff exactly its own deliverable set.
         root = subprocess.run(["git", "-C", repo, "rev-list", "--max-parents=0", "main"],
                               capture_output=True, text=True, timeout=20).stdout.strip().splitlines()
         base_ref = root[-1] if root else "main"
@@ -2114,98 +3139,23 @@ class Engine:
         # Drop any leftover from a prior run (a file a previous run's role wrote and
         # this one did not), so the commit is exactly this run's deliverable.
         subprocess.run(["git", "-C", repo, "clean", "-fdq"], check=True, timeout=20, env=git_env)
-        # Copy the deliverable at the paths the AGENTS chose. The engine renames
-        # nothing: whatever the roles wrote IS the deliverable.
-        #
-        # Every role shares ONE directory in the runtime workspace, so each role's
-        # read-back tree is a view of the SAME files. Committing one directory per
-        # role therefore published the identical project two or three times (a live
-        # 3-role run produced 21 files that were really 7), which makes the pull
-        # request unreviewable. So compose the union ONCE, flat, exactly as it sits
-        # in the workspace.
-        #
-        # Excluded, deliberately: the harness steering and skills (ours, not the
-        # deliverable) and the run-time droppings a service leaves behind (caches,
-        # and the SQLite write-ahead sidecars a started service creates: a live run
-        # committed .db-wal and .db-shm). A collision between two roles writing the
-        # same path is a real possibility and is reported rather than hidden.
-        #
-        # The authored check is excluded from the ROLES' trees too, and shipped once
-        # from the validator's own artifact below. It lives in the same shared mount
-        # as the deliverable, so every role reads it back as if it were their own
-        # file, and on a re-implement round the builders carry the PREVIOUS round's
-        # copy while the validator has just written a new one. A live 3-role run
-        # therefore reported a CONFLICT on two byte-identical-looking checks that
-        # were really two different rounds of the same file.
-        seen: dict[str, str] = {}
-        # Which role's copy currently occupies each path, so a conflict record can
-        # name the winner EXACTLY rather than inferring it from a directory name.
-        owner: dict[str, str] = {}
-        collisions: list[str] = []
-        for agent_id in run.agents:
-            src = run.roledir(agent_id)
-            if not os.path.isdir(src):
-                continue
-            for dirpath, dirnames, filenames in os.walk(src):
-                dirnames[:] = [d for d in dirnames if d not in _COMPOSE_SKIP_DIRS]
-                for fn in filenames:
-                    rel = os.path.relpath(os.path.join(dirpath, fn), src)
-                    if _compose_excluded(rel) or rel == _ACCEPTANCE_CHECK:
-                        continue
-                    full = os.path.join(dirpath, fn)
-                    prior = seen.get(rel)
-                    if prior is not None:
-                        # Same path from two roles. Identical is the shared-mount
-                        # norm and needs no comment. Different usually means the two
-                        # roles were READ AT DIFFERENT TIMES while both were editing
-                        # the one shared workspace, so one snapshot is simply older:
-                        # a live run committed an 8.9KB index.html at the root while
-                        # the workspace (and the file the gate actually ran against)
-                        # held the 31.6KB one, because the earlier reader happened to
-                        # come first in roster order.
-                        #
-                        # Roster order is not evidence, so prefer the NEWER file and
-                        # keep the older one as the flagged copy. That makes the PR's
-                        # root match what was really built and graded, while still
-                        # showing a reviewer that two roles disagreed on this path.
-                        if not filecmp.cmp(prior, full, shallow=False):
-                            collisions.append(rel)
-                            newer, older = full, prior
-                            if os.path.getmtime(prior) >= os.path.getmtime(full):
-                                newer, older = prior, full
-                            root_dest = os.path.join(repo, rel)
-                            os.makedirs(os.path.dirname(root_dest), exist_ok=True)
-                            shutil.copy2(newer, root_dest)
-                            # Whoever wrote the file we KEPT owns the path now: the
-                            # incoming role when its copy is newer, else the role
-                            # that already held it.
-                            prior_owner = owner.get(rel, "")
-                            kept_by = agent_id if newer is full else prior_owner
-                            lost_by = prior_owner if newer is full else agent_id
-                            seen[rel] = newer
-                            owner[rel] = kept_by
-                            dest = os.path.join(repo, f"CONFLICT-{agent_id}", rel)
-                            os.makedirs(os.path.dirname(dest), exist_ok=True)
-                            shutil.copy2(older, dest)
-                            # Record it so the PR can SAY so. The reviewer sees a
-                            # CONFLICT-<role>/ directory in the diff; without this
-                            # the PR never explains where it came from.
-                            run.compose_conflicts.append({
-                                "path": rel,
-                                "kept_from": kept_by,
-                                "also_written_by": lost_by,
-                                "flagged_under": f"CONFLICT-{agent_id}/{rel}",
-                            })
-                        continue
-                    seen[rel] = full
-                    owner[rel] = agent_id
-                    dest = os.path.join(repo, rel)
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    shutil.copy2(full, dest)
-        run.log(f"compose: {len(seen)} file(s) the agents wrote"
-                + (f"; {len(collisions)} path(s) differed between roles and were "
-                   f"committed under CONFLICT-<role>/: {', '.join(collisions[:5])}"
-                   if collisions else ""))
+        # Publish the exact tree that the validator inspected and the gate ran.
+        # Integration conflicts were rejected before validation, so compose never
+        # chooses a winner or carries a CONFLICT-* side copy into a passing PR.
+        if not os.path.isdir(run.candidate_dir):
+            raise RuntimeError("INTEGRATION_CANDIDATE_MISSING")
+        copied = 0
+        for dirpath, dirnames, filenames in os.walk(run.candidate_dir):
+            dirnames.sort()
+            for fn in sorted(filenames):
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, run.candidate_dir)
+                dest = os.path.join(repo, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(full, dest)
+                copied += 1
+        run.log(f"compose: copied the validated integration candidate "
+                f"({copied} file(s))")
         # The validator's authored check SHIPS WITH the deliverable, so the PR
         # reviewer (human or bot) can rerun the exact gate that passed. The review
         # verdict itself is NOT a committed file: it is posted on the pull request as
@@ -2406,13 +3356,11 @@ def public_diff(run: Run) -> dict:
 # never produced anything (a transport or turn failure, just resubmit). Same status,
 # opposite next action, and the raw token said neither.
 _NEXT_ACTION = {
-    # No "the PR is open" here: a run that ends ITERATION_CAP had a RED gate, and a red
-    # gate never reaches compose or open_pr, so there is usually no pull request at all.
-    # The `passed` arm above is where a real pr_url gets mentioned.
+    # A red candidate may already have role PRs, but it never gets a final PR to main.
     "ITERATION_CAP":
         "The authored check was still red after the bounded re-implement round, so no "
-        "pull request was opened. Read the failing lines in gate.summary: they are the "
-        "check's own output, so they name exactly what the deliverable did not do.",
+        "final integration pull request was opened. Read the failing lines in "
+        "gate.summary and the evidence on the existing role pull requests.",
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",
@@ -2427,9 +3375,39 @@ _NEXT_ACTION = {
         "EVERY routed role failed, which points at the harness or the environment "
         "rather than the request: check that each role's runtime is wired and READY, "
         "then resubmit.",
+    "INTEGRATION_CONFLICT":
+        "Two role pull requests still change the same path differently after the "
+        "bounded repair round. Review integration_conflicts and decide which role "
+        "owns each path; no candidate was selected or validated.",
+    "MERGE_QUEUE_BLOCKED":
+        "A reviewed role pull request could not merge into the run integration "
+        "branch. Open that role PR, resolve the reported branch or head-SHA problem, "
+        "then resume with a new run.",
+    "MERGE_QUEUE_EXECUTION_ERROR":
+        "A remaining role could not refresh its existing pull request against the "
+        "latest integration branch. Read that role PR's evidence and runtime output.",
+    "MERGE_QUEUE_REPAIR_ERROR":
+        "The bounded queue repair did not produce a new candidate. Read the affected "
+        "role PR's evidence and hand the remaining work to a person.",
+    "REVIEW_UNAVAILABLE":
+        "The executable check passed, but one or both required reviews did not run. "
+        "Keep the role pull requests open and retry the review after model access is "
+        "restored; do not ask builders to change code for this outage.",
+    "FINAL_PR_ERROR":
+        "Every role pull request merged and the executable gates passed, but the final "
+        "integration pull request to the default branch did not open. Run "
+        "`python3 orchestrator/github.py doctor` and open or retry the final PR.",
+    "FINAL_MERGE_ERROR":
+        "The final integration pull request is open and all executable gates passed, "
+        "but GitHub did not auto-merge it. Review branch protection or the reported "
+        "head-SHA error, then merge that final PR as a person.",
     "ENGINE_STALL":
         "The run ended without reaching a verdict. Resubmit; if it stalls again, the "
         "engine log for this run id is the place to look.",
+    "COORDINATOR_SESSION_INTERRUPTED":
+        "The coordinator Runtime was recycled while the background build was active. "
+        "Submit the SAME request again and keep polling that session until it reaches "
+        "a terminal status.",
     "NO_RUN_TO_REVIEW":
         "A review-only request needs an earlier run to review. Submit a build first.",
     "PRESET_NOT_SPECIFIED":
@@ -2462,32 +3440,27 @@ def next_action(status: str, fail_reason: str | None,
     """
     if status == "passed":
         pr = pr or {}
-        # A duplicate path is worth ONE clause on a passing run: the gate graded
-        # only the copy at the root, so "it passed" is true but incomplete.
-        dup = ""
-        if conflicts:
-            n = len(conflicts)
-            dup = (f" Note: {n} file{'' if n == 1 else 's'} "
-                   f"({', '.join(str(c.get('path')) for c in conflicts[:3])}) "
-                   f"{'was' if n == 1 else 'were'} written by more than one role; "
-                   "only the copy at the repository root was graded.")
+        if (pr.get("merge") or {}).get("merged"):
+            return (
+                "The final integration pull request was automatically merged into "
+                "the default branch after every executable gate passed.")
         if pr_url:
-            return ("Open the pull request and read the assessment comment on it."
-                    + dup)
+            return (
+                "Open the final integration pull request to the default branch and "
+                "review its role-PR, merge-queue, and executable-gate evidence.")
         pr_error = str(pr.get("error") or "")
         if pr_error.startswith("PR_NO_GATEWAY"):
-            return ("The build passed but no GitHub MCP Gateway is wired, so no PR was "
-                    "opened and the deliverable is only on a local branch. Run "
-                    "`python3 orchestrator/github.py doctor`, then resubmit.")
+            return (
+                "The offline queue completed without a GitHub side effect. Wire the "
+                "GitHub MCP Gateway and submit a new run to create real role and final "
+                "pull requests.")
         if pr_error.startswith("PR_NO_CREDENTIAL"):
             return ("The build passed but the App credential did not resolve, so no PR "
                     "was opened. Re-run deploy-credential.sh, then resubmit.")
         if pr_error:
             return (f"The build passed but the PR step failed: {pr_error[:160]}. Run "
-                    "`python3 orchestrator/github.py doctor`." + dup)
-        # No advice to give on a clean pass with no PR -- but a duplicate path is
-        # still worth saying, so `dup` alone (stripped) beats an empty string.
-        return dup.strip()
+                    "`python3 orchestrator/github.py doctor`.")
+        return ""
     reason = (fail_reason or "").split(":")[0].strip()
     if reason in _NEXT_ACTION:
         return _NEXT_ACTION[reason]
@@ -2507,6 +3480,24 @@ def public_result(run: Run) -> dict:
     return {
         "run_id": run.run_id,
         "status": run.status,
+        # CLI users poll this payload for 10-20 minutes. A bare "running" makes a
+        # healthy build indistinguishable from a stuck one even though the engine
+        # already tracks each role. Keep the same phase/progress facts the console
+        # exposes on its Run endpoint.
+        "phase": run.phase,
+        "progress": public_progress(run),
+        "work_items": {
+            agent: item.public()
+            for agent, item in run.work_items.items()
+        },
+        "integration_brief": run.integration_brief,
+        "integration_base": run.integration_base,
+        "integration_candidate": run.integration_candidate,
+        "integration_conflicts": run.integration_conflicts,
+        "integration_branch": run.integration_branch,
+        "final_base_branch": run.final_base_branch,
+        "merge_queue": run.merge_queue,
+        "gate_history": run.gate_history,
         # The gate's summary is the authored check's own last line: the closest thing
         # to a human-readable verdict, so it belongs in the public payload.
         "gate": {"passed": bool(run.gate and run.gate["passed"]),
@@ -2523,10 +3514,6 @@ def public_result(run: Run) -> dict:
         "artifact_endpoint": run.artifact_endpoint,
         "composed_branch": run.composed_branch,
         "composed_commit": run.composed_commit,
-        # Paths two roles both wrote. A PASSING run can still ship a duplicate the
-        # gate never graded, and every other field here would report plain success,
-        # so the CLI and console need to be able to say so too.
-        "compose_conflicts": run.compose_conflicts,
         "fail_reason": run.fail_reason,
         "route": run.route,
         "review": run.review,
@@ -2535,6 +3522,7 @@ def public_result(run: Run) -> dict:
         # What to DO about this outcome, in one sentence. `needs_human` alone cannot
         # tell "the gate stayed red on real work" from "a role produced nothing",
         # and those have opposite next steps.
-        "next_action": next_action(run.status, run.fail_reason, run.pr, run.pr_url,
-                                   run.compose_conflicts),
+        "next_action": next_action(
+            run.status, run.fail_reason, run.pr, run.pr_url,
+            run.integration_conflicts),
     }

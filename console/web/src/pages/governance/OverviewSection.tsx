@@ -73,7 +73,7 @@ export function OverviewSection() {
       <ChartCard title="Cost by agent" subtitle="Spend grouped from the run ledger: attribution, not a ranking.">
         {costBars.length === 0 ? (
           <div className="px-3">
-            <EmptyState title="No spend recorded yet" hint="A run with a real model invocation populates this." />
+            <EmptyState title="No spend recorded yet" hint="A run with a model invocation populates this." />
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={260}>

@@ -48,6 +48,11 @@ production work, so build it that way.
 
 The frontend renders and interacts. It does not own business logic or data.
 
+- In a multi-role build, ownership is literal. If another role owns the backend,
+  persistence, or domain logic, build against the shared contract and wait for
+  integration. Do not ship a local substitute, copied service, or second full-stack
+  implementation merely because your isolated checkout does not contain that
+  role's files yet.
 - Every value the user sees that comes from a computation, a price, a record, or
   a model MUST come from a backend call (an API, an MCP tool call, a fetch). The
   UI sends inputs and renders the structured response.

@@ -24,7 +24,8 @@ frontend (that is opencode). Stay in lane.
 
 This is an autonomous, fire-and-forget pipeline. There is **no race, no winner,
 no fastest/cheapest ranking**: the three roles each do their job and the
-orchestrator composes one deliverable.
+orchestrator validates their combined candidate, queues the builder PRs, and opens
+the final integration PR.
 
 ## Why a second Claude Code fits validation
 

@@ -4,6 +4,10 @@ This directory is the BYO Container code location used by the AgentCore CLI in
 Module 2. It wraps the repository's coordinator in `BedrockAgentCoreApp` and does
 not duplicate routing or execution logic.
 
+The shipped gate runtime supports Python and Node.js 22
+(JavaScript/TypeScript). Add another language's toolchain to `Dockerfile` before
+routing projects in that language.
+
 ## Package shape
 
 | File | Purpose |
@@ -14,16 +18,15 @@ not duplicate routing or execution logic.
 | `configure_deploy.py` | Wire role ARNs, IAM roles, and account settings into generated CLI config |
 | `Dockerfile` | Build the coordinator container |
 
-The model can clarify a request or call `route_task`, `dispatch_backend`,
+The model can clarify a request or call `list_presets`, `dispatch_backend`,
 `dispatch_frontend`, `dispatch_validator`, `run_build`, and `run_status`.
-`route_task` is advisory and starts nothing. Dispatch tools submit work through
+`list_presets` is advisory and starts nothing. Dispatch tools submit work through
 the same `orchestrator/engine.py` used by the console.
 
 ## Build the generated CLI project
 
-Run the customer instructions in
-[Deploy the Multi-Agent Coordinator](../content/30-stage2-orchestrate/2-deploy-the-orchestrator/index.en.md).
-The essential sequence is:
+Follow the Workshop Studio page **Deploy the Multi-Agent Coordinator**. The
+essential sequence is:
 
 ```bash
 cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent
@@ -41,7 +44,7 @@ agentcore add agent --name orchestrator --type byo --build Container \
 CloudFormation execution roles to `CodingAgents/agentcore/agentcore.json`.
 Generated AgentCore project files remain untracked.
 
-Before GitHub is connected, verify the container without dispatching a build:
+Before dispatching a build, verify the container with a read-only request:
 
 ```bash
 cd ~/sample-amazon-bedrock-agentcore-coding-agents/CodingAgents
@@ -49,8 +52,8 @@ agentcore dev --logs
 # In another terminal:
 cd ~/sample-amazon-bedrock-agentcore-coding-agents/CodingAgents
 agentcore dev --stream \
-  "Use route_task to classify a backend-only version-string fix. Do not dispatch."
+  "Call list_presets and tell me which roles add-a-feature uses. Do not dispatch."
 ```
 
-After this succeeds, deploy with `agentcore deploy`. The next workshop page
-connects a disposable fork before the first real multi-agent run.
+After this succeeds, deploy with `agentcore deploy --yes --json`. The workshop uses the
+attendee's private repository created from this GitHub template for the real PR.

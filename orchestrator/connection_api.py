@@ -9,20 +9,20 @@ engine (``engine.py``) sits underneath.
 What happens on POST /api/runs:
   - the engine drives the five-phase blueprint (admission -> context hydration ->
     pre-flight -> agent execution -> finalization) on a worker thread,
-  - the backend role boots the reference MCP server as a live subprocess,
-  - the validator role proves the grading contract in-process,
-  - the frontend role does a live tools/list round-trip,
-  - finalization runs the validator-authored acceptance gate over the wire against the
-    booted endpoint, with bounded iteration (2) then needs_human.
+  - every routed builder works in an isolated checkout with a unique work id,
+  - the engine assembles their patches without choosing an implementation,
+  - the validator authors an executable for that exact integration candidate,
+  - finalization runs that executable, reviews the evidence, and advances green
+    role PRs through a private queue with bounded repair.
 
-There is no race and no winner: the three agents are roles composed into one
-deliverable; the result carries ``composed_from``, never a winner.
+There is no race and no winner: builders own separate PRs, and only the validated
+integration branch can open the final PR to the default branch.
 
 Extra (additive, contract-safe) endpoints the engine makes possible:
   GET /api/runs/{id}/events   : the append-only phase journal (the audit trail)
 
-On AgentCore, the same engine swaps its local executor for runtime dispatch via
-the reference harness's deploy/connect surface; this HTTP layer does not change.
+On AgentCore, the engine dispatches through the deployed Runtime targets; this
+HTTP layer does not change.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from engine import (  # noqa: E402
     AGENTS,
     TERMINAL,
     Engine,
+    next_action,
     public_diff,
     public_events,
     public_progress,
@@ -224,7 +225,28 @@ def dispatch(method: str, path: str, body: dict | None,
                 # Changes tab): the real `git show` of this run's commit.
                 return 200, public_diff(run)
             out = public_run(run)
-            out["progress"] = public_progress(run)
+            out.update({
+                "progress": public_progress(run),
+                "work_items": {
+                    agent: item.public()
+                    for agent, item in run.work_items.items()
+                },
+                "integration_brief": run.integration_brief,
+                "integration_base": run.integration_base,
+                "integration_candidate": run.integration_candidate,
+                "integration_conflicts": run.integration_conflicts,
+                "integration_branch": run.integration_branch,
+                "final_base_branch": run.final_base_branch,
+                "merge_queue": run.merge_queue,
+                "gate_history": run.gate_history,
+                "gate": run.gate,
+                "review": run.review,
+                "pr_url": run.pr_url,
+                "merge_state": run.merge_state,
+                "next_action": next_action(
+                    run.status, run.fail_reason, run.pr, run.pr_url,
+                    run.integration_conflicts),
+            })
             return 200, out
         return 404, {"error": "not found", "path": path}
 
@@ -246,17 +268,16 @@ def dispatch(method: str, path: str, body: dict | None,
                 return 400, {"error": "invalid JSON body"}
             if body.get("clear"):
                 return 200, github.clear_settings()
-            # A policy-only flip (merge_policy present, no repo) toggles auto-merge
-            # without re-entering the connection; it touches only the policy file.
-            if body.get("merge_policy") is not None and not body.get("repo"):
-                return 200, github.set_merge_policy(body.get("merge_policy"))
+            if (body.get("final_merge_policy") is not None
+                    and not body.get("repo")):
+                return 200, github.set_final_merge_policy(
+                    body.get("final_merge_policy"))
             # Gateway model: the attendee supplies their template-derived repo
             # (owner/name); NO token. The gateway URL is normally wired by the
-            # workshop (env), but the console may also pass it. merge_policy rides
-            # the same POST; an omitted/unknown value fails closed to human_review.
+            # workshop (env), but the console may also pass it.
             out = github.save_settings(body.get("repo", ""),
                                        body.get("gateway_url"),
-                                       body.get("merge_policy"))
+                                       body.get("final_merge_policy"))
             return (400, out) if "error" in out else (200, out)
         if path == "/api/kiro":
             # Paste a Kiro API key (ksk_...) -> store it SECURELY in the AgentCore

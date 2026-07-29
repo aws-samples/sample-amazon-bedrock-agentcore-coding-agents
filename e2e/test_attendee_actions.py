@@ -348,18 +348,16 @@ def _route_of(console: str, cookie: dict, rid: str) -> dict:
     pytest.fail(f"run {rid} never reported a route")
 
 
-@pytest.mark.parametrize("preset,expected_agents", _PRESET_CASES,
-                         ids=[c[0] for c in _PRESET_CASES])
-def test_stage2_presets_route_their_documented_roles(console, cookie, preset,
-                                                     expected_agents):
+def test_stage2_presets_route_their_documented_roles(console, cookie):
     """Submit each starting point; the run's reported route matches its roles."""
-    _, run = _req(console, "POST", "/api/orchestrator/runs",
-                  {"preset": preset}, headers=cookie)
-    rid = run["run_id"]
-    route = _route_of(console, cookie, rid)
-    assert route["preset"] == preset, route
-    assert route["agents"] == expected_agents, (
-        f"preset {preset!r} dispatched {route['agents']} (expected {expected_agents})")
+    for preset, expected_agents in _PRESET_CASES:
+        _, run = _req(console, "POST", "/api/orchestrator/runs",
+                      {"preset": preset}, headers=cookie)
+        route = _route_of(console, cookie, run["run_id"])
+        assert route["preset"] == preset, route
+        assert route["agents"] == expected_agents, (
+            f"preset {preset!r} dispatched {route['agents']} "
+            f"(expected {expected_agents})")
 
 
 # ---------------------------------------------------------------------------

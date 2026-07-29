@@ -31,16 +31,21 @@ If the request asks you to extend or fix something already in the workspace, rea
 there first and do not regress it: existing behavior that nobody asked you to change must
 keep working.
 
-## MCP Tools
+## Delivery boundary
 
-You have a `gateway` MCP server connected that provides GitHub tools (prefixed
-`mcp__gateway__GitHubMCP___`). Use them to branch, commit, and open a PR. Do not call
-HTTP by hand.
+Your job ends when the requested files are in your working directory. Do not initialize
+Git, create a branch or commit, call GitHub, open a pull request, or add labels. The
+coordinator publishes each builder's role PR, validates the combined candidate, merges
+green role PRs through a private queue, and only then opens the final integration PR.
+
+Do not inspect or print credential-bearing environment variables. The Runtime's temporary
+AWS credentials are infrastructure used by the CLI, not task input and not build output.
 
 ## Rules
 
-- NEVER approve, merge, or close a PR. Submit for human review only.
-- Add the label `agent:claude-code` to everything you touch.
+- Treat the ownership in `.workshop/integration-brief.md` as exclusive. Your
+  checkout is intentionally incomplete until integration; do not ship a stand-in
+  or second implementation of a sibling role's capability.
 - Leave your work in your working directory. Do not edit another role's tree, and do not
   edit the validator's check: the maker never grades itself.
 - If you cannot do what was asked, say so plainly in your output. A stub that looks

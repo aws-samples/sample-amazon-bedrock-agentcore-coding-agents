@@ -16,7 +16,8 @@ is in a group chat forever. Instead, every value in the output is either a liter
 this module names, or it passed through `_safe`, which reports only the SHAPE of what
 it found (present/absent, a length, a suffix). Account ids inside ARNs are masked for
 the same reason. The bundle never reads a `.pem`, a token, an API key, or any
-Secrets Manager value, and it makes no call that could mutate anything.
+Secrets Manager value. Its GitHub doctor check may idempotently prepare the empty
+`workshop/doctor` branch; it writes no file and opens no pull request.
 
 It is a diagnostic, not a status API: nothing in the engine reads it back, and it is
 never on the verdict path.
@@ -86,15 +87,11 @@ def _github_section() -> dict[str, Any]:
             out["repo"] = cfg["repo"]
             out["target"] = cfg["target"]
             out["region"] = cfg["region"]
-            out["default_branch"] = cfg["default_branch"]
+            out["default_branch"] = github.repository_default_branch(cfg)
             out["config_source"] = cfg["source"]
     except Exception as exc:  # noqa: BLE001
         out["config_error"] = str(exc)
-    try:
-        out["merge_policy"] = github.merge_policy()
-    except Exception:  # noqa: BLE001
-        pass
-    # The doctor is read-only and is the answer the facilitator actually wants.
+    # Doctor idempotently prepares workshop/doctor to prove write permission.
     try:
         out["doctor"] = github.doctor()
     except Exception as exc:  # noqa: BLE001
@@ -135,7 +132,7 @@ def _env_section() -> dict[str, Any]:
     settings (a region, a role list, a model id, a bucket name), and everything else
     is reported by shape only.
     """
-    shown = ("WORKSHOP_ROLES", "WORKSHOP_MERGE_POLICY", "WORKSHOP_MODEL",
+    shown = ("WORKSHOP_ROLES", "WORKSHOP_MODEL",
              "WORKSHOP_REVIEW_MODEL", "WORKSHOP_BEDROCK_REGION", "AWS_REGION",
              "WORKSHOP_RUNS_DIR", "WORKSHOP_S3FILES_DIR", "WORKSHOP_REPO_ROOT",
              "WORKSHOP_RUNTIME_BUCKET", "GITHUB_REPO", "GITHUB_GATEWAY_TARGET",
@@ -205,7 +202,8 @@ def _host_section() -> dict[str, Any]:
         out["runs_dir_exists"] = os.path.isdir(runs)
         mount = os.environ.get("WORKSHOP_S3FILES_DIR", "/mnt/s3files")
         out["s3files_mount"] = mount
-        out["s3files_mounted"] = os.path.isdir(mount)
+        out["s3files_path_exists"] = os.path.isdir(mount)
+        out["s3files_mounted"] = os.path.ismount(mount)
     except Exception as exc:  # noqa: BLE001
         out["error"] = str(exc)
     return out
@@ -276,11 +274,16 @@ def render(data: dict[str, Any]) -> str:
     lines: list[str] = ["# Workshop diagnostic bundle",
                         f"generated {data.get('generated_at', '')}", ""]
     host = data.get("host", {})
+    if host.get("s3files_mounted"):
+        mount_state = "mounted"
+    elif host.get("s3files_path_exists"):
+        mount_state = "NOT MOUNTED (the path is only a directory)"
+    else:
+        mount_state = "NOT MOUNTED (the path does not exist)"
     lines += ["## Host", f"- platform: {host.get('platform')}",
               f"- python: {host.get('python')}",
               f"- repo: {host.get('repo_root')}",
-              f"- S3 Files mount {host.get('s3files_mount')}: "
-              f"{'present' if host.get('s3files_mounted') else 'NOT MOUNTED'}", ""]
+              f"- S3 Files mount {host.get('s3files_mount')}: {mount_state}", ""]
 
     r = data.get("roles", {})
     lines += ["## Roles"]
@@ -304,8 +307,7 @@ def render(data: dict[str, Any]) -> str:
                      f"{g.get('error') or g.get('config_error')}")
     elif g.get("wired"):
         lines += [f"- repo: `{g.get('repo')}`",
-                  f"- gateway: `{g.get('gateway_url')}` (from {g.get('config_source')})",
-                  f"- merge policy: {g.get('merge_policy')}"]
+                  f"- gateway: `{g.get('gateway_url')}` (from {g.get('config_source')})"]
     else:
         lines.append("- not wired (no gateway URL and/or no repo)")
     doctor = g.get("doctor") or {}

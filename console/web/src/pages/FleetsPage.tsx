@@ -29,7 +29,7 @@ import {
 import {
   streamChat, getRun, getRunTerminals, getRunResult, getRunDiff, listModels, getGithubStatus,
   listSuggestions, getRuntimes, wireRuntime,
-  type ChatEvent, type RunSummary, type RunResult, type RunDiff, type AgentEvent, type ModelOption,
+  type ChatEvent, type RunDetail, type RunResult, type RunDiff, type AgentEvent, type ModelOption,
   type RuntimeStatus,
 } from '../api';
 import { RunDetailPanel } from '../components/RunDetailPanel';
@@ -43,10 +43,10 @@ import { subscribeOutput, getBuffer } from '../hooks/useSessionStore';
 // engine phase id (run.phase), not invented narration.
 const PHASE_LABEL: Record<string, string> = {
   admission: 'routing the task',
-  context_hydration: 'reading the module and steering files',
+  context_hydration: 'preparing the shared context',
   pre_flight: 'running readiness checks',
   agent_execution: 'dispatching the agents',
-  finalization: 'running the acceptance gate and review',
+  finalization: 'validating and merging the role pull requests',
 };
 
 // How many opener chips the empty state shows (the backend caps its own list at
@@ -74,7 +74,7 @@ const FALLBACK_MODEL: ModelOption = {
 // per-role coding-agent tools). Every name is a real tool name the orchestrator
 // emits, never invented.
 const TOOL_LABEL: Record<string, string> = {
-  route_task:         'Routing the task',
+  list_presets:       'Reading build starting points',
   dispatch_backend:   'Dispatching backend (Claude Code)',
   dispatch_frontend:  'Dispatching frontend (opencode)',
   dispatch_validator: 'Dispatching validator (Claude Code)',
@@ -83,7 +83,7 @@ const TOOL_LABEL: Record<string, string> = {
 };
 
 const TOOL_ICON: Record<string, React.ElementType> = {
-  route_task:         Route,
+  list_presets:       Route,
   dispatch_backend:   Server,
   dispatch_frontend:  Server,
   dispatch_validator: ListChecks,
@@ -245,7 +245,7 @@ export function FleetsPage() {
 
   const onPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(e.clipboardData?.files || []);
-    if (files.length) { e.preventDefault(); addFiles(files); }
+    if (files.length) void addFiles(files);
   }, [addFiles]);
 
   // `overrideText` lets a one-click action (a suggestion chip) fill AND send in
@@ -397,7 +397,7 @@ export function FleetsPage() {
             title="New chat"
             className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground shadow-sm hover:bg-accent"
           >
-            <MessageSquarePlus className="size-3.5" />
+            <MessageSquarePlus aria-hidden="true" className="size-3.5" />
             New chat
           </button>
         </div>
@@ -418,7 +418,7 @@ export function FleetsPage() {
             // Codex-style empty state: one large prompt, then a few concise chips.
             // No eyebrow, no title, no status dot.
             <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-4 text-center">
-              <h1 className="animate-enter-up text-3xl font-semibold tracking-[-0.02em] text-foreground">
+              <h1 className="animate-enter-up text-3xl font-semibold text-foreground">
                 What should we build?
               </h1>
               <p className="animate-enter-up mt-3 text-sm text-muted-foreground" style={{ animationDelay: '40ms' }}>
@@ -428,6 +428,7 @@ export function FleetsPage() {
                 {suggestions.slice(0, MAX_SUGGESTIONS).map((p, i) => (
                   <button
                     key={p}
+                    type="button"
                     onClick={() => { setDraft(p); void send(p); }}
                     className="animate-enter-up rounded-lg border border-border bg-card px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors hover:bg-accent"
                     style={{ animationDelay: `${80 + i * 45}ms` }}
@@ -479,7 +480,7 @@ export function FleetsPage() {
               className="absolute -top-11 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-md transition hover:bg-accent"
               title="Jump to latest"
             >
-              <ChevronDown className="size-3.5" />
+              <ChevronDown aria-hidden="true" className="size-3.5" />
               Latest
             </button>
           )}
@@ -492,10 +493,14 @@ export function FleetsPage() {
                 </p>
                 <div className="flex w-full max-w-lg gap-2">
                   <Input
+                    name="orchestrator-runtime"
+                    aria-label="Orchestrator runtime ARN or development URL"
                     value={orchWireDraft}
                     onChange={(e) => setOrchWireDraft(e.target.value)}
-                    placeholder="https:// or arn:aws:bedrock-agentcore:..."
+                    placeholder="arn:aws:bedrock-agentcore:…"
                     className="text-sm"
+                    autoComplete="off"
+                    spellCheck={false}
                     onKeyDown={async (e) => {
                       if (e.key === 'Enter') {
                         const url = orchWireDraft.trim();
@@ -515,6 +520,7 @@ export function FleetsPage() {
                     }}
                   />
                   <Button
+                    aria-label={orchWiring ? 'Connecting orchestrator…' : 'Connect orchestrator'}
                     onClick={async () => {
                       const url = orchWireDraft.trim();
                       if (!url || orchWiring) return;
@@ -533,10 +539,12 @@ export function FleetsPage() {
                     disabled={!orchWireDraft.trim() || orchWiring}
                     size="sm"
                   >
-                    {orchWiring ? <Loader2 className="size-4 animate-spin" /> : 'Connect'}
+                    {orchWiring
+                      ? <Loader2 aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
+                      : 'Connect'}
                   </Button>
                 </div>
-                {orchWireError && <p className="text-xs text-destructive">{orchWireError}</p>}
+                {orchWireError && <p className="text-xs text-destructive" role="alert">{orchWireError}</p>}
               </div>
             </div>
           </div>
@@ -547,7 +555,7 @@ export function FleetsPage() {
               <div className="flex flex-wrap gap-1.5 px-3 pt-3">
                 {attachments.map((a, i) => (
                   <span key={`${a.name}-${i}`} className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">
-                    <FileText className="size-3 shrink-0 text-muted-foreground" />
+                    <FileText aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
                     <span className="max-w-[160px] truncate">{a.name}</span>
                     <button
                       type="button"
@@ -555,7 +563,7 @@ export function FleetsPage() {
                       className="rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
                       aria-label={`Remove ${a.name}`}
                     >
-                      <X className="size-3" />
+                      <X aria-hidden="true" className="size-3" />
                     </button>
                   </span>
                 ))}
@@ -573,6 +581,8 @@ export function FleetsPage() {
               <PromptInputLeftActions>
                 <input
                   id="fleet-attach"
+                  name="fleet-attachments"
+                  aria-label="Attach files"
                   type="file"
                   multiple
                   className="hidden"
@@ -584,7 +594,7 @@ export function FleetsPage() {
                     aws-samples/amazon-bedrock-agentcore-coding-agents must be fully readable. */}
                 {githubRepo && (
                   <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">
-                    <GitBranch className="size-3 shrink-0" />
+                    <GitBranch aria-hidden="true" className="size-3 shrink-0" />
                     {githubRepo}
                   </span>
                 )}
@@ -619,26 +629,28 @@ export function FleetsPage() {
 // re-rendered every time the parent transcript updates from a streaming token.
 // Its only props are the stable runId/runKind.
 const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKind: string }) {
-  const [run, setRun] = useState<(RunSummary & Record<string, unknown>) | null>(null);
+  const [run, setRun] = useState<RunDetail | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
   // After repeated 404s with no successful load, the run id is unknown (a stale
   // deep link). Show a clear not-found state instead of a forever-empty card.
   const [notFound, setNotFound] = useState(false);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
   const misses = useRef(0);
+  const hasLoaded = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
         const detail = await getRun(runId);
-        let merged: RunSummary & Record<string, unknown> = detail as RunSummary & Record<string, unknown>;
+        let merged: RunDetail = detail;
         try {
           const { terminals, events } = await getRunTerminals(runId);
           merged = { ...merged, terminals, roleEvents: events };
         } catch { /* terminals optional */ }
         if (cancelled) return;
         misses.current = 0;
+        hasLoaded.current = true;
         setRun(merged);
         if (TERMINAL_STATUSES.includes(detail.status)) {
           if (poll.current) { clearInterval(poll.current); poll.current = null; }
@@ -646,7 +658,7 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
         }
       } catch {
         // Unknown run id: never loaded after a few tries -> stop and mark not-found.
-        if (!run) {
+        if (!hasLoaded.current) {
           misses.current += 1;
           if (misses.current >= 3 && !cancelled) {
             setNotFound(true);
@@ -709,7 +721,7 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
           <RunActivityRows route={route} progress={progress} roleEvents={roleEvents} live={live} />
         </div>
       )}
-      {run && <RunDetailPanel run={run as Parameters<typeof RunDetailPanel>[0]['run']} />}
+      {run && <RunDetailPanel run={run} />}
       {terminals && Object.keys(terminals).length > 0 && (
         <div className="mt-2">
           <RunTerminalPane terminals={terminals} live={live} />
@@ -717,7 +729,7 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
       )}
       {!live && failReason && !result && (
         <div className="mt-2 flex items-center gap-2 text-sm text-destructive">
-          <AlertCircle className="size-4" />
+          <AlertCircle aria-hidden="true" className="size-4" />
           Stopped: {failReason}
         </div>
       )}
@@ -825,7 +837,7 @@ function RunTerminalPane({
       <pre className={paneClass}>
         {text
           ? text
-          : <span className="text-muted-foreground">Waiting for output...</span>
+          : <span className="text-muted-foreground">Waiting for output…</span>
         }
       </pre>
     );
@@ -885,7 +897,7 @@ const RunChangesPane = memo(function RunChangesPane({ runId }: { runId: string }
   return (
     <div className="mt-2 rounded-lg border border-border bg-background">
       <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-        <FileText className="size-3.5" />
+        <FileText aria-hidden="true" className="size-3.5" />
         <span className="font-medium text-foreground">
           {diff.files.length} file{diff.files.length === 1 ? '' : 's'} changed
         </span>
@@ -897,7 +909,7 @@ const RunChangesPane = memo(function RunChangesPane({ runId }: { runId: string }
         {diff.files.map((f) => (
           <Collapsible key={f.path} defaultOpen={diff.files.length <= 2}>
             <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40">
-              <ChevronRight className="size-3 shrink-0 transition-transform data-[state=open]:rotate-90" />
+              <ChevronRight aria-hidden="true" className="size-3 shrink-0 transition-transform data-[state=open]:rotate-90" />
               <span className="min-w-0 flex-1 truncate font-mono">{f.path}</span>
               {typeof f.added === 'number' && f.added > 0 && <span className="text-emerald-500">+{f.added}</span>}
               {typeof f.removed === 'number' && f.removed > 0 && <span className="text-destructive">-{f.removed}</span>}
@@ -939,30 +951,56 @@ function OrchestratorVerdict({ result }: { result: RunResult }) {
   const passed = result.status === 'passed';
   const gatePassed = result.gate?.passed;
   const reviewState = result.review?.state;
+  const autoMerged = result.merge_state === 'merged';
   return (
-    <div className="mt-2 space-y-2 rounded-xl bg-background px-3 py-2.5 text-sm">
+    <div
+      className="mt-2 space-y-2 rounded-xl bg-background px-3 py-2.5 text-sm"
+      role="status"
+      aria-live="polite"
+    >
       <div className="flex items-center gap-2 font-medium">
-        {passed ? <CheckCircle2 className="size-4 text-muted-foreground" /> : <AlertCircle className="size-4 text-destructive" />}
         {passed
-          ? 'Done. The acceptance gate passed.'
+          ? <CheckCircle2 aria-hidden="true" className="size-4 text-muted-foreground" />
+          : <AlertCircle aria-hidden="true" className="size-4 text-destructive" />}
+        {passed
+          ? autoMerged
+            ? 'Done. The final pull request was auto-merged.'
+            : 'Done. The final pull request is ready for review.'
           : result.status === 'needs_human'
-            ? 'Stopped for a human. The gate did not pass.'
+            ? gatePassed
+              ? 'The gates passed, but the final merge needs a human.'
+              : 'Stopped for a human. The gate did not pass.'
             : 'The run failed.'}
       </div>
       <ul className="space-y-0.5 text-xs text-muted-foreground">
-        <li>acceptance gate: {gatePassed ? 'passed' : 'did not pass'}
+        <li>latest executable gate: {gatePassed ? 'passed' : 'did not pass'}
           {result.gate?.checks?.length ? ` (${result.gate.checks.length} checks)` : ''}</li>
+        {result.work_items && (
+          <li>role pull requests: {
+            Object.values(result.work_items).filter((item) => item.kind === 'builder').length
+          }</li>
+        )}
+        {result.gate_history?.length ? <li>gate executions: {result.gate_history.length}</li> : null}
         {reviewState && <li>review: {reviewState}</li>}
+        {result.review?.panels?.length ? (
+          <li>
+            independent reviews: {result.review.panels
+              .map((panel) => `${panel.name} ${panel.state.replaceAll('_', ' ')}`)
+              .join(', ')}
+          </li>
+        ) : null}
+        {result.merge_state && <li>final PR: {result.merge_state}</li>}
         {typeof result.iterations === 'number' && <li>iterations: {result.iterations}</li>}
         {result.fail_reason && <li>reason: {result.fail_reason}</li>}
       </ul>
       {result.pr_url ? (
         <a href={result.pr_url} target="_blank" rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm underline">
-          <GitPullRequest className="size-3.5" />
-          View the pull request
+          className="inline-flex items-center gap-1.5 text-sm underline hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <GitPullRequest aria-hidden="true" className="size-3.5" />
+          View Final Pull Request
         </a>
       ) : null}
+      {result.next_action && <p className="text-xs text-muted-foreground">{result.next_action}</p>}
     </div>
   );
 }
@@ -1039,8 +1077,8 @@ const StepperToolRow = memo(function StepperToolRow({
           running ? 'border-success/40' : 'border-border',
         )}>
           {running
-            ? <Loader2 className="size-3 animate-spin text-success" />
-            : <Icon className="size-3 text-muted-foreground" />
+            ? <Loader2 aria-hidden="true" className="size-3 animate-spin text-success motion-reduce:animate-none" />
+            : <Icon aria-hidden="true" className="size-3 text-muted-foreground" />
           }
         </div>
         {!isLast && <div className="mt-1 w-px flex-1 bg-border" />}
@@ -1054,7 +1092,7 @@ const StepperToolRow = memo(function StepperToolRow({
             ) : (
               <span className="font-medium">{label}</span>
             )}
-            <ChevronRight className={cn('ml-auto size-3 shrink-0 opacity-50 transition-transform', open && 'rotate-90')} />
+            <ChevronRight aria-hidden="true" className={cn('ml-auto size-3 shrink-0 opacity-50 transition-transform', open && 'rotate-90')} />
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="mt-1 rounded-md border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground">
@@ -1085,7 +1123,7 @@ const StepperReasoningBlock = memo(function StepperReasoningBlock({
       {/* Left column */}
       <div className="flex flex-col items-center">
         <div className="flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-muted">
-          <Brain className="size-3 text-muted-foreground" />
+          <Brain aria-hidden="true" className="size-3 text-muted-foreground" />
         </div>
         {!isLast && <div className="mt-1 w-px flex-1 bg-border" />}
       </div>
@@ -1098,7 +1136,7 @@ const StepperReasoningBlock = memo(function StepperReasoningBlock({
             ) : (
               <span>Thought for a moment</span>
             )}
-            <ChevronRight className={cn('ml-auto size-3 shrink-0 opacity-50 transition-transform', open && 'rotate-90')} />
+            <ChevronRight aria-hidden="true" className={cn('ml-auto size-3 shrink-0 opacity-50 transition-transform', open && 'rotate-90')} />
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
@@ -1129,10 +1167,11 @@ function ModelSelector({
         <button
           type="button"
           disabled={disabled}
+          aria-label={`Model: ${current.label}`}
           className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-foreground/80 hover:bg-muted hover:text-foreground disabled:opacity-50"
         >
           <span className="max-w-[150px] truncate">{current.label}</span>
-          <ChevronDown className="size-3 shrink-0 opacity-40" />
+          <ChevronDown aria-hidden="true" className="size-3 shrink-0 opacity-40" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[260px] p-1.5">
@@ -1152,7 +1191,7 @@ function ModelSelector({
                 <div className="truncate text-[13px] font-medium">{m.label}</div>
                 {m.hint && <div className="truncate text-[11px] text-muted-foreground/80">{m.hint}</div>}
               </div>
-              {selected && <Check className="size-3.5 shrink-0 text-primary" />}
+              {selected && <Check aria-hidden="true" className="size-3.5 shrink-0 text-primary" />}
             </button>
           );
         })}

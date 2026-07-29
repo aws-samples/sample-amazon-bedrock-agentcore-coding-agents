@@ -42,6 +42,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -218,6 +219,7 @@ _SESSIONS: dict[str, dict] = {}
 _LOCK = threading.Lock()
 _COUNTER = {"n": 0}
 _EPOCH = time.strftime("%H%M%S", time.gmtime())
+_PROCESS_NONCE = uuid.uuid4().hex[:8]
 
 
 def _ledger_append(row: dict) -> None:
@@ -927,7 +929,7 @@ def _open_folder(session: dict, raw_path: str | None) -> dict:
 
 def _new_session(agent_id: str) -> dict:
     _COUNTER["n"] += 1
-    session_id = f"sess_{_EPOCH}_{_COUNTER['n']:03d}"
+    session_id = f"sess_{_EPOCH}_{_PROCESS_NONCE}_{_COUNTER['n']:03d}"
     # Cap the workspace pile before adding a new one, so .runs/stage1 can't grow
     # without bound across a long workshop / many test runs.
     _prune_dirs(_STAGE1_DIR, _MAX_STAGE1_DIRS)
@@ -942,7 +944,10 @@ def _new_session(agent_id: str) -> dict:
     else:
         root = os.path.join(_STAGE1_DIR, session_id)
         workspace = os.path.join(root, "workspace")
-        os.makedirs(workspace, exist_ok=True)
+        # The console test server and pytest can create sessions against the same
+        # .runs directory at once. Never reopen another process's workspace: that
+        # can leak steering or customer files into a supposedly fresh session.
+        os.makedirs(workspace, exist_ok=False)
         dev_home = None
         vlabel = "/mnt/s3files"
     dev = agent_id == "dev"
