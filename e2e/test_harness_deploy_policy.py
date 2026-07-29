@@ -29,6 +29,7 @@ module with a mountless (empty-AP) infra config.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 
@@ -128,3 +129,84 @@ def test_ap_scoped_s3files_resources_when_mounted():
         for resource in resources:
             assert resource.startswith("arn:"), (
                 f"{role}: mounted resource {resource!r} must be an ARN")
+
+
+def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path):
+    """A damaged local config must reconcile by Runtime name and repair itself."""
+
+    class ResourceNotFoundException(Exception):
+        pass
+
+    class ConflictException(Exception):
+        pass
+
+    class Exceptions:
+        pass
+
+    Exceptions.ResourceNotFoundException = ResourceNotFoundException
+    Exceptions.ConflictException = ConflictException
+
+    class Paginator:
+        def __init__(self, runtime_name, runtime_id):
+            self.runtime_name = runtime_name
+            self.runtime_id = runtime_id
+
+        def paginate(self):
+            return [{"agentRuntimes": [{
+                "agentRuntimeName": self.runtime_name,
+                "agentRuntimeId": self.runtime_id,
+            }]}]
+
+    class Control:
+        exceptions = Exceptions
+
+        def __init__(self, runtime_name, runtime_id):
+            self.runtime_name = runtime_name
+            self.runtime_id = runtime_id
+            self.updated_ids = []
+
+        def create_agent_runtime(self, **_kwargs):
+            raise ConflictException("already exists")
+
+        def get_paginator(self, operation):
+            assert operation == "list_agent_runtimes"
+            return Paginator(self.runtime_name, self.runtime_id)
+
+        def update_agent_runtime(self, **kwargs):
+            self.updated_ids.append(kwargs["agentRuntimeId"])
+
+        def get_agent_runtime(self, **kwargs):
+            assert kwargs["agentRuntimeId"] == self.runtime_id
+            return {"status": "READY"}
+
+    class Session:
+        def __init__(self, control):
+            self.control = control
+
+        def client(self, service, region_name=None):
+            assert service == "bedrock-agentcore-control"
+            assert region_name
+            return self.control
+
+    for role in _HARNESS_ROLES:
+        mod = _load_deploy_module_mountless(role)
+        role_dir = tmp_path / role
+        role_dir.mkdir()
+        config_path = role_dir / "runtime_config.json"
+        config_path.write_text("export RUNTIME_ARN=not-json\n")
+
+        runtime_id = f"{mod.AGENT_NAME}-existing"
+        control = Control(mod.AGENT_NAME, runtime_id)
+        mod.SCRIPT_DIR = str(role_dir)
+        mod.session = Session(control)
+        fake_boto3 = type("FakeBoto3", (), {})()
+        fake_boto3.Session = lambda **_kwargs: Session(control)
+        mod.boto3 = fake_boto3
+        mod.create_execution_role = lambda: "arn:aws:iam::123456789012:role/test"
+
+        mod.main()
+
+        repaired = json.loads(config_path.read_text())
+        assert repaired["runtime_id"] == runtime_id
+        assert repaired["runtime_arn"].endswith(f"/{runtime_id}")
+        assert control.updated_ids == [runtime_id]

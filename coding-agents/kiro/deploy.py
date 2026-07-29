@@ -31,6 +31,23 @@ def load_dotconfig(path):
     return cfg
 
 
+def _load_runtime_id(config_path: str):
+    """Read a saved Runtime ID, or recover from a damaged local config."""
+    if not os.path.exists(config_path):
+        return None
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print("Warning: runtime_config.json is invalid; recovering from AgentCore.")
+        return None
+    if not isinstance(config, dict):
+        print("Warning: runtime_config.json has an invalid shape; recovering from AgentCore.")
+        return None
+    runtime_id = config.get("runtime_id")
+    return runtime_id if isinstance(runtime_id, str) and runtime_id else None
+
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 INFRA_CONFIG = os.path.join(SCRIPT_DIR, "..", "infra.config")
 LOCAL_CONFIG = os.path.join(SCRIPT_DIR, "agent.config")
@@ -368,11 +385,8 @@ def deploy_runtime(role_arn: str) -> dict:
     # DEPLOY-TIME-only input to setup.sh, not a runtime env var here.
 
     # Check if runtime already exists
-    existing_id = None
     config_path = os.path.join(SCRIPT_DIR, "runtime_config.json")
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            existing_id = json.load(f).get("runtime_id")
+    existing_id = _load_runtime_id(config_path)
 
     if existing_id:
         try:

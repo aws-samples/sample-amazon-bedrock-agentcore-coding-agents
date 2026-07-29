@@ -30,6 +30,23 @@ def load_dotconfig(path):
     return cfg
 
 
+def _load_runtime_id(config_path: str):
+    """Read a saved Runtime ID, or recover from a damaged local config."""
+    if not os.path.exists(config_path):
+        return None
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print("Warning: runtime_config.json is invalid; recovering from AgentCore.")
+        return None
+    if not isinstance(config, dict):
+        print("Warning: runtime_config.json has an invalid shape; recovering from AgentCore.")
+        return None
+    runtime_id = config.get("runtime_id")
+    return runtime_id if isinstance(runtime_id, str) and runtime_id else None
+
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
 INFRA_CONFIG = os.path.join(ROOT_DIR, "infra.config")
@@ -355,11 +372,8 @@ def deploy_runtime(role_arn: str) -> dict:
         env_vars["WORKSHOP_MODEL"] = os.environ["WORKSHOP_MODEL"]
 
     # Check if runtime already exists
-    existing_id = None
     config_path = os.path.join(SCRIPT_DIR, "runtime_config.json")
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            existing_id = json.load(f).get("runtime_id")
+    existing_id = _load_runtime_id(config_path)
 
     if existing_id:
         try:
@@ -381,18 +395,43 @@ def deploy_runtime(role_arn: str) -> dict:
 
     if not existing_id:
         print(f"\nCreating runtime '{AGENT_NAME}'...")
-        response = control.create_agent_runtime(
-            agentRuntimeName=AGENT_NAME,
-            agentRuntimeArtifact=artifact,
-            roleArn=role_arn,
-            networkConfiguration=network,
-            protocolConfiguration={"serverProtocol": "HTTP"},
-            environmentVariables=env_vars,
-            description="Claude Code PTY agent",
-            **fs_kwargs,
-        )
-        runtime_id = response["agentRuntimeId"]
-        runtime_arn = response["agentRuntimeArn"]
+        try:
+            response = control.create_agent_runtime(
+                agentRuntimeName=AGENT_NAME,
+                agentRuntimeArtifact=artifact,
+                roleArn=role_arn,
+                networkConfiguration=network,
+                protocolConfiguration={"serverProtocol": "HTTP"},
+                environmentVariables=env_vars,
+                description="Claude Code PTY agent",
+                **fs_kwargs,
+            )
+            runtime_id = response["agentRuntimeId"]
+            runtime_arn = response["agentRuntimeArn"]
+        except control.exceptions.ConflictException:
+            print(f"Runtime '{AGENT_NAME}' already exists; updating it instead...")
+            found = None
+            paginator = control.get_paginator("list_agent_runtimes")
+            for page in paginator.paginate():
+                for rt in page.get("agentRuntimes", []):
+                    if rt.get("agentRuntimeName") == AGENT_NAME:
+                        found = rt["agentRuntimeId"]
+                        break
+                if found:
+                    break
+            if not found:
+                raise
+            control.update_agent_runtime(
+                agentRuntimeId=found,
+                agentRuntimeArtifact=artifact,
+                roleArn=role_arn,
+                networkConfiguration=network,
+                environmentVariables=env_vars,
+                description="Claude Code PTY agent",
+                **fs_kwargs,
+            )
+            runtime_id = found
+            runtime_arn = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT_ID}:runtime/{found}"
 
     print(f"Runtime ID: {runtime_id}")
     print("Waiting for READY...")
