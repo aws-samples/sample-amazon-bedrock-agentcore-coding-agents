@@ -83,11 +83,11 @@ request and the environment; none of them says what a correct answer looks like.
 | `DELIVERABLE_URL` | a live URL, when one exists (may be empty) |
 | `WORKSHOP_GATE_TIMEOUT_S` | the wall clock the check gets before it is killed |
 
-Size any readiness poll against that budget, and **never below 60 seconds**. The
-workspace is a network file mount: a deliverable's first start, which usually installs
-dependencies, measures ~47s there against 7s on local disk. Checks that allowed 15-20s
-produced red gates on services that were merely still starting. Reject work that
-ANSWERS WRONGLY, never work you did not wait for.
+Size any readiness poll against that budget, and **never below 60 seconds**. A
+deliverable's first start may install dependencies and take much longer than a
+warm restart. Checks that allowed 15-20s produced red gates on services that were
+merely still starting. Reject work that ANSWERS WRONGLY, never work you did not
+wait for.
 
 With those inputs the validator's job is:
 

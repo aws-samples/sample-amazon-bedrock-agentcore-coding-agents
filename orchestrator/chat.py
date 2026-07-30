@@ -113,9 +113,11 @@ describe the preset, or ask a clarifying question first. This applies to any id 
 the user supplies; the tool and routing layer validate it and fail loud if it does \
 not exist.
 
-After `run_build`, report only the roles in the tool result's `agents` list. Never \
-infer a role count from the roster or claim that every role works in parallel. \
-Builders may run in parallel, but the checker waits for their combined work.
+After `run_build`, treat the tool result's `schedule` as authoritative. Report only \
+the roles in its `agents` list. Say that each selected builder started, then say the \
+selected checker is WAITING for the combined builder work and will write and run the \
+check afterward. Never group builders and checkers together as "agents are working", \
+infer a role count from the roster, or claim that every role works in parallel.
 
 ## Reading back a run you did not start
 run_status(run_id) answers for runs from EARLIER sessions too: the engine persists \
@@ -259,11 +261,11 @@ def build_tools() -> list:
 
     @tool
     def run_build(task: str, preset: str = "") -> str:
-        """Start a FULL build of ANY request. Every role on the roster works, their
-        isolated role pull requests enter a private integration queue, the checker
-        authors and executes a gate for the candidate after every merge, and one
-        final integration pull request collects the evidence. Returns immediately
-        with a run id; the build runs in the background.
+        """Start a FULL build of ANY request. Every selected builder gets an
+        isolated role pull request. The checker waits for their combined work,
+        authors and executes a gate, and a private integration queue reruns that
+        gate before one final pull request can open. Returns immediately with a run
+        id; the build runs in the background.
 
         Pass the user's request text VERBATIM as task. It can be anything at all:
         nothing here classifies it or maps it to a sample, so there is no wording to
@@ -279,11 +281,24 @@ def build_tools() -> list:
             _presets.resolve(preset=preset).agents
             if preset else list(_roles.roster_ids())
         )
+        schedule = []
+        for agent_id in agents:
+            role = _roles.BY_ID[agent_id]
+            schedule.append({
+                "agent": agent_id,
+                "kind": role.kind,
+                "timing": (
+                    "after every selected builder finishes"
+                    if role.kind == _roles.CHECKER
+                    else "starts immediately"
+                ),
+            })
         return json.dumps({
             "run_id": _kick(None, task, preset=preset or None),
             "kind": "build",
             "status": "started",
             "agents": agents,
+            "schedule": schedule,
         })
 
     @tool

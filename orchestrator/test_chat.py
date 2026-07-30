@@ -191,6 +191,18 @@ def test_run_build_reports_the_exact_preset_roles(tmp_path, monkeypatch):
     ]
     assert out["agents"] == list(dict.fromkeys(expected))
     assert set(out["agents"]).isdisjoint(chat._roles.by_capability("frontend"))
+    assert out["schedule"] == [
+        {
+            "agent": expected[0],
+            "kind": "builder",
+            "timing": "starts immediately",
+        },
+        {
+            "agent": expected[1],
+            "kind": "checker",
+            "timing": "after every selected builder finishes",
+        },
+    ]
 
 
 def test_run_build_refuses_an_empty_task_without_minting_a_run(tmp_path, monkeypatch):
@@ -215,8 +227,11 @@ def test_run_build_accepts_any_request_at_all(tmp_path, monkeypatch):
 
 def test_system_prompt_tells_the_model_to_pass_the_task_verbatim():
     assert "VERBATIM" in chat.SYSTEM_PROMPT
-    assert "tool result's `agents` list" in chat.SYSTEM_PROMPT
-    assert "checker waits for their combined work" in chat.SYSTEM_PROMPT
+    assert "tool result's `schedule` as authoritative" in chat.SYSTEM_PROMPT
+    assert "selected checker is WAITING" in chat.SYSTEM_PROMPT
+    assert 'Never group builders and checkers together as "agents are working"' in (
+        chat.SYSTEM_PROMPT
+    )
 
 
 # --------------------------------------------------- the dynamic model catalog
