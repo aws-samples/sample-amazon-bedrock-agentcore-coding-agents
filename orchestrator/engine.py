@@ -2370,6 +2370,9 @@ class Engine:
 
             def _run_role() -> None:
                 t0 = time.monotonic()
+                role.state = "working"
+                role.note = ""
+                role.last_beat = t0
                 item = run.work_items.get(agent_id)
                 if item is not None:
                     item.attempt += 1
@@ -2447,12 +2450,23 @@ class Engine:
             if (roles.get(agent_id).kind == roles.CHECKER
                 or agent_id in active_builders)
         ]
-        # Mark every role in THIS round as started before the graph runs. Builders
-        # not selected for repair keep their completed result and unchanged PR.
+        # Builders start as one entry batch. The checker is selected for this round,
+        # but does not become "working" until its graph node actually starts after
+        # every selected builder finishes. Builders not selected for repair keep
+        # their completed result and unchanged PR.
+        has_builder = any(
+            roles.get(agent_id).kind == roles.BUILDER
+            for agent_id in execution_agents
+        )
         for agent_id in execution_agents:
             r = run.progress[agent_id]
-            r.state = "working"
-            r.last_beat = time.monotonic()      # first heartbeat = role started
+            if roles.get(agent_id).kind == roles.CHECKER and has_builder:
+                r.state = "pending"
+                r.note = "waiting for the selected builders to finish"
+            else:
+                r.state = "working"
+                r.note = ""
+            r.last_beat = time.monotonic()
 
         # Hand the schedule to Strands: builders as one parallel entry batch, the
         # checker behind an explicit AND join. The phase budget becomes the graph's own
@@ -2475,13 +2489,18 @@ class Engine:
         # authority here; last_beat is display-only (it dates the last terminal
         # line so the note can say HOW LONG the role was silent).
         now = time.monotonic()
-        for r in run.progress.values():
+        for agent_id in execution_agents:
+            r = run.progress[agent_id]
             if r.state == "working":
                 stale = now - r.last_beat
                 r.state, r.note = "error", (
                     f"role wedged: no progress for {stale:.0f}s, exceeded the "
                     f"{budget}s phase budget")
                 run.log(f"{r.role} timed out (wedged {stale:.0f}s) -> role failure", "error")
+            elif r.state == "pending":
+                r.state, r.note = "error", (
+                    "role never started before the agent-execution phase ended")
+                run.log(f"{r.role} never started -> role failure", "error")
         errored = [r for r in run.progress.values() if r.state == "error"]
         if errored:
             # Tiered escalation: a single flaky role is ROLE_EXECUTION_ERROR, but

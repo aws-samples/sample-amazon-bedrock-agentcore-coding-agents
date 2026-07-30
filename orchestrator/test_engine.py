@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,38 @@ def _wait_terminal(run, timeout_s: float = 60.0):
         assert time.monotonic() < deadline, f"run stuck in {run.status}/{run.phase}"
         time.sleep(0.2)
     return run
+
+
+def test_checker_stays_pending_until_the_builder_finishes():
+    """The public run state must describe the graph rather than claim the checker
+    is working while it is still behind the builder join."""
+    fixture = FixtureExecutor()
+    produce = fixture.produce
+    builder_started = threading.Event()
+    release_builder = threading.Event()
+
+    def blocked_builder(run, agent_id, role):
+        if agent_id == "claude-code":
+            builder_started.set()
+            assert release_builder.wait(timeout=10)
+        return produce(run, agent_id, role)
+
+    fixture.produce = blocked_builder
+    engine = Engine(executor_obj=fixture)
+    run = engine.submit(
+        "build a small command line tool",
+        ["claude-code", "claude-code-validator"],
+    )
+    try:
+        assert builder_started.wait(timeout=10)
+        assert run.progress["claude-code"].state == "working"
+        checker = run.progress["claude-code-validator"]
+        assert checker.state == "pending"
+        assert "waiting for the selected builders" in checker.note
+    finally:
+        release_builder.set()
+        _wait_terminal(run)
+        engine.shutdown()
 
 
 def test_run_ids_do_not_collide_across_coordinator_instances():
