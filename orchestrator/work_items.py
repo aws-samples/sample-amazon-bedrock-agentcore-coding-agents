@@ -85,7 +85,7 @@ class WorkItem:
         )
 
     def runtime_subdir(self, run_id: str) -> str:
-        """The writable checkout path relative to the shared Runtime mount."""
+        """The role checkout's isolated Runtime exchange name."""
         return f"{run_id}/work/{self.work_id}"
 
     def public(self) -> dict[str, Any]:

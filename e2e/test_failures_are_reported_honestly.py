@@ -204,6 +204,56 @@ def test_the_normal_path_is_unchanged(monkeypatch) -> None:
     assert "hello" in result["raw"]
 
 
+def test_runtime_tree_clone_is_one_server_side_archive_copy(monkeypatch) -> None:
+    """A checkout must never be copied file by file across the S3 Files mount."""
+    import runtime_exec
+    import runtime_stage
+
+    seen = {}
+
+    def _clone(source, destination, region):
+        seen.update({
+            "source": source,
+            "destination": destination,
+            "region": region,
+        })
+
+    monkeypatch.setattr(runtime_stage, "clone_archive", _clone)
+    monkeypatch.setattr(
+        runtime_exec, "_drive_shell",
+        lambda *_args, **_kwargs: pytest.fail(
+            "checkout cloning must not open a Runtime shell or traverse NFS"),
+    )
+    runtime_exec.clone_runtime_tree(_ARN, "run_1/base", "run_1/work/backend")
+
+    assert seen == {
+        "source": "run_1/base",
+        "destination": "run_1/work/backend",
+        "region": "us-east-1",
+    }
+
+
+def test_terminal_agentcore_run_cleans_its_exchange_archives(
+        monkeypatch) -> None:
+    """Transport objects are removed after the durable terminal result exists."""
+    import engine
+    import runtime_stage
+
+    cleaned = []
+    monkeypatch.delenv("WORKSHOP_S3FILES_DIR", raising=False)
+    monkeypatch.setattr(
+        runtime_stage, "cleanup_run",
+        lambda run_id: cleaned.append(run_id),
+    )
+    subject = object.__new__(engine.Engine)
+    subject.executor = type("AgentCore", (), {"name": "agentcore"})()
+    run = type("Run", (), {"run_id": "run_cleanup_1"})()
+
+    subject._cleanup_runtime_exchange(run)
+
+    assert cleaned == ["run_cleanup_1"]
+
+
 # --- 3. a FAILED gateway tool must not read as success ---------------------------
 
 def test_error_shaped_tool_result_raises(monkeypatch) -> None:

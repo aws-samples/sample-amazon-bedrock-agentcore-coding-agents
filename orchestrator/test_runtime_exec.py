@@ -50,20 +50,11 @@ def _stub_dispatch(monkeypatch, scripted):
 
 
 def _stub_artifact(monkeypatch, text="<html>ok</html>"):
-    """Replace the artifact read-back so a green dispatch yields a body.
-
-    Only the read-back path still calls ``asyncio.run`` (_dispatch_once is stubbed),
-    so a fake run() that closes the (un-awaited) coroutine and returns a canned
-    frame dict, plus a _slice that yields the artifact text, drives the loop offline."""
-    def fake_run(coro):
-        try:
-            coro.close()  # the read-back builds a real coroutine; close to silence warning
-        except Exception:  # noqa: BLE001
-            pass
-        return {"raw": "ARTIFACT", "exit": 0, "session_id": "read"}
-
-    monkeypatch.setattr(runtime_exec.asyncio, "run", fake_run)
-    monkeypatch.setattr(runtime_exec, "_slice", lambda raw, b, e: text)
+    """Replace the atomic archive read-back so a green dispatch yields a body."""
+    monkeypatch.setattr(
+        runtime_exec, "read_tree_from_runtime",
+        lambda *_args, **_kwargs: {"chatbot.html": text.encode()},
+    )
 
 
 def test_codex_model_gone_falls_back_to_sibling(monkeypatch):
@@ -236,3 +227,17 @@ def test_anonymous_dispatch_never_stamps_identity(monkeypatch):
     cmd = _cmd_for("claude-code", monkeypatch)
     assert "AGENTCORE_USER_EMAIL" not in cmd
     assert "user.id=" not in cmd
+
+
+def test_dispatch_uses_local_checkout_and_one_s3_archive(monkeypatch):
+    cmd = runtime_exec._build_command(
+        "claude-code", "build", "run_1/work/backend", None,
+        "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
+        archive_uri="s3://bucket/run_1/work/backend.tar.gz",
+        skills_uri="s3://bucket/run_1-skills.tar.gz",
+    )
+    assert "/tmp/workshop-abc123" in cmd
+    assert "aws s3 cp" in cmd
+    assert "s3://bucket/run_1/work/backend.tar.gz" in cmd
+    assert "--exclude=node_modules" in cmd
+    assert "/mnt/s3files/run_1/work/backend" not in cmd

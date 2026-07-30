@@ -1,4 +1,4 @@
-"""The check must be told how long it has, because the mount is slow.
+"""The check must be told how long it has.
 
 Four consecutive live runs in us-east-1 failed their authored check on a READINESS
 POLL, not on a wrong answer:
@@ -9,12 +9,9 @@ POLL, not on a wrong answer:
   run_045143_001 iter 1  "didn't detect the server as ready within 15 seconds,
                           even though uvicorn actually started successfully"
 
-Measured on the box, and this is the whole finding: the deliverable's own start path
-created a virtualenv and pip-installed its requirements ON THE S3 FILES NFS MOUNT,
-which took **47 seconds**. The identical work on local disk took **7**. So the
-validator budgeted 15-30s for something that needed 47, and nothing it could read
-would have told it: the slowness is a property of the mount, not of the code in front
-of it.
+The validator budgeted 15-30s for a first start that was still preparing declared
+dependencies. Nothing in the code tells the validator how much of the enforced wall
+clock remains.
 
 Those were RED GATES ON WORKING SERVICES, which is the one verdict this engine must
 never manufacture. A gate is allowed to reject bad work; it is not allowed to reject
@@ -104,14 +101,15 @@ def test_the_engine_still_hands_over_no_answers(tmp_path) -> None:
     assert handed == allowed, f"gate env changed shape: {handed}"
 
 
-def test_the_validator_steering_warns_about_the_mount() -> None:
-    """The steering must say the workspace is slow, or a check will under-wait again."""
+def test_the_validator_steering_warns_about_cold_start_time() -> None:
+    """Local checkout removed NFS, but dependency startup still needs a real budget."""
     path = os.path.join(_ROOT, "orchestrator", "harness",
                         "claude-code-validator", "CLAUDE.md")
     text = open(path, encoding="utf-8").read()
     assert "WORKSHOP_GATE_TIMEOUT_S" in text
     lowered = text.lower()
-    assert "network file mount" in lowered or "nfs" in lowered
+    assert "declared dependencies" in lowered
+    assert "network file mount" not in lowered
     # The reason a red gate here is the wrong verdict must be stated, not implied.
     assert "answers wrongly" in lowered or "answers incorrectly" in lowered
 

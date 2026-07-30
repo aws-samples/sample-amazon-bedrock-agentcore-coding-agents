@@ -24,12 +24,10 @@ it must find out by REALLY EXERCISING the work, not by reading it.
   and the work; you are given no answers.
 - **If you start the deliverable, poll for AT LEAST 60 SECONDS before concluding it
   did not come up.** This is a hard floor, not a suggestion, and it is the one number
-  in this file. Reason: this workspace is a NETWORK FILE MOUNT, not local disk, and a
-  first start usually installs dependencies there. Measured on this host, a cold
-  virtualenv plus dependency install takes **47 seconds on this mount** and 7 on local
-  disk. So a 15 or 20 second poll rejects services that were merely still starting, and
-  that has really happened here: four consecutive runs reported "the server did not
-  become ready" about services whose own logs said `Application startup complete`.
+  in this file. A first start may install declared dependencies, so a 15 or 20 second
+  poll can reject a service that is merely still starting. That has happened here:
+  four consecutive runs reported "the server did not become ready" about services
+  whose own logs said `Application startup complete`.
   `WORKSHOP_GATE_TIMEOUT_S` tells you the total wall clock you have; spend a real share
   of it, polling until a deadline rather than a small fixed count of tries.
 - **Reject a service because it ANSWERS WRONGLY, never because you did not wait for

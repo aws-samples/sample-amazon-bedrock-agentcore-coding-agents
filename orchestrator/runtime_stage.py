@@ -1,43 +1,50 @@
-"""Stage a role's SKILLS onto the shared S3Files mount, for its container to read.
+"""Move exact role checkouts between the coordinator and AgentCore Runtimes.
 
-The deployed coding agents build INSIDE their AgentCore Runtime container, where
-the only shared, writable workspace is ``/mnt/s3files``, backed by an S3Files
-access point all three runtimes mount. That mount is read-through from S3: an
-object uploaded to ``s3://<bucket>/agents/mnt/s3files/<key>`` appears at
-``/mnt/s3files/<key>`` inside every runtime. So to give a role the SKILL it applies
-(its principle-based harness), we upload it there before dispatch.
+The GitHub Gateway gives the coordinator a tracked branch snapshot. This module
+packs those source bytes into one normalized archive per isolated work item.
+Runtimes download the archive through the S3 API, work on local disk, and upload
+one result archive. The orchestration path never copies a repository file by file
+through the S3 Files NFS mount.
+
+S3 Files remains the customer-visible shared storage used in Lab 1. The local-dev
+seam also uses ``WORKSHOP_S3FILES_DIR`` so tests can exercise the same tree shape
+without AWS.
 
 What is deliberately NOT staged is a sample module, a scaffold, or an acceptance
 contract. The request is whatever the attendee typed, so there is nothing to stage on
 its behalf, and staging an answer would be the predetermined-shape problem this design
 exists to remove.
 
-Per-run prefix (``<run_id>/``) isolates concurrent runs and makes cleanup a
-single prefix delete. The bucket name follows the infra convention
+Per-run object names isolate concurrent runs and make cleanup a single prefix
+delete. The bucket name follows the infra convention
 ``coding-agents-<account>-<region>`` (infra/setup.sh), resolvable from the
 ambient AWS identity; nothing hardcoded.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import stat
+import tarfile
 import time
 from typing import Any, Iterable
 
-_MOUNT_PREFIX = "agents/mnt/s3files"  # S3 key prefix that maps to /mnt/s3files
+_EXCHANGE_PREFIX = "agents/runtime-exchange"
+_ARCHIVE_EXCLUDES = {
+    "node_modules", "__pycache__", ".git", ".venv", "venv",
+    ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next", ".cache",
+}
 
 
 def mnt_root() -> str:
-    """The shared workspace root the coding agents build in.
+    """The Lab 1/local-dev shared workspace root.
 
-    On a deployed AgentCore Runtime this is ``/mnt/s3files`` (the S3Files mount,
-    fed by the read-through S3 upload below). A LOCAL ``agentcore dev`` / capture
-    run has no such mount (S3 read-through only materializes inside a deployed
-    runtime), so ``WORKSHOP_S3FILES_DIR`` wires it to a real local directory the
-    local-dev CLIs read and write directly. Unset (the deployed default) keeps the
-    exact ``/mnt/s3files`` path, so the shipped runtime path is unchanged."""
+    A local ``agentcore dev`` or capture run has no managed mount, so
+    ``WORKSHOP_S3FILES_DIR`` wires it to a local directory. Deployed orchestration
+    uses exchange archives instead; the default remains the path attendees use
+    directly in Lab 1."""
     return os.environ.get("WORKSHOP_S3FILES_DIR", "/mnt/s3files")
 
 
@@ -127,33 +134,177 @@ def _account_id(region: str) -> str:
                         region_name=region or None).get_caller_identity()["Account"]
 
 
-def _upload_tree(s3, bucket: str, local_dir: str, key_prefix: str) -> int:
-    """Upload every file under local_dir to bucket/key_prefix, preserving layout.
-    Skips caches. Returns the file count."""
-    n = 0
-    for dp, dns, fns in os.walk(local_dir):
-        dns[:] = [d for d in dns if d not in ("__pycache__", ".pytest_cache")]
-        for fn in fns:
-            if fn.endswith(".pyc"):
+def _safe_subdir(value: str) -> str:
+    normalized = (value or "").replace("\\", "/").strip("/")
+    parts = normalized.split("/")
+    if (not normalized or any(part in ("", ".", "..") for part in parts)
+            or any("\x00" in part for part in parts)):
+        raise RuntimeError(f"unsafe Runtime archive path: {value!r}")
+    return "/".join(parts)
+
+
+def archive_key(subdir: str) -> str:
+    """The one S3 object carrying a Runtime checkout.
+
+    Runtime work no longer traverses the S3 Files mount file by file. The host
+    checks out an exact Git ref through the GitHub Gateway, stores its tracked
+    bytes in one archive, and each Runtime downloads that object to local disk.
+    """
+    return f"{_EXCHANGE_PREFIX}/{_safe_subdir(subdir)}.tar.gz"
+
+
+def _bucket_name(region: str) -> str:
+    region = region or _s3_region()
+    override = os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
+    if override:
+        return override
+    return _bucket(region, _account_id(region))
+
+
+def archive_uri(subdir: str, region: str | None = None) -> str:
+    region = region or _s3_region()
+    return f"s3://{_bucket_name(region)}/{archive_key(subdir)}"
+
+
+def skills_subdir(run_id: str, agent_id: str | None = None) -> str:
+    suffix = f"-{_safe_subdir(agent_id)}" if agent_id else ""
+    return f"{run_id}-skills{suffix}"
+
+
+def skills_archive_uri(run_id: str, agent_id: str | None = None,
+                       region: str | None = None) -> str:
+    return archive_uri(skills_subdir(run_id, agent_id), region)
+
+
+def _iter_archive_entries(source: str, prefix: str = ""):
+    """Yield normalized archive members containing bytes and executable intent."""
+    for dirpath, dirnames, filenames in os.walk(source):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _ARCHIVE_EXCLUDES)
+        rel_dir = os.path.relpath(dirpath, source)
+        if rel_dir != ".":
+            arcdir = "/".join(
+                part for part in (prefix, rel_dir.replace(os.sep, "/")) if part)
+            yield dirpath, arcdir, True
+        for filename in sorted(filenames):
+            if filename in _ARCHIVE_EXCLUDES or filename.endswith((".pyc", ".pyo")):
                 continue
-            full = os.path.join(dp, fn)
-            rel = os.path.relpath(full, local_dir)
-            # Retry a transient upload. The caller treats a staging failure as
-            # non-fatal (the role falls back to its baked-in guidance), which means a
-            # single throttled PutObject silently changes what the agent was told --
-            # two attendees running the same request get different-quality work and
-            # nothing on the run says why. A retry keeps that fallback for real
-            # outages instead of for one unlucky packet.
-            for attempt in range(3):
-                try:
-                    s3.upload_file(full, bucket, f"{key_prefix}/{rel}")
-                    break
-                except Exception:  # noqa: BLE001 (re-raised on the last attempt)
-                    if attempt == 2:
-                        raise
-                    time.sleep(1.0 * (attempt + 1))
-            n += 1
-    return n
+            full = os.path.join(dirpath, filename)
+            if os.path.islink(full):
+                raise RuntimeError(
+                    f"symbolic links are not portable Runtime input: {full}")
+            rel = os.path.relpath(full, source).replace(os.sep, "/")
+            arcname = "/".join(part for part in (prefix, rel) if part)
+            yield full, arcname, False
+
+
+def _pack_trees(trees: Iterable[tuple[str, str]]) -> tuple[bytes, int]:
+    """Pack source bytes with normalized metadata and no dependency caches."""
+    out = io.BytesIO()
+    count = 0
+    with tarfile.open(fileobj=out, mode="w:gz") as tf:
+        for source, prefix in trees:
+            if not os.path.isdir(source):
+                raise RuntimeError(f"archive source does not exist: {source}")
+            for full, arcname, is_dir in _iter_archive_entries(source, prefix):
+                info = tf.gettarinfo(full, arcname=arcname)
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mtime = 0
+                if is_dir:
+                    info.mode = 0o755
+                    tf.addfile(info)
+                    continue
+                info.mode = (
+                    0o755 if stat.S_IMODE(os.stat(full).st_mode) & 0o111
+                    else 0o644
+                )
+                with open(full, "rb") as reader:
+                    tf.addfile(info, reader)
+                count += 1
+    return out.getvalue(), count
+
+
+def _put_archive(subdir: str, trees: Iterable[tuple[str, str]],
+                 region: str | None = None) -> int:
+    region = region or _s3_region()
+    bucket = _bucket_name(region)
+    body, count = _pack_trees(trees)
+    s3 = _client(region)
+    for attempt in range(3):
+        try:
+            s3.put_object(
+                Bucket=bucket,
+                Key=archive_key(subdir),
+                Body=body,
+                ContentType="application/gzip",
+            )
+            return count
+        except Exception:  # noqa: BLE001 (re-raised on final transient failure)
+            if attempt == 2:
+                raise
+            time.sleep(1.0 * (attempt + 1))
+    raise AssertionError("archive upload retry loop exhausted")
+
+
+def clone_archive(source_subdir: str, destination_subdir: str,
+                  region: str | None = None) -> None:
+    """Clone one immutable checkout with an S3 server-side object copy."""
+    region = region or _s3_region()
+    bucket = _bucket_name(region)
+    s3 = _client(region)
+    s3.copy_object(
+        Bucket=bucket,
+        Key=archive_key(destination_subdir),
+        CopySource={"Bucket": bucket, "Key": archive_key(source_subdir)},
+        ContentType="application/gzip",
+        MetadataDirective="REPLACE",
+    )
+
+
+def read_archive(subdir: str, region: str | None = None) -> dict[str, bytes]:
+    """Read one atomically uploaded Runtime result archive."""
+    region = region or _s3_region()
+    response = _client(region).get_object(
+        Bucket=_bucket_name(region), Key=archive_key(subdir))
+    payload = response["Body"].read()
+    files: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tf:
+        for member in tf.getmembers():
+            name = member.name.replace("\\", "/")
+            while name.startswith("./"):
+                name = name[2:]
+            if (not member.isfile() or not name or name.startswith("/")
+                    or ".." in name.split("/")):
+                continue
+            reader = tf.extractfile(member)
+            if reader is not None:
+                files[name] = reader.read()
+    return files
+
+
+def list_archive(subdir: str, region: str | None = None) -> str:
+    return "\n".join(sorted(read_archive(subdir, region))) + "\n"
+
+
+def cleanup_run(run_id: str, region: str | None = None) -> None:
+    """Delete one run's exchange archives after its durable result is saved."""
+    region = region or _s3_region()
+    bucket = _bucket_name(region)
+    s3 = _client(region)
+    prefix = f"{_EXCHANGE_PREFIX}/{_safe_subdir(run_id)}"
+    token: str | None = None
+    while True:
+        kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        page = s3.list_objects_v2(**kwargs)
+        objects = [{"Key": row["Key"]} for row in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+        if not page.get("IsTruncated"):
+            return
+        token = page.get("NextContinuationToken")
 
 
 def copy_tree_files(source: str, destination: str, *,
@@ -212,25 +363,6 @@ def copy_tree_files(source: str, destination: str, *,
     return count
 
 
-def _delete_prefix(s3, bucket: str, key_prefix: str) -> None:
-    """Delete an earlier candidate before uploading the next bounded round."""
-    token: str | None = None
-    while True:
-        kwargs: dict[str, Any] = {
-            "Bucket": bucket,
-            "Prefix": key_prefix.rstrip("/") + "/",
-        }
-        if token:
-            kwargs["ContinuationToken"] = token
-        page = s3.list_objects_v2(**kwargs)
-        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-        if objects:
-            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
-        if not page.get("IsTruncated"):
-            return
-        token = page.get("NextContinuationToken")
-
-
 def stage_candidate(run_id: str, local_dir: str,
                     region: str | None = None) -> int:
     """Publish the exact integration candidate as immutable Runtime input.
@@ -244,13 +376,7 @@ def stage_candidate(run_id: str, local_dir: str,
     if os.environ.get("WORKSHOP_S3FILES_DIR"):
         dest = candidate_path(run_id)
         return copy_tree_files(local_dir, dest)
-    region = region or _s3_region()
-    account_id = _account_id(region)
-    bucket = _bucket(region, account_id)
-    s3 = _client(region)
-    key = f"{_MOUNT_PREFIX}/{candidate_subdir(run_id)}"
-    _delete_prefix(s3, bucket, key)
-    return _upload_tree(s3, bucket, local_dir, key)
+    return _put_archive(candidate_subdir(run_id), [(local_dir, "")], region)
 
 
 def stage_base(run_id: str, local_dir: str,
@@ -261,13 +387,7 @@ def stage_base(run_id: str, local_dir: str,
     if os.environ.get("WORKSHOP_S3FILES_DIR"):
         dest = base_path(run_id)
         return copy_tree_files(local_dir, dest)
-    region = region or _s3_region()
-    account_id = _account_id(region)
-    bucket = _bucket(region, account_id)
-    s3 = _client(region)
-    key = f"{_MOUNT_PREFIX}/{base_subdir(run_id)}"
-    _delete_prefix(s3, bucket, key)
-    return _upload_tree(s3, bucket, local_dir, key)
+    return _put_archive(base_subdir(run_id), [(local_dir, "")], region)
 
 
 def stage_refresh(run_id: str, work_id: str, local_dir: str,
@@ -278,17 +398,13 @@ def stage_refresh(run_id: str, work_id: str, local_dir: str,
     if os.environ.get("WORKSHOP_S3FILES_DIR"):
         dest = refresh_path(run_id, work_id)
         return copy_tree_files(local_dir, dest)
-    region = region or _s3_region()
-    account_id = _account_id(region)
-    bucket = _bucket(region, account_id)
-    s3 = _client(region)
-    key = f"{_MOUNT_PREFIX}/{refresh_subdir(run_id, work_id)}"
-    _delete_prefix(s3, bucket, key)
-    return _upload_tree(s3, bucket, local_dir, key)
+    return _put_archive(
+        refresh_subdir(run_id, work_id), [(local_dir, "")], region)
 
 
 def stage_skills(run_id: str, skill_dirs: list[str],
-                 region: str | None = None) -> int:
+                 region: str | None = None,
+                 agent_id: str | None = None) -> int:
     """Upload each harness skill dir to ``<run_id>-skill/skills/<name>``, the
     run's READ-ONLY inputs prefix, so the dispatched CLI can read the SKILL.md
     its prompt names. The backend image also bakes its skill at ~/skills, but
@@ -307,12 +423,8 @@ def stage_skills(run_id: str, skill_dirs: list[str],
             dest = os.path.join(skill_path(run_id), "skills", os.path.basename(d))
             n += copy_tree_files(d, dest)
         return n
-    region = region or _s3_region()
-    account_id = _account_id(region)
-    bucket = _bucket(region, account_id)
-    s3 = _client(region)
-    n = 0
-    for d in skill_dirs:
-        key = f"{_MOUNT_PREFIX}/{run_id}-skill/skills/{os.path.basename(d)}"
-        n += _upload_tree(s3, bucket, d, key)
-    return n
+    trees = [
+        (directory, f"skills/{os.path.basename(directory.rstrip(os.sep))}")
+        for directory in skill_dirs
+    ]
+    return _put_archive(skills_subdir(run_id, agent_id), trees, region)

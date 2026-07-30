@@ -646,7 +646,7 @@ class Run:
         return os.path.join(self.workdir, f"base-{suffix}")
 
     def runtime_subdir(self, agent: str) -> str:
-        """The role's unique writable checkout on the shared Runtime mount."""
+        """The role's unique Runtime exchange archive name."""
         item = self.work_items.get(agent)
         return (item.runtime_subdir(self.run_id)
                 if item is not None else f"{self.run_id}/work/{agent}")
@@ -864,6 +864,14 @@ class Engine:
                 return
             self._persist_run(run)
 
+    def _cleanup_runtime_exchange(self, run: Run) -> None:
+        """Remove deployed Runtime transfer objects after the verdict is durable."""
+        if (self.executor.name != "agentcore"
+                or os.environ.get("WORKSHOP_S3FILES_DIR")):
+            return
+        import runtime_stage  # noqa: PLC0415 (AgentCore-only lifecycle seam)
+        runtime_stage.cleanup_run(run.run_id)
+
     # ----------------------------------------------------------- the blueprint
     def _drive(self, run: Run) -> None:
         """One task in -> five phases -> terminal state. Always terminal."""
@@ -952,6 +960,17 @@ class Engine:
                 self._persist_run(run)
             except Exception as exc:  # noqa: BLE001 (history is not the verdict)
                 run.log(f"run state not persisted: {exc}", "warn")
+            # Runtime input and output archives are transport, not durable run
+            # history. Delete them only after the terminal snapshot above has
+            # been attempted; a cleanup failure never changes the verdict.
+            try:
+                self._cleanup_runtime_exchange(run)
+            except Exception as exc:  # noqa: BLE001 (cleanup is best-effort)
+                run.log(f"Runtime exchange cleanup failed: {exc}", "warn")
+                try:
+                    self._persist_run(run)
+                except Exception:
+                    pass
             # The engine starts NOTHING, so there is nothing here to stop. If the
             # deliverable needs to run, the validator's authored check starts it, and
             # `reviewer.run_gate` tears that whole process group down when the check
@@ -1167,7 +1186,7 @@ class Engine:
     def _stage_builder_checkouts(
         self, run: Run, builders: list[_work_items.WorkItem]
     ) -> None:
-        """Put one immutable base into S3 Files, then clone it per work id."""
+        """Publish one immutable source archive, then clone it per work id."""
         import runtime_stage  # noqa: PLC0415
 
         staged = runtime_stage.stage_base(run.run_id, run.integration_base_dir)
@@ -1221,9 +1240,9 @@ class Engine:
         """Run ``agent_id``'s CLI INSIDE its deployed AgentCore Runtime.
 
         Dispatches over the command shell via ``runtime_exec`` against the role's
-        wired runtime ARN; the agent works in its unique
-        ``/mnt/s3files/<run_id>/work/<work_id>`` checkout. Raises if the role has
-        no wired runtime: fail loud, never local.
+        wired runtime ARN. The exact role archive is expanded on Runtime local
+        disk for the turn and uploaded atomically when the turn ends. Raises if
+        the role has no wired runtime: fail loud, never local.
 
         ``artifact_rel`` names ONE file to read back and require, and is used only
         where a filename is genuinely part of the contract: the validator's authored
@@ -1245,8 +1264,8 @@ class Engine:
         run_subdir = run.runtime_subdir(agent_id)
         role.engine = "agentcore"
         run.term(agent_id, f"echo 'dispatching to {arn.split('/')[-1]} on AgentCore "
-                           f"Runtime; it builds in /mnt/s3files/{run_subdir} and "
-                           "writes its artifact there'")
+                           "Runtime; it receives the tracked checkout archive, "
+                           "works on local disk, and uploads one result archive'")
         t0 = time.monotonic()
         collected: list[str] = []
 
@@ -1383,7 +1402,12 @@ class Engine:
         # in its own writable <run_id>/ workdir (set as cwd by runtime_exec). Name the
         # paths the agent will actually see in its container.
         import runtime_stage  # noqa: PLC0415 (lazy; the wirable mount root)
-        staged = runtime_stage.skill_path(run.run_id)
+        staged = (
+            "."
+            if self.executor.name == "agentcore"
+            and not os.environ.get("WORKSHOP_S3FILES_DIR")
+            else runtime_stage.skill_path(run.run_id)
+        )
         prompt = (
             "You are the backend implementer role in a multi-agent build. Read "
             "CLAUDE.md in this directory for your role, and read the "
@@ -1423,7 +1447,12 @@ class Engine:
         agent_id = role.agent
         model = self._role_model(run, agent_id, roles.get(agent_id).default_model)
         import runtime_stage  # noqa: PLC0415 (lazy; the wirable mount root)
-        staged = runtime_stage.skill_path(run.run_id)
+        staged = (
+            "."
+            if self.executor.name == "agentcore"
+            and not os.environ.get("WORKSHOP_S3FILES_DIR")
+            else runtime_stage.skill_path(run.run_id)
+        )
         assignment = (
             (run.integration_brief or {}).get("role_assignments") or {}
         ).get(agent_id, {})
@@ -2096,11 +2125,10 @@ class Engine:
             # the earlier instruction won.
             "WAIT LONG ENOUGH: poll for AT LEAST 60 SECONDS before concluding it did "
             "not come up, and read `WORKSHOP_GATE_TIMEOUT_S` for the total wall clock "
-            "you have. This workspace is a network file mount, where a first start "
-            "that installs dependencies costs around 47 seconds (7 on local disk). A "
-            "short poll rejects services that were merely still starting, which is a "
-            "false verdict: reject work that ANSWERS WRONGLY, never work you did not "
-            "wait for."
+            "you have. A first start may still install declared dependencies. A short "
+            "poll rejects services that were merely still starting, which is a false "
+            "verdict: reject work that ANSWERS WRONGLY, never work you did not wait "
+            "for."
             + feedback)
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
                                    _ACCEPTANCE_CHECK)
@@ -2230,13 +2258,13 @@ class Engine:
                     skill_dirs.append(full)
                 else:
                     run.term(agent_id, f"echo 'skill path not found: {skill_path}' && false")
-            # Runtime dispatch builds in /mnt/s3files/<run_id>, not this local
-            # workdir, so the skill must ALSO land there for the dispatched CLI
-            # to read the skills/<name>/SKILL.md its prompt names.
+            # The Runtime receives an independent checkout archive, so the role's
+            # skill must travel in its own small archive and be expanded beside it.
             if skill_dirs and getattr(self.executor, "name", "") == "agentcore":
                 import runtime_stage  # noqa: PLC0415 (lazy, agentcore path only)
                 try:
-                    runtime_stage.stage_skills(run.run_id, skill_dirs)
+                    runtime_stage.stage_skills(
+                        run.run_id, skill_dirs, agent_id=agent_id)
                     run.term(agent_id, "echo 'skills staged to the runtime workspace'")
                 except Exception as exc:  # noqa: BLE001 (skill is guidance, not the gate)
                     run.log(f"skill staging to runtime failed ({exc}); the role "

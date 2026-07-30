@@ -7,14 +7,12 @@ CLI runner on the shipped path; a role's CLI only ever runs in its deployed
 Runtime, never on the orchestrator box:
 
   1. open a WebSocket shell on the role's runtime (SigV4, the server-side path);
-  2. ``cd`` into the run's workspace on the shared ``/mnt/s3files`` mount and run
-     the agent's launcher (``/app/run.sh --print '<prompt>'``) headless, with the
-     Bedrock env set inline;
-  3. capture only STDOUT, delimited by sentinels so the prompt echo and ANSI
-     noise never pollute the transcript or the artifact;
-  4. read the artifact the CLI wrote (``cat`` over the same shell; S3Files is a
-     managed filesystem, not a transparent ``s3://`` prefix, so the file is read
-     back through the runtime, never via ``s3:GetObject``).
+  2. download the exact tracked checkout archive and expand it on Runtime local
+     disk;
+  3. run the role's native headless CLI with the Bedrock env set inline;
+  4. exclude dependency/cache directories and upload one result archive;
+  5. capture STDOUT between sentinels so prompt echo and ANSI noise never pollute
+     the transcript.
 
 The role prompts are identical to the in-process path; only WHERE the CLI runs
 changes. A missing runtime, a nonzero exit, or a missing/empty artifact raises
@@ -61,8 +59,15 @@ def _clean(text: str) -> str:
 # shell transcript, so capture is exact regardless of prompt echo / ANSI control.
 _RUN_BEGIN = "__ROLE_RUN_BEGIN__"
 _RUN_END = "__ROLE_RUN_END__"
-_ART_BEGIN = "__ARTIFACT_BEGIN__"
-_ART_END = "__ARTIFACT_END__"
+
+# Directories a build creates that are not source. They are reproducible from the
+# manifest the agent wrote and never cross the Runtime exchange boundary.
+#
+# `dist` and `build` are deliberately absent. Either can be an agent-authored
+# deliverable, so the engine cannot classify those names as caches.
+_TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
+                  ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next",
+                  ".cache")
 
 # Per-role execution facts (the Bedrock env each CLI needs, the telemetry env that
 # makes it emit, and the headless invocation itself) all come from the role
@@ -94,8 +99,7 @@ def _cli_invocation(agent_id: str, prompt_var: str, model: str, workdir: str) ->
     the default model are the role's own (registry), so each CLI's standard headless
     one-shot form lives with the role that needs it. ``workdir`` is the run workspace
     the caller has already cd'd into; some CLIs need it PASSED EXPLICITLY because
-    they anchor their project at the nearest git root, not the process cwd, and
-    ``/mnt/s3files/<run>`` is not a git repo.
+    they anchor their project at the nearest git root rather than process cwd.
     """
     return _role(agent_id).command(prompt_var, model, workdir)
 
@@ -153,13 +157,15 @@ def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
     return env
 
 
-def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: str | None,
-                   model: str, region: str, nonce: str) -> str:
+def _build_command(agent_id: str, prompt: str, run_subdir: str,
+                   artifact_rel: str | None, model: str, region: str,
+                   nonce: str, archive_uri: str | None = None,
+                   skills_uri: str | None = None) -> str:
     """The one shell line dispatched into the runtime.
 
-    Sets the Bedrock env inline, cd's into the run's workspace on the shared
-    mount, runs the agent launcher headless on the prompt, then prints the
-    artifact between sentinels.
+    Downloads the exact Git checkout archive, expands it on Runtime local disk,
+    runs the agent there, then atomically uploads one result archive. No checkout
+    is copied file by file through the S3 Files NFS surface.
 
     The PTY echoes the whole command line back before running it, so the literal
     sentinel strings would appear in the echo as well as in the real output. To
@@ -170,7 +176,12 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
     ``set -o pipefail`` is intentionally NOT used: the artifact read-back must
     run regardless, and the captured exit code reflects the CLI itself.
     """
-    workdir = f"/mnt/s3files/{run_subdir}"
+    # A fresh local path per turn prevents files from a failed/previous shell
+    # leaking into this attempt. The stable S3 object is the continuity boundary.
+    workdir = f"/tmp/workshop-{nonce}"
+    source_archive = f"/tmp/workshop-source-{nonce}.tar.gz"
+    result_archive = f"/tmp/workshop-result-{nonce}.tar.gz"
+    archive_uri = archive_uri or f"s3://workshop-runtime-exchange/{run_subdir}.tar.gz"
     # Every role uses the runtime's own region: opencode/claude/kiro all call
     # plain Bedrock there (no mantle/us-east-2 special case).
     cli_region = region
@@ -235,41 +246,68 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str, artifact_rel: st
             peruser_prefix = assume_as_user(identity.user_id, _peruser_role, cli_region)
         except Exception:
             peruser_prefix = ""
+    tar_excludes = " ".join(
+        f"--exclude={shlex.quote(name)} --exclude={shlex.quote('*/' + name)}"
+        for name in _TREE_EXCLUDES
+    )
+    steering = role.steering_file.replace("\\", "/")
+    steering_source = f"$HOME/{steering}"
+    steering_target = os.path.join(workdir, *steering.split("/"))
+    steering_parent = os.path.dirname(steering_target)
+    skill_setup = ""
+    if skills_uri:
+        skill_archive = f"/tmp/workshop-skills-{nonce}.tar.gz"
+        skill_setup = (
+            f"if aws s3 cp {shlex.quote(skills_uri)} "
+            f"{shlex.quote(skill_archive)} --region {shlex.quote(cli_region)} "
+            "--only-show-errors 2>/dev/null; then "
+            f"tar --no-same-owner --no-same-permissions --touch -xzf "
+            f"{shlex.quote(skill_archive)} -C {shlex.quote(workdir)}; "
+            f"rm -f {shlex.quote(skill_archive)}; "
+            "fi; "
+        )
+
     # The prompt is held in shell var $P (assigned once, safely quoted) so the CLI
     # line stays clean and the command echo never collides with our sentinels.
-    # Sentinels are emitted via $B1..$E1 vars for the same reason. The artifact is
-    # read back in a SEPARATE shell session (see _read_artifact_from_runtime): the
-    # S3Files mount has brief write-back latency, so a `cat` in this same pipeline
-    # right after the CLI exits can miss a file that is in fact written.
+    # Sentinels are emitted via $B1..$E1 vars for the same reason.
     return (
         f"P={shlex.quote(prompt)}; "
         f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; "
         f'echo "$B1"; '
         f"{peruser_prefix}"
-        f"mkdir -p {shlex.quote(workdir)} 2>/dev/null; "
-        f"cd {shlex.quote(workdir)} 2>/dev/null || cd /tmp; "
+        f"rm -rf {shlex.quote(workdir)} "
+        f"{shlex.quote(source_archive)} {shlex.quote(result_archive)}; "
+        f"mkdir -p {shlex.quote(workdir)}; "
+        f"aws s3 cp {shlex.quote(archive_uri)} "
+        f"{shlex.quote(source_archive)} --region {shlex.quote(cli_region)} "
+        "--only-show-errors; "
+        f"__hydrate_rc=$?; "
+        f"if [ $__hydrate_rc -eq 0 ]; then "
+        f"tar --no-same-owner --no-same-permissions --touch -xzf "
+        f"{shlex.quote(source_archive)} -C {shlex.quote(workdir)}; "
+        f"__hydrate_rc=$?; fi; "
+        f"rm -f {shlex.quote(source_archive)}; "
+        f"if [ $__hydrate_rc -ne 0 ]; then echo \"$E1\"; "
+        f"exit $__hydrate_rc; fi; "
+        f"{skill_setup}"
+        f"mkdir -p {shlex.quote(steering_parent)}; "
+        f"if test -f {steering_source}; then "
+        f"cp {steering_source} {shlex.quote(steering_target)}; fi; "
+        f"cd {shlex.quote(workdir)}; "
         f"{cred_prelude}"
         f"{env_prefix} {cli}; "
-        f"__rc=$?; sync 2>/dev/null; "
+        f"__rc=$?; "
+        f"tar -C {shlex.quote(workdir)} {tar_excludes} "
+        f"-czf {shlex.quote(result_archive)} .; "
+        f"__pack_rc=$?; "
+        f"if [ $__pack_rc -eq 0 ]; then "
+        f"aws s3 cp {shlex.quote(result_archive)} "
+        f"{shlex.quote(archive_uri)} --region {shlex.quote(cli_region)} "
+        "--only-show-errors; __pack_rc=$?; fi; "
+        f"rm -f {shlex.quote(result_archive)}; "
         f'echo "$E1"; '
-        f"exit $__rc\n"
-    )
-
-
-def _build_read_command(run_subdir: str, artifact_rel: str, nonce: str) -> str:
-    """A separate shell command that reads the artifact back, sentinel-delimited.
-    Run after the build (own session) so S3Files write-back has settled."""
-    path = f"/mnt/s3files/{run_subdir}/{artifact_rel}"
-    # A leading newline before the END marker guarantees it starts on its own line
-    # even when the artifact has no trailing newline (else `cat` output and the
-    # marker share a line and the slice can't find the boundary). _slice strips the
-    # one extra newline. printf '\n' is portable.
-    return (
-        f"B2={_ART_BEGIN}-{nonce}; E2={_ART_END}-{nonce}; "
-        f'echo "$B2"; '
-        f"cat {shlex.quote(path)} 2>/dev/null; "
-        f"printf '\\n'; "
-        f'echo "$E2"; exit 0\n'
+        f"if [ $__rc -ne 0 ]; then exit $__rc; fi; "
+        f"exit $__pack_rc\n"
     )
 
 
@@ -500,10 +538,16 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     """One shell dispatch of the role's CLI; returns ``{exit, transcript, raw}``.
     The artifact read-back is done by the caller after a successful exit."""
     nonce = uuid.uuid4().hex[:12]
+    import runtime_stage  # noqa: PLC0415
+    archive_uri = runtime_stage.archive_uri(run_subdir, region)
+    run_id = run_subdir.replace("\\", "/").split("/", 1)[0]
+    skills_uri = runtime_stage.skills_archive_uri(run_id, agent_id, region)
     # runtimeSessionId must be >= 33 chars (AgentCore command-shell constraint);
     # a uuid4 hex is 32, so prefix it to clear the floor deterministically.
     session_id = "rex-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
-    command = _build_command(agent_id, prompt, run_subdir, artifact_rel, model, region, nonce)
+    command = _build_command(
+        agent_id, prompt, run_subdir, artifact_rel, model, region, nonce,
+        archive_uri=archive_uri, skills_uri=skills_uri)
     # asyncio.run needs no running loop; the engine calls this from a worker
     # thread that has none, so run directly.
     result = asyncio.run(_drive_shell(runtime_arn, command, region, on_line,
@@ -591,180 +635,58 @@ def _run_in_live_pty(session: Any, agent_id: str, prompt: str, run_subdir: str,
 
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
                                 artifact_rel: str | None, region: str) -> str:
-    """Read /mnt/s3files/<run>/<artifact> over a fresh one-shot command shell,
-    sentinel-delimited, retrying for S3Files write-back lag. Returns "" when the
-    file never appears (the caller decides how loud to fail).
-
-    STABILITY: write-back settles per file, so a first non-empty read can be a
-    PARTIAL file (a truncated artifact that still parses as text). Two
-    consecutive reads must agree before the content is accepted."""
-    artifact = ""
-    prev: str | None = None
-    for attempt in range(8):
-        read_nonce = uuid.uuid4().hex[:12]
-        read_cmd = _build_read_command(run_subdir, artifact_rel, read_nonce)
-        read_sid = "rexrd-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
-        rr = asyncio.run(_drive_shell(runtime_arn, read_cmd, region, None,
-                                      60.0, read_sid))
-        artifact = _slice(rr["raw"], f"{_ART_BEGIN}-{read_nonce}",
-                          f"{_ART_END}-{read_nonce}")
-        if artifact and prev == artifact:
-            return artifact             # two agreeing reads: settled
-        if artifact:
-            prev = artifact             # changed since last read: keep polling
-        time.sleep(2.0 * (attempt + 1))
-    return prev or artifact
-
-
-# Directories a build creates that are NOT the deliverable and must never enter the
-# read-back channel: installed dependencies, caches, and virtualenvs. They are
-# reproducible from the manifest the agent wrote, and one of them (a 615-file,
-# 4.6MB node_modules from an agent that ran `npm install`) broke a live run's tree
-# read-back outright. Kept as a small explicit list rather than a heuristic: the
-# engine must not start guessing which of the agent's files matter.
-#
-# `dist` and `build` are deliberately NOT here. A live validator checked a frontend's
-# pre-built `client/dist`, which existed on the shared workspace, but the transfer
-# silently dropped it and manufactured a red gate. Those names can be the artifact a
-# role chose to deliver, so the engine cannot classify them as caches.
-_TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
-                  ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next",
-                  ".cache")
+    """Read a named file from the role's atomically uploaded result archive."""
+    if not artifact_rel:
+        return ""
+    tree = read_tree_from_runtime(runtime_arn, run_subdir, ".", region)
+    data = tree.get(artifact_rel.replace("\\", "/"))
+    return data.decode("utf-8", errors="replace") if data is not None else ""
 
 
 def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
                          region: str | None = None) -> str:
-    """A cheap LISTING of the run workspace, for telling two failures apart.
-
-    When ``read_tree_from_runtime`` comes back empty the engine cannot tell "the
-    role wrote nothing" from "the transfer failed", and the difference decides
-    whether an attendee is told their agent produced no work or that a transport
-    hiccup is being retried. This asks the runtime for names only, so it stays
-    small no matter how large the workspace is (the payload is what broke the
-    real read-back). Excluded directories are not listed, because a workspace
-    containing only ``node_modules`` is not a deliverable.
-
-    Returns the listing, or "" when the probe itself fails: an inconclusive probe
-    must never be read as evidence either way.
-    """
-    path = f"/mnt/s3files/{run_subdir}"
-    prune = " ".join(f"-name {shlex.quote(p)} -prune -o" for p in _TREE_EXCLUDES)
-    nonce = uuid.uuid4().hex[:12]
-    cmd = (
-        f"B3={_ART_BEGIN}-{nonce}; E3={_ART_END}-{nonce}; "
-        f'echo "$B3"; '
-        f"find {shlex.quote(path)} {prune} -type f -print 2>/dev/null | head -50; "
-        f'echo "$E3"; exit 0\n'
-    )
-    sid = "rexls-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+    """List the atomically uploaded result archive without opening a Runtime shell."""
     try:
-        rr = asyncio.run(_drive_shell(runtime_arn, cmd,
-                                      region_for(runtime_arn, region),
-                                      None, 60.0, sid))
+        import runtime_stage  # noqa: PLC0415
+        return runtime_stage.list_archive(
+            run_subdir, region_for(runtime_arn, region))
     except Exception:  # noqa: BLE001 (a probe that cannot run proves nothing)
         return ""
-    return _clean(_slice(rr["raw"], f"{_ART_BEGIN}-{nonce}", f"{_ART_END}-{nonce}"))
 
 
 def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
                            region: str | None = None) -> dict[str, bytes]:
-    """Read a whole DIRECTORY (/mnt/s3files/<run>/<tree_rel>) back from the
-    runtime as {relative_path: bytes}, via one tar|base64 pass between the same
-    sentinels the single-file read uses. Lets a role deliver a multi-file
-    project (a real ui/ tree, not one hardcoded page) over the identical
-    fail-loud shell channel. Returns {} when the tree never appears.
-
-    STABILITY: S3Files write-back settles per file, so a tar taken mid-settle
-    can carry PARTIAL contents (a truncated app.js) yet still succeed. Two
-    consecutive reads must agree byte-for-byte before the tree is accepted.
-
-    SIZE: the tree crosses a WebSocket shell as base64 text, so it must stay
-    small. DEPENDENCY AND STATE DIRECTORIES ARE EXCLUDED AT THE TAR, not
-    afterwards: an agent that runs `npm install` creates a `node_modules` of
-    thousands of files, and a live run of the big preset produced 615 files /
-    4.6MB, which broke the read-back (the frontend role came back with only its
-    harness files, so the run failed the empty-tree guard and ended
-    ``needs_human`` even though the work was on the mount). Those directories are
-    reproducible from the manifest the agent wrote (package.json, requirements.txt)
-    and are not the deliverable, so excluding them loses nothing a reviewer needs.
-    The payload is gzipped for the same reason (``mode="r:*"`` reads either)."""
-    import base64  # noqa: PLC0415
-    import io  # noqa: PLC0415
-    import tarfile  # noqa: PLC0415
-    path = f"/mnt/s3files/{run_subdir}"
-    excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in _TREE_EXCLUDES)
-    prev: dict[str, bytes] | None = None
-    for attempt in range(8):
-        nonce = uuid.uuid4().hex[:12]
-        cmd = (
-            f"B2={_ART_BEGIN}-{nonce}; E2={_ART_END}-{nonce}; "
-            f'echo "$B2"; '
-            f"tar -C {shlex.quote(path)} {excludes} -czf - {shlex.quote(tree_rel)} "
-            f"2>/dev/null | base64; "
-            f"printf '\\n'; "
-            f'echo "$E2"; exit 0\n'
-        )
-        sid = "rextr-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
-        rr = asyncio.run(_drive_shell(runtime_arn, cmd,
-                                      region_for(runtime_arn, region),
-                                      None, 90.0, sid))
-        blob = _slice(rr["raw"], f"{_ART_BEGIN}-{nonce}", f"{_ART_END}-{nonce}")
-        if blob.strip():
-            try:
-                raw = base64.b64decode("".join(blob.split()))
-                out: dict[str, bytes] = {}
-                with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as tf:
-                    for m in tf.getmembers():
-                        if not m.isfile():
-                            continue
-                        rel = os.path.relpath(m.name, tree_rel)
-                        if rel.startswith(".."):
-                            continue  # never escape the tree
-                        f = tf.extractfile(m)
-                        if f is not None:
-                            out[rel] = f.read()
-                if out and prev == out:
-                    return out          # two agreeing reads: settled
-                if out:
-                    prev = out          # changed since last read: keep polling
-            except Exception:  # noqa: BLE001 (corrupt slice -> retry)
-                pass
-        time.sleep(2.0 * (attempt + 1))
-    return prev or {}
+    """Read source bytes from one S3 object uploaded at the end of the role turn."""
+    import runtime_stage  # noqa: PLC0415
+    tree = runtime_stage.read_archive(
+        run_subdir, region_for(runtime_arn, region))
+    normalized = (tree_rel or ".").replace("\\", "/").strip("/")
+    if normalized in ("", "."):
+        return tree
+    prefix = normalized + "/"
+    return {
+        path[len(prefix):]: data
+        for path, data in tree.items()
+        if path.startswith(prefix)
+    }
 
 
 def clone_runtime_tree(runtime_arn: str, source_subdir: str, dest_subdir: str,
                        region: str | None = None) -> None:
-    """Clone immutable mounted input into a role's fresh writable checkout.
-
-    No GitHub credential enters the Runtime. The coordinator stages the source
-    through S3 Files, then this command copies it to the role's unique work id.
-    """
+    """Clone a tracked checkout with one S3 server-side object copy."""
     for label, value in (("source", source_subdir), ("destination", dest_subdir)):
         if (not value or os.path.isabs(value)
                 or ".." in value.replace("\\", "/").split("/")):
             raise RoleExecutionError(
                 f"ROLE_EXECUTION_ERROR: unsafe {label} Runtime subdirectory")
-    source = f"/mnt/s3files/{source_subdir}"
-    dest = f"/mnt/s3files/{dest_subdir}"
-    nonce = uuid.uuid4().hex[:12]
-    command = (
-        "set -eu; "
-        f"test -d {shlex.quote(source)}; "
-        f"rm -rf {shlex.quote(dest)}; "
-        f"mkdir -p {shlex.quote(dest)}; "
-        f"cp -R --no-preserve=all "
-        f"{shlex.quote(source)}/. {shlex.quote(dest)}/; "
-        f"echo CLONE_READY_{nonce}\n"
-    )
-    sid = "rexclone-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
-    result = asyncio.run(_drive_shell(
-        runtime_arn, command, region_for(runtime_arn, region),
-        None, 120.0, sid))
-    if result.get("exit") != 0 or f"CLONE_READY_{nonce}" not in result.get("raw", ""):
+    try:
+        import runtime_stage  # noqa: PLC0415
+        runtime_stage.clone_archive(
+            source_subdir, dest_subdir, region_for(runtime_arn, region))
+    except Exception as exc:
         raise RoleExecutionError(
-            "ROLE_EXECUTION_ERROR: the Runtime could not clone the integration "
-            f"candidate into {dest_subdir}; output: {result.get('raw', '')[-400:]}")
+            "ROLE_EXECUTION_ERROR: the coordinator could not clone the tracked "
+            f"checkout archive into {dest_subdir}: {exc}") from exc
 
 
 def _live_session_for(agent_id: str, runtime_arn: str,
@@ -844,8 +766,11 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     # dispatch_env() builds the same mapping the headless path uses, and the
     # session layer opens a fresh PTY launched with it (a human's own terminal,
     # launched without this run's identity, is never reused for a build).
-    live = _live_session_for(agent_id, runtime_arn,
-                             launch_env=dispatch_env(agent_id, run_subdir))
+    # Orchestrated work uses a local checkout hydrated from one S3 object. A
+    # long-lived TUI session cannot atomically upload that checkout when its turn
+    # ends, so builds use the bounded headless shell. Human-opened TUI sessions
+    # remain available on the Agents page for direct exploration.
+    live = None
     if live is not None:
         return _run_in_live_pty(live, agent_id, prompt, run_subdir, artifact_rel,
                                 _live_region, on_line, timeout_s)

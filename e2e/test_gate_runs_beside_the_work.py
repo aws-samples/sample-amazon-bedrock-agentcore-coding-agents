@@ -1,16 +1,15 @@
 """The authored check must run BESIDE the work it was authored beside.
 
-Every role shares ONE directory in the runtime workspace (`/mnt/s3files/<run_id>`),
-so the validator writes its check next to the builders' files and addresses them as
-siblings: `os.path.dirname(__file__) + "/server.py"`, or plain `./server.py`. That is
-correct where it was written, and it is what real validators actually emit.
+The validator receives the combined candidate in its isolated local checkout, so it
+writes its check next to the builders' files and addresses them as siblings:
+`os.path.dirname(__file__) + "/server.py"`, or plain `./server.py`. That is correct
+where it was written, and it is what validators actually emit.
 
-The engine then reads each role's tree back into a SEPARATE `role-<agent>` directory,
-which compose needs so every file is attributable to its author. That split used to
-leave the check ALONE in the validator's directory with the deliverable one level
-away, so the gate ran it somewhere its siblings did not exist: every file check
-failed, no service started, and a CORRECT deliverable was graded RED, burning the
-bounded retry to `needs_human`.
+The engine reads each role's archive into a separate `role-<agent>` directory, which
+compose needs so every file is attributable to its author. That split must not leave
+the check alone in the validator's directory with the deliverable one level away.
+The gate runs from an assembled review directory where the candidate and authored
+check are siblings.
 
 Verified on a live event box (2026-07-26): the same validator-authored check scored
 `0 passed, 4 failed` in the validator's directory and `45 passed, 0 failed` beside
@@ -20,11 +19,13 @@ the work.
 from __future__ import annotations
 
 import importlib
+import io
 import inspect
 import os
 import stat
 import sys
 import shutil
+import tarfile
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
@@ -62,6 +63,16 @@ def test_supported_toolchains_cross_every_execution_boundary(
         str(source), str(destination)) == 1
     assert (destination / "dist" / "app.js").read_text() == (
         "console.log('ready')\n")
+
+    (source / "node_modules" / "left-pad").mkdir(parents=True)
+    (source / "node_modules" / "left-pad" / "index.js").write_text(
+        "module.exports = true\n")
+    archive, count = runtime_stage._pack_trees([(str(source), "")])
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as tf:
+        names = {member.name for member in tf.getmembers() if member.isfile()}
+    assert count == 1
+    assert "dist/app.js" in names
+    assert not any("node_modules" in name for name in names)
 
     candidate = tmp_path / "candidate"
     (candidate / "dist").mkdir(parents=True)

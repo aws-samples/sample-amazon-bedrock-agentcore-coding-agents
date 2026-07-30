@@ -93,10 +93,8 @@ class Verdict:
 
 # ------------------------------------------------------------------ the gate
 # The wall clock for the authored check. It has to cover the check's own readiness
-# poll PLUS every assertion it then makes, and on this host the readiness poll alone
-# can legitimately need ~47s: the workspace is an NFS mount and a deliverable's first
-# start usually creates a virtualenv and installs dependencies there (the same work
-# takes 7s on local disk). At 120s a check that waits the 60s its steering now
+# poll PLUS every assertion it then makes. A first start may create an environment
+# and install declared dependencies. At 120s a check that waits the 60s its steering
 # requires had barely a minute left for the actual checks, so the budget itself was
 # pushing checks to under-wait.
 #
@@ -248,10 +246,9 @@ def run_gate(run: Any) -> dict:
     # GATE_TIMEOUT_S is a FACT about the environment, not a hint about the verdict, so
     # handing it over changes nothing about what the check decides. Withholding it made
     # checks guess: four live runs in a row failed on a readiness poll the author had
-    # budgeted 15-30s, while the deliverable's own start path spent 47s creating a venv
-    # and pip-installing ON THE S3 FILES NFS MOUNT (the same work takes 7s on local
-    # disk, so nothing the validator could read would tell it). Those were red gates on
-    # working services, which is the one failure this file must not manufacture.
+    # budgeted 15-30s while the deliverable was still preparing declared
+    # dependencies. Those were red gates on working services, which is the one
+    # failure this file must not manufacture.
     env = {**os.environ,
            "WORKSHOP_WORK_DIR": work_dir,
            "WORKSHOP_TASK": getattr(run, "task", "") or "",
