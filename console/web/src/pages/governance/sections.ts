@@ -20,7 +20,7 @@ export interface GovSection {
 export const GOV_SECTIONS: GovSection[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, sub: 'Fleet health at a glance', title: 'Governance', subtitle: "Every number is computed from this machine's run ledger over the metrics API." },
   { id: 'runtimes', label: 'Runtimes', icon: Cpu, sub: 'Deployed fleet & live probe', title: 'Runtimes', subtitle: 'See the deployed AgentCore Runtimes, their wiring, fleet size, and the result of a one-line probe inside a Runtime.' },
-  { id: 'sessions', label: 'Sessions', icon: ListTree, sub: 'Inventory, attribution & kill switch', title: 'Sessions', subtitle: 'Every Runtime session, its recorded submitter, and a kill switch. Click a row for evidence.' },
+  { id: 'sessions', label: 'Sessions', icon: ListTree, sub: 'See and stop active sessions', title: 'Sessions', subtitle: 'See who started each Runtime session, open its details, or stop it when it is no longer needed.' },
   { id: 'cost', label: 'Cost', icon: DollarSign, sub: 'Per-agent & per-user spend', title: 'Cost', subtitle: 'The per-user cost surface groups ledger records by agent or authenticated submitter.' },
   { id: 'audit', label: 'Audit', icon: ScrollText, sub: 'Append-only ledger trail', title: 'Audit trail', subtitle: 'Every recorded ledger event appears as one auditable line.' },
   { id: 'policies', label: 'Guardrails', icon: ShieldCheck, sub: 'Cedar rules the harness enforces', title: 'Guardrails', subtitle: 'The rule set the harness screens every action against, decided in code, not from a dashboard.' },

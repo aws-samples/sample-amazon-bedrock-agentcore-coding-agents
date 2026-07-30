@@ -89,7 +89,7 @@ class RouteError(ValueError):
 # is not a valid route.
 PRESETS: dict[str, dict[str, Any]] = {
     "service-from-scratch": {
-        "title": "Build a real HTTP API (backend only)",
+        "title": "Build an HTTP API (backend only)",
         "needs": ["backend"],
         "task": (
             "Build an HTTP API for a personal library: books with a title, author, "
@@ -105,7 +105,7 @@ PRESETS: dict[str, dict[str, Any]] = {
             "an id that does not exist); and the API must be documented enough that a "
             "caller can use it without reading the source.\n"
             "\n"
-            "Build it the way a real service is built: a proper web framework rather "
+            "Build it as a maintained service. Use a web framework rather "
             "than a hand-rolled request handler, dependencies declared in the "
             "manifest for your ecosystem, and the concerns (routing, domain logic, "
             "storage, validation) in separate modules. Decide the language, the "
@@ -126,7 +126,7 @@ PRESETS: dict[str, dict[str, Any]] = {
             "all of the above against that same service (the page never owns the "
             "data).\n"
             "\n"
-            "Build both sides the way real ones are built: a proper web framework on "
+            "Build both sides as a maintained project. Use a web framework on "
             "the service side, a component-based UI rather than one hand-written file "
             "on the page side, and dependencies declared in the manifest for your "
             "ecosystem. Decide the languages, the frameworks, and the storage "
@@ -158,10 +158,10 @@ PRESETS: dict[str, dict[str, Any]] = {
             "transition must be rejected. Include a page a person can use to do all "
             "of this against the same service.\n"
             "\n"
-            "Build it the way a team would build a real one: a proper web framework "
+            "Build it as a team project. Use a web framework "
             "rather than a hand-rolled request handler, a component-based UI rather "
             "than one hand-written file, dependencies declared in the manifest for "
-            "your ecosystem, and the concerns split into modules with real names. A "
+            "your ecosystem, and split the concerns into clearly named modules. A "
             "single file that happens to pass is not the deliverable.\n"
             "\n"
             "Decide the language, the framework, the storage, the protocol, the file "
@@ -170,9 +170,12 @@ PRESETS: dict[str, dict[str, Any]] = {
     "cli-tool": {
         "title": "Build a command line tool",
         "needs": ["backend"],
-        "task": ("Write a command line tool that reads lines on stdin and reports the "
-                 "word, line, and character counts. It prints its result on stdout and "
-                 "exits nonzero on bad input."),
+        "task": (
+            "Write a command line tool that reads UTF-8 text on stdin and reports "
+            "line, word, and character counts. For valid input, use the same counting "
+            "rules and order as `wc -l -w -m`, then print the three integers on one "
+            "space-separated line. Exit nonzero with a clear stderr message when the "
+            "input is not valid UTF-8."),
     },
     "add-a-feature": {
         "title": "Extend something that already exists",

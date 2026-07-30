@@ -31,6 +31,8 @@ import secrets
 import sys
 import time
 from binascii import Error as BinasciiError
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, unquote
 
 from fastapi import FastAPI, Request, Response
 from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
@@ -145,6 +147,68 @@ def _current_user(request: Request) -> cognito_auth.CognitoUser | None:
 _MOUNTS = {"dev": "s1", "orchestrator": "s2", "metrics": "s3"}
 
 
+def _live_runtime_rows(query: str) -> list[dict]:
+    """Expose currently open Runtime terminals in the governance session list."""
+    params = parse_qs(query)
+    agent_filter = (params.get("assistant_type") or [None])[0]
+    user_filter = (params.get("user_id") or [None])[0]
+    raw_window = (params.get("window") or [None])[0]
+    try:
+        window_minutes = float(raw_window) if raw_window is not None else None
+    except (TypeError, ValueError):
+        window_minutes = None
+
+    now = datetime.now(timezone.utc)
+    rows = []
+    for session in runtime_shell.list_sessions().get("sessions", []):
+        if not session.get("alive"):
+            continue
+        agent_id = str(session.get("agent_id") or "")
+        user_id = str(session.get("user_id") or "unknown")
+        started_at = str(session.get("started_at") or "")
+        if agent_filter and agent_id != agent_filter:
+            continue
+        if user_filter and user_id != user_filter:
+            continue
+        if window_minutes is not None and started_at:
+            try:
+                started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                if (now - started).total_seconds() > window_minutes * 60:
+                    continue
+            except ValueError:
+                continue
+        rows.append({
+            "session_id": session["session_id"],
+            "invocation_number": 1,
+            "runtime_arn": session.get("runtime_arn"),
+            "assistant_type": agent_id,
+            "user_id": user_id,
+            "started_at": started_at,
+            "issue_url": None,
+            "claude_running": True,
+        })
+    return rows
+
+
+def _stop_live_runtime_session(session_id: str) -> tuple[int, dict] | None:
+    """Stop a registered command-shell session by its exact AgentCore ID."""
+    session = runtime_shell.get_session(session_id)
+    if session is None:
+        return None
+    try:
+        result = metrics_api.metrics_lib._stop_runtime_session(
+            session.runtime_arn, session.session_id)
+    except Exception as exc:  # noqa: BLE001 (surface the AWS failure)
+        return 502, {
+            "session_id": session_id,
+            "stopped": False,
+            "mechanism": "StopRuntimeSession",
+            "error": str(exc),
+        }
+    runtime_shell.close_runtime_session(session_id)
+    return 200, {"session_id": session_id, "stopped": True, **result}
+
+
 def _route_api(method: str, full_path: str, query: str, body: dict | None):
     """Forward /api/<mount>/<resource> to the right engine.
     full_path looks like /api/orchestrator/runs -> mount=orchestrator, sub=/api/runs."""
@@ -158,7 +222,29 @@ def _route_api(method: str, full_path: str, query: str, body: dict | None):
     if mount == "orchestrator":
         return connection_api.dispatch(method, sub, body, query)
     if mount == "metrics":
-        return metrics_api.dispatch(method, sub, query, body)
+        if method == "POST" and sub.startswith("/api/sessions/") and sub.endswith("/stop"):
+            session_id = unquote(sub.removeprefix("/api/sessions/").removesuffix("/stop"))
+            stopped = _stop_live_runtime_session(session_id)
+            if stopped is not None:
+                return stopped
+        code, out = metrics_api.dispatch(method, sub, query, body)
+        if code == 200 and method == "GET" and sub == "/api/sessions":
+            existing = {
+                str(row.get("session_id"))
+                for row in out.get("sessions", [])
+            }
+            live = [
+                row for row in _live_runtime_rows(query)
+                if row["session_id"] not in existing
+            ]
+            out = {**out, "sessions": live + out.get("sessions", [])}
+        elif code == 200 and method == "GET" and sub == "/api/dashboard":
+            live_count = len(_live_runtime_rows(""))
+            out = {
+                **out,
+                "active_sessions": int(out.get("active_sessions", 0)) + live_count,
+            }
+        return code, out
     return 404, {"error": "unknown API mount", "mount": mount}
 
 
@@ -350,11 +436,14 @@ async def runtime_session_open(request: Request):
     rows = body.get("rows", 24)
     # Optional: which wired instance to open against (a fleet has more than one).
     instance_arn = body.get("instance_arn") or None
+    user = _current_user(request)
+    user_id = user.email if user else CONSOLE_USER
     # open_runtime_session reads runtime_config (file I/O) before spawning the
     # connection thread; run it off the event loop so a slow read can't stall the
     # loop and freeze the other pages.
     result = await run_in_threadpool(
-        runtime_shell.open_runtime_session, agent_id, cols, rows, instance_arn)
+        runtime_shell.open_runtime_session, agent_id, cols, rows, instance_arn,
+        "user", user_id)
     if "error" in result:
         return JSONResponse(result, status_code=400)
     return JSONResponse(result, status_code=201)

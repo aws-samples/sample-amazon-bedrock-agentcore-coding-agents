@@ -150,7 +150,8 @@ def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
             env.update(identity.to_otel_env())
     except Exception:
         pass
-    _corr = f"run.id={run_subdir},agent.id={agent_id}"
+    run_id = run_subdir.split("/", 1)[0]
+    _corr = f"run.id={run_id},agent.id={agent_id}"
     _existing_res = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
     env["OTEL_RESOURCE_ATTRIBUTES"] = (
         f"{_existing_res},{_corr}" if _existing_res else _corr)
@@ -210,7 +211,8 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     # own agent.id), so one Logs Insights query can group a single task's cost
     # across the fleet even though the CLIs cannot join a shared trace tree.
     # Merged (never overwritten) so the identity stamp above survives intact.
-    _corr = f"run.id={run_subdir},agent.id={agent_id}"
+    run_id = run_subdir.split("/", 1)[0]
+    _corr = f"run.id={run_id},agent.id={agent_id}"
     _existing_res = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
     env["OTEL_RESOURCE_ATTRIBUTES"] = (
         f"{_existing_res},{_corr}" if _existing_res else _corr)
@@ -274,7 +276,6 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"P={shlex.quote(prompt)}; "
         f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; "
         f'echo "$B1"; '
-        f"{peruser_prefix}"
         f"rm -rf {shlex.quote(workdir)} "
         f"{shlex.quote(source_archive)} {shlex.quote(result_archive)}; "
         f"mkdir -p {shlex.quote(workdir)}; "
@@ -294,8 +295,11 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"if test -f {steering_source}; then "
         f"cp {steering_source} {shlex.quote(steering_target)}; fi; "
         f"cd {shlex.quote(workdir)}; "
+        f"("
+        f"{peruser_prefix}"
         f"{cred_prelude}"
-        f"{env_prefix} {cli}; "
+        f"{env_prefix} {cli}"
+        f"); "
         f"__rc=$?; "
         f"tar -C {shlex.quote(workdir)} {tar_excludes} "
         f"-czf {shlex.quote(result_archive)} .; "

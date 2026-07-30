@@ -71,6 +71,7 @@ export function SessionsSection() {
 
   async function kill(e: React.MouseEvent, sessionId: string) {
     e.stopPropagation(); // don't open the drill-down when killing
+    if (!window.confirm('Stop this session? Files saved in shared storage are kept.')) return;
     setStopping((m) => ({ ...m, [sessionId]: true }));
     try {
       await stopSession(sessionId);
@@ -126,14 +127,14 @@ export function SessionsSection() {
       <div className="grid grid-cols-3 gap-4">
         <StatCard accent label="Active sessions" value={dash ? fmtNum(dash.active_sessions) : '-'} hint="running now" delay={0} />
         <StatCard label="Total cost" value={dash ? `$${Object.values(dash.cost_by_agent).reduce((s, n) => s + n, 0).toFixed(2)}` : '-'} hint="attributed" delay={60} />
-        <StatCard label="p95 latency" value={dash ? fmtSeconds(dash.p95_latency_ms) : '-'} hint="fleet-wide" delay={120} />
+        <StatCard label="p95 latency" value={dash ? fmtSeconds(dash.p95_latency_ms) : '-'} hint="all sessions" delay={120} />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           {rows.length} session{rows.length === 1 ? '' : 's'}
-          {windowKey !== 'all' ? ` in the last ${WINDOWS.find((w) => w.key === windowKey)?.label}` : ' on the ledger'}
-          {pageCount > 1 ? ` · page ${page + 1} of ${pageCount}` : ''} · click a row for recorded attribution
+          {windowKey !== 'all' ? ` in the last ${WINDOWS.find((w) => w.key === windowKey)?.label}` : ' recorded'}
+          {pageCount > 1 ? ` · page ${page + 1} of ${pageCount}` : ''} · select a row to see who ran it
         </p>
         <div className="flex items-center gap-2">
           {/* Lookback presets: each re-queries the sessions endpoint with a real
@@ -141,10 +142,12 @@ export function SessionsSection() {
           <div className="flex items-center rounded-lg border border-border bg-card p-0.5 text-xs font-medium">
             {WINDOWS.map((w) => (
               <button
+                type="button"
                 key={w.key}
                 onClick={() => setWindowKey(w.key)}
+                aria-pressed={windowKey === w.key}
                 className={cn(
-                  'rounded-md px-2.5 py-1 transition-colors',
+                  'rounded-md px-2.5 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   windowKey === w.key ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
                 )}
               >
@@ -155,6 +158,9 @@ export function SessionsSection() {
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            aria-label="Filter sessions"
+            name="session-filter"
+            autoComplete="off"
             placeholder="Filter sessions…"
             className="h-8 w-56"
           />
@@ -173,7 +179,7 @@ export function SessionsSection() {
                 <Th label="User" k="user" />
                 <Th label="Started" k="started" />
                 <Th label="State" k="state" />
-                <th className="px-3 py-2 text-right font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Kill</th>
+                <th className="px-3 py-2 text-right font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -184,8 +190,17 @@ export function SessionsSection() {
                   <tr
                     key={s.session_id}
                     onClick={() => setSelected(s)}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelected(s);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-label={`Open details for session ${s.session_id}`}
                     className={cn(
-                      'cursor-pointer border-t border-border transition-colors',
+                      'cursor-pointer border-t border-border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                       selected?.session_id === s.session_id ? 'bg-muted/60' : 'hover:bg-muted/40',
                     )}
                   >
@@ -203,9 +218,11 @@ export function SessionsSection() {
                     </td>
                     <td className="px-3 py-2.5 text-right">
                       <button
+                        type="button"
                         onClick={(e) => kill(e, s.session_id)}
                         disabled={isStopped || busy}
-                        className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-40"
+                        aria-live="polite"
+                        className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
                       >
                         {busy ? 'Stopping…' : 'Stop'}
                       </button>
@@ -221,17 +238,19 @@ export function SessionsSection() {
       {pageCount > 1 && (
         <div className="flex items-center justify-end gap-2">
           <button
+            type="button"
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={page === 0}
-            className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
           >
             Prev
           </button>
           <span className="text-xs tabular-nums text-muted-foreground">{page + 1} / {pageCount}</span>
           <button
+            type="button"
             onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
             disabled={page >= pageCount - 1}
-            className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
           >
             Next
           </button>

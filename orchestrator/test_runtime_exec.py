@@ -211,6 +211,16 @@ def test_dispatch_always_stamps_task_correlation(monkeypatch):
         assert f"agent.id={agent_id}" in cmd
 
 
+def test_dispatch_stamps_the_run_id_not_the_exchange_path(monkeypatch):
+    cmd = runtime_exec._build_command(
+        "claude-code", "build",
+        "run_test_001/work/work_claude-code_123", None,
+        "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
+    )
+    assert "run.id=run_test_001," in cmd
+    assert "run.id=run_test_001/work/" not in cmd
+
+
 def test_correlation_merges_with_identity_stamp(monkeypatch):
     # The correlation stamp must EXTEND the seam's resource attributes, never
     # clobber them: post-fix, one OTEL_RESOURCE_ATTRIBUTES value carries both.
@@ -241,3 +251,42 @@ def test_dispatch_uses_local_checkout_and_one_s3_archive(monkeypatch):
     assert "s3://bucket/run_1/work/backend.tar.gz" in cmd
     assert "--exclude=node_modules" in cmd
     assert "/mnt/s3files/run_1/work/backend" not in cmd
+
+
+def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
+    """Runtime transport keeps the execution role even for a signed-in user.
+
+    The per-user role is intentionally narrower than the Runtime role and cannot
+    read the exchange bucket. Its temporary credentials therefore belong inside
+    the CLI subshell, after source download and before result upload.
+    """
+    import identity_baggage
+    import peruser
+
+    identity_baggage.set_current_identity(identity_baggage.UserIdentity(
+        user_id="attendee-sub", email="attendee@workshop.aws"))
+    monkeypatch.setenv(
+        "PERUSER_ROLE_ARN",
+        "arn:aws:iam::123456789012:role/workshop-per-user",
+    )
+    monkeypatch.setattr(
+        peruser,
+        "assume_as_user",
+        lambda *_args: "__ASSUME_USER_CREDENTIALS__; ",
+    )
+
+    archive = "s3://bucket/run_1/work/backend.tar.gz"
+    cmd = runtime_exec._build_command(
+        "claude-code", "build", "run_1/work/backend", None,
+        "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
+        archive_uri=archive,
+    )
+
+    download = cmd.index(f"aws s3 cp {archive} /tmp/workshop-source-abc123.tar.gz")
+    assume = cmd.index("__ASSUME_USER_CREDENTIALS__")
+    subshell_end = cmd.index("); __rc=$?", assume)
+    upload = cmd.index(
+        f"aws s3 cp /tmp/workshop-result-abc123.tar.gz {archive}",
+        subshell_end,
+    )
+    assert download < assume < subshell_end < upload

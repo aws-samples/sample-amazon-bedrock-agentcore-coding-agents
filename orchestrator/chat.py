@@ -113,6 +113,10 @@ describe the preset, or ask a clarifying question first. This applies to any id 
 the user supplies; the tool and routing layer validate it and fail loud if it does \
 not exist.
 
+After `run_build`, report only the roles in the tool result's `agents` list. Never \
+infer a role count from the roster or claim that every role works in parallel. \
+Builders may run in parallel, but the checker waits for their combined work.
+
 ## Reading back a run you did not start
 run_status(run_id) answers for runs from EARLIER sessions too: the engine persists \
 every verdict, so an expired session no longer loses the result. If the user has \
@@ -271,8 +275,16 @@ def build_tools() -> list:
                 "hint": "No run was started. Ask the user what they want built, in "
                         "their own words, or offer a starting point from list_presets.",
             })
-        return json.dumps({"run_id": _kick(None, task, preset=preset or None),
-                           "kind": "build", "status": "started"})
+        agents = (
+            _presets.resolve(preset=preset).agents
+            if preset else list(_roles.roster_ids())
+        )
+        return json.dumps({
+            "run_id": _kick(None, task, preset=preset or None),
+            "kind": "build",
+            "status": "started",
+            "agents": agents,
+        })
 
     @tool
     def run_status(run_id: str) -> str:

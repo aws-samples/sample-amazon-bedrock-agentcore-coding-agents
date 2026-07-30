@@ -49,6 +49,14 @@ def test_round_two_tells_the_validator_its_own_check_may_be_at_fault():
         "so a check that blamed working software will blame it again")
 
 
+def test_the_validator_does_not_contradict_its_own_runtime_oracle():
+    p = _validator_prompt().lower()
+    assert "runtime oracle" in p and "hand-entered" in p, (
+        "a live validator check matched the named standard on every oracle-based "
+        "case, then rejected the same implementation using incorrect manually "
+        "counted values")
+
+
 def test_the_steering_says_the_same_thing_and_the_baked_copy_matches():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shipped = os.path.join(repo, "orchestrator", "harness",
@@ -58,3 +66,4 @@ def test_the_steering_says_the_same_thing_and_the_baked_copy_matches():
     b = open(baked, encoding="utf-8").read()
     assert a == b, "the baked steering drifted from the shipped one"
     assert "YOUR CHECK STARTS IT" in a, a[:400]
+    assert "runtime oracle" in a.lower()

@@ -311,11 +311,15 @@ def test_list_sessions_reports_owner_and_liveness():
     it must carry opened_by (user vs orchestrator) and alive."""
     s = _FakeShellSession("claude-code")
     s.opened_by = "orchestrator"
+    s.user_id = "attendee@workshop.aws"
+    s.started_at = "2026-07-30T07:45:21Z"
     _register(s)
     try:
         rows = runtime_shell.list_sessions("claude-code")["sessions"]
         mine = [r for r in rows if r["session_id"] == s.session_id]
         assert mine and mine[0]["opened_by"] == "orchestrator"
         assert mine[0]["alive"] is True and mine[0]["busy"] is False
+        assert mine[0]["user_id"] == "attendee@workshop.aws"
+        assert mine[0]["started_at"] == "2026-07-30T07:45:21Z"
     finally:
         runtime_shell._sessions.pop(s.session_id, None)

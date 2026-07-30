@@ -90,7 +90,10 @@ function Workflow({ run, builders }: { run: RunDetail; builders: WorkItem[] }) {
 
   return (
     <div className="overflow-x-auto pb-1">
-      <ol className="grid min-w-[840px] grid-cols-7" aria-label="Integration workflow">
+      <ol
+        className="grid min-w-[560px] grid-cols-7 sm:min-w-0"
+        aria-label="Integration workflow"
+      >
         {WORKFLOW.map(({ label, icon: Icon }, index) => {
           const isFailed = failed === index;
           const isDone = index < current || (index === current && terminalPass);
@@ -132,7 +135,9 @@ function Workflow({ run, builders }: { run: RunDetail; builders: WorkItem[] }) {
                       ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
                       : <Circle aria-hidden="true" className="size-2.5" />}
               </span>
-              <span className="mt-1.5 block truncate text-[11px] font-medium">{label}</span>
+              <span className="mt-1.5 flex min-h-8 items-start justify-center text-[11px] font-medium leading-4">
+                {label}
+              </span>
               <Icon aria-hidden="true" className="mx-auto mt-1 size-3 text-muted-foreground" />
             </li>
           );

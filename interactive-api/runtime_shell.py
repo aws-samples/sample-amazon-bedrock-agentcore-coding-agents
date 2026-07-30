@@ -22,6 +22,7 @@ import sys
 import threading
 import uuid
 from contextlib import AsyncExitStack
+from datetime import datetime, timezone
 from typing import Any
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -94,6 +95,7 @@ class RuntimeShellSession:
 
     def __init__(self, session_id: str, agent_id: str, runtime_arn: str,
                  opened_by: str = "user",
+                 user_id: str = "unknown",
                  launch_env: dict[str, str] | None = None):
         self.session_id = session_id
         self.agent_id = agent_id
@@ -102,6 +104,11 @@ class RuntimeShellSession:
         # dispatch). Display-only; both kinds are the SAME live session and both
         # the human and the engine can read/type into it (server fan-out).
         self.opened_by = opened_by
+        self.user_id = user_id
+        self.started_at = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
         # Per-run env exported before the CLI launch so the agent inherits
         # telemetry-enable, identity stamp, and run.id/agent.id correlation.
         self._launch_env = launch_env
@@ -357,6 +364,7 @@ def get_runtime_arn(agent_id: str, instance_arn: str | None = None) -> str | Non
 def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
                          instance_arn: str | None = None,
                          opened_by: str = "user",
+                         user_id: str = "unknown",
                          launch_env: dict[str, str] | None = None) -> dict:
     """Open a real runtime shell session. Fails loud if no ARN wired (or if a
     requested instance is not one of the role's wired instances).
@@ -381,6 +389,7 @@ def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
 
     session_id = f"console-{uuid.uuid4().hex}{uuid.uuid4().hex[:4]}"
     session = RuntimeShellSession(session_id, agent_id, arn, opened_by=opened_by,
+                                  user_id=user_id,
                                   launch_env=launch_env)
     session.start(cols, rows)
 
@@ -434,6 +443,8 @@ def list_sessions(agent_id: str | None = None) -> dict:
             {"session_id": s.session_id, "agent_id": s.agent_id,
              "runtime_arn": s.runtime_arn, "alive": s.alive,
              "opened_by": s.opened_by, "busy": s.busy,
+             "user_id": getattr(s, "user_id", "unknown"),
+             "started_at": getattr(s, "started_at", ""),
              "buffer_chars": len(s.buffer)}
             for s in _sessions.values()
             if agent_id is None or s.agent_id == agent_id

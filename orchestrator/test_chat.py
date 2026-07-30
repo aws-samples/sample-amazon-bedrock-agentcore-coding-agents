@@ -177,7 +177,20 @@ def test_run_build_starts_a_buildable_route(tmp_path, monkeypatch):
     _wire_all(tmp_path, monkeypatch)
     out = json.loads(_call("run_build", task="convert the cost analyzer module to an MCP server"))
     assert out["status"] == "started" and out["run_id"].startswith("run_")
+    assert out["agents"] == list(chat._roles.roster_ids())
     assert chat.ENGINE.get(out["run_id"]) is not None
+
+
+def test_run_build_reports_the_exact_preset_roles(tmp_path, monkeypatch):
+    """The chat model must not guess a role count from the full roster."""
+    _wire_all(tmp_path, monkeypatch)
+    out = json.loads(_call("run_build", task="", preset="cli-tool"))
+    expected = [
+        *chat._roles.by_capability("backend"),
+        *chat._roles.checker_ids(),
+    ]
+    assert out["agents"] == list(dict.fromkeys(expected))
+    assert set(out["agents"]).isdisjoint(chat._roles.by_capability("frontend"))
 
 
 def test_run_build_refuses_an_empty_task_without_minting_a_run(tmp_path, monkeypatch):
@@ -202,6 +215,8 @@ def test_run_build_accepts_any_request_at_all(tmp_path, monkeypatch):
 
 def test_system_prompt_tells_the_model_to_pass_the_task_verbatim():
     assert "VERBATIM" in chat.SYSTEM_PROMPT
+    assert "tool result's `agents` list" in chat.SYSTEM_PROMPT
+    assert "checker waits for their combined work" in chat.SYSTEM_PROMPT
 
 
 # --------------------------------------------------- the dynamic model catalog

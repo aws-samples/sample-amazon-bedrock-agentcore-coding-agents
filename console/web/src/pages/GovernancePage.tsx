@@ -43,7 +43,11 @@ export function GovernancePage() {
         })}
       </div>
 
-      <SectionHeader title={current.title} subtitle={current.subtitle} source="ledger" />
+      <SectionHeader
+        title={current.title}
+        subtitle={current.subtitle}
+        source={current.id === 'sessions' ? undefined : 'ledger'}
+      />
 
       {current.id === 'overview' && <OverviewSection />}
       {current.id === 'runtimes' && <RuntimesSection />}

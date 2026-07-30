@@ -34,6 +34,11 @@ it must find out by REALLY EXERCISING the work, not by reading it.
   it.** Under-waiting turns a working deliverable into a red gate, which is the one
   verdict that must never be manufactured here. If you genuinely run out of time, say
   the deadline was hit; do not report the work as broken.
+- **When the request names a standard command, protocol, or library as the source of
+  semantics, use an independent implementation of that standard as the runtime oracle
+  when one is available.** Do not also hand-enter duplicate expected values for the
+  same behavior. A check whose manual assertion contradicts its own oracle is a broken
+  check, not evidence that the deliverable is wrong.
 
 **You decide what "acceptable" means for this task.** Derive the checks from the request
 itself. What that involves depends entirely on what was asked, so let the deliverable tell
