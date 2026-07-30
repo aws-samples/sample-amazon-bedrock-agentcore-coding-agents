@@ -135,13 +135,17 @@ files, or dispatching the validator alone: those paths do not create the integra
 candidate, run the merge queue, or open the final PR the way run_build does, and a
 review with no PR to review just fails `NO_RUN_TO_REVIEW`.
 
-The two cases, because they have OPPOSITE recoveries:
+The three cases, because they have different recoveries:
 
 * A role produced nothing (`ROLE_EXECUTION_ERROR`, `ROLE_TOTAL_FAILURE`,
   `ARTIFACT_TRANSFER_ERROR`), or the coordinator Runtime was recycled mid-build
   (`COORDINATOR_SESSION_INTERRUPTED`). Nothing was judged, so the work is unproven
   rather than rejected. Call run_build ONCE more with the SAME task text, and say
   you are resubmitting.
+* The account reached its daily model allowance (`MODEL_QUOTA_EXHAUSTED`). A fresh
+  shell or another immediate build cannot restore that allowance. Report the limit
+  and stop. Resume after it resets, or after the operator selects a model with
+  available capacity.
 * The gate stayed RED on real work (`ITERATION_CAP`). The roles built something and
   the validator's own check rejected it, twice, having already had its bounded
   re-implement round. Resubmitting here is not recovery, it is the unbounded loop the

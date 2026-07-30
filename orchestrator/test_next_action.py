@@ -28,6 +28,12 @@ def test_the_two_needs_human_cases_get_different_advice():
     assert "same" in empty.lower() and "resubmit" not in red.lower(), (empty, red)
 
 
+def test_daily_model_quota_does_not_recommend_an_immediate_retry():
+    action = engine.next_action("needs_human", "MODEL_QUOTA_EXHAUSTED")
+    assert "do not resubmit now" in action.lower()
+    assert "reset" in action.lower()
+
+
 def test_a_passing_run_is_advised_from_its_PR_not_its_reason():
     """A passing run has two endings, and only the PR result tells them apart.
 

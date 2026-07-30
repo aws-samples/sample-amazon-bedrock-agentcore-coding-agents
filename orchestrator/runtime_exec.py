@@ -108,6 +108,21 @@ class RoleExecutionError(RuntimeError):
     """A role's runtime dispatch failed (no runtime, nonzero exit, missing artifact)."""
 
 
+class ModelQuotaError(RoleExecutionError):
+    """The CLI reached its model but the account's daily token allowance is spent."""
+
+
+_DAILY_MODEL_QUOTA_RE = re.compile(
+    r"too many tokens per day|daily (?:token )?(?:allowance|limit|quota).*(?:exceed|spent)",
+    re.IGNORECASE,
+)
+
+
+def model_quota_exhausted(output: str) -> bool:
+    """Recognize the daily-limit error Claude Code can print while exiting zero."""
+    return bool(_DAILY_MODEL_QUOTA_RE.search(output or ""))
+
+
 def region_for(runtime_arn: str, fallback: str | None = None) -> str:
     """The region a runtime call MUST use: the one in the runtime's own ARN.
 
@@ -791,6 +806,14 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
                          model, region, on_line, timeout_s)
     transcript = run["transcript"]
     session_id = run["session_id"]
+    # Claude Code currently exits 0 for this API rejection. Treat the transcript as
+    # authoritative for the one known false-zero case, before an empty checkout is
+    # mislabeled as work the builder chose not to do.
+    if model_quota_exhausted(transcript):
+        raise ModelQuotaError(
+            f"MODEL_QUOTA_EXHAUSTED: {agent_id} could not start because the "
+            f"account's daily token allowance for {model} is exhausted; "
+            f"transcript tail:\n{transcript[-600:]}")
     if run["exit"] != 0:
         sibling = llm.openai_sibling(model)
         if sibling and llm.cli_model_is_down(transcript):

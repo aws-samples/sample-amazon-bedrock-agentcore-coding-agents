@@ -124,6 +124,31 @@ def test_claude_role_does_not_fall_back(monkeypatch):
     assert calls == ["us.anthropic.claude-opus-4-6-v1"]
 
 
+def test_claude_daily_quota_fails_even_when_the_cli_exits_zero(monkeypatch):
+    """Claude Code prints a 429 and exits zero when its daily allowance is spent.
+
+    The empty checkout must be reported as model capacity, not as a builder that
+    decided to write nothing, and an immediate second dispatch would be wasteful.
+    """
+    model = "us.anthropic.claude-opus-4-6-v1"
+    calls = _stub_dispatch(monkeypatch, {
+        model: (
+            0,
+            "API Error: Request rejected (429) - Too many tokens per day, "
+            "please wait before trying again.",
+        ),
+    })
+
+    with pytest.raises(runtime_exec.ModelQuotaError) as excinfo:
+        runtime_exec.run_in_runtime(
+            runtime_arn="arn:...:runtime/claude",
+            agent_id="claude-code", prompt="build", run_subdir="run1",
+            artifact_rel=None, model=model)
+
+    assert "MODEL_QUOTA_EXHAUSTED" in str(excinfo.value)
+    assert calls == [model]
+
+
 def test_fallback_disabled_fails_loud(monkeypatch):
     """With WORKSHOP_OPENAI_FALLBACK="" (sibling disabled), a model-down failure
     propagates as RoleExecutionError: the resilience is opt-outable."""

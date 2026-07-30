@@ -1296,6 +1296,10 @@ class Engine:
                     region=runtime_exec.region_for(arn),
                     on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
                 break
+            except runtime_exec.ModelQuotaError:
+                # A daily account limit cannot recover in a fresh shell. Preserve
+                # the specific reason and avoid spending another rejected request.
+                raise
             except runtime_exec.RoleExecutionError as exc:
                 _last_exc = exc
                 if _attempt == 0:
@@ -2513,7 +2517,9 @@ class Engine:
             # runtime still holds, the run-level reason must say transport too,
             # or the honest per-role note is contradicted by the headline the
             # attendee actually reads.
-            if all("ARTIFACT_TRANSFER_ERROR" in (r.note or "") for r in errored):
+            if any("MODEL_QUOTA_EXHAUSTED" in (r.note or "") for r in errored):
+                reason = "MODEL_QUOTA_EXHAUSTED"
+            elif all("ARTIFACT_TRANSFER_ERROR" in (r.note or "") for r in errored):
                 reason = "ARTIFACT_TRANSFER_ERROR"
             elif any("INTEGRATION_CONFLICT" in (r.note or "") for r in errored):
                 reason = "INTEGRATION_CONFLICT"
@@ -3427,6 +3433,10 @@ _NEXT_ACTION = {
         "EVERY routed role failed, which points at the harness or the environment "
         "rather than the request: check that each role's runtime is wired and READY, "
         "then resubmit.",
+    "MODEL_QUOTA_EXHAUSTED":
+        "The selected model's daily token allowance is exhausted. Do not resubmit "
+        "now. Wait for the allowance to reset or choose a model with available "
+        "capacity, then submit the SAME request once.",
     "INTEGRATION_CONFLICT":
         "Two role pull requests still change the same path differently after the "
         "bounded repair round. Review integration_conflicts and decide which role "
