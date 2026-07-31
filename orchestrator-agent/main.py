@@ -6,26 +6,27 @@ Strands`): a ``BedrockAgentCoreApp`` wrapping a Strands ``Agent``, with an
 ``@app.entrypoint`` that streams the agent's reasoning back to the caller.
 
 What makes it an orchestrator rather than a chatbot is its tools. It follows the
-foxl multi-agent pattern: the model clarifies an ambiguous request first, then
-calls its agents AS TOOLS: the three coding agents deployed on their own
-AgentCore Runtimes are exposed as ``dispatch_*`` tools the model invokes
-directly, so the MODEL decides who runs, not a fixed fan-out.
+agents-as-tools pattern: the model clarifies an ambiguous request first, then
+calls the active roles on their own AgentCore Runtimes. ``chat.py`` generates
+the ``dispatch_*`` tools from the active ``roles.py`` roster, so the model
+decides which wired roles run instead of using a fixed fan-out.
 
   * ``list_presets``      : the example starting points (any request works)
-                            (advisory: it suggests which agents a task needs).
-  * ``dispatch_backend``  : run Claude Code (backend MCP server) on its Runtime.
-  * ``dispatch_frontend`` : run opencode (chatbot UI) on its Runtime.
-  * ``dispatch_validator``: run the validator (a second Claude Code) on its Runtime.
+                            (advisory: it suggests which capabilities a task needs).
+  * ``dispatch_*``        : generated tools for the roles in the active roster.
   * ``run_build``         : the composed pipeline; dispatch the routed roles,
-                            compose, run the authored acceptance gate, and post the PR assessment.
+                            compose their work, execute the validator-authored
+                            check, require both independent reviews, and report
+                            the PR result.
   * ``run_status``        : read back a run's verdict, gate checks, and PR URL.
 
 The model decides the sequence: clarify if the ask is ambiguous, then either
 dispatch individual agents as tools (subagents-as-tool) or call ``run_build`` for
 the full composed pipeline. The tools do the real work by calling the same
 in-process engine the console drives: each ``dispatch_*`` submits a single-role
-run to that role's DEPLOYED Runtime. A build boots an MCP-server subprocess and
-grades it with the acceptance contract.
+run to that role's DEPLOYED Runtime. ``run_build`` assembles the routed builder
+work and passes the immutable candidate through the validator-authored executable
+and the independent adversarial/design review panel.
 
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs
@@ -75,7 +76,7 @@ _agent = None
 def _get_or_create_agent():
     """Lazily build the orchestrator agent (created once per runtime, reused per
     call). ``ORCHESTRATOR_MODEL_ID`` sets the model; chat.build_agent wires the
-    system prompt and the six tools."""
+    system prompt and the roster-derived tool set."""
     global _agent
     if _agent is None:
         _agent = _chat.build_agent()

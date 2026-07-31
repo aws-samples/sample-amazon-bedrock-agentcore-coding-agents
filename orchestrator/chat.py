@@ -125,6 +125,15 @@ every verdict, so an expired session no longer loses the result. If the user has
 lost their run id, call list_runs() for the recent builds and their outcomes rather \
 than telling them the run is gone.
 
+## Report status facts without inventing lifecycle rules
+Treat every field returned by run_status as authoritative. Builder role PRs are \
+published BEFORE the checker inspects the combined candidate; the top-level \
+`pr_url` is the later final integration PR. If a builder's `work_items.*.pr.pr_url` \
+is empty during a live transition, say only that it is not reported yet. Never \
+claim that a gate must pass before a role PR opens, and never infer a missing \
+field's cause or timing. Report `gate_history`, both members under `review`, \
+`merge_queue`, and `next_action` exactly as returned.
+
 ## If a build did not complete, READ next_action. Never improvise, and never loop
 Every terminal result carries a `next_action` field. It is derived from the actual
 fail reason, so it already knows which of the two very different `needs_human` cases
@@ -146,14 +155,14 @@ The three cases, because they have different recoveries:
   shell or another immediate build cannot restore that allowance. Report the limit
   and stop. Resume after it resets, or after the operator selects a model with
   available capacity.
-* The gate stayed RED on real work (`ITERATION_CAP`). The roles built something and
-  the validator's own check rejected it, twice, having already had its bounded
-  re-implement round. Resubmitting here is not recovery, it is the unbounded loop the
-  cap exists to prevent: it spends another full build to reach the same verdict, and
-  it hides a real red gate behind "let me try again". REPORT it instead. Quote the
-  failing lines from `gate.summary` (they are the check's own output, so they name
-  exactly what the deliverable did not do) and stop. It is the human's call whether
-  to change the request, change the deliverable, or accept the finding.
+* Validation stayed blocked on real work (`ITERATION_CAP`). This can be a RED
+  validator-authored executable OR a required behavior/design review finding even
+  when the executable is green. The bounded re-implement round is already spent.
+  Resubmitting here is not recovery, it is the unbounded loop the cap exists to
+  prevent. REPORT it instead. If the latest gate is red, quote its `gate.summary`;
+  if a review blocks, quote that member's recorded evidence. Never call a green gate
+  red. It is the human's call whether to change the request, change the deliverable,
+  or accept the finding.
 
 Resubmit AT MOST once per request in a session. If a resubmitted run also does not
 complete, report that and stop; do not start a third.

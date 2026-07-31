@@ -109,9 +109,9 @@ export function AgentsPage() {
   }, [selected.id]);
 
   // One effect owns the tab list for the selected agent: seed from the store,
-  // then poll the SERVER registry (so an orchestrator-opened live PTY shows up as
-  // a tab), and auto-open exactly ONE session when the agent is wired and none is
-  // open -- unless the human just closed them all. openingRef makes the auto-open
+  // then poll the server registry to restore manually opened terminals, and
+  // auto-open exactly one session when the agent is wired and none is open,
+  // unless the human just closed them all. openingRef makes the auto-open
   // single-flight, so no second tab races in.
   useEffect(() => {
     let stop = false;
@@ -179,9 +179,6 @@ export function AgentsPage() {
           <button onClick={() => setActiveTab(t.id)} className="flex items-center gap-1.5">
             <AgentIcon agentId={selected.id} size={12} />
             Session {t.label}
-            {t.openedBy === 'orchestrator' && (
-              <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">run</span>
-            )}
             {isFleet && arnIndex(t.runtimeArn) > 0 && (
               <span className="text-muted-foreground">{`· #${arnIndex(t.runtimeArn)}`}</span>
             )}

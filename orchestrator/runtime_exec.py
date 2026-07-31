@@ -154,8 +154,8 @@ def _client(region: str):
 def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
     """The telemetry + identity + correlation env for a dispatched build.
 
-    Used by both the headless one-shot (_build_command) and the live-PTY launch
-    so every path emits attributed telemetry through the collector sidecar.
+    The bounded headless shell receives it at launch so every build emits
+    attributed telemetry through the collector sidecar.
     """
     env = dict(_role(agent_id).telemetry_env)
     try:
@@ -576,82 +576,6 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
             "session_id": result["session_id"]}
 
 
-def _run_in_live_pty(session: Any, agent_id: str, prompt: str, run_subdir: str,
-                     artifact_rel: str | None, region: str,
-                     on_line: Callable[[str], None] | None,
-                     timeout_s: float) -> dict[str, Any]:
-    """Drive the agent's LIVE interactive TUI (the SAME PTY the console's Agents
-    page streams) for one dispatch turn, then read the artifact back.
-
-    This is the MUXED path: one PTY, many subscribers. The human watches the real
-    Claude Code / opencode / kiro TUI work the turn live on the Agents page (and
-    the run view mirrors it), the orchestrator types the turn and reads the same
-    screen, and the human can keep typing into the same session afterwards.
-
-    The turn is framed exactly like a human: an ``[orchestrator]`` banner, the
-    prompt pasted (bracketed paste) into the TUI's input box, Enter as its own
-    keystroke. Done = the screen goes quiet (a working TUI repaints its status
-    line continuously, so buffer-idle is the turn boundary). The artifact is then
-    read back over a separate one-shot command shell on the SAME runtime -- the
-    PTY stays clean for the human, and the read is exact (sentinel-delimited),
-    never scraped from TUI paint.
-    """
-    session.busy = True
-    try:
-        # A just-opened session (the dispatch opened it itself) must be READY --
-        # WebSocket up, TUI banner painted -- before keystrokes land; typing into
-        # a connecting shell is a silent drop. Fail loud, never dispatch blind.
-        if not session.wait_ready(timeout_s=120.0):
-            raise RoleExecutionError(
-                f"ROLE_EXECUTION_ERROR: {agent_id} live session "
-                f"{session.session_id} never became ready (runtime shell did not "
-                "connect/paint)")
-        t0_len = len(session.buffer)
-        session.emit_banner(f"run {run_subdir}: {prompt[:120]}"
-                            + ("..." if len(prompt) > 120 else ""))
-        # The TUI's cwd is $HOME (run.sh cd's there), not the run workspace, so the
-        # prompt itself must pin absolute paths; the engine's prompts already name
-        # /mnt/s3files/<run>/ paths explicitly. Tell the agent where to work first.
-        session.send_turn(
-            f"Work in /mnt/s3files/{run_subdir} (create it if needed; cd there "
-            f"first).\n\n{prompt}")
-        # How long the TUI must be SILENT before the turn counts as finished. The signal
-        # is sound (a working CLI repaints its spinner many times a second, so the buffer
-        # only stops growing when it is genuinely idle), but it is the one place where a
-        # correct run can be cut short: if a CLI stops repainting while the model thinks,
-        # an early "done" reads the artifact before it is written and the run fails with
-        # ROLE_EXECUTION_ERROR on work that was fine. 8s was a bare literal; 20s costs at
-        # most 12 extra seconds per role and removes a whole class of false failure.
-        # Wirable so an operator can tune it for a slower CLI without a code change.
-        quiet_s = float(os.environ.get("WORKSHOP_TURN_QUIET_S", "20"))
-        finished = session.wait_turn_idle(quiet_s=quiet_s, timeout_s=timeout_s)
-        transcript = _clean(session.buffer[t0_len:])
-        if on_line:
-            for line in transcript.splitlines():
-                on_line(line)
-        if not finished:
-            raise RoleExecutionError(
-                f"ROLE_EXECUTION_ERROR: {agent_id} live session still busy after "
-                f"{timeout_s:.0f}s; transcript tail:\n{transcript[-600:]}")
-    finally:
-        session.busy = False
-
-    # Artifact read-back: a separate one-shot command shell on the same runtime
-    # (same S3Files mount), retried for write-back lag; identical to the headless
-    # path's read so the fail-loud contract is one code path. Unnamed (builder)
-    # dispatches read their whole tree in the caller instead.
-    artifact = ""
-    if artifact_rel:
-        artifact = _read_artifact_from_runtime(session.runtime_arn, run_subdir,
-                                               artifact_rel, region)
-        if not artifact:
-            raise RoleExecutionError(
-                f"ROLE_EXECUTION_ERROR: {agent_id} live turn ended but {artifact_rel} "
-                f"is missing/empty in the runtime; transcript tail:\n{transcript[-600:]}")
-    return {"exit": 0, "transcript": transcript, "artifact": artifact,
-            "session_id": session.session_id, "live_session": True}
-
-
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
                                 artifact_rel: str | None, region: str) -> str:
     """Read a named file from the role's atomically uploaded result archive."""
@@ -708,35 +632,6 @@ def clone_runtime_tree(runtime_arn: str, source_subdir: str, dest_subdir: str,
             f"checkout archive into {dest_subdir}: {exc}") from exc
 
 
-def _live_session_for(agent_id: str, runtime_arn: str,
-                      launch_env: dict[str, str] | None = None) -> Any | None:
-    """The live console PTY this dispatch should drive, if the console is hosting
-    one for the SAME runtime this role is wired to. Import is lazy and optional:
-    runtime_shell lives in interactive-api (the console); a coordinator deployed
-    without the console has no live-PTY surface and uses the headless shell.
-
-    When ``launch_env`` is provided, ensure_dispatch_session opens a FRESH PTY
-    that exports those vars before launching the CLI, so the agent inherits the
-    telemetry-enable + identity + correlation env from birth. A human's already-
-    open terminal (launched without this run's env) is never reused for a build.
-    """
-    try:
-        import runtime_shell  # noqa: PLC0415 (console-only surface)
-    except Exception:
-        return None
-    try:
-        s = runtime_shell.ensure_dispatch_session(agent_id,
-                                                  instance_arn=runtime_arn,
-                                                  launch_env=launch_env)
-    except Exception:
-        return None
-    # Only drive a session on the SAME runtime the router picked; a session on a
-    # different fleet instance would build in another microVM's mount namespace.
-    if s is None or s.runtime_arn != runtime_arn:
-        return None
-    return s
-
-
 def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str,
                    artifact_rel: str | None, model: str, region: str | None = None,
                    on_line: Callable[[str], None] | None = None,
@@ -744,17 +639,11 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     """Run ``agent_id``'s CLI inside its deployed runtime and read the artifact
     it wrote. Returns ``{exit, transcript, artifact, session_id}``.
 
-    TWO dispatch surfaces, one contract:
-
-      * LIVE PTY (preferred when the console hosts one): the dispatch drives the
-        agent's real interactive TUI -- the same WebSocket shell session the
-        Agents page streams -- so the human, the orchestrator, and the run view
-        all watch ONE live session (server fan-out), and the human can type into
-        it before and after the turn.
-      * HEADLESS one-shot (always available): a fresh command shell runs the CLI
-        ``--print``-style. This is the path when no console PTY exists (CLI-only
-        submit, coordinator deployed without the console) and the safety net if
-        the live surface cannot host this dispatch.
+    Every orchestrated role uses a fresh bounded command shell and its native
+    headless CLI. The tracked-source archive exchange requires this boundary:
+    the turn downloads one immutable checkout archive, works on Runtime-local
+    disk, and atomically uploads one result archive before the shell exits.
+    Manually opened console terminals remain a separate interactive surface.
 
     Raises ``RoleExecutionError`` on a nonzero exit or a missing/empty artifact:
     the same fail-loud contract the engine's ``_read_artifact`` enforced locally.
@@ -777,22 +666,6 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     if runtime_arn.startswith("http://") or runtime_arn.startswith("https://"):
         return _run_in_local_dev(runtime_arn, agent_id, prompt, run_subdir,
                                  artifact_rel, model, on_line, timeout_s)
-
-    _live_region = region_for(runtime_arn, region)
-    # A live-PTY CLI inherits its env at LAUNCH, so the run's telemetry env
-    # (enable + identity + run.id/agent.id) must be in the session's launch
-    # command; typing a turn into an already-running TUI can inject nothing.
-    # dispatch_env() builds the same mapping the headless path uses, and the
-    # session layer opens a fresh PTY launched with it (a human's own terminal,
-    # launched without this run's identity, is never reused for a build).
-    # Orchestrated work uses a local checkout hydrated from one S3 object. A
-    # long-lived TUI session cannot atomically upload that checkout when its turn
-    # ends, so builds use the bounded headless shell. Human-opened TUI sessions
-    # remain available on the Agents page for direct exploration.
-    live = None
-    if live is not None:
-        return _run_in_live_pty(live, agent_id, prompt, run_subdir, artifact_rel,
-                                _live_region, on_line, timeout_s)
 
     # The AgentCore client AND the dispatched command must use the RUNTIME's own
     # region (region_for: parsed from the ARN), never a caller default. Otherwise

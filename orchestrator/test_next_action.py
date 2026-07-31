@@ -1,10 +1,10 @@
 """Every terminal outcome must say what to DO about it.
 
-`needs_human` covers two situations with opposite next steps: the authored check
-stayed red on real work (the deliverable needs changing) and a role produced nothing
+`needs_human` covers two situations with opposite next steps: validation stayed
+blocked on real work (the deliverable needs changing) and a role produced nothing
 (transient, just resubmit). The status alone cannot tell them apart, and the raw
-`fail_reason` token is not advice. Idea from awslabs/aidlc-workflows v2, whose stage
-checkboxes name who is blocking rather than making you decode a state.
+`fail_reason` token is not advice. Idea from awslabs/aidlc-workflows v2, whose
+stage checkboxes name who is blocking rather than making you decode a state.
 """
 
 from __future__ import annotations
@@ -19,13 +19,21 @@ import engine  # noqa: E402
 
 
 def test_the_two_needs_human_cases_get_different_advice():
-    red = engine.next_action("needs_human", "ITERATION_CAP")
+    blocked = engine.next_action("needs_human", "ITERATION_CAP")
     empty = engine.next_action("needs_human", "ROLE_EXECUTION_ERROR")
-    assert red and empty and red != empty, (red, empty)
-    # The red gate sends you to the check's own output, not to a resubmit.
-    assert "gate.summary" in red or "failing lines" in red, red
+    assert blocked and empty and blocked != empty, (blocked, empty)
+    # Blocked validation sends you to gate and review evidence, not a resubmit.
+    assert "gate.summary" in blocked and "review" in blocked, blocked
     # The empty role sends you to a resubmit, and warns off hand-finishing.
-    assert "same" in empty.lower() and "resubmit" not in red.lower(), (empty, red)
+    assert "same" in empty.lower() and "resubmit" not in blocked.lower(), (
+        empty, blocked)
+
+
+def test_iteration_cap_does_not_call_a_green_gate_red():
+    """A live run hit the cap on review findings after two green executable gates."""
+    action = engine.next_action("needs_human", "ITERATION_CAP")
+    assert "check was still red" not in action.lower(), action
+    assert "blocking gate or review evidence" in action.lower(), action
 
 
 def test_daily_model_quota_does_not_recommend_an_immediate_retry():

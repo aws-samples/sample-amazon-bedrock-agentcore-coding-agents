@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Watch the agents work, live, from a terminal.
+"""Follow Runtime terminals manually opened in the sample console.
 
-The console already multiplexes each role's real Runtime PTY: ONE session, many
-subscribers, so the human and the orchestrator watch the same shell. That fan-out
-was only reachable from the browser. This attaches a TERMINAL to the very same
-sessions, so an attendee who lives in the VS Code terminal sees what is being
-built as it happens instead of waiting for a status line.
+The sample console multiplexes each manually opened Runtime PTY: one
+console-hosted session, many subscribers. This developer utility attaches a
+terminal to those same sessions. Orchestrated builds use isolated headless
+shells so their tracked checkout can be uploaded atomically at the end of the
+turn. Those shells are not registered here, whether the build was submitted
+through the sample-console Chat page or the deployed coordinator CLI. Use the
+Chat run details or ``run_status`` for a build.
 
     python3 orchestrator/watch_agents.py                 # follow every role
     python3 orchestrator/watch_agents.py --agent opencode
@@ -73,7 +75,6 @@ class _Follower(threading.Thread):
         self.cookie = cookie
         self.sid = session.get("session_id", "")
         self.agent = session.get("agent_id", "?")
-        self.opened_by = session.get("opened_by", "")
         self.colour = "" if plain else colour
         self.plain = plain
         self.lock = lock
@@ -138,9 +139,13 @@ def watch(base: str, agent: str | None, plain: bool, cookie: str | None,
                 sessions = _get(url, cookie).get("sessions", [])
             except urllib.error.HTTPError as exc:
                 if exc.code == 401:
-                    print("unauthorized: the console requires a login. Open the "
-                          "console once in the browser, or pass "
-                          "--cookie \"session=...\".", file=sys.stderr)
+                    print("unauthorized: the sample console requires its Cognito "
+                          "cookie. Pass --cookie "
+                          "\"console_cognito_session=...\". Browser cookies are not "
+                          "shared with this terminal. This utility follows only "
+                          "manually opened Runtime terminals; use Chat run details "
+                          "or agentcore invoke with run_status for a build.",
+                          file=sys.stderr)
                     return 2
                 print(f"console error: {exc}", file=sys.stderr)
                 return 2
@@ -158,15 +163,16 @@ def watch(base: str, agent: str | None, plain: bool, cookie: str | None,
                 f = _Follower(base, cookie, s, colour, plain, lock)
                 followers[sid] = f
                 with lock:
-                    who = s.get("opened_by") or "human"
                     print(f"{_DIM}+ attached to {s.get('agent_id')} "
-                          f"(session {sid[:8]}, opened by {who}){_RESET}")
+                          f"(manually opened session {sid[:8]}){_RESET}")
                 f.start()
 
             if not sessions and not said_empty:
                 with lock:
-                    print(f"{_DIM}no live agent session yet; waiting. Submit a "
-                          f"build and the roles appear here as they start.{_RESET}")
+                    print(f"{_DIM}no manually opened Runtime terminal is live; "
+                          f"waiting. Open one on the console Agents page to make "
+                          f"it appear here. Builds are shown in Chat/run_status."
+                          f"{_RESET}")
                 said_empty = True
             elif sessions:
                 said_empty = False
@@ -183,7 +189,7 @@ def watch(base: str, agent: str | None, plain: bool, cookie: str | None,
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Follow the coding agents' live Runtime shells in a terminal.")
+        description="Follow Runtime terminals manually opened in the sample console.")
     ap.add_argument("--base", default=DEFAULT_BASE,
                     help=f"console base URL (default {DEFAULT_BASE})")
     ap.add_argument("--agent", default=None,

@@ -138,8 +138,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     # endpoints: several features that must hold together, real persistence, real
     # input rejection, and a UI over the same service. That gives both builders
     # substantial parallel work and gives the validator something worth checking,
-    # so watching it happen (the console Agents tabs, or `watch_agents.py` in a
-    # terminal) actually shows a team building a system.
+    # so the sample console's Agents tabs show a team building a system.
     "project-from-scratch": {
         "title": "Build a whole project (the big one)",
         "needs": ["backend", "frontend"],

@@ -1,8 +1,9 @@
 # Multi-agent coordinator
 
-This package coordinates the three coding assistants deployed in Module 1. The
-shipped execution path dispatches to wired AgentCore Runtime ARNs. A missing
-Runtime, artifact, test contract, or GitHub credential is an explicit error.
+This package coordinates the active coding-assistant roster declared in
+`roles.py`. The shipped execution path dispatches to wired AgentCore Runtime
+ARNs. A missing Runtime, artifact, validator-authored check, or GitHub
+configuration is an explicit error.
 
 ## Request flow
 
@@ -54,7 +55,7 @@ final PR supports either human review or guarded auto-merge.
 | `policy.py` | Guardrails every engine-run command is screened against |
 | `llm.py` | Model id resolution and Bedrock invocation |
 | `connection_api.py` | JSON and SSE adapter used by the console |
-| `watch_agents.py` | Read-only terminal client for watching a live build |
+| `watch_agents.py` | Developer client for manually opened console Runtime terminals; orchestrated builds use Chat/run_status |
 | `fixture_executor.py` | TEST-ONLY deterministic producer; never on the shipped path |
 
 The wire contract is in [API_CONTRACT.md](API_CONTRACT.md).
@@ -87,8 +88,10 @@ GitHub attributes a PR to the App installation whose token the MCP server minted
 for the call. Cognito identity baggage records who submitted the run. Those are
 separate facts and this package does not infer OAuth OBO delegation.
 
-Before deploying the coordinator, prove the PR path end to end. Both are
-read-only and safe to re-run:
+Before deploying the coordinator, prove the PR path end to end. Both commands
+are safe to re-run. `diagnose.py` is read-only; `github.py doctor` idempotently
+prepares the empty `workshop/doctor` branch to prove the App can write, but
+creates no file or pull request:
 
 ```bash
 python3 orchestrator/github.py doctor   # can the App reach THIS repo?

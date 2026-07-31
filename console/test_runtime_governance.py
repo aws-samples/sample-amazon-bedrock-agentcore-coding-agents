@@ -28,8 +28,6 @@ def _live_session():
             "runtime/claude-code"
         ),
         "alive": True,
-        "opened_by": "user",
-        "busy": False,
         "user_id": "attendee@workshop.aws",
         "started_at": "2026-07-30T07:45:21Z",
         "buffer_chars": 120,

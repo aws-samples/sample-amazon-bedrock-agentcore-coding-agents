@@ -143,7 +143,7 @@ def test_open_session_forged_instance_fails_loud():
     assert "not wired" in out["error"]
 
 
-# --- F1: orchestrator drives the SAME live session (shared PTY, fan-out) -------
+# --- Explicit interactive tools drive the manually opened PTY -----------------
 class _FakeShellSession:
     """A live session stand-in: records sends + exposes the shared buffer, with no
     real WebSocket. The orchestrator API only needs agent_id/alive/buffer + send_input."""
@@ -151,8 +151,6 @@ class _FakeShellSession:
         self.agent_id = agent_id
         self.session_id = session_id
         self.runtime_arn = f"arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/{agent_id}-fake"
-        self.opened_by = "user"
-        self.busy = False
         self.alive = True
         self.buffer = ""
         self.sent = []
@@ -165,9 +163,6 @@ class _FakeShellSession:
             return self.buffer[-max_chars:]
     def send_input(self, text):
         self.sent.append(text)
-    # the REAL turn-framing/idle methods, exercised against the fake's buffer/sends
-    send_turn = runtime_shell.RuntimeShellSession.send_turn
-    wait_turn_idle = runtime_shell.RuntimeShellSession.wait_turn_idle
 
 
 def _register(session):
@@ -250,75 +245,17 @@ def test_launch_gate_starts_closed_and_opens_on_resize():
     assert s._size_event.is_set()
 
 
-# --- muxed dispatch: the engine drives ONE live PTY the human also watches ----
-def test_send_turn_uses_bracketed_paste_and_separate_enter():
-    """A dispatch turn is framed like a human paste: the body arrives inside
-    bracketed-paste markers (so embedded newlines never submit partial prompts),
-    and Enter is its OWN keystroke after a beat."""
+def test_list_sessions_reports_identity_and_liveness():
+    """The Agents-page registry carries the signed-in user and liveness."""
     s = _FakeShellSession("claude-code")
-    s.send_turn("line one\nline two")
-    assert s.sent[0] == "\x1b[200~line one\nline two\x1b[201~"
-    assert s.sent[-1] == "\r"
-
-
-def test_wait_turn_idle_returns_when_buffer_goes_quiet():
-    """Buffer-idle is the turn boundary: a working TUI repaints continuously, so
-    a quiet buffer means the turn finished. A still-writing buffer times out."""
-    s = _FakeShellSession("kiro")
-    assert s.wait_turn_idle(quiet_s=0.2, timeout_s=2.0, poll_s=0.05) is True
-
-    import threading, time as _t
-    busy = _FakeShellSession("kiro", "console-busy0000000000000000000000000000000000")
-    stop = _t.monotonic() + 1.0
-    def _spam():
-        while _t.monotonic() < stop:
-            busy.buffer += "."
-            _t.sleep(0.05)
-    th = threading.Thread(target=_spam, daemon=True); th.start()
-    assert busy.wait_turn_idle(quiet_s=0.5, timeout_s=0.7, poll_s=0.05) is False
-    th.join()
-
-
-def test_ensure_dispatch_session_reuses_the_humans_live_session():
-    """The engine's dispatch reuses the newest live non-busy session -- the very
-    session the human is watching on the Agents page -- so both surfaces share
-    one PTY."""
-    s = _FakeShellSession("opencode")
-    _register(s)
-    try:
-        got = runtime_shell.ensure_dispatch_session("opencode", instance_arn=s.runtime_arn)
-        assert got is s
-    finally:
-        runtime_shell._sessions.pop(s.session_id, None)
-
-
-def test_ensure_dispatch_session_skips_busy_sessions():
-    """A session already driven by another dispatch is never shared: two prompts
-    interleaved into one TUI input box would corrupt both turns. With the only
-    session busy and no wired runtime to open a new one, the caller gets None
-    (and falls back to the headless one-shot path)."""
-    s = _FakeShellSession("opencode")
-    s.busy = True
-    _register(s)
-    try:
-        assert runtime_shell.ensure_dispatch_session("opencode") is None
-    finally:
-        runtime_shell._sessions.pop(s.session_id, None)
-
-
-def test_list_sessions_reports_owner_and_liveness():
-    """The server-side registry is the Agents page's source of truth for tabs:
-    it must carry opened_by (user vs orchestrator) and alive."""
-    s = _FakeShellSession("claude-code")
-    s.opened_by = "orchestrator"
     s.user_id = "attendee@workshop.aws"
     s.started_at = "2026-07-30T07:45:21Z"
     _register(s)
     try:
         rows = runtime_shell.list_sessions("claude-code")["sessions"]
         mine = [r for r in rows if r["session_id"] == s.session_id]
-        assert mine and mine[0]["opened_by"] == "orchestrator"
-        assert mine[0]["alive"] is True and mine[0]["busy"] is False
+        assert mine and mine[0]["alive"] is True
+        assert "opened_by" not in mine[0] and "busy" not in mine[0]
         assert mine[0]["user_id"] == "attendee@workshop.aws"
         assert mine[0]["started_at"] == "2026-07-30T07:45:21Z"
     finally:

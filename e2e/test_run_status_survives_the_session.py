@@ -16,12 +16,14 @@ would have given, and read it back by run id alone.
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
@@ -99,6 +101,55 @@ def test_the_chat_tool_answers_from_the_persisted_record():
         assert any(r["run_id"] == run_id for r in rows), rows
     finally:
         chat.use_engine(chat.ENGINE)
+
+
+def test_list_runs_recovers_s3_history_in_a_fresh_microvm(monkeypatch):
+    """A deployed session has an empty /tmp, so local-only recent() returns []."""
+    run_store = importlib.import_module("run_store")
+    tmp = tempfile.mkdtemp()
+
+    class FakeS3:
+        payloads = {
+            "orchestrator/run-state/run_235959_old.json": {
+                "run_id": "run_235959_old", "status": "passed"},
+            "orchestrator/run-state/run_000501_new.json": {
+                "run_id": "run_000501_new", "status": "needs_human"},
+        }
+
+        def list_objects_v2(self, **kwargs):
+            if not kwargs.get("ContinuationToken"):
+                return {
+                    "Contents": [{
+                        "Key": "orchestrator/run-state/run_235959_old.json",
+                        "LastModified": datetime(
+                            2026, 7, 30, 23, 59, tzinfo=timezone.utc),
+                    }],
+                    "IsTruncated": True,
+                    "NextContinuationToken": "page-2",
+                }
+            return {
+                "Contents": [{
+                    "Key": "orchestrator/run-state/run_000501_new.json",
+                    "LastModified": datetime(
+                        2026, 7, 31, 0, 5, tzinfo=timezone.utc),
+                }],
+                "IsTruncated": False,
+            }
+
+        def get_object(self, *, Bucket, Key):
+            assert Bucket == "workshop-bucket"
+            return {"Body": io.BytesIO(json.dumps(
+                self.payloads[Key]).encode("utf-8"))}
+
+    monkeypatch.setattr(
+        run_store, "_s3", lambda: (FakeS3(), "workshop-bucket"))
+    try:
+        rows = run_store.recent(tmp, limit=10)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    assert [row["run_id"] for row in rows] == [
+        "run_000501_new", "run_235959_old"]
 
 
 def test_an_unknown_run_still_fails_loud_and_says_what_to_do():

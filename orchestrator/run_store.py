@@ -156,35 +156,85 @@ def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
     """The most recent persisted runs, newest first.
 
     Lets an attendee who lost their session id ask "what did I run?" instead of
-    having no way back to their own build. Local only: listing a bucket prefix on
-    every call is a cost the answer does not justify, and the local directory is
-    what the console and the box actually read.
+    having no way back to their own build. Read both the local state directory and,
+    when configured, the S3 mirror. A new deployed coordinator session has a fresh
+    ``/tmp`` and therefore MUST list the mirror; otherwise ``run_status <known-id>``
+    works while the recovery command ``list_runs`` falsely returns an empty list.
+    This listing happens only on an explicit history request.
 
-    Ordered by MTIME, not by name. A run id starts with ``run_<HHMMSS>`` -- time
-    of day with no date -- so sorting the filenames puts last night's 23:59 run ahead of
-    this morning's 00:05 one, and "your most recent run" would name the wrong build
-    for anyone whose session crosses midnight UTC.
+    Ordered by local MTIME or S3 LastModified, not by name. A run id starts with
+    ``run_<HHMMSS>`` -- time of day with no date -- so sorting filenames puts last
+    night's 23:59 run ahead of this morning's 00:05 one.
     """
-    out: list[dict[str, Any]] = []
+    if limit <= 0:
+        return []
+
+    # run_id -> (modified timestamp, already-loaded payload, S3 key)
+    candidates: dict[str, tuple[float, dict[str, Any] | None, str | None]] = {}
     d = _local_dir(runs_dir)
     try:
-        entries = []
         for name in os.listdir(d):
             if not name.endswith(".json"):
                 continue
             path = os.path.join(d, name)
             try:
-                entries.append((os.path.getmtime(path), path))
-            except OSError:
+                modified = os.path.getmtime(path)
+                with open(path, encoding="utf-8") as f:
+                    payload = json.load(f)
+            except (OSError, json.JSONDecodeError):
                 continue
+            run_id = str(payload.get("run_id") or name[:-5])
+            candidates[run_id] = (modified, payload, None)
     except OSError:
-        return out
-    for _mtime, path in sorted(entries, reverse=True):
+        pass
+
+    hit = _s3()
+    if hit is not None:
+        s3, bucket = hit
         try:
-            with open(path, encoding="utf-8") as f:
-                out.append(json.load(f))
-        except (OSError, json.JSONDecodeError):
+            token: str | None = None
+            while True:
+                args: dict[str, Any] = {
+                    "Bucket": bucket,
+                    "Prefix": _STATE_PREFIX + "/",
+                    "MaxKeys": 1000,
+                }
+                if token:
+                    args["ContinuationToken"] = token
+                page = s3.list_objects_v2(**args)
+                for obj in page.get("Contents", []):
+                    key = str(obj.get("Key") or "")
+                    if not key.endswith(".json"):
+                        continue
+                    run_id = os.path.basename(key)[:-5]
+                    stamp = obj.get("LastModified")
+                    modified = float(stamp.timestamp()) if hasattr(
+                        stamp, "timestamp") else 0.0
+                    current = candidates.get(run_id)
+                    if current is None or modified > current[0]:
+                        candidates[run_id] = (modified, None, key)
+                if not page.get("IsTruncated"):
+                    break
+                token = page.get("NextContinuationToken")
+                if not token:
+                    break
+        except Exception:
+            # History is best effort and never changes a build verdict.
+            pass
+
+    out: list[dict[str, Any]] = []
+    for _modified, payload, key in sorted(
+            candidates.values(), key=lambda row: row[0], reverse=True):
+        if payload is None and key and hit is not None:
+            s3, bucket = hit
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=key)
+                payload = json.loads(obj["Body"].read().decode("utf-8"))
+            except Exception:
+                continue
+        if payload is None:
             continue
+        out.append(payload)
         if len(out) >= limit:
             break
     return out

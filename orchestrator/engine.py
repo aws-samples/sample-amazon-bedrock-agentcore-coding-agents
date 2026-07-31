@@ -10,12 +10,12 @@ silently building locally. The producer sits behind the execution seam
 (``executor.Executor``): ``AgentCoreExecutor`` (the shipped default,
 ``InvokeAgentRuntime`` / command-shell dispatch against deployed role runtimes).
 
-Three design decisions define this engine:
+The central design rules are:
 
-  * **Model-selected tools with a deterministic floor.** ``chat.py`` lets the
-    Strands coordinator clarify an ambiguous request and choose dispatch tools.
-    ``router.py`` provides the versioned registry and advisory route ladder used
-    by ``run_build``. Only selected roles are dispatched.
+  * **Registry-derived routing.** ``roles.py`` declares the available roles once,
+    and ``presets.py`` selects capabilities rather than agent ids. ``chat.py``
+    generates dispatch tools from the active roster and lets the Strands
+    coordinator clarify an ambiguous request. Only selected roles are dispatched.
   * **A separate checker and reviewer** (``reviewer.py``). The build side never
     approves its own work: the validator authors an executable check for the
     assembled candidate and real execution supplies the gate verdict. The reviewer
@@ -50,10 +50,10 @@ How a role's artifact is produced (the step behind the execution seam):
 The executor is selected at startup from ``WORKSHOP_EXECUTOR`` (default / ``""`` /
 ``agentcore`` -> ``AgentCoreExecutor``; unknown values fail loud). Deterministic
 OFFLINE TESTS inject a test-only ``FixtureExecutor`` (``fixture_executor.py``) by
-constructor: it runs the role closures in-process and routes the PRODUCE step to
-the deterministic builders (no model, no live AWS), so the gate / reviewer / compose
-/ PR tail is exercised without a deployed runtime. No env flag selects a fake on the
-shipped binary, and no shipped module imports the fixture.
+constructor. Test-owned fixture outputs exercise the lifecycle, gate plumbing,
+reviewer, compose, and PR tail without a model or live AWS. They are not a
+customer-path builder or answer key. No env flag selects a fake on the shipped
+binary, and no shipped module imports the fixture.
 
 Run it (always via the HTTP shell, ``connection_api.py``):
     python3 orchestrator/connection_api.py
@@ -975,12 +975,10 @@ class Engine:
             # deliverable needs to run, the validator's authored check starts it, and
             # `reviewer.run_gate` tears that whole process group down when the check
             # ends: the only place a started service can leak is the only place one is
-            # started. The old replay-server pool lived here and is gone with the
-            # deterministic builders that populated it.
+            # started. The retired replay-server pool no longer exists.
 
-    # Phase 1, deterministic. Admission validates AND ROUTES: the workflow
-    # registry decides which agents this task dispatches (an unknown
-    # an unknown preset fails loud, never a guess).
+    # Phase 1. Admission validates AND ROUTES: the workflow registry decides which
+    # agents this task dispatches (an unknown preset fails loud, never a guess).
     def _admission(self, run: Run) -> bool:
         run.phase, run.status = "admission", "queued"
         # A starting point supplies its request text when the caller sent none, so
@@ -1321,19 +1319,11 @@ class Engine:
             with open(dest, "w", encoding="utf-8") as f:
                 f.write(result["artifact"])
         tail = result["transcript"][-4000:]
-        # A live-PTY dispatch (the muxed path) drove the agent's real interactive
-        # session -- the SAME one the Agents page streams -- so label the entry as
-        # that shared session and record its id, letting the run view point the
-        # reader at the live terminal instead of pretending it was a one-shot.
-        live_sid = result.get("session_id") if result.get("live_session") else None
         with run._lock:
             run.terminals.setdefault(agent_id, []).append({
-                "cmd": (f"agentcore live session {live_sid} on {arn.split('/')[-1]} "
-                        f"({agent_id} TUI)" if live_sid else
-                        f"agentcore dispatch -> {arn.split('/')[-1]} ({agent_id} CLI)"),
+                "cmd": f"agentcore dispatch -> {arn.split('/')[-1]} ({agent_id} CLI)",
                 "output": _display_scrub(tail), "exit": result["exit"],
-                "elapsed_s": round(time.monotonic() - t0, 2),
-                **({"live_session_id": live_sid} if live_sid else {})})
+                "elapsed_s": round(time.monotonic() - t0, 2)})
             role.last_beat = time.monotonic()
         # The runtime CLI does not report machine usage over the shell; record an
         # honest zero (never invented), mirroring the no-usage local branch.
@@ -2211,13 +2201,12 @@ class Engine:
                   or run.options.get("model"))
         return chosen or env_default or default
 
-    # Phase 4: THE one agentic phase. Each role is dispatched through
-    # ``self.executor`` (executor.py): the shipped AgentCoreExecutor sends the role
-    # to its DEPLOYED Runtime, where its CLI builds the artifact and the engine
-    # reads it back; the test FixtureExecutor runs the closure in-process and the
-    # PRODUCE step builds the artifact deterministically. Either way every visible
-    # step is a real shell command captured into the role's terminal, and the
-    # verdict path (boot + acceptance gate + reviewer + compose + PR) is identical.
+    # Phase 4: role execution. The shipped AgentCoreExecutor sends each role to its
+    # DEPLOYED Runtime, where its CLI builds the artifact and the engine reads it
+    # back. The test FixtureExecutor supplies test-owned output in-process so the
+    # surrounding lifecycle can be exercised without pretending to be a customer
+    # path. On the shipped path, shell output is captured in the role terminal; the
+    # validator-authored executable and independent review panel decide the verdict.
     def _execute(self, run: Run) -> bool:
         run.phase, run.status = "agent_execution", "running"
         budget = AGENT_EXECUTION_TIMEOUT_S
@@ -2398,9 +2387,9 @@ class Engine:
                     # AgentCoreExecutor confirms the role has a wired runtime (fails
                     # loud otherwise) and runs the closure, whose PRODUCE step
                     # dispatches to that deployed Runtime; the test FixtureExecutor
-                    # runs the closure in-process and the PRODUCE step builds the
-                    # artifact deterministically. Either way the engine reads the
-                    # artifact and grades it.
+                    # runs the closure against test-owned fixture output. Either way
+                    # the engine collects the artifact; the separately authored
+                    # executable and review panel decide its verdict later.
                     capability = roles.get(agent_id).capability
                     if capability not in work:
                         raise RuntimeError(
@@ -3409,16 +3398,18 @@ def public_diff(run: Run) -> dict:
 # awslabs/aidlc-workflows v2, whose stage checkboxes say WHO IS BLOCKING at a glance
 # (`[?]` awaiting you, `[R]` revising) rather than making you decode a state name.
 #
-# Our `needs_human` covers two very different situations: the gate stayed red on real
-# work (read the check's own failing lines, the deliverable needs changing) and a role
-# never produced anything (a transport or turn failure, just resubmit). Same status,
-# opposite next action, and the raw token said neither.
+# Our `needs_human` covers two very different situations: validation stayed blocked
+# on real work (read the gate and review evidence) and a role never produced anything
+# (a transport or turn failure, just resubmit). Same status, opposite next action,
+# and the raw token said neither.
 _NEXT_ACTION = {
-    # A red candidate may already have role PRs, but it never gets a final PR to main.
+    # A blocked candidate may already have role PRs, but it never gets a final PR to
+    # main. ITERATION_CAP can mean a red executable OR a required review finding.
     "ITERATION_CAP":
-        "The authored check was still red after the bounded re-implement round, so no "
-        "final integration pull request was opened. Read the failing lines in "
-        "gate.summary and the evidence on the existing role pull requests.",
+        "The candidate still had blocking gate or review evidence after the bounded "
+        "re-implement round, so no final integration pull request was opened. Read "
+        "the latest gate.summary and both review members' evidence on the existing "
+        "role pull requests.",
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",

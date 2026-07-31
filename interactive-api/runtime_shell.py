@@ -94,28 +94,15 @@ class RuntimeShellSession:
     """A live WebSocket shell to a deployed AgentCore Runtime."""
 
     def __init__(self, session_id: str, agent_id: str, runtime_arn: str,
-                 opened_by: str = "user",
-                 user_id: str = "unknown",
-                 launch_env: dict[str, str] | None = None):
+                 user_id: str = "unknown"):
         self.session_id = session_id
         self.agent_id = agent_id
         self.runtime_arn = runtime_arn
-        # Who created this PTY: "user" (Agents page) or "orchestrator" (a run's
-        # dispatch). Display-only; both kinds are the SAME live session and both
-        # the human and the engine can read/type into it (server fan-out).
-        self.opened_by = opened_by
         self.user_id = user_id
         self.started_at = (
             datetime.now(timezone.utc).isoformat(timespec="seconds")
             .replace("+00:00", "Z")
         )
-        # Per-run env exported before the CLI launch so the agent inherits
-        # telemetry-enable, identity stamp, and run.id/agent.id correlation.
-        self._launch_env = launch_env
-        # True while an engine dispatch is driving this PTY, so a concurrent
-        # dispatch opens its own session instead of interleaving two prompts
-        # into one TUI input box.
-        self.busy = False
         self.buffer = ""
         self.alive = True
         self._shell = None
@@ -175,16 +162,8 @@ class RuntimeShellSession:
             cols, rows = self._size
             await shell.resize(cols, rows)
 
-            # Auto-launch the agent CLI at the measured width. When a dispatch
-            # provided launch_env (telemetry + identity + correlation), export it
-            # inline so the CLI inherits the full attribution env from birth.
-            base_cmd = _AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n").rstrip("\n")
-            if self._launch_env:
-                exports = " ".join(f"{k}={v}" for k, v in self._launch_env.items())
-                launch_cmd = f"export {exports}; {base_cmd}\n"
-            else:
-                launch_cmd = base_cmd + "\n"
-            await shell.send(launch_cmd)
+            # Auto-launch the interactive agent CLI at the measured width.
+            await shell.send(_AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n"))
 
             async for frame in shell:
                 if frame.channel == ShellChannel.STDOUT:
@@ -213,71 +192,10 @@ class RuntimeShellSession:
 
     def emit_banner(self, text: str) -> None:
         """Inject a dim, labeled line into the SAME buffer the human's terminal
-        streams, so an orchestrator turn shows up inline as e.g.
+        streams, so an explicit interactive-tool turn shows up inline as e.g.
         ``[orchestrator] build the server`` without looking like the human typed
         it. Fan-out (one PTY, many subscribers) means the human sees it live."""
         self._emit(f"\r\n\x1b[2m[orchestrator] {text}\x1b[0m\r\n")
-
-    def wait_ready(self, timeout_s: float = 120.0, settle_s: float = 3.0) -> bool:
-        """Block until this PTY can take keystrokes: the WebSocket is connected
-        AND the TUI has painted something and gone briefly quiet (its banner is
-        up, the input box is idle). A freshly opened session needs this before
-        ``send_turn``: ``send_input`` on a not-yet-connected shell is a silent
-        no-op, so typing early would drop the whole prompt."""
-        import time as _t
-        deadline = _t.monotonic() + timeout_s
-        # 1. connected + first paint arrived.
-        while _t.monotonic() < deadline:
-            if not self.alive:
-                return False
-            if self._shell is not None and self.buffer:
-                break
-            _t.sleep(0.3)
-        else:
-            return False
-        # 2. the banner finished painting (short quiet window).
-        return self.wait_turn_idle(quiet_s=settle_s,
-                                   timeout_s=max(5.0, deadline - _t.monotonic()))
-
-    def send_turn(self, text: str) -> None:
-        """Type one (possibly multi-line) turn into the live TUI and submit it.
-
-        The body is wrapped in bracketed-paste markers so embedded newlines are
-        treated as pasted text by the CLI's input box (claude / opencode / kiro
-        all speak bracketed paste) instead of each newline submitting a partial
-        prompt. Enter is sent as its own keystroke after a beat, exactly like a
-        human pasting then pressing Return."""
-        import time as _t
-        body = text.rstrip("\r\n")
-        self.send_input("\x1b[200~" + body + "\x1b[201~")
-        _t.sleep(0.5)           # let the TUI register the pasted input line
-        self.send_input("\r")
-
-    def wait_turn_idle(self, quiet_s: float = 6.0, timeout_s: float = 900.0,
-                       poll_s: float = 0.5) -> bool:
-        """Block until the TUI has been silent for ``quiet_s`` seconds (the turn
-        finished), or ``timeout_s`` elapsed (returns False).
-
-        Why buffer-idle is a reliable done signal for a TUI: while a coding-agent
-        CLI works it repaints its spinner/status line continuously (many writes
-        per second), so the buffer only stops growing when the turn is actually
-        finished and the input prompt is idle."""
-        import time as _t
-        deadline = _t.monotonic() + timeout_s
-        last_len = len(self.buffer)
-        quiet_since = _t.monotonic()
-        while _t.monotonic() < deadline:
-            if not self.alive:
-                return True  # session ended: nothing more will arrive
-            cur = len(self.buffer)
-            now = _t.monotonic()
-            if cur != last_len:
-                last_len = cur
-                quiet_since = now
-            elif now - quiet_since >= quiet_s:
-                return True
-            _t.sleep(poll_s)
-        return False
 
     def snapshot(self, max_chars: int = 4000) -> str:
         """A thread-safe tail of the shared buffer (the current screen as text).
@@ -363,14 +281,9 @@ def get_runtime_arn(agent_id: str, instance_arn: str | None = None) -> str | Non
 
 def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
                          instance_arn: str | None = None,
-                         opened_by: str = "user",
-                         user_id: str = "unknown",
-                         launch_env: dict[str, str] | None = None) -> dict:
+                         user_id: str = "unknown") -> dict:
     """Open a real runtime shell session. Fails loud if no ARN wired (or if a
-    requested instance is not one of the role's wired instances).
-
-    When ``launch_env`` is provided, the env vars are exported on the same line
-    as the CLI launch, so the agent process inherits them from birth."""
+    requested instance is not one of the role's wired instances)."""
     arn = get_runtime_arn(agent_id, instance_arn)
     if not arn:
         if instance_arn:
@@ -388,16 +301,13 @@ def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
             "an interactive shell. Wire a deployed ARN (agentcore deploy) to open a terminal.")}
 
     session_id = f"console-{uuid.uuid4().hex}{uuid.uuid4().hex[:4]}"
-    session = RuntimeShellSession(session_id, agent_id, arn, opened_by=opened_by,
-                                  user_id=user_id,
-                                  launch_env=launch_env)
+    session = RuntimeShellSession(session_id, agent_id, arn, user_id=user_id)
     session.start(cols, rows)
 
     with _sessions_lock:
         _sessions[session_id] = session
 
-    return {"session_id": session_id, "agent_id": agent_id, "runtime_arn": arn,
-            "opened_by": opened_by}
+    return {"session_id": session_id, "agent_id": agent_id, "runtime_arn": arn}
 
 
 def get_session(session_id: str) -> RuntimeShellSession | None:
@@ -430,19 +340,16 @@ def find_session_for_agent(agent_id: str) -> RuntimeShellSession | None:
 
 
 def list_sessions(agent_id: str | None = None) -> dict:
-    """Every registered session (optionally one agent's), for the console UI.
+    """Every interactive terminal registered by the console.
 
-    The Agents page renders these as terminal tabs. Because the engine can now
-    OPEN a session itself (``opened_by="orchestrator"``) when it dispatches a
-    role, this server-side list is the source of truth the browser merges into
-    its local tab store, so a run's live agent terminal appears on the Agents
-    page even though no human clicked "+". Dead sessions are included with
-    ``alive: false`` so the UI can prune them."""
+    The Agents page renders these as terminal tabs. Orchestrated build turns use
+    separate bounded headless shells and are not registered here. Dead sessions
+    are included with ``alive: false`` so the UI can prune them.
+    """
     with _sessions_lock:
         rows = [
             {"session_id": s.session_id, "agent_id": s.agent_id,
              "runtime_arn": s.runtime_arn, "alive": s.alive,
-             "opened_by": s.opened_by, "busy": s.busy,
              "user_id": getattr(s, "user_id", "unknown"),
              "started_at": getattr(s, "started_at", ""),
              "buffer_chars": len(s.buffer)}
@@ -452,37 +359,8 @@ def list_sessions(agent_id: str | None = None) -> dict:
     return {"sessions": rows}
 
 
-def ensure_dispatch_session(agent_id: str,
-                            instance_arn: str | None = None,
-                            launch_env: dict[str, str] | None = None
-                            ) -> RuntimeShellSession | None:
-    """The live PTY a run dispatch should drive.
-
-    When ``launch_env`` is provided, a human's existing session is never reused
-    (its CLI was launched without this run's identity/correlation env). A fresh
-    PTY is opened with the env exported before the CLI launch, so the agent
-    inherits telemetry-enable + identity + run.id from birth.
-
-    Without ``launch_env`` the old behavior is preserved: reuse the newest live,
-    non-busy session.
-
-    ``busy`` sessions are skipped, never shared: two concurrent dispatches
-    typing into one TUI input box would interleave their prompts."""
-    if not launch_env:
-        s = find_session_for_agent(agent_id)
-        if s is not None and not s.busy:
-            return s
-    out = open_runtime_session(agent_id, cols=120, rows=32,
-                               instance_arn=instance_arn,
-                               opened_by="orchestrator",
-                               launch_env=launch_env)
-    if "error" in out:
-        return None
-    return get_session(out["session_id"])
-
-
-# --- Orchestrator <-> live PTY (shared-session, server fan-out) ---------------
-# The orchestrator drives the SAME RuntimeShellSession the human opened: it emits
+# --- Explicit interactive tools <-> live PTY (server fan-out) ----------------
+# An interactive tool drives the SAME RuntimeShellSession the human opened: it emits
 # a labeled banner (visible in the human's terminal), sends the turn into the one
 # PTY, and reads the buffer back. Both see the same screen; no second WebSocket,
 # so no kick (the SDK forbids two clients on one shell_id).

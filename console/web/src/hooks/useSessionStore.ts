@@ -22,10 +22,6 @@ export interface SessionEntry {
   /** Stable display number, assigned once at open. Never renumbered when an
    *  earlier tab closes, so "Session 2" stays "Session 2". */
   label: number;
-  /** Who created the PTY: the human ("user", via +) or the engine
-   *  ("orchestrator", a run dispatch). Same live session either way; the tag
-   *  only drives the tab label so a run-driven terminal is recognizable. */
-  openedBy?: 'user' | 'orchestrator';
 }
 
 // Keyed by session id (the tab id), NOT by agentId, so one agent can hold many.
@@ -177,17 +173,16 @@ export function closeSession(id: string): void {
 }
 
 /**
- * Merge the SERVER's session registry into the local tab store. The engine can
- * open a live PTY itself when a run dispatches a role (opened_by:
- * "orchestrator"), and this browser never called openSession for it -- syncing
- * the registry is how that session appears as a tab on the Agents page while
- * the run is working. Also prunes local tabs whose backend session died.
+ * Merge the SERVER's manually opened terminal registry into the local tab
+ * store. This restores tabs after a reload and prunes tabs whose backend
+ * session died. Orchestrated builds use separate headless shells and are
+ * reported in Chat/run_status rather than this store.
  * Returns true when anything changed (so callers re-render only on change).
  */
 export async function syncServerSessions(agentId: string): Promise<boolean> {
   _hydrate();
   let rows: { session_id: string; agent_id: string; runtime_arn: string;
-              alive: boolean; opened_by?: string }[];
+              alive: boolean }[];
   try {
     const r = await fetch(`${API}?agent_id=${encodeURIComponent(agentId)}`);
     const data = await r.json();
@@ -207,7 +202,6 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
       _sessions.set(s.session_id, {
         id: s.session_id, agentId, runtimeArn: s.runtime_arn,
         alive: true, buffer: '', label: nextLabel,
-        openedBy: s.opened_by === 'orchestrator' ? 'orchestrator' : 'user',
       });
       changed = true;
     }

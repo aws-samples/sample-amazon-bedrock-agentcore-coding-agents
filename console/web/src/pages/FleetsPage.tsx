@@ -743,13 +743,10 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
   );
 });
 
-// The terminal surface for a run. An AGENT lane (claude-code / kiro / opencode)
-// is that agent's REAL AgentCore Runtime shell session. When the dispatch drove a
-// LIVE interactive session (the muxed path), the lane carries its
-// live_session_id and the pane renders the SAME live PTY stream the Agents page
-// shows -- one session, two surfaces -- via LiveSessionPane (xterm over the
-// session's SSE). A lane with no live session (headless dispatch, or the run
-// predates the console) falls back to the recorded transcript. The
+// The terminal surface for a run. An agent lane is the captured output of that
+// role's bounded headless AgentCore shell. Old persisted runs may still carry a
+// live_session_id from the retired muxed dispatch path; LiveSessionPane keeps
+// those records readable. The
 // ``orchestrator`` lane is the engine's own host-side plumbing (harness staging,
 // module probes, the acceptance gate) -- separate work on the orchestrator box,
 // NOT the agent's session, so it is its own clearly-labeled tab, sorted last,

@@ -54,17 +54,19 @@ def test_the_prompt_tells_the_coordinator_to_read_next_action() -> None:
     assert "next_action" in _prompt()
 
 
-def test_a_red_gate_is_reported_not_resubmitted() -> None:
-    """ITERATION_CAP must be named as the case that is REPORTED, not retried."""
+def test_blocked_validation_is_reported_not_resubmitted() -> None:
+    """ITERATION_CAP covers gate/review evidence and is REPORTED, not retried."""
     prompt = _prompt()
     assert "ITERATION_CAP" in prompt, (
-        "the steering must distinguish a red gate from a role that produced nothing; "
-        "they have opposite recoveries and the same status token")
-    # The instruction around ITERATION_CAP must point at the gate output, not a retry.
+        "the steering must distinguish blocked validation from a role that produced "
+        "nothing; they have opposite recoveries and the same status token")
+    # The instruction around ITERATION_CAP must point at evidence, not a retry.
     window = prompt[prompt.index("ITERATION_CAP"):][:1200]
     assert "gate.summary" in window
+    assert "review" in window
+    assert "Never call a green gate" in window
     assert re.search(r"\bREPORT\b", window), (
-        "a red gate that already had its bounded re-implement round must be reported")
+        "blocked validation after its bounded re-implement round must be reported")
 
 
 def test_resubmission_is_bounded() -> None:
@@ -92,10 +94,10 @@ def test_engine_and_steering_agree_on_the_two_cases() -> None:
 
     cap = engine.next_action("needs_human", "ITERATION_CAP").lower()
     role = engine.next_action("needs_human", "ROLE_EXECUTION_ERROR").lower()
-    # The red-gate arm must NOT advise resubmitting...
+    # The blocked-validation arm must NOT advise resubmitting...
     assert "resubmit" not in cap and "same request again" not in cap
     # ...while the role-failure arm must.
     assert "same request again" in role or "resubmit" in role
-    # Role PRs retain evidence, but a red gate can never publish the final PR.
+    # Role PRs retain evidence, but blocked validation cannot publish the final PR.
     assert "no final integration pull request" in cap
     assert "existing role pull requests" in cap
