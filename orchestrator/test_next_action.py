@@ -25,8 +25,12 @@ def test_the_two_needs_human_cases_get_different_advice():
     # Blocked validation sends you to gate and review evidence, not a resubmit.
     assert "gate.summary" in blocked and "review" in blocked, blocked
     # The empty role sends you to a resubmit, and warns off hand-finishing.
-    assert "same" in empty.lower() and "resubmit" not in blocked.lower(), (
+    assert "same" in empty.lower() and "do not resubmit" in blocked.lower(), (
         empty, blocked)
+    assert engine.resubmission_allowed(
+        "needs_human", "ITERATION_CAP") is False
+    assert engine.resubmission_allowed(
+        "needs_human", "ROLE_EXECUTION_ERROR") is True
 
 
 def test_iteration_cap_does_not_call_a_green_gate_red():
@@ -78,3 +82,4 @@ def test_the_public_result_carries_it():
     run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
     payload = engine.public_result(run)
     assert payload["next_action"], payload
+    assert payload["resubmission_allowed"] is False

@@ -9,13 +9,13 @@ these tests are red against it: that red is your task list):
     starter agent (no cachePoint anywhere); turns GREEN once the fix adds a
     `cachePoint` block to the system prompt / repeated context.
 
-        STARTER_AGENT_LAB=1 pytest src/starter-agent/tests/ -v
+        STARTER_AGENT_LAB=1 pytest starter-agent/tests/ -v
 
   - LIVE (additionally needs AWS creds): calls Bedrock twice with the same context
     and asserts the second response reports `cacheReadInputTokens > 0` and a lower
     input-token count than the first call.
 
-        STARTER_AGENT_LAB=1 STARTER_AGENT_LIVE=1 pytest src/starter-agent/tests/ -v
+        STARTER_AGENT_LAB=1 STARTER_AGENT_LIVE=1 pytest starter-agent/tests/ -v
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ agent = importlib.import_module("agent")
 LIVE = os.environ.get("STARTER_AGENT_LIVE") == "1"
 
 # The lab's red->green loop is opt-in: without the flag the whole module skips,
-# keeping `pytest src/` green for people who never open the efficiency lab.
+# keeping repository-wide pytest green for people who skip the efficiency lab.
 if os.environ.get("STARTER_AGENT_LAB") != "1" and not LIVE:
     pytest.skip("set STARTER_AGENT_LAB=1 to run the efficiency-lab acceptance tests",
                 allow_module_level=True)

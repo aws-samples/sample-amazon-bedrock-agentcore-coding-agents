@@ -208,6 +208,7 @@ export interface RunDetail extends RunSummary {
     panels?: ReviewPanelEntry[];
   } | null;
   next_action?: string;
+  resubmission_allowed?: boolean;
   terminals?: Record<string, Array<{ cmd?: string; output?: string; text?: string }>>;
   roleEvents?: Record<string, AgentEvent[]>;
 }
@@ -282,6 +283,7 @@ export interface RunResult {
   merge_queue?: MergeQueueEntry[];
   gate_history?: GateRecord[];
   next_action?: string;
+  resubmission_allowed?: boolean;
 }
 
 export const getRunResult = (runId: string) =>

@@ -75,9 +75,9 @@ python3 orchestrator/diagnose.py <run_id>   # + that run's engine-log tail
 Run `doctor` BEFORE deploying the coordinator. The mistakes that cost the most time
 (an App installed on a different repository, a wrong owner in `GITHUB_REPO`) all pass
 a plain gateway health check and then fail when a build tries to write, after the
-agents have already run. `diagnose.py` is read-only. To prove write permission,
-`github.py doctor` idempotently prepares the `workshop/doctor` branch; it writes
-no file and opens no pull request.
+agents have already run. `diagnose.py` invokes the same GitHub doctor check.
+To prove write permission, that check idempotently resets the
+`workshop/doctor` branch; it writes no file and opens no pull request.
 
 Every finished run also persists its verdict, so `run_status <run_id>` still answers
 from a NEW coordinator session, and `list_runs` finds it when the run id is lost.

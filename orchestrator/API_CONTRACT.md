@@ -126,9 +126,10 @@ A run also has a terminal status once finalization completes.
   "pr": {…},                            // additive: GitHub finalization result (see below)
   "compose_base": {…},                  // additive: {mode: "external"|"local", …} compose base
   "merge_state": "human_review",        // additive: "human_review"|"merged"|null
-  "next_action": "Open the final integration pull request and review its evidence."
+  "next_action": "Open the final integration pull request and review its evidence.",
                                         // additive: what to DO about this outcome; "" when
                                         // there is genuinely nothing to say
+  "resubmission_allowed": false          // additive: hard immediate-retry constraint
 }
 ```
 
@@ -145,6 +146,14 @@ fixes), and because a PASSING run splits into "the PR opened" and "no PR opened,
 the work is only on a local branch". That second case is NOT a `fail_reason` (the
 build succeeded), so it is read from `pr.error`. An unmapped reason yields `""` rather
 than invented advice.
+
+`resubmission_allowed` is also derived from `(status, fail_reason)`. It is `false`
+for a completed run, for a bounded red gate or review finding such as
+`ITERATION_CAP`, and whenever an external prerequisite must change first. It is
+`true` only when immediately repeating the same request is an intended recovery,
+such as a transient role execution or artifact-transfer failure. Callers must not
+offer an immediate retry when this field is false; they still report conditional
+future steps from `next_action`, such as waiting for quota to reset.
 
 ---
 

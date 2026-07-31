@@ -4,8 +4,8 @@ A minimal Bedrock `converse` tool-use agent that answers cost questions from a t
 lookup table it owns (see RATES_PER_HOUR). Self-contained on purpose: the lab is about
 this agent's own efficiency, not about any deliverable the workshop builds. It works,
 and it wastes money on purpose. Every numbered inefficiency below maps to one row of
-the lab's enhancement table; you dispatch fixes through the orchestrator and the
-validator proves each one with a test under tests/.
+the lab's enhancement table; you ask Claude Code on the workshop host to make each
+fix and prove it with a test under tests/.
 
 Run it (needs AWS credentials with Bedrock access, e.g. the workshop account):
 
@@ -14,7 +14,7 @@ Run it (needs AWS credentials with Bedrock access, e.g. the workshop account):
 Built-in inefficiencies (the lab menu):
   1. No prompt caching       : nothing in the request is marked cacheable.
   2. (after #1 lands) fixed cache TTL rather than peak/off-peak.
-  3. Single-region model id  : us.* inference profile, never the global.* one.
+  3. Geography-limited model : us.* profile, never the global.* one.
   4. Extended thinking ALWAYS: reasoning enabled on every call, even "2+2".
   5. No few-shot examples    : and (5b) a system prompt too short to cache.
   6. Weak tool specs         : one-line descriptions, no examples, loose schema.
@@ -31,14 +31,20 @@ import sys
 
 import boto3
 
-# (3) Pinned single-region inference profile. The fix is global cross-region
-# inference (global.anthropic...), which routes around regional load.
+# (3) Pinned US geography inference profile. It already routes across supported
+# US regions; the improvement is the global profile (global.anthropic...), which
+# can route across every geography where that model is available.
 # WORKSHOP_MODEL is honored so accounts without access to the default model
 # (Marketplace subscription gaps) can point the lab at any enabled Claude
 # model without editing this file. The default matches the models the
 # workshop already requires (Sonnet 4.6 is enabled for opencode/validator).
 MODEL_ID = os.environ.get("WORKSHOP_MODEL", "us.anthropic.claude-sonnet-4-6")
-REGION = "us-west-2"
+REGION = (
+    os.environ.get("AWS_REGION")
+    or os.environ.get("AWS_DEFAULT_REGION")
+    or boto3.Session().region_name
+    or ""
+)
 
 # (5b) Too short to ever reach the prompt-caching minimum token threshold -
 # even after a cachePoint is added, this prompt alone won't cache.
@@ -103,6 +109,9 @@ def _run_tool(name: str, args: dict) -> str:
 
 
 def ask(question: str) -> str:
+    if not REGION:
+        raise RuntimeError(
+            "AWS region is not configured; set AWS_REGION to the workshop region")
     client = boto3.client("bedrock-runtime", region_name=REGION)
     messages = [{"role": "user", "content": [{"text": question}]}]
     while True:

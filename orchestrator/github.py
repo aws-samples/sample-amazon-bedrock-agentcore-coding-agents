@@ -457,8 +457,9 @@ def doctor() -> dict[str, Any]:
     30-second answer rather than a failed run.
 
     It resolves config, lists the gateway's tools, reads the target repository, and
-    idempotently prepares ``workshop/doctor`` to prove write permission. It writes no
-    file and opens no pull request, so it is safe to run repeatedly.
+    idempotently resets ``workshop/doctor`` to the current default-branch head to
+    prove write permission. It writes no file and opens no pull request, so it is
+    safe to run repeatedly.
 
     Returns ``{ok, checks: [{check, passed, detail}], hint}``: ``ok`` only when every
     check passed.
@@ -557,22 +558,27 @@ def doctor() -> dict[str, Any]:
     # AFTER a ten-minute build. So probe a write here, while it is still cheap.
     #
     # The stable probe branch is deliberately separate from every run-private
-    # integration branch. `create_branch` is idempotent and the Gateway exposes no
-    # branch delete operation.
+    # integration branch. An existing branch proves only that some earlier
+    # credential could write; reset it to the current default head so every doctor
+    # invocation proves the credential wired NOW can still write.
     try:
-        _tool(cfg, "create_branch",
+        try:
+            _tool(cfg, "create_branch",
+                  {"owner": owner, "repo": repo_name, "branch": DOCTOR_BRANCH,
+                   "from_branch": default_branch}, timeout=20.0)
+        except GatewayError as exc:
+            if not _branch_already_exists(exc):
+                raise
+        _tool(cfg, "reset_branch",
               {"owner": owner, "repo": repo_name, "branch": DOCTOR_BRANCH,
                "from_branch": default_branch}, timeout=20.0)
         add("app_can_write_repo", True,
-            f"the App can create a branch on {cfg['repo']} "
-            f"(prepared {DOCTOR_BRANCH})")
+            f"the App can update a branch on {cfg['repo']} "
+            f"(reset {DOCTOR_BRANCH} to {default_branch})")
     except GatewayError as exc:
         reason = str(exc)
         lowered = reason.lower()
-        if _branch_already_exists(exc):
-            add("app_can_write_repo", True,
-                f"{DOCTOR_BRANCH} already exists, so the App can write")
-        elif "403" in lowered or "forbidden" in lowered or "permission" in lowered:
+        if "403" in lowered or "forbidden" in lowered or "permission" in lowered:
             add("app_can_write_repo", False,
                 "the App can READ the repo but not write to it (403). In the App's "
                 "settings, set Repository permissions -> Contents, Issues, and Pull "

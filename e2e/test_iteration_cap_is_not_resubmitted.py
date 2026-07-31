@@ -65,6 +65,7 @@ def test_blocked_validation_is_reported_not_resubmitted() -> None:
     assert "gate.summary" in window
     assert "review" in window
     assert "Never call a green gate" in window
+    assert "resubmission_allowed" in prompt
     assert re.search(r"\bREPORT\b", window), (
         "blocked validation after its bounded re-implement round must be reported")
 
@@ -95,9 +96,13 @@ def test_engine_and_steering_agree_on_the_two_cases() -> None:
     cap = engine.next_action("needs_human", "ITERATION_CAP").lower()
     role = engine.next_action("needs_human", "ROLE_EXECUTION_ERROR").lower()
     # The blocked-validation arm must NOT advise resubmitting...
-    assert "resubmit" not in cap and "same request again" not in cap
+    assert "do not resubmit" in cap and "same request again" not in cap
+    assert engine.resubmission_allowed(
+        "needs_human", "ITERATION_CAP") is False
     # ...while the role-failure arm must.
     assert "same request again" in role or "resubmit" in role
+    assert engine.resubmission_allowed(
+        "needs_human", "ROLE_EXECUTION_ERROR") is True
     # Role PRs retain evidence, but blocked validation cannot publish the final PR.
     assert "no final integration pull request" in cap
     assert "existing role pull requests" in cap

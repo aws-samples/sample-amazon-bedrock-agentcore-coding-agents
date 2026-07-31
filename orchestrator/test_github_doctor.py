@@ -122,14 +122,15 @@ def test_a_gateway_missing_the_pr_tools_is_reported(monkeypatch):
 def test_the_doctor_is_idempotent_and_leaves_no_litter(monkeypatch):
     """Safe to run repeatedly on a real repo. NOT the same as "read-only".
 
-    It deliberately performs ONE write: creating the doctor branch. Reading a repo
+    It deliberately performs a branch write. Reading a repo
     does not prove the App may write to it, and a beginner leaving "Pull requests" on
     read-only passes every read check and then fails at `create_branch` after a
     ten-minute build. So the write is probed here, while it is cheap.
 
     What must still hold: no content is written, nothing is opened or merged, and the one
-    branch it touches is the stable `workshop/doctor` probe (`create_branch` treats
-    "already exists" as success), so re-running changes nothing.
+    branch it touches is the stable `workshop/doctor` probe. It is reset to the
+    current default head, so re-running proves the current credential can write
+    without accumulating branches or commits.
     """
     called: list[str] = []
 
@@ -141,6 +142,12 @@ def test_the_doctor_is_idempotent_and_leaves_no_litter(monkeypatch):
             assert args["branch"] == github.DOCTOR_BRANCH, (
                 f"doctor created a branch other than the doctor branch: {args}")
             return "ok"
+        if tool == "reset_branch":
+            assert args == {
+                "owner": "me", "repo": "my-repo",
+                "branch": github.DOCTOR_BRANCH, "from_branch": "main",
+            }
+            return {"branch": github.DOCTOR_BRANCH, "base": "main"}
         return ["README.md"]
     _wire(monkeypatch, tool_fn=record)
     github.doctor()
@@ -172,17 +179,41 @@ def test_a_read_only_app_permission_is_caught_before_the_coordinator_deploys(mon
     assert "re-install" in detail, "must say the App needs re-installing to take effect"
 
 
-def test_an_already_existing_doctor_branch_is_success(monkeypatch):
-    """Second and later checks: the branch exists, which proves write access."""
+def test_an_already_existing_doctor_branch_is_reset_with_current_credentials(
+        monkeypatch):
+    """A prior branch is not evidence; the current App must update it."""
+    called: list[str] = []
+
     def exists(c, tool, args, timeout=30.0):
+        called.append(tool)
         if tool == "get_repository":
             return {"default_branch": "main"}
         if tool == "create_branch":
             raise github.GatewayError("422: Reference already exists")
+        if tool == "reset_branch":
+            return {"branch": github.DOCTOR_BRANCH, "base": "main"}
         return ["README.md"]
     _wire(monkeypatch, tool_fn=exists)
     r = github.doctor()
     assert r["ok"] is True, _failed(r)
+    assert "reset_branch" in called
+
+
+def test_an_existing_probe_does_not_hide_revoked_write_permission(monkeypatch):
+    """The regression: an old probe branch must not make a read-only App pass."""
+    def revoked(c, tool, args, timeout=30.0):
+        if tool == "get_repository":
+            return {"default_branch": "main"}
+        if tool == "create_branch":
+            raise github.GatewayError("422: Reference already exists")
+        if tool == "reset_branch":
+            raise github.GatewayError(
+                "403: Resource not accessible by integration")
+        return ["README.md"]
+    _wire(monkeypatch, tool_fn=revoked)
+    r = github.doctor()
+    assert r["ok"] is False
+    assert "app_can_write_repo" in _failed(r)
 
 
 def test_the_cli_exits_nonzero_when_not_ready(monkeypatch, capsys):

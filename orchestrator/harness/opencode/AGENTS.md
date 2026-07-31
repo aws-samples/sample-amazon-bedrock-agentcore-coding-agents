@@ -54,9 +54,11 @@ AWS credentials are infrastructure used by the CLI, not task input and not build
 
 ## Rules
 
-- Treat the ownership in `.workshop/integration-brief.md` as exclusive. Your
-  checkout is intentionally incomplete until integration; do not ship a backend,
-  persistence layer, or other stand-in for a sibling role's capability.
+- When `.workshop/integration-brief.md` exists, treat its ownership as exclusive.
+  An orchestrated checkout is intentionally incomplete until integration; do not
+  ship a backend, persistence layer, or other stand-in for a sibling role's
+  capability. The manual Lab 1 workspace has no integration brief, so build the
+  task directly there.
 - Leave your work in your working directory. Do not edit another role's tree, and do not
   edit the validator's check.
 - If you cannot do what was asked, say so plainly in your output rather than shipping

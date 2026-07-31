@@ -10,6 +10,8 @@ expect that one failure).
 """
 from __future__ import annotations
 
+import os
+
 from identity_baggage import (
     ANONYMOUS,
     UserIdentity,
@@ -31,11 +33,14 @@ def test_to_env_carries_the_full_attribution_triplet():
 
 
 def test_to_otel_env_ships_empty():
-    # The Lab 3 gap, pinned: no OTel identity leaves the dispatch until the
-    # attendee implements the mapping. If you just implemented it and this
-    # fails, that is the lab working as intended; the companion test below
-    # defines what the finished mapping must satisfy.
-    assert IDENT.to_otel_env() == {}
+    # CI pins the shipped Lab 3 gap. After the attendee implements the mapping,
+    # completion mode switches this same test to the finished contract so a
+    # correct workshop edit produces a green suite, not an intentional red.
+    out = IDENT.to_otel_env()
+    if os.environ.get("WORKSHOP_LAB3_COMPLETE") == "1":
+        assert out, "Lab 3 completion mode requires a non-empty OTel identity stamp"
+    else:
+        assert out == {}
 
 
 def test_to_otel_env_contract_once_implemented():

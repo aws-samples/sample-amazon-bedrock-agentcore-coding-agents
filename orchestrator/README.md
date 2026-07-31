@@ -89,9 +89,9 @@ for the call. Cognito identity baggage records who submitted the run. Those are
 separate facts and this package does not infer OAuth OBO delegation.
 
 Before deploying the coordinator, prove the PR path end to end. Both commands
-are safe to re-run. `diagnose.py` is read-only; `github.py doctor` idempotently
-prepares the empty `workshop/doctor` branch to prove the App can write, but
-creates no file or pull request:
+are safe to re-run. Their GitHub check idempotently resets the empty
+`workshop/doctor` branch to prove the App can write, but creates no file or pull
+request:
 
 ```bash
 python3 orchestrator/github.py doctor   # can the App reach THIS repo?

@@ -523,9 +523,9 @@ function RuntimesCard() {
           )}
         </div>
         <CardDescription>
-          Wire each agent's runtime ARN so the orchestrator can dispatch to it. The event
-          pre-provisions the opencode and validator runtimes (both Bedrock-native, no key), so
-          you only paste their ARN; the backend Claude Code is the one you build and deploy by hand.
+          The three coding-role runtimes are discovered from the Lab 1 runtime configs.
+          Paste the coordinator ARN after its CLI deployment; use these controls only
+          when replacing a runtime or adding another instance.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

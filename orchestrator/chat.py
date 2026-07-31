@@ -132,12 +132,16 @@ published BEFORE the checker inspects the combined candidate; the top-level \
 is empty during a live transition, say only that it is not reported yet. Never \
 claim that a gate must pass before a role PR opens, and never infer a missing \
 field's cause or timing. Report `gate_history`, both members under `review`, \
-`merge_queue`, and `next_action` exactly as returned.
+`merge_queue`, `next_action`, and `resubmission_allowed` exactly as returned.
 
 ## If a build did not complete, READ next_action. Never improvise, and never loop
 Every terminal result carries a `next_action` field. It is derived from the actual
 fail reason, so it already knows which of the two very different `needs_human` cases
 you are in. FOLLOW IT rather than deciding for yourself.
+`resubmission_allowed` is a hard constraint on an IMMEDIATE retry: when it is
+false, do not offer repeating the request now or a "clean retry." Preserve any
+external prerequisite in `next_action` exactly (for example, wait for quota to
+reset first).
 
 Do NOT try to "finish it yourself" by dispatching individual roles, hand-composing
 files, or dispatching the validator alone: those paths do not create the integration
@@ -341,6 +345,8 @@ def build_tools() -> list:
                         "needs_human", reason, saved.get("pr"),
                         saved.get("pr_url"),
                         saved.get("integration_conflicts")),
+                    "resubmission_allowed": _engine.resubmission_allowed(
+                        "needs_human", reason),
                     "source": "persisted",
                 })
             return json.dumps({**saved, "source": "persisted"})
@@ -365,7 +371,8 @@ def build_tools() -> list:
         rows = _run_store.recent(_engine._RUNS_DIR, limit=10)
         return json.dumps({"runs": [
             {k: r.get(k) for k in ("run_id", "status", "task", "preset",
-                                   "pr_url", "fail_reason", "_saved_at")}
+                                   "pr_url", "fail_reason", "next_action",
+                                   "resubmission_allowed", "_saved_at")}
             for r in rows]})
 
     # --- Interactive control of a LIVE agent terminal (shared PTY, F1) -------

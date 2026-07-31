@@ -422,10 +422,11 @@ def get_branch_head(owner: str, repo: str, branch: str) -> str:
 @mcp.tool()
 def reset_branch(owner: str, repo: str, branch: str,
                  from_branch: str) -> dict:
-    """Reset a role-owned branch to the latest integration head.
+    """Reset an engine-owned branch to a known source head.
 
-    This is used only for per-run work branches. It lets the owning role refresh
-    a stale PR without exposing the GitHub App credential to the role Runtime.
+    Per-run work branches use this to refresh a stale PR without exposing the
+    GitHub App credential to the role Runtime. The stable ``workshop/doctor``
+    branch also uses it as an idempotent write-permission probe.
     """
     if branch == from_branch:
         raise ValueError("refusing to reset a branch onto itself")

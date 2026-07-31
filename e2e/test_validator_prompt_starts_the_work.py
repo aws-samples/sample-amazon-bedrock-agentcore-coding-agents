@@ -57,6 +57,15 @@ def test_the_validator_does_not_contradict_its_own_runtime_oracle():
         "counted values")
 
 
+def test_the_validator_syntax_checks_without_running_its_acceptance_behavior():
+    p = _validator_prompt().lower()
+    assert "parse-only" in p and "python -m py_compile" in p, (
+        "a live validator handed off a Python snippet with broken nested quotes; "
+        "the prompt must require a syntax-only check before the engine executes it")
+    assert "native json" in p and "python -c" in p, (
+        "test payloads must not become source code through nested shell quoting")
+
+
 def test_the_steering_says_the_same_thing_and_the_baked_copy_matches():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shipped = os.path.join(repo, "orchestrator", "harness",
@@ -67,3 +76,5 @@ def test_the_steering_says_the_same_thing_and_the_baked_copy_matches():
     assert a == b, "the baked steering drifted from the shipped one"
     assert "YOUR CHECK STARTS IT" in a, a[:400]
     assert "runtime oracle" in a.lower()
+    assert "syntax-check" in a.lower()
+    assert "python -c" in a

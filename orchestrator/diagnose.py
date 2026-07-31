@@ -68,7 +68,7 @@ def _safe(name: str, value: str | None) -> dict[str, Any]:
 
 
 def _github_section() -> dict[str, Any]:
-    """Wiring + the read-only doctor verdict. Publishable fields only.
+    """Wiring + the idempotent doctor verdict. Publishable fields only.
 
     A gateway URL and an ``owner/repo`` are not credentials (github.py says so at
     its top, and both appear in the workshop content), so they are shown: a wrong

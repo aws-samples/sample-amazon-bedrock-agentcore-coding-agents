@@ -2127,7 +2127,13 @@ class Engine:
             "you have. A first start may still install declared dependencies. A short "
             "poll rejects services that were merely still starting, which is a false "
             "verdict: reject work that ANSWERS WRONGLY, never work you did not wait "
-            "for."
+            "for.\n\n"
+            "KEEP THE CHECK ITSELF EXECUTABLE: do not pass quoted test data through "
+            "nested shell/source snippets such as `python -c` or `node -e`; serialize "
+            "payloads with the check language's native JSON support. Before handing "
+            "the file off, run a PARSE-ONLY syntax check (`bash -n`, "
+            "`python -m py_compile`, or `node --check`, as appropriate). Do not run "
+            "the acceptance behavior; the engine owns that one real execution."
             + feedback)
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
                                    _ACCEPTANCE_CHECK)
@@ -3406,10 +3412,10 @@ _NEXT_ACTION = {
     # A blocked candidate may already have role PRs, but it never gets a final PR to
     # main. ITERATION_CAP can mean a red executable OR a required review finding.
     "ITERATION_CAP":
-        "The candidate still had blocking gate or review evidence after the bounded "
-        "re-implement round, so no final integration pull request was opened. Read "
-        "the latest gate.summary and both review members' evidence on the existing "
-        "role pull requests.",
+        "Do not resubmit this request. The candidate still had blocking gate or "
+        "review evidence after the bounded re-implement round, so no final "
+        "integration pull request was opened. Read the latest gate.summary and both "
+        "review members' evidence on the existing role pull requests.",
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",
@@ -3529,6 +3535,23 @@ def next_action(status: str, fail_reason: str | None,
     return ""
 
 
+_RESUBMITTABLE_REASONS = {
+    "ROLE_EXECUTION_ERROR",
+    "ARTIFACT_TRANSFER_ERROR",
+    "ROLE_TOTAL_FAILURE",
+    "ENGINE_STALL",
+    "COORDINATOR_SESSION_INTERRUPTED",
+}
+
+
+def resubmission_allowed(status: str, fail_reason: str | None) -> bool:
+    """Whether immediately repeating the same request can recover this outcome."""
+    if status not in ("failed", "needs_human"):
+        return False
+    reason = (fail_reason or "").split(":")[0].strip()
+    return reason in _RESUBMITTABLE_REASONS
+
+
 def public_result(run: Run) -> dict:
     return {
         "run_id": run.run_id,
@@ -3578,4 +3601,6 @@ def public_result(run: Run) -> dict:
         "next_action": next_action(
             run.status, run.fail_reason, run.pr, run.pr_url,
             run.integration_conflicts),
+        "resubmission_allowed": resubmission_allowed(
+            run.status, run.fail_reason),
     }

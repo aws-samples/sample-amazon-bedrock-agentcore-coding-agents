@@ -69,6 +69,19 @@ def test_no_regional_module_hardcodes_a_region_default() -> None:
         "Derive the region from the resource ARN or ambient AWS configuration.")
 
 
+def test_efficiency_lab_starter_uses_the_workshop_region() -> None:
+    """The optional lab runs on the same host and must not jump regions."""
+    path = os.path.join(os.path.dirname(_HERE), "starter-agent", "agent.py")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    code = "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+    code = re.sub(r'""".*?"""', "", code, flags=re.S)
+    assert not re.findall(
+        r"[\"'](?:us|eu|ap|sa|ca|me|af)-[a-z]+-\d[\"']", code), (
+        "starter-agent hardcodes a region; derive the workshop host's region")
+    assert "AWS_REGION" in code and "boto3.Session().region_name" in code
+
+
 def test_region_for_prefers_the_arn_over_any_caller_default() -> None:
     """The ARN is authoritative: ``open_shell`` rejects a mismatched client region.
 
