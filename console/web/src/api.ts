@@ -118,6 +118,7 @@ export interface WorkItem {
   kind: 'builder' | 'checker';
   branch: string;
   base_branch: string;
+  worktree_branch?: string;
   state: string;
   attempt: number;
   pr?: {

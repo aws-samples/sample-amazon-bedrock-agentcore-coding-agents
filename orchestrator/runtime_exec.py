@@ -7,9 +7,9 @@ CLI runner on the shipped path; a role's CLI only ever runs in its deployed
 Runtime, never on the orchestrator box:
 
   1. open a WebSocket shell on the role's runtime (SigV4, the server-side path);
-  2. download the exact tracked checkout archive and expand it on Runtime local
-     disk;
-  3. run the role's native headless CLI with the Bedrock env set inline;
+  2. download the exact tracked checkout archive and expand it into a run-local
+     Git seed on Runtime local disk;
+  3. create the role's named Git worktree and run its native headless CLI there;
   4. exclude dependency/cache directories and upload one result archive;
   5. capture STDOUT between sentinels so prompt echo and ANSI noise never pollute
      the transcript.
@@ -173,15 +173,22 @@ def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
     return env
 
 
+def worktree_branch(run_subdir: str) -> str:
+    """Derive the role's stable local worktree branch from its isolated work id."""
+    leaf = run_subdir.replace("\\", "/").strip("/").rsplit("/", 1)[-1]
+    slug = re.sub(r"[^a-z0-9]+", "-", leaf.lower()).strip("-")
+    return f"worktree-{slug or 'role'}"
+
+
 def _build_command(agent_id: str, prompt: str, run_subdir: str,
                    artifact_rel: str | None, model: str, region: str,
                    nonce: str, archive_uri: str | None = None,
                    skills_uri: str | None = None) -> str:
     """The one shell line dispatched into the runtime.
 
-    Downloads the exact Git checkout archive, expands it on Runtime local disk,
-    runs the agent there, then atomically uploads one result archive. No checkout
-    is copied file by file through the S3 Files NFS surface.
+    Downloads the exact tracked checkout archive, creates one linked Git worktree
+    on Runtime-local disk, runs the agent there, then atomically uploads one result
+    archive. No checkout or Git metadata traverses the S3 Files NFS surface.
 
     The PTY echoes the whole command line back before running it, so the literal
     sentinel strings would appear in the echo as well as in the real output. To
@@ -192,12 +199,15 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     ``set -o pipefail`` is intentionally NOT used: the artifact read-back must
     run regardless, and the captured exit code reflects the CLI itself.
     """
-    # A fresh local path per turn prevents files from a failed/previous shell
-    # leaking into this attempt. The stable S3 object is the continuity boundary.
+    # Fresh local paths per turn prevent files from a failed/previous shell leaking
+    # into this attempt. The stable S3 object is the continuity boundary; the seed
+    # owns common Git metadata and the role edits only its linked worktree.
     workdir = f"/tmp/workshop-{nonce}"
+    seed_dir = f"/tmp/workshop-seed-{nonce}"
     source_archive = f"/tmp/workshop-source-{nonce}.tar.gz"
     result_archive = f"/tmp/workshop-result-{nonce}.tar.gz"
     archive_uri = archive_uri or f"s3://workshop-runtime-exchange/{run_subdir}.tar.gz"
+    branch = worktree_branch(run_subdir)
     # Every role uses the runtime's own region: opencode/claude/kiro all call
     # plain Bedrock there (no mantle/us-east-2 special case).
     cli_region = region
@@ -291,19 +301,32 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"P={shlex.quote(prompt)}; "
         f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; "
         f'echo "$B1"; '
-        f"rm -rf {shlex.quote(workdir)} "
+        f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)} "
         f"{shlex.quote(source_archive)} {shlex.quote(result_archive)}; "
-        f"mkdir -p {shlex.quote(workdir)}; "
+        f"mkdir -p {shlex.quote(seed_dir)}; "
         f"aws s3 cp {shlex.quote(archive_uri)} "
         f"{shlex.quote(source_archive)} --region {shlex.quote(cli_region)} "
         "--only-show-errors; "
         f"__hydrate_rc=$?; "
         f"if [ $__hydrate_rc -eq 0 ]; then "
         f"tar --no-same-owner --no-same-permissions --touch -xzf "
-        f"{shlex.quote(source_archive)} -C {shlex.quote(workdir)}; "
+        f"{shlex.quote(source_archive)} -C {shlex.quote(seed_dir)}; "
         f"__hydrate_rc=$?; fi; "
         f"rm -f {shlex.quote(source_archive)}; "
+        f"if [ $__hydrate_rc -eq 0 ]; then "
+        f"git -C {shlex.quote(seed_dir)} init -q -b workshop-base && "
+        f"git -C {shlex.quote(seed_dir)} config user.name "
+        f"{shlex.quote('Workshop Runtime')} && "
+        f"git -C {shlex.quote(seed_dir)} config user.email "
+        f"{shlex.quote('workshop-runtime@example.invalid')} && "
+        f"git -C {shlex.quote(seed_dir)} add -A && "
+        f"git -C {shlex.quote(seed_dir)} commit -qm "
+        f"{shlex.quote('Seed tracked checkout')} --allow-empty && "
+        f"git -C {shlex.quote(seed_dir)} worktree add -q -b "
+        f"{shlex.quote(branch)} {shlex.quote(workdir)} HEAD; "
+        f"__hydrate_rc=$?; fi; "
         f"if [ $__hydrate_rc -ne 0 ]; then echo \"$E1\"; "
+        f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)}; "
         f"exit $__hydrate_rc; fi; "
         f"{skill_setup}"
         f"mkdir -p {shlex.quote(steering_parent)}; "
@@ -324,6 +347,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"{shlex.quote(archive_uri)} --region {shlex.quote(cli_region)} "
         "--only-show-errors; __pack_rc=$?; fi; "
         f"rm -f {shlex.quote(result_archive)}; "
+        f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)}; "
         f'echo "$E1"; '
         f"if [ $__rc -ne 0 ]; then exit $__rc; fi; "
         f"exit $__pack_rc\n"
@@ -578,7 +602,7 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
 
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
                                 artifact_rel: str | None, region: str) -> str:
-    """Read a named file from the role's atomically uploaded result archive."""
+    """Read a named file from the worktree's atomically uploaded result archive."""
     if not artifact_rel:
         return ""
     tree = read_tree_from_runtime(runtime_arn, run_subdir, ".", region)
@@ -588,7 +612,7 @@ def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
 
 def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
                          region: str | None = None) -> str:
-    """List the atomically uploaded result archive without opening a Runtime shell."""
+    """List the worktree result archive without opening a Runtime shell."""
     try:
         import runtime_stage  # noqa: PLC0415
         return runtime_stage.list_archive(
@@ -599,7 +623,7 @@ def list_tree_in_runtime(runtime_arn: str, run_subdir: str,
 
 def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
                            region: str | None = None) -> dict[str, bytes]:
-    """Read source bytes from one S3 object uploaded at the end of the role turn."""
+    """Read source bytes uploaded from the Runtime-local role worktree."""
     import runtime_stage  # noqa: PLC0415
     tree = runtime_stage.read_archive(
         run_subdir, region_for(runtime_arn, region))
@@ -616,7 +640,7 @@ def read_tree_from_runtime(runtime_arn: str, run_subdir: str, tree_rel: str,
 
 def clone_runtime_tree(runtime_arn: str, source_subdir: str, dest_subdir: str,
                        region: str | None = None) -> None:
-    """Clone a tracked checkout with one S3 server-side object copy."""
+    """Clone a worktree seed with one S3 server-side object copy."""
     for label, value in (("source", source_subdir), ("destination", dest_subdir)):
         if (not value or os.path.isabs(value)
                 or ".." in value.replace("\\", "/").split("/")):
@@ -641,8 +665,9 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
 
     Every orchestrated role uses a fresh bounded command shell and its native
     headless CLI. The tracked-source archive exchange requires this boundary:
-    the turn downloads one immutable checkout archive, works on Runtime-local
-    disk, and atomically uploads one result archive before the shell exits.
+    the turn downloads one immutable checkout archive, creates a named Git
+    worktree on Runtime-local disk, and atomically uploads one result archive
+    before the shell exits.
     Manually opened console terminals remain a separate interactive surface.
 
     Raises ``RoleExecutionError`` on a nonzero exit or a missing/empty artifact:

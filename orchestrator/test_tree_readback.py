@@ -127,6 +127,8 @@ def test_a_transfer_replaces_the_previous_rounds_files_but_keeps_the_harness():
         f.write("harness skill\n")
     with open(os.path.join(root, "CLAUDE.md"), "w") as f:
         f.write("harness steering\n")
+    with open(os.path.join(root, ".git"), "w") as f:
+        f.write("gitdir: ../git/repo.git/worktrees/test-role\n")
     # Round 1's work, including a file round 2 will not write again.
     with open(os.path.join(root, "server.py"), "w") as f:
         f.write("# round 1\n")
@@ -137,6 +139,7 @@ def test_a_transfer_replaces_the_previous_rounds_files_but_keeps_the_harness():
 
     left = sorted(os.listdir(root))
     assert "CLAUDE.md" in left, left        # the engine's harness stays
+    assert ".git" in left, left             # the linked-worktree gitlink stays
     assert "skills" in left, left
     assert "server.py" not in left, left    # round 1's work goes
     assert "dropped_in_round_2.py" not in left, left

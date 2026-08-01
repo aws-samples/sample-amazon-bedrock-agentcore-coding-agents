@@ -1,9 +1,10 @@
 """Independent role work and deterministic integration candidates.
 
-Each builder gets a stable work id, an isolated Runtime directory, and its own
-GitHub branch. Builders may share a task and an integration brief, but they never
-share a writable tree. That mirrors a human team: separate checkouts, explicit
-pull requests, and one integration queue.
+Each builder gets a stable work id, a local linked Git worktree, and its own GitHub
+branch. Builders may share a task and an integration brief, but they never share a
+writable tree. That mirrors a human team: separate checkouts, explicit pull
+requests, and one integration queue. The common Git metadata stays on local disk;
+only normalized source archives cross an AgentCore Runtime boundary.
 
 This module does not decide whether code is correct. It only performs structural
 work that must be deterministic:
@@ -19,14 +20,19 @@ assembled candidate, and the engine runs that executable for the verdict.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
+import subprocess
+import threading
 import uuid
-import hashlib
-import json
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
+
+import fcntl
 
 
 def _slug(value: str) -> str:
@@ -39,9 +45,14 @@ def integration_branch(run_id: str) -> str:
     return f"workshop/runs/{_slug(run_id)}/integration"
 
 
+def worktree_branch(work_id: str) -> str:
+    """The local branch checked out for one isolated role turn."""
+    return f"worktree-{_slug(work_id)}"
+
+
 @dataclass
 class WorkItem:
-    """One builder's isolated unit of work and pull request lifecycle."""
+    """One role's isolated worktree and pull request lifecycle."""
 
     work_id: str
     agent: str
@@ -50,6 +61,7 @@ class WorkItem:
     kind: str
     branch: str
     base_branch: str
+    worktree_branch: str
     depends_on: list[str] = field(default_factory=list)
     state: str = "pending"
     attempt: int = 0
@@ -82,6 +94,7 @@ class WorkItem:
             kind=kind,
             branch=f"workshop/runs/{_slug(run_id)}/{_slug(agent)}-{suffix}",
             base_branch=base,
+            worktree_branch=worktree_branch(work_id),
         )
 
     def runtime_subdir(self, run_id: str) -> str:
@@ -97,6 +110,7 @@ class WorkItem:
             "kind": self.kind,
             "branch": self.branch,
             "base_branch": self.base_branch,
+            "worktree_branch": self.worktree_branch,
             "depends_on": list(self.depends_on),
             "state": self.state,
             "attempt": self.attempt,
@@ -113,6 +127,147 @@ class WorkItem:
             "refreshes": self.refreshes,
             "dependency_refreshes": self.dependency_refreshes,
         }
+
+
+_REPO_LOCKS: dict[str, threading.Lock] = {}
+_REPO_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock(repo_dir: str) -> threading.Lock:
+    key = os.path.realpath(repo_dir)
+    with _REPO_LOCKS_GUARD:
+        return _REPO_LOCKS.setdefault(key, threading.Lock())
+
+
+@contextmanager
+def _repo_lock(repo_dir: str):
+    """Serialize common Git metadata changes across threads and processes."""
+    lock = _thread_lock(repo_dir)
+    lock_path = os.path.join(os.path.dirname(repo_dir), "worktree.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with lock, open(lock_path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _git(*args: str, cwd: str | None = None,
+         check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if check and result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(
+            f"WORKTREE_GIT_ERROR: git {' '.join(args)} failed: {detail}")
+    return result
+
+
+def _copy_worktree_source(source: str, destination: str) -> int:
+    """Copy a tracked tree while never importing another repository's metadata."""
+    if not os.path.isdir(source):
+        raise RuntimeError(f"worktree source does not exist: {source}")
+    os.makedirs(destination, exist_ok=True)
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(source):
+        dirnames[:] = sorted(name for name in dirnames if name != ".git")
+        rel_dir = os.path.relpath(dirpath, source)
+        target_dir = (
+            destination if rel_dir == "."
+            else os.path.join(destination, rel_dir)
+        )
+        os.makedirs(target_dir, exist_ok=True)
+        for filename in sorted(filenames):
+            if filename == ".git":
+                continue
+            src = os.path.join(dirpath, filename)
+            if os.path.islink(src):
+                raise RuntimeError(
+                    f"symbolic links are not portable worktree input: {src}")
+            dest = os.path.join(target_dir, filename)
+            shutil.copyfile(src, dest)
+            shutil.copymode(src, dest)
+            count += 1
+    return count
+
+
+def initialize_worktree_repo(repo_dir: str, source_root: str) -> str:
+    """Create one run-local common repository from the exact integration base."""
+    if os.path.exists(repo_dir):
+        raise RuntimeError(
+            f"WORKTREE_REPO_EXISTS: refusing to replace {repo_dir}")
+    parent = os.path.dirname(repo_dir)
+    os.makedirs(parent, exist_ok=True)
+    seed = os.path.join(parent, f"seed-{uuid.uuid4().hex[:10]}")
+    shutil.rmtree(seed, ignore_errors=True)
+    try:
+        _copy_worktree_source(source_root, seed)
+        _git("init", "-q", "-b", "workshop-base", seed)
+        _git("-C", seed, "config", "user.name", "Workshop Coordinator")
+        _git("-C", seed, "config", "user.email",
+             "workshop-coordinator@example.invalid")
+        _git("-C", seed, "add", "-A")
+        _git("-C", seed, "commit", "-qm", "Seed integration base",
+             "--allow-empty")
+        _git("clone", "-q", "--bare", "--no-hardlinks", seed, repo_dir)
+        _git("--git-dir", repo_dir, "config", "gc.auto", "0")
+        return _git(
+            "--git-dir", repo_dir, "rev-parse", "HEAD").stdout.strip()
+    finally:
+        shutil.rmtree(seed, ignore_errors=True)
+
+
+def add_worktree(repo_dir: str, destination: str, branch: str,
+                 start: str = "HEAD") -> None:
+    """Add one role-owned worktree under a unique local branch."""
+    if not os.path.isdir(repo_dir):
+        raise RuntimeError(f"WORKTREE_REPO_MISSING:{repo_dir}")
+    if not branch.startswith("worktree-") or "/" in branch:
+        raise RuntimeError(f"unsafe worktree branch: {branch!r}")
+    with _repo_lock(repo_dir):
+        _git("--git-dir", repo_dir, "worktree", "prune")
+        shutil.rmtree(destination, ignore_errors=True)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        _git("--git-dir", repo_dir, "worktree", "add", "-q", "-b", branch,
+             destination, start)
+        _git("-C", destination, "config", "user.name",
+             "Workshop Coordinator")
+        _git("-C", destination, "config", "user.email",
+             "workshop-coordinator@example.invalid")
+
+
+def reset_worktree(repo_dir: str, destination: str, source_root: str,
+                   message: str) -> int:
+    """Replace a role tree with a new clean baseline without breaking its gitlink."""
+    gitlink = os.path.join(destination, ".git")
+    if not os.path.isfile(gitlink):
+        raise RuntimeError(
+            f"WORKTREE_GITLINK_MISSING: {destination} is not a linked worktree")
+    with _repo_lock(repo_dir):
+        _git("-C", destination, "reset", "--hard", "-q")
+        for name in os.listdir(destination):
+            if name == ".git":
+                continue
+            victim = os.path.join(destination, name)
+            if os.path.isdir(victim):
+                shutil.rmtree(victim, ignore_errors=True)
+            else:
+                os.remove(victim)
+        count = _copy_worktree_source(source_root, destination)
+        _git("-C", destination, "add", "-A")
+        changed = _git(
+            "-C", destination, "diff", "--cached", "--quiet",
+            check=False).returncode
+        if changed:
+            _git("-C", destination, "commit", "-qm", message)
+        return count
 
 
 class DependencyCycle(ValueError):

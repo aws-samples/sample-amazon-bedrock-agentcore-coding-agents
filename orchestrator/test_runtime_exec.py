@@ -264,17 +264,22 @@ def test_anonymous_dispatch_never_stamps_identity(monkeypatch):
     assert "user.id=" not in cmd
 
 
-def test_dispatch_uses_local_checkout_and_one_s3_archive(monkeypatch):
+def test_dispatch_uses_runtime_local_worktree_and_one_s3_archive(monkeypatch):
+    assert runtime_exec.worktree_branch(
+        "run_1/work/work_backend_a") == "worktree-work-backend-a"
     cmd = runtime_exec._build_command(
         "claude-code", "build", "run_1/work/backend", None,
         "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
         archive_uri="s3://bucket/run_1/work/backend.tar.gz",
         skills_uri="s3://bucket/run_1-skills.tar.gz",
     )
-    assert "/tmp/workshop-abc123" in cmd
+    assert "/tmp/workshop-seed-abc123" in cmd
+    assert "git -C /tmp/workshop-seed-abc123 worktree add" in cmd
+    assert "-b worktree-backend /tmp/workshop-abc123 HEAD" in cmd
     assert "aws s3 cp" in cmd
     assert "s3://bucket/run_1/work/backend.tar.gz" in cmd
     assert "--exclude=node_modules" in cmd
+    assert "--exclude=.git" in cmd
     assert "/mnt/s3files/run_1/work/backend" not in cmd
 
 
@@ -308,10 +313,14 @@ def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
     )
 
     download = cmd.index(f"aws s3 cp {archive} /tmp/workshop-source-abc123.tar.gz")
+    worktree = cmd.index(
+        "git -C /tmp/workshop-seed-abc123 worktree add",
+        download,
+    )
     assume = cmd.index("__ASSUME_USER_CREDENTIALS__")
     subshell_end = cmd.index("); __rc=$?", assume)
     upload = cmd.index(
         f"aws s3 cp /tmp/workshop-result-abc123.tar.gz {archive}",
         subshell_end,
     )
-    assert download < assume < subshell_end < upload
+    assert download < worktree < assume < subshell_end < upload

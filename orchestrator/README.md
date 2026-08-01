@@ -14,8 +14,8 @@ configuration is an explicit error.
    finalization around the selected work.
 4. `AgentCoreExecutor` sends each role to its deployed Runtime. It does not fall
    back to an in-process builder.
-5. Each builder gets an isolated checkout, unique work id, branch, and role PR
-   against the run's private integration branch.
+5. Each builder gets a named linked Git worktree on local disk, a unique work id,
+   branch, and role PR against the run's private integration branch.
 6. `reviewer.py` executes the validator-authored task-specific check, then runs
    one independent, read-only review over the integrated candidate. Its structured
    response must cover both adversarial-verification and design/integration
@@ -41,11 +41,11 @@ final PR supports either human review or guarded auto-merge.
 | `chat.py` | Strands conversation and tool selection |
 | `role_graph.py` | The agent-execution schedule as a Strands graph |
 | `integration_plan.py` | Flexible shared contract and bounded repair routing |
-| `work_items.py` | Work ids, isolated patches, dependency order, candidate assembly |
+| `work_items.py` | Linked worktrees, work ids, isolated patches, dependency order, candidate assembly |
 | `engine.py` | Five-phase lifecycle, state, compose, and finalization |
 | `executor.py` | Real AgentCore executor boundary |
-| `runtime_exec.py` | Command-shell dispatch and work-tree readback |
-| `runtime_stage.py` | Stage the harness skills onto S3 Files |
+| `runtime_exec.py` | Command-shell dispatch, Runtime-local worktrees, and tree readback |
+| `runtime_stage.py` | Exchange normalized source and skill archives through S3 |
 | `runtime_config.py` | Resolve per-role Runtime ARN fleets or explicit dev URIs |
 | `reviewer.py` | Runs the validator check plus one integrated read-only review |
 | `replay.py` | The run's narrative, for the PR body (reports, never judges) |
@@ -71,7 +71,9 @@ robin selection. An explicit `http://` or `https://` target is the supported
 Other important settings:
 
 - `WORKSHOP_ROLES` selects which registered roles are served (an unknown id fails loud).
-- `WORKSHOP_RUNS_DIR` selects untracked run state.
+- `WORKSHOP_RUNS_DIR` selects untracked run state and coordinator-local worktrees.
+  The deployed coordinator sets it to `/tmp/workshop-runs`; the box console uses
+  repo-local `.runs`. Neither points at the S3 Files NFS mount.
 - `WORKSHOP_MAX_RUN_STATE` caps how many persisted run verdicts are kept.
 - `WORKSHOP_S3FILES_DIR` points the S3 Files mount at a local dir (the dev seam).
 - `WORKSHOP_GITHUB_SETTINGS` isolates the GitHub settings file.

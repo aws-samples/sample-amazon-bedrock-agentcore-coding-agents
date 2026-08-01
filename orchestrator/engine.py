@@ -246,7 +246,7 @@ _ACCEPTANCE_CHECK = "acceptance_check"
 # is what a reviewer can actually read.
 _COMPOSE_SKIP_DIRS = {"__pycache__", ".git", ".workshop", "node_modules",
                       ".pytest_cache", ".ruff_cache", ".mypy_cache", "skills"}
-_COMPOSE_SKIP_NAMES = {"CLAUDE.md", "AGENTS.md", ".DS_Store"}
+_COMPOSE_SKIP_NAMES = {"CLAUDE.md", "AGENTS.md", ".DS_Store", ".git"}
 # NFS silly-rename stubs: when a process deletes a file it still has open, the
 # S3 Files (NFS) mount keeps it as `.nfsXXXXXXXX` until the handle closes. A live
 # run committed three of them (4KB/32KB/49KB of nothing) because the validator's
@@ -555,7 +555,8 @@ class Run:
     iterations: int = 0
     fail_reason: str | None = None
     progress: dict[str, RoleResult] = field(default_factory=dict)
-    # Every routed role gets a unique work id and Runtime checkout. Builder items
+    # Every routed role gets a unique work id and local linked worktree. Its Runtime
+    # turn reconstructs the same named worktree from a source archive. Builder items
     # also map to independent GitHub branches and pull requests; the checker item
     # remains isolated but never authors a code PR.
     work_items: dict[str, _work_items.WorkItem] = field(default_factory=dict)
@@ -624,10 +625,17 @@ class Run:
         return os.path.join(_RUNS_DIR, "work", self.run_id)
 
     def roledir(self, agent: str) -> str:
-        """The role's own container directory: its /mnt/workspace equivalent."""
-        d = os.path.join(self.workdir, f"role-{agent}")
+        """The role's isolated local Git worktree."""
+        item = self.work_items.get(agent)
+        suffix = item.work_id if item is not None else agent
+        d = os.path.join(self.workdir, "worktrees", suffix)
         os.makedirs(d, exist_ok=True)
         return d
+
+    @property
+    def worktree_repo_dir(self) -> str:
+        """The run-local common Git metadata shared by its isolated worktrees."""
+        return os.path.join(self.workdir, "git", "repo.git")
 
     @property
     def candidate_dir(self) -> str:
@@ -646,7 +654,7 @@ class Run:
         return os.path.join(self.workdir, f"base-{suffix}")
 
     def runtime_subdir(self, agent: str) -> str:
-        """The role's unique Runtime exchange archive name."""
+        """The role's unique Runtime worktree archive name."""
         item = self.work_items.get(agent)
         return (item.runtime_subdir(self.run_id)
                 if item is not None else f"{self.run_id}/work/{agent}")
@@ -1167,24 +1175,32 @@ class Engine:
             item.base_digest = _work_items.tree_digest(
                 item_base, exclude=_compose_excluded)
 
-        if self.executor.name == "fixture":
-            for item in builders:
-                dest = run.roledir(item.agent)
-                shutil.rmtree(dest, ignore_errors=True)
-                shutil.copytree(run.item_base_dir(item.agent), dest)
-        else:
+        shutil.rmtree(os.path.dirname(run.worktree_repo_dir), ignore_errors=True)
+        shutil.rmtree(os.path.join(run.workdir, "worktrees"),
+                      ignore_errors=True)
+        base_commit = _work_items.initialize_worktree_repo(
+            run.worktree_repo_dir, run.integration_base_dir)
+        for item in builders:
+            _work_items.add_worktree(
+                run.worktree_repo_dir,
+                run.roledir(item.agent),
+                item.worktree_branch,
+                base_commit,
+            )
+
+        if self.executor.name != "fixture":
             self._stage_builder_checkouts(run, builders)
         run._active_builders = {item.agent for item in builders}
         run.log(
             f"integration base ready on {run.integration_branch}: "
             f"{(run.integration_base or {}).get('files', 0)} file(s); "
-            f"{len(builders)} isolated checkout(s) seeded")
+            f"{len(builders)} isolated Git worktree(s) seeded")
         return True
 
     def _stage_builder_checkouts(
         self, run: Run, builders: list[_work_items.WorkItem]
     ) -> None:
-        """Publish one immutable source archive, then clone it per work id."""
+        """Publish each local worktree seed through one immutable source archive."""
         import runtime_stage  # noqa: PLC0415
 
         staged = runtime_stage.stage_base(run.run_id, run.integration_base_dir)
@@ -1238,9 +1254,9 @@ class Engine:
         """Run ``agent_id``'s CLI INSIDE its deployed AgentCore Runtime.
 
         Dispatches over the command shell via ``runtime_exec`` against the role's
-        wired runtime ARN. The exact role archive is expanded on Runtime local
-        disk for the turn and uploaded atomically when the turn ends. Raises if
-        the role has no wired runtime: fail loud, never local.
+        wired runtime ARN. The exact role archive becomes an isolated Git worktree
+        on Runtime-local disk for the turn and is uploaded atomically when the turn
+        ends. Raises if the role has no wired runtime: fail loud, never local.
 
         ``artifact_rel`` names ONE file to read back and require, and is used only
         where a filename is genuinely part of the contract: the validator's authored
@@ -1263,7 +1279,8 @@ class Engine:
         role.engine = "agentcore"
         run.term(agent_id, f"echo 'dispatching to {arn.split('/')[-1]} on AgentCore "
                            "Runtime; it receives the tracked checkout archive, "
-                           "works on local disk, and uploads one result archive'")
+                           f"opens {run.work_items[agent_id].worktree_branch} on "
+                           "local disk, and uploads one result archive'")
         t0 = time.monotonic()
         collected: list[str] = []
 
@@ -1657,7 +1674,11 @@ class Engine:
         must never happen: a role that wrote nothing would then reach a green gate
         and an empty commit, and the repository has no builder to fall back on.
         """
-        paths = {harness_config.steering_filename(agent_id), ".mcp/servers.jsonl"}
+        paths = {
+            harness_config.steering_filename(agent_id),
+            ".mcp/servers.jsonl",
+            ".git",
+        }
         try:
             src = harness_config.harness_file(agent_id)
             setup = harness_config.parse_setup_spec(src)
@@ -1856,12 +1877,14 @@ class Engine:
         item: _work_items.WorkItem,
         seed: str,
     ) -> int:
-        """Replace one owner's Runtime checkout with a prepared refresh tree."""
+        """Reset one owner's linked worktree and Runtime checkout to a refresh."""
         dest = run.roledir(item.agent)
-        shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(seed, dest)
-        local_count = sum(
-            len(files) for _root, _dirs, files in os.walk(dest))
+        local_count = _work_items.reset_worktree(
+            run.worktree_repo_dir,
+            dest,
+            seed,
+            f"Refresh baseline for {item.work_id}",
+        )
         if self.executor.name == "fixture":
             return local_count
 
@@ -1994,13 +2017,24 @@ class Engine:
         return active
 
     def _prepare_checker_checkout(self, run: Run, agent_id: str) -> None:
-        """Give the checker a writable clone of the immutable candidate."""
+        """Give the checker its own worktree at the immutable candidate."""
         import runtime_stage  # noqa: PLC0415
 
+        item = run.work_items[agent_id]
+        dest = run.roledir(agent_id)
+        if not os.path.isfile(os.path.join(dest, ".git")):
+            _work_items.add_worktree(
+                run.worktree_repo_dir,
+                dest,
+                item.worktree_branch,
+            )
+        _work_items.reset_worktree(
+            run.worktree_repo_dir,
+            dest,
+            run.candidate_dir,
+            f"Candidate baseline for {item.work_id}",
+        )
         if self.executor.name == "fixture":
-            dest = run.roledir(agent_id)
-            shutil.rmtree(dest, ignore_errors=True)
-            shutil.copytree(run.candidate_dir, dest)
             return
         if self.executor.name != "agentcore":
             raise RuntimeError(_NO_PRODUCER_ERROR)

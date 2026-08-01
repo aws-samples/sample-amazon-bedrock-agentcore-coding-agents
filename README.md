@@ -3,8 +3,10 @@
 Run Claude Code, a second Claude Code validator, and opencode on Amazon Bedrock
 AgentCore Runtime. Give the team one request and receive one checked pull request.
 
-Each builder works in a separate checkout and pull request. The validator writes an
-executable for that request, and the orchestrator runs it. One independent,
+Each builder works in a named linked Git worktree and separate pull request. The
+worktree is local to the coordinator or Runtime; only one normalized source archive
+crosses the Runtime boundary. The validator writes an executable for that request,
+and the orchestrator runs it. One independent,
 read-only review then applies two required lenses to the combined result:
 adversarial verification and design/integration. The reviewer never sees a
 builder's conversation or edits a builder's code.
@@ -36,6 +38,11 @@ request merges, a dependent builder gets one chance to inspect and use that work
 its existing pull request. This catches cases where separate branches each worked
 but did not agree when combined. It is separate from the one repair allowed after a
 failed check or review finding.
+
+Lab 2 deliberately keeps Git metadata off S3 Files. The deployed coordinator uses
+`/tmp/workshop-runs`, each coding-agent Runtime creates its turn's worktree under
+`/tmp`, and `.git` never enters the exchange archive. S3 Files remains the shared
+workspace for direct shell work in Lab 1.
 
 ## Layout
 

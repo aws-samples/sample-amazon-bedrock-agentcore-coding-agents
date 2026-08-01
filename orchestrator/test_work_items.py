@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -36,6 +37,8 @@ def test_candidate_applies_disjoint_and_identical_role_changes(tmp_path):
     assert backend.work_id != frontend.work_id
     assert backend.branch != frontend.branch
     assert backend.base_branch == frontend.base_branch
+    assert backend.worktree_branch == "worktree-work-backend-a"
+    assert frontend.worktree_branch == "worktree-work-frontend-b"
     assert backend.runtime_subdir("run_1").endswith(backend.work_id)
     assert frontend.runtime_subdir("run_1").endswith(frontend.work_id)
     assert "/work/" in backend.runtime_subdir("run_1")
@@ -172,3 +175,50 @@ def test_refresh_preserves_clean_work_and_surfaces_same_path_conflicts(tmp_path)
     assert (refreshed / "contract.json").read_text() == '{"owner":"backend"}\n'
     assert (refreshed / ".workshop" / "prior-work" /
             "contract.json").read_text() == '{"owner":"frontend"}\n'
+
+
+def test_linked_worktrees_isolate_roles_and_survive_refresh(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "shared.txt").write_text("base\n")
+    repo = tmp_path / "git" / "repo.git"
+    backend = _item("run_1", "backend", "a")
+    frontend = _item("run_1", "frontend", "b")
+    backend_dir = tmp_path / "worktrees" / backend.work_id
+    frontend_dir = tmp_path / "worktrees" / frontend.work_id
+
+    commit = work_items.initialize_worktree_repo(str(repo), str(source))
+    work_items.add_worktree(
+        str(repo), str(backend_dir), backend.worktree_branch, commit)
+    work_items.add_worktree(
+        str(repo), str(frontend_dir), frontend.worktree_branch, commit)
+
+    assert (backend_dir / ".git").is_file()
+    assert (frontend_dir / ".git").is_file()
+    assert subprocess.check_output(
+        ["git", "-C", str(backend_dir), "branch", "--show-current"],
+        text=True,
+    ).strip() == backend.worktree_branch
+
+    (backend_dir / "backend.py").write_text("print('backend')\n")
+    assert not (frontend_dir / "backend.py").exists()
+
+    refreshed = tmp_path / "refreshed"
+    refreshed.mkdir()
+    (refreshed / "shared.txt").write_text("latest\n")
+    (refreshed / "frontend.ts").write_text("export const ready = true\n")
+    gitlink = (frontend_dir / ".git").read_text()
+
+    assert work_items.reset_worktree(
+        str(repo),
+        str(frontend_dir),
+        str(refreshed),
+        "Refresh frontend baseline",
+    ) == 2
+    assert (frontend_dir / ".git").read_text() == gitlink
+    assert (frontend_dir / "shared.txt").read_text() == "latest\n"
+    assert (frontend_dir / "frontend.ts").is_file()
+    assert subprocess.check_output(
+        ["git", "-C", str(frontend_dir), "status", "--porcelain"],
+        text=True,
+    ) == ""

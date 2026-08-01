@@ -5,11 +5,11 @@ writes its check next to the builders' files and addresses them as siblings:
 `os.path.dirname(__file__) + "/server.py"`, or plain `./server.py`. That is correct
 where it was written, and it is what validators actually emit.
 
-The engine reads each role's archive into a separate `role-<agent>` directory, which
-compose needs so every file is attributable to its author. That split must not leave
-the check alone in the validator's directory with the deliverable one level away.
-The gate runs from an assembled review directory where the candidate and authored
-check are siblings.
+The engine reads each role's archive into a named linked worktree, which compose
+needs so every file is attributable to its author. That split must not leave the
+check alone in the validator's worktree with the deliverable one level away. The
+gate runs from an assembled review directory where the candidate and authored check
+are siblings.
 
 Verified on a live event box (2026-07-26): the same validator-authored check scored
 `0 passed, 4 failed` in the validator's directory and `45 passed, 0 failed` beside
@@ -83,17 +83,44 @@ def test_supported_toolchains_cross_every_execution_boundary(
         shutil, "copytree",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(524, "NFS")),
     )
-    checker_run = type("CheckerRun", (), {
-        "run_id": "run_nfs_checkout",
-        "candidate_dir": str(candidate),
-        "log": lambda *_args, **_kwargs: None,
-        "runtime_subdir": lambda _self, agent: f"work/{agent}",
-    })()
     engine = importlib.import_module("engine")
+    import work_items
+
+    monkeypatch.setattr(engine, "_RUNS_DIR", str(tmp_path / "runs"))
+    checker_run = engine.Run(
+        run_id="run_nfs_checkout",
+        task="validate the candidate",
+        agents=["claude-code-validator"],
+        roles={"claude-code-validator": "validator"},
+    )
+    checker_run.work_items["claude-code-validator"] = (
+        work_items.WorkItem.create(
+            checker_run.run_id,
+            "claude-code-validator",
+            "validator",
+            "validator",
+            kind="checker",
+            token="nfs-checkout",
+        )
+    )
+    os.makedirs(os.path.join(checker_run.candidate_dir, "dist"))
+    shutil.copyfile(
+        candidate / "dist" / "app.js",
+        os.path.join(checker_run.candidate_dir, "dist", "app.js"),
+    )
+    work_items.initialize_worktree_repo(
+        checker_run.worktree_repo_dir,
+        checker_run.candidate_dir,
+    )
     eng = engine.Engine.__new__(engine.Engine)
     eng.executor = type("Executor", (), {"name": "agentcore"})()
     eng._prepare_checker_checkout(checker_run, "claude-code-validator")
-    staged = mount / "work" / "claude-code-validator" / "dist" / "app.js"
+    staged = (
+        mount
+        / checker_run.runtime_subdir("claude-code-validator")
+        / "dist"
+        / "app.js"
+    )
     assert staged.read_text() == "console.log('candidate')\n"
 
     validator = open(os.path.join(

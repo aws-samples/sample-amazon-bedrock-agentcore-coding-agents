@@ -173,7 +173,10 @@ function WorkItemsTable({ builders }: { builders: WorkItem[] }) {
                   </span>
                 </td>
                 <td className="py-2 pr-3 font-mono text-muted-foreground" translate="no">
-                  {item.work_id}
+                  <span className="block">{item.work_id}</span>
+                  {item.worktree_branch && (
+                    <span className="block text-[10px]">{item.worktree_branch}</span>
+                  )}
                 </td>
                 <td className="py-2 pr-3">
                   {item.pr?.pr_url ? (
