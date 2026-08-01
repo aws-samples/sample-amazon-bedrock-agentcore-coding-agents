@@ -131,7 +131,7 @@ published BEFORE the checker inspects the combined candidate; the top-level \
 `pr_url` is the later final integration PR. If a builder's `work_items.*.pr.pr_url` \
 is empty during a live transition, say only that it is not reported yet. Never \
 claim that a gate must pass before a role PR opens, and never infer a missing \
-field's cause or timing. Report `gate_history`, both members under `review`, \
+field's cause or timing. Report `gate_history`, the integrated review evidence, \
 `merge_queue`, `next_action`, and `resubmission_allowed` exactly as returned.
 
 ## If a build did not complete, READ next_action. Never improvise, and never loop
@@ -160,11 +160,12 @@ The three cases, because they have different recoveries:
   and stop. Resume after it resets, or after the operator selects a model with
   available capacity.
 * Validation stayed blocked on real work (`ITERATION_CAP`). This can be a RED
-  validator-authored executable OR a required behavior/design review finding even
-  when the executable is green. The bounded re-implement round is already spent.
+  validator-authored executable OR a finding under either required lens of the
+  integrated review, even when the executable is green. The bounded re-implement
+  round is already spent.
   Resubmitting here is not recovery, it is the unbounded loop the cap exists to
   prevent. REPORT it instead. If the latest gate is red, quote its `gate.summary`;
-  if a review blocks, quote that member's recorded evidence. Never call a green gate
+  if a review blocks, quote the recorded lens evidence. Never call a green gate
   red. It is the human's call whether to change the request, change the deliverable,
   or accept the finding.
 

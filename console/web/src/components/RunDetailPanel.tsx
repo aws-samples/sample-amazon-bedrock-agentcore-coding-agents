@@ -55,7 +55,7 @@ const WORKFLOW = [
   { label: 'Role PRs', icon: GitPullRequest },
   { label: 'Combined Work', icon: Layers3 },
   { label: 'Run Check', icon: FileCheck2 },
-  { label: 'Two Reviews', icon: ShieldCheck },
+  { label: 'Integrated Review', icon: ShieldCheck },
   { label: 'Checked Merges', icon: GitMerge },
   { label: 'Final PR', icon: GitPullRequest },
 ] as const;
@@ -241,16 +241,16 @@ function GateHistory({ gates }: { gates: GateRecord[] }) {
   );
 }
 
-function ReviewPanels({ review }: { review: RunDetail['review'] }) {
+function IntegratedReview({ review }: { review: RunDetail['review'] }) {
   const panels = review?.panels ?? [];
   return (
     <section className="min-w-0 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">Two Independent Reviews</h3>
+      <h3 className="text-xs font-semibold">Integrated Read-only Review</h3>
       {panels.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">
           {review?.state
-            ? 'No separate review was recorded for this run.'
-            : 'Waiting for the behavior and design reviews.'}
+            ? 'No integrated review was recorded for this run.'
+            : 'Waiting for the adversarial and design review lenses.'}
         </p>
       ) : (
         <ol className="mt-2 space-y-2">
@@ -392,7 +392,7 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
           )}
         </section>
         <GateHistory gates={gates} />
-        <ReviewPanels review={run.review} />
+        <IntegratedReview review={run.review} />
         <Queue rows={queue} />
         <section className="min-w-0 border-t border-border pt-3">
           <h3 className="text-xs font-semibold">Final Pull Request</h3>
@@ -417,7 +417,7 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
             </div>
           ) : (
             <p className="mt-2 text-xs text-muted-foreground">
-              Opens against the normal branch after every check and review passes.
+              Opens against the default branch after every check and review passes.
             </p>
           )}
         </section>

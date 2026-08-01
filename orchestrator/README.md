@@ -17,10 +17,11 @@ configuration is an explicit error.
 5. Each builder gets an isolated checkout, unique work id, branch, and role PR
    against the run's private integration branch.
 6. `reviewer.py` executes the validator-authored task-specific check, then runs
-   independent adversarial-verification and design/integration turns over the
-   integrated candidate. They are read-only, never reuse a maker conversation,
-   and can make a green gate stricter. A red executable can never pass. The exact
-   approval token is `LGTM: no changes needed`.
+   one independent, read-only review over the integrated candidate. Its structured
+   response must cover both adversarial-verification and design/integration
+   lenses, never reuses a maker conversation, and can make a green gate stricter.
+   A red executable can never pass. The exact approval token is
+   `LGTM: no changes needed`.
 7. `github.py` merges approved role PRs one at a time, rerunning the executable
    gate after every merge, then opens one final integration PR to the default
    branch. If no Gateway resolves, pre-flight fails before agent work.
@@ -46,7 +47,7 @@ final PR supports either human review or guarded auto-merge.
 | `runtime_exec.py` | Command-shell dispatch and work-tree readback |
 | `runtime_stage.py` | Stage the harness skills onto S3 Files |
 | `runtime_config.py` | Resolve per-role Runtime ARN fleets or explicit dev URIs |
-| `reviewer.py` | Runs the validator check plus the read-only adversarial/design panel |
+| `reviewer.py` | Runs the validator check plus one integrated read-only review |
 | `replay.py` | The run's narrative, for the PR body (reports, never judges) |
 | `github.py` | Gateway config resolution, PR creation, and the `doctor` preflight |
 | `run_store.py` | Durable run state, so a verdict outlives its session |
@@ -78,9 +79,7 @@ Other important settings:
 - `WORKSHOP_RUNTIME_BUCKET` overrides the S3 staging bucket, and is where the
   deployed coordinator mirrors run state (its own filesystem dies with the microVM).
 - `WORKSHOP_BEDROCK_REGION` selects coordinator inference region.
-- `WORKSHOP_REVIEW_MODEL` selects the default model for both independent panel
-  turns. `WORKSHOP_ADVERSARIAL_REVIEW_MODEL` and
-  `WORKSHOP_DESIGN_REVIEW_MODEL` can override either member.
+- `WORKSHOP_REVIEW_MODEL` selects the model for the integrated read-only review.
 - `WORKSHOP_FINAL_MERGE_POLICY` is `human_review` (default) or `auto`.
   `WORKSHOP_MERGE_POLICY` remains a compatibility alias.
 
@@ -120,5 +119,5 @@ Settings or `runtime_config.py`. Start the console as described in
 outcome-oriented request.
 
 The run panel must show only routed roles, their unique work ids and role PRs, the
-candidate digest, every executable checkpoint, both independent review-panel
-members, the private merge queue, and the real final `pr_url`.
+candidate digest, every executable checkpoint, the integrated review and both
+required lenses, the private merge queue, and the real final `pr_url`.

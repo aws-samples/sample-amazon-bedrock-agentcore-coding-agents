@@ -981,7 +981,7 @@ function OrchestratorVerdict({ result }: { result: RunResult }) {
         {reviewState && <li>review: {reviewState}</li>}
         {result.review?.panels?.length ? (
           <li>
-            independent reviews: {result.review.panels
+            review evidence: {result.review.panels
               .map((panel) => `${panel.name} ${panel.state.replaceAll('_', ' ')}`)
               .join(', ')}
           </li>

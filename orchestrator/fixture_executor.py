@@ -82,7 +82,7 @@ class FixtureExecutor(executor.Executor):
         plainly lets the review layer judge the plumbing rather than be tricked by it,
         and keeps the offline suite from depending on a judge being fooled.
         """
-        # Mark the run: its work is a stub, so the review panel abstains instead of
+        # Mark the run: its work is a stub, so the integrated review abstains instead of
         # being asked to approve something that implements nothing (see
         # reviewer._default_judge). A real dispatch never sets this.
         run._offline_double = True

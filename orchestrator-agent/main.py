@@ -16,7 +16,7 @@ decides which wired roles run instead of using a fixed fan-out.
   * ``dispatch_*``        : generated tools for the roles in the active roster.
   * ``run_build``         : the composed pipeline; dispatch the routed roles,
                             compose their work, execute the validator-authored
-                            check, require both independent reviews, and report
+                            check, require the integrated read-only review, and report
                             the PR result.
   * ``run_status``        : read back a run's verdict, gate checks, and PR URL.
 
@@ -26,7 +26,7 @@ the full composed pipeline. The tools do the real work by calling the same
 in-process engine the console drives: each ``dispatch_*`` submits a single-role
 run to that role's DEPLOYED Runtime. ``run_build`` assembles the routed builder
 work and passes the immutable candidate through the validator-authored executable
-and the independent adversarial/design review panel.
+and one integrated review that must cover adversarial and design/integration lenses.
 
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs

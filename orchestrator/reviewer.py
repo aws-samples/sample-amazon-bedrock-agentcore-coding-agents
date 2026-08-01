@@ -13,14 +13,15 @@ in two layers that make one loop:
     fallback would be this repository deciding correctness, which is the thing
     the design forbids. A red gate can never pass, and nothing fabricates a
     verdict.
-  * The REVIEW PANEL runs two independent model turns over the integrated
-    artifacts. An adversarial reviewer tries to falsify the green result at
-    runtime and across producer/consumer boundaries. A design reviewer checks
-    ownership, integration, operability, and maintainability. Either may request
-    changes. Both members must finish before a merge can proceed. An unavailable
-    member is recorded and blocks the queue instead of inventing evidence or
-    sending builders to repair an infrastructure failure. A panel can withhold
-    approval on a green gate; it can never turn a red gate green.
+  * The INTEGRATED REVIEW runs one read-only model turn over the integrated
+    artifacts. That response must contain two explicit lenses: adversarial
+    verification tries to falsify the green result at runtime and across
+    producer/consumer boundaries, while design and integration review checks
+    ownership, operability, and maintainability. A finding under either lens
+    requests changes. An unavailable review is recorded and blocks the queue
+    instead of inventing evidence or sending builders to repair an infrastructure
+    failure. The review can withhold approval on a green gate; it can never turn
+    a red gate green.
 
 Approve admits the candidate to the run's private merge queue. Request changes
 routes evidence to the responsible existing role pull requests, bounded by
@@ -316,26 +317,26 @@ def run_gate(run: Any) -> dict:
         "output": (out or "")[-4000:]}
 
 
-# ---------------------------------------------------- independent review panel
-# The panel models are independently wirable. At an event the backend model is the
-# strongest Bedrock-native model known to be enabled, so use it unless the operator
-# explicitly picks a cheaper review model. Two separate turns and system prompts are
-# load-bearing: neither builder's conversation or self-assessment is reused.
+# ----------------------------------------------------- integrated read-only review
+# At an event the backend model is the strongest Bedrock-native model known to be
+# enabled, so use it unless the operator explicitly picks a cheaper review model.
+# The reviewer is independent from every builder conversation, but it evaluates both
+# required lenses in one turn to avoid paying twice for the same candidate context.
 _REVIEW_MODEL = (
     os.environ.get("WORKSHOP_REVIEW_MODEL")
     or os.environ.get("WORKSHOP_CLAUDE_MODEL")
     or "claude-sonnet-4-6"
 )
-ADVERSARIAL_REVIEW_MODEL = os.environ.get(
-    "WORKSHOP_ADVERSARIAL_REVIEW_MODEL", _REVIEW_MODEL)
-DESIGN_REVIEW_MODEL = os.environ.get(
-    "WORKSHOP_DESIGN_REVIEW_MODEL", _REVIEW_MODEL)
+INTEGRATED_REVIEW_MODEL = _REVIEW_MODEL
 
-_PANEL_RESPONSE_CONTRACT = (
+_REVIEW_RESPONSE_CONTRACT = (
     "Reply with STRICT JSON only:\n"
     '{"approve": true|false, "reasons": ["..."], '
     '"work_item_evidence": {"<work id>": "<specific usage evidence>"}, '
-    '"assessment": "<concise markdown findings>"}\n'
+    '"adversarial_assessment": "<concise markdown findings>", '
+    '"design_assessment": "<concise markdown findings>"}\n'
+    "Both assessment fields are required, even when they report no finding. "
+    "Set approve=false when EITHER lens finds a material defect. "
     "An approval must identify concrete usage evidence for EVERY routed builder "
     "work id. Evidence must say how that contribution participates in the "
     "integrated product; a changed-file list alone is not evidence. If you cannot "
@@ -344,30 +345,26 @@ _PANEL_RESPONSE_CONTRACT = (
     "operability, integration, or maintainability."
 )
 
-_ADVERSARIAL_SYSTEM = (
-    "You are the adversarial verification member of an independent pull-request "
-    "review panel. The makers are not allowed to grade their own work. A separate "
-    "validator-authored executable is green, but your job is to try to falsify that "
-    "result from the task, shared contract, and integrated artifacts. Trace at "
-    "least one nontrivial value through each producer/consumer boundary. Compare "
-    "field names, enums, null semantics, errors, and state transitions on both "
-    "sides. Look for edge cases, persistence failures, security defects, dead "
-    "paths, and checks that prove only existence or build success. Do not demand a "
-    "particular framework, filename, or layout, and do not rewrite the code.\n\n"
-    + _PANEL_RESPONSE_CONTRACT
-)
-
-_DESIGN_SYSTEM = (
-    "You are the design and integration member of an independent pull-request "
-    "review panel. The makers are not allowed to grade their own work. Review the "
-    "integrated product as a senior staff engineer: verify that role ownership is "
-    "exclusive, every contribution is used, the shared contract is coherent, and "
-    "there is one operable runtime path rather than disconnected parallel stacks. "
-    "Assess data ownership, failure handling, migration compatibility, deployment "
-    "and restart behavior, accessibility where relevant, and whether the design is "
-    "maintainable at the requested scope. Do not demand a particular framework, "
-    "filename, or layout, and do not rewrite the code.\n\n"
-    + _PANEL_RESPONSE_CONTRACT
+_INTEGRATED_REVIEW_SYSTEM = (
+    "You are the independent, read-only reviewer of an integrated pull-request "
+    "candidate. The makers are not allowed to grade their own work, and you do not "
+    "reuse a builder conversation or edit the code. A separate validator-authored "
+    "executable is green, but that is evidence rather than permission to approve. "
+    "Apply BOTH of these lenses in this one review:\n"
+    "1. Adversarial verification: try to falsify the result from the task, shared "
+    "contract, and artifacts. Trace at least one nontrivial value through each "
+    "producer/consumer boundary. Compare field names, enums, null semantics, "
+    "errors, and state transitions on both sides. Look for edge cases, persistence "
+    "failures, security defects, dead paths, and checks that prove only existence "
+    "or build success.\n"
+    "2. Design and integration: verify exclusive role ownership, that every "
+    "contribution is used, that the shared contract is coherent, and that there is "
+    "one operable runtime path rather than disconnected parallel stacks. Assess "
+    "data ownership, failure handling, migration compatibility, deployment and "
+    "restart behavior, accessibility where relevant, and maintainability at the "
+    "requested scope.\n"
+    "Do not demand a particular framework, filename, or layout.\n\n"
+    + _REVIEW_RESPONSE_CONTRACT
 )
 
 class _JudgeEvidenceError(ValueError):
@@ -410,8 +407,28 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
             + ", ".join(missing)
         )
 
-    assessment = str(parsed.get("assessment") or "").strip()
-    if evidence and "<summary>Integration evidence</summary>" not in assessment:
+    adversarial = str(parsed.get("adversarial_assessment") or "").strip()
+    design = str(parsed.get("design_assessment") or "").strip()
+    missing_lenses = [
+        label for label, value in (
+            ("adversarial_assessment", adversarial),
+            ("design_assessment", design),
+        )
+        if not value
+    ]
+    if missing_lenses:
+        raise ValueError(
+            "reviewer response omitted required lens: "
+            + ", ".join(missing_lenses)
+        )
+
+    assessment = (
+        "#### Adversarial verification\n\n"
+        f"{adversarial}\n\n"
+        "#### Design & integration\n\n"
+        f"{design}"
+    )
+    if evidence:
         rows = [
             f"- `{work_id}`: {evidence[work_id]}"
             for work_id in required_work_ids
@@ -433,35 +450,35 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
         "approve": approve,
         "reasons": [str(r) for r in (parsed.get("reasons") or [])][:5],
         "work_item_evidence": evidence,
+        "adversarial_assessment": adversarial,
+        "design_assessment": design,
         "assessment": assessment,
     }
 
 
-def _panel_record(name: str, label: str, model: str, *,
-                  state: str = "abstained", note: str = "") -> dict[str, Any]:
+def _review_record(model: str, *, state: str = "abstained",
+                   note: str = "") -> dict[str, Any]:
     return {
-        "name": name,
-        "label": label,
+        "name": "integrated",
+        "label": "Integrated review",
         "state": state,
         "model": model,
         "reasons": [],
         "assessment": "",
+        "lenses": {},
         "note": note,
     }
 
 
-def _run_panel_turn(
+def _run_review_turn(
     llm_module: Any,
     *,
-    name: str,
-    label: str,
     model: str,
-    system: str,
     base_prompt: str,
     required_work_ids: list[str],
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Run one independent panel turn with one bounded JSON repair."""
-    record = _panel_record(name, label, model)
+    """Run one integrated review turn with one bounded response repair."""
+    record = _review_record(model)
     prior_text = ""
     prior_error = ""
     had_response = False
@@ -470,9 +487,10 @@ def _run_panel_turn(
         if attempt:
             if had_response:
                 prompt += (
-                    "\n\nYOUR PREVIOUS PANEL RESPONSE WAS INCOMPLETE.\n"
+                    "\n\nYOUR PREVIOUS REVIEW RESPONSE WAS INCOMPLETE.\n"
                     f"Validation error: {prior_error}\n"
-                    "Return the complete strict JSON object. An approval needs "
+                    "Return the complete strict JSON object with both required "
+                    "assessment fields. An approval also needs "
                     "specific usage evidence for every one of these work ids: "
                     f"{json.dumps(required_work_ids)}.\n\n"
                     f"Previous response:\n{prior_text}"
@@ -485,7 +503,7 @@ def _run_panel_turn(
                 )
         try:
             out = llm_module.invoke(
-                model, prompt, system=system, max_tokens=2400)
+                model, prompt, system=_INTEGRATED_REVIEW_SYSTEM, max_tokens=3200)
         except Exception as exc:  # noqa: BLE001 (record the model boundary)
             prior_error = f"model invocation unavailable ({type(exc).__name__})"
             if not attempt:
@@ -508,8 +526,12 @@ def _run_panel_turn(
                     "reasons": [prior_error],
                     "work_item_evidence": {},
                     "assessment": (
-                        "Could not establish concrete usage evidence for every "
-                        "routed builder contribution."
+                        "#### Adversarial verification\n\n"
+                        "The review could not prove every routed contribution "
+                        "participates in the integrated behavior.\n\n"
+                        "#### Design & integration\n\n"
+                        "Concrete integration evidence was missing, so the "
+                        "candidate cannot be approved."
                     ),
                 }
             else:
@@ -521,95 +543,90 @@ def _run_panel_turn(
             "approved" if parsed.get("approve") else "changes_requested")
         record["reasons"] = list(parsed.get("reasons") or [])
         record["assessment"] = str(parsed.get("assessment") or "")
+        record["lenses"] = {
+            "adversarial": str(parsed.get("adversarial_assessment") or ""),
+            "design": str(parsed.get("design_assessment") or ""),
+        }
         return record, parsed
     return record, None  # pragma: no cover - both attempts return above
 
 
-def _combine_panel(
+def _combine_review(
     gate: dict,
-    records: list[dict[str, Any]],
-    decisions: list[tuple[str, dict[str, Any]]],
+    record: dict[str, Any],
+    decision: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Combine independent opinions; findings and missing reviews block the queue."""
-    all_abstained = not decisions
-    unavailable = [
-        record for record in records
-        if record.get("state") == "abstained"
-    ]
-    approve = (
-        bool(decisions)
+    """Turn the single structured review into the public verdict shape."""
+    unavailable = record.get("state") == "abstained" or decision is None
+    approve = bool(
+        decision is not None
         and not unavailable
-        and all(decision.get("approve") for _name, decision in decisions)
+        and decision.get("approve")
     )
 
     reasons = [
-        f"{name}: {reason}"
-        for name, decision in decisions
-        for reason in (decision.get("reasons") or [])
+        f"integrated: {reason}"
+        for reason in ((decision or {}).get("reasons") or [])
     ][:8]
-    reasons.extend(
-        f"{record['name']}: review unavailable"
-        + (f" ({record['note']})" if record.get("note") else "")
-        for record in unavailable
-    )
-    reasons = reasons[:8]
+    if unavailable:
+        reasons.append(
+            "integrated: review unavailable"
+            + (f" ({record['note']})" if record.get("note") else "")
+        )
     if not approve and not reasons:
-        reasons = [
-            f"{record['name']}: requested changes"
-            for record in records
-            if record.get("state") == "changes_requested"
-        ]
+        reasons = ["integrated: requested changes"]
 
     if unavailable:
         summary = (
-            "The validator's executable passed, but every required review did not "
-            "finish. The queue is blocked without sending builders back to change "
+            "The validator's executable passed, but the required integrated review "
+            "did not finish. The queue is blocked without sending builders back to change "
             "code for a review-service failure."
         )
     elif approve:
         summary = (
-            "The validator's executable passed. Both available reviews approved "
-            "the combined work."
+            "The validator's executable passed. The integrated review approved "
+            "both its adversarial and design lenses."
         )
     else:
         summary = (
-            "The executable passed, but a review found a problem. The responsible "
-            "role pull request must be updated and checked again."
+            "The executable passed, but the integrated review found a problem "
+            "under at least one required lens. The responsible role pull request "
+            "must be updated and checked again."
         )
 
-    sections: list[str] = []
-    for record in records:
-        body = str(record.get("assessment") or "").strip()
-        if not body:
-            body = str(record.get("note") or "No review output was available.")
-        sections.append(
-            f"<details><summary>{record['label']}: "
-            f"{str(record['state']).replace('_', ' ')}</summary>\n\n"
-            f"{body}\n\n"
-            f"Model: `{record.get('model') or 'unavailable'}`\n\n"
-            "</details>"
-        )
+    body = str(record.get("assessment") or "").strip()
+    if not body:
+        body = str(record.get("note") or "No review output was available.")
+    section = (
+        f"<details><summary>{record['label']}: "
+        f"{str(record['state']).replace('_', ' ')}</summary>\n\n"
+        f"{body}\n\n"
+        f"Model: `{record.get('model') or 'unavailable'}`\n\n"
+        "</details>"
+    )
     state = "Approve" if approve else "Request changes"
     return {
         "approve": approve,
         "reasons": reasons,
         "assessment": (
             f"**Assessment**: {state}\n\n{summary}\n\n"
-            + "\n\n".join(sections)
+            + section
         ),
-        "panels": records,
-        "all_abstained": all_abstained,
-        "review_unavailable": bool(unavailable),
+        # Keep the list-shaped field so persisted runs and existing clients remain
+        # readable. New runs record exactly one integrated review entry.
+        "panels": [record],
+        "all_abstained": unavailable,
+        "review_unavailable": unavailable,
         "gate_summary": gate.get("summary"),
     }
 
 
 def _default_judge(run: Any, gate: dict) -> dict | None:
-    """Run an adversarial verification turn and a design/integration turn.
+    """Run one review turn that must cover adversarial and design lenses.
 
-    Each turn sees the same immutable candidate but has separate steering and no
-    maker conversation. A request-changes verdict blocks the queue. An unreachable
-    member is recorded and also blocks the queue.
+    The reviewer sees the immutable candidate and no maker conversation. A
+    request-changes verdict blocks the queue. An unreachable reviewer is recorded
+    and also blocks the queue.
     """
     # A run whose work came from the offline test double has nothing to review: the
     # files say so themselves. Abstaining is the honest answer, and it keeps the
@@ -620,25 +637,13 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
     try:
         import llm  # noqa: PLC0415 (lazy; offline tests never import boto3)
     except Exception:
-        records = [
-            _panel_record(
-                "adversarial", "Behavior review",
-                ADVERSARIAL_REVIEW_MODEL, note="review module unavailable"),
-            _panel_record(
-                "design", "Design review",
-                DESIGN_REVIEW_MODEL, note="review module unavailable"),
-        ]
-        return _combine_panel(gate, records, [])
+        record = _review_record(
+            INTEGRATED_REVIEW_MODEL, note="review module unavailable")
+        return _combine_review(gate, record, None)
     if not llm.available():
-        records = [
-            _panel_record(
-                "adversarial", "Behavior review",
-                ADVERSARIAL_REVIEW_MODEL, note="no model credentials available"),
-            _panel_record(
-                "design", "Design review",
-                DESIGN_REVIEW_MODEL, note="no model credentials available"),
-        ]
-        return _combine_panel(gate, records, [])
+        record = _review_record(
+            INTEGRATED_REVIEW_MODEL, note="no model credentials available")
+        return _combine_review(gate, record, None)
 
     parts: list[str] = [f"Task: {getattr(run, 'task', '')!r}",
                         f"acceptance gate passed: {gate.get('passed')}",
@@ -662,42 +667,23 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
             with open(path, encoding="utf-8", errors="replace") as f:
                 parts.append(f"--- {label} ---\n{f.read()[:3000]}")
     base_prompt = (
-        "Independently review this integrated pull-request candidate. Do not trust "
-        "a builder's self-assessment or infer success from the green gate alone.\n\n"
+        "Review this integrated pull-request candidate through both required "
+        "lenses. Do not trust a builder's self-assessment or infer success from "
+        "the green gate alone.\n\n"
         + "\n\n".join(parts)
     )
     required_work_ids = _builder_work_ids(run)
-    specs = [
-        (
-            "adversarial", "Behavior review",
-            ADVERSARIAL_REVIEW_MODEL, _ADVERSARIAL_SYSTEM,
-        ),
-        (
-            "design", "Design review",
-            DESIGN_REVIEW_MODEL, _DESIGN_SYSTEM,
-        ),
-    ]
-    records: list[dict[str, Any]] = []
-    decisions: list[tuple[str, dict[str, Any]]] = []
-    for name, label, model, system in specs:
-        record, decision = _run_panel_turn(
-            llm,
-            name=name,
-            label=label,
-            model=model,
-            system=system,
-            base_prompt=base_prompt,
-            required_work_ids=required_work_ids,
-        )
-        records.append(record)
-        if decision is not None:
-            decisions.append((name, decision))
+    record, decision = _run_review_turn(
+        llm,
+        model=INTEGRATED_REVIEW_MODEL,
+        base_prompt=base_prompt,
+        required_work_ids=required_work_ids,
+    )
 
     logger = getattr(run, "log", None)
     if callable(logger):
-        logger("review panel: " + ", ".join(
-            f"{record['name']}={record['state']}" for record in records))
-    return _combine_panel(gate, records, decisions)
+        logger(f"integrated review: {record['state']}")
+    return _combine_review(gate, record, decision)
 
 
 _MAX_JUDGE_FILES = 48
@@ -795,14 +781,14 @@ def _artifact_files(run: Any) -> list[tuple[str, str]]:
 
 
 def _abstained_assessment(gate: dict, approve: bool) -> str:
-    """The deterministic assessment used when the review panel abstains: a short,
+    """The deterministic assessment used when the integrated review abstains: a short,
     honest summary of the gate. Never invents review findings."""
     line = gate.get("summary") or ("green" if gate.get("passed") else "red")
     if approve:
         return ("**Assessment**: Approve\n\n"
                 f"The validator's executable passed ({line}). "
-                "The behavior and design reviews were unavailable, so their "
-                "status is recorded and the executable result still applies.")
+                "The external integrated review was not run for this offline "
+                "fixture, so that status is recorded explicitly.")
     return ("**Assessment**: Request changes\n\n"
             f"The executable failed ({line}). See the failing checks. "
             "A failed executable cannot be approved.")
@@ -810,14 +796,15 @@ def _abstained_assessment(gate: dict, approve: bool) -> str:
 
 def assess(run: Any, gate: dict, round_no: int,
            judge: Any = _default_judge) -> Verdict:
-    """One review round: take the gate result, layer the independent panel, and
+    """One review round: take the gate result, layer the integrated review, and
     return the verdict whose markdown the engine posts on the PR.
 
     The ``judge`` is injectable (tests pass a fake or ``None`` to disable it);
-    it defaults to two separate, read-only model turns. Both must finish before a
-    green gate can be approved. A missing member is recorded without fabricating a
-    finding or asking a builder to repair the outage. A red gate is never assessed
-    as approvable; a green gate may still get changes requested.
+    it defaults to one read-only model turn whose response must cover both
+    adversarial and design/integration lenses. An unavailable review is recorded
+    without fabricating a finding or asking a builder to repair the outage. A red
+    gate is never assessed as approvable; a green gate may still get changes
+    requested.
     """
     verdict = Verdict(round=round_no, gate=gate)
     if not gate.get("passed"):
@@ -841,15 +828,9 @@ def assess(run: Any, gate: dict, round_no: int,
             verdict.lgtm = True
             verdict.assessment = _abstained_assessment(gate, approve=True)
         else:
-            records = [
-                _panel_record(
-                    "adversarial", "Behavior review",
-                    ADVERSARIAL_REVIEW_MODEL, note="review call unavailable"),
-                _panel_record(
-                    "design", "Design review",
-                    DESIGN_REVIEW_MODEL, note="review call unavailable"),
-            ]
-            jv = _combine_panel(gate, records, [])
+            record = _review_record(
+                INTEGRATED_REVIEW_MODEL, note="review call unavailable")
+            jv = _combine_review(gate, record, None)
             verdict.lgtm = False
     else:
         verdict.lgtm = bool(jv.get("approve"))

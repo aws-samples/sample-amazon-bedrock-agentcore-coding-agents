@@ -151,12 +151,13 @@ export interface GateRecord {
 }
 
 export interface ReviewPanelEntry {
-  name: 'adversarial' | 'design' | string;
+  name: 'integrated' | 'adversarial' | 'design' | string;
   label?: string;
   state: 'approved' | 'changes_requested' | 'abstained' | string;
   model?: string;
   reasons?: string[];
   assessment?: string;
+  lenses?: { adversarial?: string; design?: string };
   note?: string;
 }
 

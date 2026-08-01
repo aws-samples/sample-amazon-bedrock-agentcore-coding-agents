@@ -283,10 +283,10 @@ def test_review_outage_blocks_the_queue_without_rebuilding(monkeypatch):
             state="changes_requested",
             gate=gate,
             round=round_no,
-            reasons=["design: review unavailable"],
+            reasons=["integrated: review unavailable"],
             panels=[{
-                "name": "design",
-                "label": "Design review",
+                "name": "integrated",
+                "label": "Integrated review",
                 "state": "abstained",
                 "model": "test-model",
                 "reasons": [],

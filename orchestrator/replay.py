@@ -144,10 +144,10 @@ def _rounds(run: Any) -> list[dict[str, Any]]:
 
 
 def _review_panels(run: Any) -> list[dict[str, Any]]:
-    """Independent panel records already decided by reviewer.py.
+    """Read-only review records already decided by reviewer.py.
 
-    Replay only normalizes the persisted public shape. It does not infer a missing
-    member, approval, or finding.
+    The list-shaped wire field is retained for older persisted runs. New runs
+    contain one integrated review record.
     """
     review = getattr(run, "review", None) or {}
     panels = review.get("panels") if isinstance(review, dict) else None
@@ -155,15 +155,15 @@ def _review_panels(run: Any) -> list[dict[str, Any]]:
 
 
 def _append_review_panel(lines: list[str], run: Any) -> None:
-    """Append recorded adversarial/design evidence to a PR narrative."""
+    """Append the recorded integrated review evidence to a PR narrative."""
     panels = _review_panels(run)
     lines += [
         "",
-        "## Two Independent Reviews",
+        "## Integrated Read-only Review",
         "",
     ]
     if not panels:
-        lines.append("_No separate review was recorded for this run._")
+        lines.append("_No integrated review was recorded for this run._")
         return
 
     lines += [
@@ -200,10 +200,11 @@ def _append_review_panel(lines: list[str], run: Any) -> None:
 
     lines += [
         "",
-        "Both reviews read the combined work without seeing a builder's "
-        "conversation or self-review. A finding stops the merge. If a review "
-        "cannot run, it records that fact. The validator's executable still has "
-        "to pass.",
+        "One reviewer reads the combined work without seeing a builder's "
+        "conversation or self-review. Its response must cover adversarial "
+        "verification and design/integration. A finding under either lens stops "
+        "the merge. If the review cannot run, it records that fact. The "
+        "validator's executable still has to pass.",
     ]
 
 
@@ -462,8 +463,8 @@ def narrative(run: Any) -> str:
     parts.append("\n## What happens next\n")
     parts.append(
         "The role pull requests merge one at a time into a temporary branch. The "
-        "check runs after each merge. When every check and review passes, one "
-        "final pull request opens against the repository's normal branch. The "
+        "check runs after each merge. When every check and integrated review passes, "
+        "one final pull request opens against the repository's default branch. The "
         "selected policy either leaves it for a person or merges that exact "
         "reviewed version automatically."
     )

@@ -159,26 +159,23 @@ def test_the_round_comment_exists_because_a_body_cannot_be_rewritten():
     assert "passed" in note
 
 
-def test_final_pr_reports_both_independent_panel_members_and_findings():
+def test_final_pr_reports_the_integrated_review_and_both_lenses():
     run = _run(
         review={
             "state": "approved",
             "panels": [
                 {
-                    "name": "adversarial",
-                    "label": "Behavior review",
-                    "state": "approved",
-                    "model": "model-a",
-                    "reasons": [],
-                    "assessment": "Traced the API status value into the UI.",
-                },
-                {
-                    "name": "design",
-                    "label": "Design review",
+                    "name": "integrated",
+                    "label": "Integrated review",
                     "state": "changes_requested",
-                    "model": "model-b",
+                    "model": "model-a",
                     "reasons": ["The restart path drops persisted filters."],
-                    "assessment": "Persistence ownership is incomplete.",
+                    "assessment": (
+                        "#### Adversarial verification\n\n"
+                        "Traced the API status value into the UI.\n\n"
+                        "#### Design & integration\n\n"
+                        "Persistence ownership is incomplete."
+                    ),
                 },
             ],
         },
@@ -193,9 +190,9 @@ def test_final_pr_reports_both_independent_panel_members_and_findings():
         merge_queue=[],
     )
     body = replay.integration_narrative(run)
-    assert "Two Independent Reviews" in body
-    assert "Behavior review" in body
-    assert "Design review" in body
+    assert "Integrated Read-only Review" in body
+    assert "Adversarial verification" in body
+    assert "Design & integration" in body
     assert "The restart path drops persisted filters." in body
     assert (
         "without seeing a builder's conversation or self-review"

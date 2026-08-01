@@ -2,7 +2,7 @@
 
 Stage 2 has attendees read ``reviewer.py`` after the router: the pass token, the
 one-bounded-pass rule, the strict branch-suffix guard, the executable acceptance
-gate, and the required independent reviews. These tests pin that contract,
+gate, and the required integrated review. These tests pin that contract,
 unit-tested without a model:
 
     python3 -m pytest orchestrator/test_reviewer.py -v
@@ -163,7 +163,7 @@ def test_verdict_public_shape():
     assert pub["lgtm"] is True
 
 
-# ------------------------------------------------------- the required review panel
+# ---------------------------------------------------- the required integrated review
 _GREEN_GATE = {"passed": True, "checks": [
     {"check": "acceptance_test_authored", "passed": True, "detail": "green"}],
     "summary": "all checks green"}
@@ -186,7 +186,7 @@ def test_red_gate_is_never_assessed_approvable():
 
 
 def test_judge_outage_blocks_merge_without_inventing_a_finding():
-    """A green executable is not enough when the required reviews did not run."""
+    """A green executable is not enough when the required review did not run."""
     for judge in (
         lambda *args: None,
         lambda *args: (_ for _ in ()).throw(RuntimeError("boom")),
@@ -195,7 +195,8 @@ def test_judge_outage_blocks_merge_without_inventing_a_finding():
         assert verdict.lgtm is False
         assert verdict.state == "changes_requested"
         assert verdict.review_unavailable is True
-        assert len(verdict.panels) == 2
+        assert len(verdict.panels) == 1
+        assert verdict.panels[0]["name"] == "integrated"
         assert all(row["state"] == "abstained" for row in verdict.panels)
         assert LGTM_TOKEN not in verdict.assessment
 
@@ -258,7 +259,8 @@ def test_judge_approval_requires_usage_evidence_for_every_builder():
     incomplete = (
         '{"approve":true,"reasons":[],"work_item_evidence":{'
         f'"{backend.work_id}":"UI calls its issue API"'
-        '},"assessment":"**Assessment**: Approve\\n\\nLooks good"}'
+        '},"adversarial_assessment":"Runtime behavior is sound",'
+        '"design_assessment":"The components are integrated"}'
     )
     with pytest.raises(reviewer._JudgeEvidenceError, match=frontend.work_id):
         reviewer._parse_judge_response(incomplete, required)
@@ -267,16 +269,19 @@ def test_judge_approval_requires_usage_evidence_for_every_builder():
         '{"approve":true,"reasons":[],"work_item_evidence":{'
         f'"{backend.work_id}":"The running API owns persistence",'
         f'"{frontend.work_id}":"The browser calls that API over the shared boundary"'
-        '},"assessment":"**Assessment**: Approve\\n\\nIntegrated"}',
+        '},"adversarial_assessment":"Traced API values into the UI",'
+        '"design_assessment":"The runtime path is coherent"}',
         required,
     )
     assert complete["approve"] is True
     assert all(work_id in complete["assessment"] for work_id in required)
+    assert "Adversarial verification" in complete["assessment"]
+    assert "Design & integration" in complete["assessment"]
 
 
-def test_adversarial_and_design_panel_are_independent_and_one_finding_blocks(
+def test_integrated_review_runs_once_and_either_lens_can_block(
         monkeypatch, tmp_path):
-    """A green executable is evidence, not permission for the panel to agree."""
+    """One call must cover both lenses; a finding under either one blocks."""
     import llm
 
     candidate = tmp_path / "candidate"
@@ -308,48 +313,63 @@ def test_adversarial_and_design_panel_are_independent_and_one_finding_blocks(
     calls = []
 
     def invoke(model, prompt, system=None, max_tokens=0):
-        calls.append({"model": model, "prompt": prompt, "system": system})
-        if "adversarial verification member" in system:
-            return {
-                "model_id": "adversarial-model",
-                "text": json.dumps({
-                    "approve": False,
-                    "reasons": [
-                        "API emits detail.before/after while the UI reads "
-                        "detail.from/to, so real values disappear."
-                    ],
-                    "work_item_evidence": {},
-                    "assessment": "The producer and consumer disagree.",
-                }),
-            }
+        calls.append({
+            "model": model,
+            "prompt": prompt,
+            "system": system,
+            "max_tokens": max_tokens,
+        })
         return {
-            "model_id": "design-model",
+            "model_id": "integrated-review-model",
             "text": json.dumps({
-                "approve": True,
-                "reasons": [],
+                "approve": False,
+                "reasons": [
+                    "API emits detail.before/after while the UI reads "
+                    "detail.from/to, so real values disappear."
+                ],
                 "work_item_evidence": {
                     backend.work_id: "API produces the activity payload.",
                     frontend.work_id: "UI renders the activity payload.",
                 },
-                "assessment": "The role split and runtime path are coherent.",
+                "adversarial_assessment": (
+                    "The producer and consumer field names disagree."
+                ),
+                "design_assessment": (
+                    "The role split is clear, but the shared contract is not "
+                    "implemented consistently."
+                ),
             }),
         }
 
     monkeypatch.setattr(llm, "available", lambda: True)
     monkeypatch.setattr(llm, "invoke", invoke)
-    panel = reviewer._default_judge(run, _GREEN_GATE)
-    assert len(calls) == 2
-    assert calls[0]["system"] != calls[1]["system"]
-    assert panel["approve"] is False
-    assert [row["state"] for row in panel["panels"]] == [
-        "changes_requested", "approved"]
+    review = reviewer._default_judge(run, _GREEN_GATE)
+    assert len(calls) == 1
+    assert "Apply BOTH" in calls[0]["system"]
+    assert "Adversarial verification" in calls[0]["system"]
+    assert "Design and integration" in calls[0]["system"]
+    assert review["approve"] is False
+    assert [row["state"] for row in review["panels"]] == [
+        "changes_requested"]
+    assert "Adversarial verification" in review["assessment"]
+    assert "Design & integration" in review["assessment"]
 
     verdict = reviewer.assess(
-        run, _GREEN_GATE, 1, judge=lambda *_args: panel)
+        run, _GREEN_GATE, 1, judge=lambda *_args: review)
     assert verdict.state == "changes_requested"
     assert "before/after" in " ".join(verdict.reasons)
-    assert {row["name"] for row in verdict.panels} == {
-        "adversarial", "design"}
+    assert [row["name"] for row in verdict.panels] == ["integrated"]
+
+
+def test_integrated_review_requires_both_lens_sections():
+    response = json.dumps({
+        "approve": False,
+        "reasons": ["runtime mismatch"],
+        "work_item_evidence": {},
+        "adversarial_assessment": "Found a mismatch.",
+    })
+    with pytest.raises(ValueError, match="design_assessment"):
+        reviewer._parse_judge_response(response, [])
 
 
 def test_reasons_feed_the_reimplement_loop():

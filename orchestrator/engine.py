@@ -2212,7 +2212,7 @@ class Engine:
     # back. The test FixtureExecutor supplies test-owned output in-process so the
     # surrounding lifecycle can be exercised without pretending to be a customer
     # path. On the shipped path, shell output is captured in the role terminal; the
-    # validator-authored executable and independent review panel decide the verdict.
+    # validator-authored executable and integrated read-only review decide the verdict.
     def _execute(self, run: Run) -> bool:
         run.phase, run.status = "agent_execution", "running"
         budget = AGENT_EXECUTION_TIMEOUT_S
@@ -2395,7 +2395,7 @@ class Engine:
                     # dispatches to that deployed Runtime; the test FixtureExecutor
                     # runs the closure against test-owned fixture output. Either way
                     # the engine collects the artifact; the separately authored
-                    # executable and review panel decide its verdict later.
+                    # executable and integrated review decide its verdict later.
                     capability = roles.get(agent_id).capability
                     if capability not in work:
                         raise RuntimeError(
@@ -2547,7 +2547,7 @@ class Engine:
         # The check inspects the TARGET's work, not this review run's empty workdir.
         run._review_work_dir = target.candidate_dir
         # A review of offline-double work is itself a review of a stub; carry the mark
-        # so the review panel abstains rather than judging something that implements
+        # so the integrated review abstains rather than judging something that implements
         # nothing. Never set on a real dispatch.
         run._offline_double = getattr(target, "_offline_double", False)
         run.artifact_endpoint = getattr(target, "artifact_endpoint", "") or ""
@@ -2658,7 +2658,7 @@ class Engine:
                     "warn",
                 )
             run.log(
-                f"review panel {verdict.state} candidate {digest[:12]} at {stage}")
+                f"integrated review {verdict.state} candidate {digest[:12]} at {stage}")
 
         body = replay.gate_evidence_comment(
             run, gate, stage=stage, candidate_digest=digest,
@@ -3414,8 +3414,8 @@ _NEXT_ACTION = {
     "ITERATION_CAP":
         "Do not resubmit this request. The candidate still had blocking gate or "
         "review evidence after the bounded re-implement round, so no final "
-        "integration pull request was opened. Read the latest gate.summary and both "
-        "review members' evidence on the existing role pull requests.",
+        "integration pull request was opened. Read the latest gate.summary and the "
+        "integrated review evidence on the existing role pull requests.",
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",
@@ -3449,7 +3449,7 @@ _NEXT_ACTION = {
         "The bounded queue repair did not produce a new candidate. Read the affected "
         "role PR's evidence and hand the remaining work to a person.",
     "REVIEW_UNAVAILABLE":
-        "The executable check passed, but one or both required reviews did not run. "
+        "The executable check passed, but the required integrated review did not run. "
         "Keep the role pull requests open and retry the review after model access is "
         "restored; do not ask builders to change code for this outage.",
     "FINAL_PR_ERROR":

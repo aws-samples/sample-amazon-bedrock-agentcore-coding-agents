@@ -4,9 +4,10 @@ Run Claude Code, a second Claude Code validator, and opencode on Amazon Bedrock
 AgentCore Runtime. Give the team one request and receive one checked pull request.
 
 Each builder works in a separate checkout and pull request. The validator writes an
-executable for that request, and the orchestrator runs it. A behavior review tries
-to break the combined result. A design review checks whether the parts fit together.
-Neither review sees a builder's conversation or edits a builder's code.
+executable for that request, and the orchestrator runs it. One independent,
+read-only review then applies two required lenses to the combined result:
+adversarial verification and design/integration. The reviewer never sees a
+builder's conversation or edits a builder's code.
 
 This repo is the full workshop payload. Clone it and follow the workshop content; every
 step is reproducible with the CLI, starting from this one clone.
@@ -28,7 +29,7 @@ This repository is also a GitHub **template**. In Lab 2 of the workshop you clic
 fork, no shared credentials). Each builder opens a role pull request against a
 temporary branch for the run. The validator's executable must pass for the combined
 work and after every role pull request merge. One final pull request then targets
-the repository's normal branch. The GitHub App authors every pull request.
+the repository's default branch. The GitHub App authors every pull request.
 
 Builders begin independently from the same shared plan. After an earlier role pull
 request merges, a dependent builder gets one chance to inspect and use that work on

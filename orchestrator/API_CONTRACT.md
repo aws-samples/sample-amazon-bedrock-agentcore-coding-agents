@@ -122,7 +122,7 @@ A run also has a terminal status once finalization completes.
   "composed_commit": "517e4dcf66…",               // additive local commit (null until gate green)
   "fail_reason": null,                  // additive: machine-readable reason on failed/needs_human
   "route": {…},                         // additive: same routing verdict as on Run
-  "review": {…},                        // additive: independent panel verdict (see below)
+  "review": {…},                        // additive: integrated review verdict (see below)
   "pr": {…},                            // additive: GitHub finalization result (see below)
   "compose_base": {…},                  // additive: {mode: "external"|"local", …} compose base
   "merge_state": "human_review",        // additive: "human_review"|"merged"|null
@@ -266,20 +266,22 @@ Append-only audit trail of phase transitions and role activity (embedded event a
   `rule` is a human-readable explanation for the run log. `agents` is the resolved
   role list; `read_only` is true for review-only routes (no builder dispatched).
   Absent until the run exits admission (the router sets it there).
-- `Result.review`: the independent review-panel verdict:
+- `Result.review`: the independent integrated-review verdict:
   `{"state":"approved"|"changes_requested","lgtm":bool,"round":n,"gate":{…},
   "reasons":[…],"assessment":"…","panels":[…],"review_unavailable":bool}`.
-  Each `panels` row records
-  `name` (`adversarial` or `design`), display `label`, `state`
+  The list-shaped `panels` field remains for persisted-run compatibility; new runs
+  record one row with `name: "integrated"`, display `label`, `state`
   (`approved`, `changes_requested`, or `abstained`), `model`, `reasons`,
-  `assessment`, and an optional abstention `note`.
+  `assessment`, the two optional `lenses` fields, and an optional abstention
+  `note`.
   `reasons` is the list of change-request feedback items fed back to the routed roles on a
   re-implement pass. `assessment` is the full markdown posted on the PR.
   Pass token is the exact string `LGTM: no changes needed`; non-LGTM buys ONE bounded
-  re-implement pass (`MAX_REVIEW_ROUNDS`). The two panel members run as separate,
-  read-only model turns over the integrated candidate and never reuse a builder
-  conversation. Any finding blocks the queue. An unreachable member is recorded
-  as `abstained`, sets `review_unavailable`, and blocks the queue with
+  re-implement pass (`MAX_REVIEW_ROUNDS`). One read-only model turn reviews the
+  integrated candidate and never reuses a builder conversation. Its response must
+  contain both adversarial-verification and design/integration lenses; a finding
+  under either lens blocks the queue. An unreachable reviewer is recorded as
+  `abstained`, sets `review_unavailable`, and blocks the queue with
   `REVIEW_UNAVAILABLE`; builders are not asked to repair a model outage.
 - `Result.pr`: GitHub finalization: `{"pr_url":…}` when connected, `{"skipped":…}` in local
   mode, `{"error":…}` on a real failure. `pr_url` is real or null, never fake.
@@ -294,7 +296,7 @@ POST /api/runs
         └─> running (context_hydration)
              └─> running (pre_flight)        // fail-closed: may go -> failed here
                   └─> running (agent_execution)   // builders in parallel; checker after their join
-                       └─> running (finalization)  // candidate + executable gate + review panel + queue
+                       └─> running (finalization)  // candidate + executable gate + integrated review + queue
                             ├─> passed        (gate green, pr_url set)
                             ├─> failed        (gate red after bounded iterations)
                             └─> needs_human   (iteration cap hit)

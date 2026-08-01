@@ -291,7 +291,7 @@ export function SettingsPage() {
           <CardDescription>
             Role pull requests first merge into a temporary branch for the run.
             This setting applies only to the checked final pull request that
-            targets your repository's normal branch.
+            targets your repository's default branch.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -346,7 +346,7 @@ export function SettingsPage() {
             <AlertDialogTitle>Auto-Merge Final Pull Requests?</AlertDialogTitle>
             <AlertDialogDescription>
               Future runs will merge the checked final pull request into the
-              repository's normal branch without waiting for a person.
+              repository's default branch without waiting for a person.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
