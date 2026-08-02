@@ -95,10 +95,10 @@ their stack and features, or says "just build it", dispatch immediately.
 - Focused single-role job (rebuild the UI, patch the backend): call the matching \
 dispatch_* tool. It returns a run id immediately and the build runs in the \
 background. State that it started and which agent owns it.
-- Full build that must be integrated and graded: call run_build(task). Every builder \
-gets an isolated work id and role PR. Their patches form a candidate, the checker's \
-authored executable gates it, and a private merge queue reruns that gate before a \
-final PR can target the default branch. Pass the user's request text VERBATIM as task. \
+- Full build that must be checked and reviewed: call run_build(task). Every builder \
+gets an isolated work id and its OWN pull request against the default branch. The \
+checker then authors one executable per pull request, and each pull request is gated, \
+reviewed, and merged on its own. Pass the user's request text VERBATIM as task. \
 It can be ANY request: \
 nothing classifies it and nothing maps it to a sample, so there is no wording to \
 get right.
@@ -115,8 +115,8 @@ not exist.
 
 After `run_build`, treat the tool result's `schedule` as authoritative. Report only \
 the roles in its `agents` list. Say that each selected builder started, then say the \
-selected checker is WAITING for the combined builder work and will write and run the \
-check afterward. Never group builders and checkers together as "agents are working", \
+selected checker is WAITING for the builders and will then write and run one check \
+per pull request. Never group builders and checkers together as "agents are working", \
 infer a role count from the roster, or claim that every role works in parallel.
 
 ## Reading back a run you did not start
@@ -126,13 +126,13 @@ lost their run id, call list_runs() for the recent builds and their outcomes rat
 than telling them the run is gone.
 
 ## Report status facts without inventing lifecycle rules
-Treat every field returned by run_status as authoritative. Builder role PRs are \
-published BEFORE the checker inspects the combined candidate; the top-level \
-`pr_url` is the later final integration PR. If a builder's `work_items.*.pr.pr_url` \
-is empty during a live transition, say only that it is not reported yet. Never \
-claim that a gate must pass before a role PR opens, and never infer a missing \
-field's cause or timing. Report `gate_history`, the integrated review evidence, \
-`merge_queue`, `next_action`, and `resubmission_allowed` exactly as returned.
+Treat every field returned by run_status as authoritative. Builder pull requests are \
+published BEFORE the checker inspects them, and `role_prs` carries each one's own \
+check, review, and merge state. If a builder's `work_items.*.pr.pr_url` is empty \
+during a live transition, say only that it is not reported yet. Never claim that a \
+gate must pass before a pull request opens, and never infer a missing field's cause \
+or timing. Report `gate_history`, the integrated review evidence, \
+`role_prs`, `next_action`, and `resubmission_allowed` exactly as returned.
 
 ## If a build did not complete, READ next_action. Never improvise, and never loop
 Every terminal result carries a `next_action` field. It is derived from the actual
@@ -144,9 +144,9 @@ external prerequisite in `next_action` exactly (for example, wait for quota to
 reset first).
 
 Do NOT try to "finish it yourself" by dispatching individual roles, hand-composing
-files, or dispatching the validator alone: those paths do not create the integration
-candidate, run the merge queue, or open the final PR the way run_build does, and a
-review with no PR to review just fails `NO_RUN_TO_REVIEW`.
+files, or dispatching the validator alone: those paths do not open pull requests, run
+their checks, or merge them the way run_build does, and a review with no PR to review
+just fails `NO_RUN_TO_REVIEW`.
 
 The three cases, because they have different recoveries:
 
@@ -280,9 +280,9 @@ def build_tools() -> list:
     @tool
     def run_build(task: str, preset: str = "") -> str:
         """Start a FULL build of ANY request. Every selected builder gets an
-        isolated role pull request. The checker waits for their combined work,
-        authors and executes a gate, and a private integration queue reruns that
-        gate before one final pull request can open. Returns immediately with a run
+        isolated pull request against the default branch. The checker then authors
+        and executes one gate per pull request, and each pull request is reviewed and
+        merged on its own. Returns immediately with a run
         id; the build runs in the background.
 
         Pass the user's request text VERBATIM as task. It can be anything at all:
@@ -345,7 +345,7 @@ def build_tools() -> list:
                     "next_action": _engine.next_action(
                         "needs_human", reason, saved.get("pr"),
                         saved.get("pr_url"),
-                        saved.get("integration_conflicts")),
+                        saved.get("role_prs")),
                     "resubmission_allowed": _engine.resubmission_allowed(
                         "needs_human", reason),
                     "source": "persisted",

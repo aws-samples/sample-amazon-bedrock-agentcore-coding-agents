@@ -20,13 +20,13 @@ import {
 } from '@foxl/ui';
 import {
   GithubStatus,
-  FinalMergePolicy,
+  MergePolicy,
   RuntimeStatus,
   KiroStatus,
   clearGithubCredential,
   getGithubStatus,
   saveGithubCredential,
-  setFinalMergePolicy,
+  setMergePolicy,
   getKiroStatus,
   saveKiroKey,
   clearKiroKey,
@@ -113,17 +113,17 @@ export function SettingsPage() {
     }
   }
 
-  async function handleFinalPolicy(next: FinalMergePolicy) {
-    if (policySaving || status?.final_merge_policy === next) return;
+  async function handleMergePolicy(next: MergePolicy) {
+    if (policySaving || status?.merge_policy === next) return;
     setPolicyError('');
     setPolicySaving(true);
     try {
-      setStatus(await setFinalMergePolicy(next));
+      setStatus(await setMergePolicy(next));
     } catch (err: unknown) {
       setPolicyError(
         err instanceof Error
           ? err.message
-          : 'Could not update the final PR policy. Check the console service and try again.',
+          : 'Could not update the merge policy. Check the console service and try again.',
       );
     } finally {
       setPolicySaving(false);
@@ -136,8 +136,8 @@ export function SettingsPage() {
         <div className="eyebrow">Configuration</div>
         <h1 className="text-2xl font-semibold">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Point runs at your repository. The GitHub MCP Gateway opens the role and
-          final pull requests; no personal access token is ever stored here.
+          Point runs at your repository. The GitHub MCP Gateway opens one pull
+          request per role; no personal access token is ever stored here.
         </p>
       </div>
 
@@ -158,10 +158,9 @@ export function SettingsPage() {
             )}
           </div>
           <CardDescription>
-            The Gateway opens one pull request per builder against a run-specific
-            integration branch. The queue merges only reviewed heads and reruns the
-            executable gate after every merge. The final integration pull request
-            targets your default branch for human review or guarded auto-merge.
+            The Gateway opens one pull request per builder against your default
+            branch. Each one runs its own executable check and its own independent
+            review, then merges on its own: left open for you, or auto-merged.
           </CardDescription>
         </CardHeader>
 
@@ -180,7 +179,7 @@ export function SettingsPage() {
               </div>
               {status.default_branch && (
                 <div className="flex min-w-0 items-start gap-2">
-                  <span className="text-muted-foreground w-24 shrink-0">Final base</span>
+                  <span className="text-muted-foreground w-24 shrink-0">Base branch</span>
                   <span className="min-w-0 break-all font-mono text-xs" translate="no">
                     {status.default_branch}
                   </span>
@@ -276,37 +275,36 @@ export function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <div className="eyebrow">Final pull request</div>
+          <div className="eyebrow">Merge policy</div>
           <div className="flex items-center gap-2">
             <CardTitle>Default Branch Merge</CardTitle>
             {status && (
               <Badge
-                variant={status.final_merge_policy === 'auto' ? 'default' : 'secondary'}
+                variant={status.merge_policy === 'auto' ? 'default' : 'secondary'}
                 className="text-xs"
               >
-                {status.final_merge_policy === 'auto' ? 'Auto-merge' : 'Human review'}
+                {status.merge_policy === 'auto' ? 'Auto-merge' : 'Human review'}
               </Badge>
             )}
           </div>
           <CardDescription>
-            Role pull requests first merge into a temporary branch for the run.
-            This setting applies only to the checked final pull request that
-            targets your repository's default branch.
+            Every pull request is checked and reviewed before it can merge. This
+            setting decides who performs that merge into your default branch.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div
             role="group"
-            aria-label="Final pull request policy"
+            aria-label="Merge policy"
             className="inline-grid w-full grid-cols-2 rounded-md border border-border p-1 sm:w-auto"
           >
             <button
               type="button"
               disabled={policySaving}
-              aria-pressed={(status?.final_merge_policy ?? 'human_review') === 'human_review'}
-              onClick={() => void handleFinalPolicy('human_review')}
+              aria-pressed={(status?.merge_policy ?? 'human_review') === 'human_review'}
+              onClick={() => void handleMergePolicy('human_review')}
               className={`min-h-10 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                (status?.final_merge_policy ?? 'human_review') === 'human_review'
+                (status?.merge_policy ?? 'human_review') === 'human_review'
                   ? 'bg-foreground text-background'
                   : 'hover:bg-accent'
               }`}
@@ -316,10 +314,10 @@ export function SettingsPage() {
             <button
               type="button"
               disabled={policySaving}
-              aria-pressed={status?.final_merge_policy === 'auto'}
+              aria-pressed={status?.merge_policy === 'auto'}
               onClick={() => setConfirmAuto(true)}
               className={`min-h-10 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                status?.final_merge_policy === 'auto'
+                status?.merge_policy === 'auto'
                   ? 'bg-foreground text-background'
                   : 'hover:bg-accent'
               }`}
@@ -328,9 +326,9 @@ export function SettingsPage() {
             </button>
           </div>
           <p className="mt-3 max-w-xl text-xs text-muted-foreground">
-            Auto-merge uses the exact version that passed review and still follows
-            branch protection. If GitHub rejects it, the final pull request stays
-            open for a person.
+            Auto-merge uses the exact version that passed its check and review, and
+            still follows branch protection. A red pull request is never merged, and
+            a rejected merge leaves that pull request open for a person.
           </p>
           {policyError && (
             <p className="mt-3 text-sm text-destructive" role="alert">
@@ -343,17 +341,17 @@ export function SettingsPage() {
       <AlertDialog open={confirmAuto} onOpenChange={setConfirmAuto}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Auto-Merge Final Pull Requests?</AlertDialogTitle>
+            <AlertDialogTitle>Auto-Merge Approved Pull Requests?</AlertDialogTitle>
             <AlertDialogDescription>
-              Future runs will merge the checked final pull request into the
-              repository's default branch without waiting for a person.
+              Future runs will merge each pull request that passes its own check and
+              review into the default branch without waiting for a person.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={policySaving}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={policySaving}
-              onClick={() => void handleFinalPolicy('auto')}
+              onClick={() => void handleMergePolicy('auto')}
             >
               Enable Auto-Merge
             </AlertDialogAction>

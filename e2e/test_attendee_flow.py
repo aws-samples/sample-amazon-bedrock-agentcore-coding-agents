@@ -163,16 +163,23 @@ def test_stage2_submit_watch_and_review(console, cookie):
         item for item in items.values() if item["kind"] == "builder"
     ]
     assert len({item["work_id"] for item in items.values()}) == len(items)
+    # Every pull request targets the repository's DEFAULT branch, not a run branch.
+    assert res["final_base_branch"]
     assert all(
-        item["base_branch"] == res["integration_branch"]
+        item["base_branch"] == res["final_base_branch"]
         for item in builder_items
     )
-    assert all(item["merge_state"] == "merged" for item in builder_items)
-    assert all(row["state"] == "merged" for row in res["merge_queue"])
-    assert len(res["gate_history"]) == len(builder_items) + 1
+    # Each one settled on its own: merged, or green and left open for a person.
+    assert all(item["merge_state"] in ("merged", "human_review")
+               for item in builder_items)
+    assert len(res["role_prs"]) == len(builder_items)
+    assert all(row["state"] in ("merged", "awaiting_review")
+               for row in res["role_prs"])
+    # ONE executable per pull request, each attributed to the work id it judged.
+    assert len(res["gate_history"]) == len(builder_items)
     assert all(row["passed"] for row in res["gate_history"])
-    assert res["pr_url"] is None
-    assert res["merge_state"] != "merged"
+    assert {row["work_id"] for row in res["gate_history"]} == {
+        item["work_id"] for item in builder_items}
 
     _, terms = _req(console, "GET", f"/api/orchestrator/runs/{rid}/terminals",
                     headers=cookie)
@@ -190,14 +197,14 @@ def test_settings_github_card_round_trip(console, cookie):
 
     _, policy = _req(
         console, "POST", "/api/orchestrator/github",
-        {"final_merge_policy": "auto"}, headers=cookie)
-    assert policy["final_merge_policy"] == "auto"
+        {"merge_policy": "auto"}, headers=cookie)
+    assert policy["merge_policy"] == "auto"
     assert policy["connected"] is False
 
     _, closed = _req(
         console, "POST", "/api/orchestrator/github",
-        {"final_merge_policy": "not-a-policy"}, headers=cookie)
-    assert closed["final_merge_policy"] == "human_review"
+        {"merge_policy": "not-a-policy"}, headers=cookie)
+    assert closed["merge_policy"] == "human_review"
 
     code, st = _req(console, "POST", "/api/orchestrator/github", {"clear": True},
                     headers=cookie)

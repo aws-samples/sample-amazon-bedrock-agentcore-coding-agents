@@ -10,9 +10,10 @@ Base URL (local engine): `http://localhost:8090`. All bodies are JSON. CORS is o
 static console can call it from `file://` or `localhost`.
 
 The model is **fully autonomous orchestration** (no race/winner): submit one task,
-give each builder an isolated work item and role PR, validate the combined
-candidate, advance green heads through a private merge queue, then open one final
-PR to the default branch. The API reflects that lifecycle.
+give each builder an isolated work item and its own pull request against the default
+branch, then take EACH pull request through its own executable check, its own
+independent review, and its own merge. No combined candidate, no queue, no final PR.
+The API reflects that lifecycle.
 
 ---
 
@@ -89,21 +90,22 @@ A run also has a terminal status once finalization completes.
     "role_assignments": { /* exclusive builder ownership */ },
     "merge_order": ["claude-code", "opencode"]
   },
-  "integration_candidate": {
-    "files": ["src/service.py", "web/app.tsx"],
-    "owners": { /* changed path -> work ids */ },
-    "digest": "8bc4…"
-  },
-  "integration_branch": "workshop/runs/run-0001/integration",
-  "gate_history": [                     // initial candidate, then one row per queued merge
-    {"sequence": 1, "stage": "full candidate round 1", "passed": true,
-     "candidate_digest": "8bc4…", "summary": "12 checks passed"},
-    {"sequence": 2, "stage": "after merge work_claude-code_a1b2c3", "passed": true,
-     "candidate_digest": "8bc4…", "summary": "12 checks passed"}
+  "final_base_branch": "main",          // every pull request targets this ONE branch
+  "gate_history": [                     // one row per executable run, per pull request
+    {"sequence": 1, "stage": "work_claude-code_a1b2c3 round 1", "passed": true,
+     "work_id": "work_claude-code_a1b2c3", "agent": "claude-code",
+     "patch_digest": "8bc4…", "summary": "12 checks passed"},
+    {"sequence": 2, "stage": "work_opencode_d4e5f6 round 1", "passed": true,
+     "work_id": "work_opencode_d4e5f6", "agent": "opencode",
+     "patch_digest": "9fa1…", "summary": "12 checks passed"}
   ],
-  "merge_queue": [
-    {"position": 1, "work_id": "work_claude-code_a1b2c3",
-     "agent": "claude-code", "state": "merged", "sha": "517e4d…"}
+  "role_prs": [                         // one row per pull request, each independent
+    {"work_id": "work_claude-code_a1b2c3", "agent": "claude-code", "role": "backend",
+     "pr_url": "https://github.com/your-org/your-repo/pull/42",
+     "state": "merged", "sha": "517e4d…"},
+    {"work_id": "work_opencode_d4e5f6", "agent": "opencode", "role": "frontend",
+     "pr_url": "https://github.com/your-org/your-repo/pull/43",
+     "state": "awaiting_review"}
   ],
   "gate": {                             // the validator-authored acceptance check result (agentic, real exit code)
     "passed": true,
@@ -114,15 +116,15 @@ A run also has a terminal status once finalization completes.
     ],
     "summary": "3 checks passed"
   },
-  "pr_url": "https://github.com/your-org/your-repo/pull/42",   // final PR; null until the queue is green
+  "pr_url": "https://github.com/your-org/your-repo/pull/42",   // the single role PR when exactly one builder ran; else null (read role_prs)
   "composed_from": ["backend-builder", "frontend-builder", "validator"],  // proves compose-not-compete
-  "iterations": 1,                      // global gate/panel round; initial + one repair
+  "iterations": 1,                      // repair rounds spent; the bound is PER pull request
   "artifact_endpoint": "http://127.0.0.1:49760",  // additive: where the running service answers (when applicable)
   "composed_branch": "run/run_150318_001",        // additive local/offline compatibility branch
   "composed_commit": "517e4dcf66…",               // additive local commit (null until gate green)
   "fail_reason": null,                  // additive: machine-readable reason on failed/needs_human
   "route": {…},                         // additive: same routing verdict as on Run
-  "review": {…},                        // additive: integrated review verdict (see below)
+  "review": {…},                        // additive: the most recent per-PR review verdict (see below)
   "pr": {…},                            // additive: GitHub finalization result (see below)
   "compose_base": {…},                  // additive: {mode: "external"|"local", …} compose base
   "merge_state": "human_review",        // additive: "human_review"|"merged"|null
@@ -134,10 +136,11 @@ A run also has a terminal status once finalization completes.
 ```
 
 `gate` is the latest executable result for compatibility. `gate_history` is the
-complete evidence: the validator authors and the engine executes a fresh check for
-the assembled candidate and after every queued merge. A green `gate` never erases an
-earlier checkpoint. Builder `work_items` have role PRs; checker work items have an
-isolated checkout but no code PR.
+complete evidence: the validator authors one check per pull request and the engine
+executes it against that pull request's tree, built on the default branch as it
+stands. Each row names the `work_id` it judged. A green `gate` never erases an
+earlier checkpoint. Builder `work_items` have pull requests; checker work items have
+an isolated checkout but no code PR.
 
 `next_action` is DERIVED from `(status, fail_reason, pr)` on every read, never stored:
 the reason is the fact, this is how to read it. It exists because `needs_human` covers
@@ -277,11 +280,11 @@ Append-only audit trail of phase transitions and role activity (embedded event a
   `reasons` is the list of change-request feedback items fed back to the routed roles on a
   re-implement pass. `assessment` is the full markdown posted on the PR.
   Pass token is the exact string `LGTM: no changes needed`; non-LGTM buys ONE bounded
-  re-implement pass (`MAX_REVIEW_ROUNDS`). One read-only model turn reviews the
-  integrated candidate and never reuses a builder conversation. Its response must
+  re-implement pass (`MAX_REVIEW_ROUNDS`) PER PULL REQUEST. One read-only model turn
+  reviews ONE pull request and never reuses a builder conversation. Its response must
   contain both adversarial-verification and design/integration lenses; a finding
-  under either lens blocks the queue. An unreachable reviewer is recorded as
-  `abstained`, sets `review_unavailable`, and blocks the queue with
+  under either lens stops that pull request from merging. An unreachable reviewer is
+  recorded as `abstained`, sets `review_unavailable`, and holds that pull request with
   `REVIEW_UNAVAILABLE`; builders are not asked to repair a model outage.
 - `Result.pr`: GitHub finalization: `{"pr_url":…}` when connected, `{"skipped":…}` in local
   mode, `{"error":…}` on a real failure. `pr_url` is real or null, never fake.
@@ -296,10 +299,10 @@ POST /api/runs
         └─> running (context_hydration)
              └─> running (pre_flight)        // fail-closed: may go -> failed here
                   └─> running (agent_execution)   // builders in parallel; checker after their join
-                       └─> running (finalization)  // candidate + executable gate + integrated review + queue
-                            ├─> passed        (gate green, pr_url set)
-                            ├─> failed        (gate red after bounded iterations)
-                            └─> needs_human   (iteration cap hit)
+                       └─> running (finalization)  // per pull request: gate -> review -> merge
+                            ├─> passed        (every PR settled: merged, or green and awaiting a person)
+                            ├─> failed        (no PR reached a check)
+                            └─> needs_human   (ROLE_PR_BLOCKED naming the open work ids)
 ```
 
 ## Rules the real implementation must keep (so the Console never breaks)

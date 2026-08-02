@@ -1,4 +1,12 @@
-"""Tests for isolated role work and integration candidate assembly."""
+"""Tests for isolated role work and ONE pull request's tree.
+
+There is no assembled multi-role candidate any more: each role gets one pull
+request against the repository's default branch, and ``apply_patch`` materialises
+exactly what merging THAT one pull request would produce. So the load-bearing
+property here is no longer "who wins when two roles touch a path", it is "a patch
+whose base moved under it is STALE and never overwrites what somebody already
+merged".
+"""
 
 from __future__ import annotations
 
@@ -13,10 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import work_items  # noqa: E402
 
 
-def _item(run_id: str, agent: str, token: str) -> work_items.WorkItem:
+def _item(run_id: str, agent: str, token: str,
+          base_branch: str = "main") -> work_items.WorkItem:
     return work_items.WorkItem.create(
         run_id, agent, agent.replace("-", " "), agent.split("-")[0],
-        token=token,
+        base_branch=base_branch, token=token,
     )
 
 
@@ -31,12 +40,21 @@ def test_dependency_order_is_stable_and_rejects_cycles():
         work_items.dependency_order([backend, frontend])
 
 
-def test_candidate_applies_disjoint_and_identical_role_changes(tmp_path):
+def test_pull_request_tree_is_the_base_plus_only_this_roles_patch(tmp_path):
+    """``apply_patch`` materialises exactly what merging ONE pull request produces.
+
+    Every role targets the repository's default branch directly, gets its own
+    collision-free work id, branch, and local worktree branch, and its tree is the
+    base as it stands plus its own additions, edits, and deletions. Nothing from a
+    sibling role appears, because a pull request is the unit a person merges.
+    """
     backend = _item("run_1", "backend", "a")
     frontend = _item("run_1", "frontend", "b")
     assert backend.work_id != frontend.work_id
     assert backend.branch != frontend.branch
-    assert backend.base_branch == frontend.base_branch
+    # Both pull requests target the SAME default branch: there is no run-scoped
+    # integration branch above them.
+    assert backend.base_branch == frontend.base_branch == "main"
     assert backend.worktree_branch == "worktree-work-backend-a"
     assert frontend.worktree_branch == "worktree-work-frontend-b"
     assert backend.runtime_subdir("run_1").endswith(backend.work_id)
@@ -45,92 +63,91 @@ def test_candidate_applies_disjoint_and_identical_role_changes(tmp_path):
 
     base = tmp_path / "base"
     back_root = tmp_path / "backend"
-    front_root = tmp_path / "frontend"
     base.mkdir()
     (back_root / "service").mkdir(parents=True)
-    (front_root / "ui").mkdir(parents=True)
     (base / "keep.txt").write_text("before\n")
     (base / "delete.txt").write_text("remove me\n")
     (back_root / "keep.txt").write_text("after\n")
     (back_root / "README.md").write_text("shared contract\n")
     (back_root / "service" / "app.py").write_text("print('api')\n")
-    (front_root / "keep.txt").write_text("before\n")
-    (front_root / "delete.txt").write_text("remove me\n")
-    (front_root / "README.md").write_text("shared contract\n")
-    (front_root / "ui" / "app.ts").write_text("console.log('ui')\n")
 
-    candidate = work_items.assemble_candidate(
-        str(base),
-        [(backend, str(base), str(back_root)),
-         (frontend, str(base), str(front_root))],
-        str(tmp_path / "candidate"),
-    )
+    destination = tmp_path / "pr-backend"
+    digest = work_items.apply_patch(
+        str(base), backend, str(base), str(back_root), str(destination))
 
-    assert candidate.files == [
-        "README.md", "keep.txt", "service/app.py", "ui/app.ts"]
-    assert (tmp_path / "candidate" / "keep.txt").read_text() == "after\n"
-    assert not (tmp_path / "candidate" / "delete.txt").exists()
-    assert (tmp_path / "candidate" / "service" / "app.py").is_file()
-    assert candidate.owners["README.md"] == [
-        backend.work_id, frontend.work_id]
-    assert candidate.owners["service/app.py"] == [backend.work_id]
-    assert candidate.owners["ui/app.ts"] == [frontend.work_id]
+    assert (destination / "keep.txt").read_text() == "after\n"
+    assert (destination / "README.md").read_text() == "shared contract\n"
+    assert (destination / "service" / "app.py").is_file()
+    assert not (destination / "delete.txt").exists()
     assert backend.changed_files == ["README.md", "keep.txt", "service/app.py"]
     assert backend.deleted_files == ["delete.txt"]
-    assert candidate.digest == work_items.tree_digest(str(tmp_path / "candidate"))
+    assert digest == work_items.tree_digest(str(destination))
 
-
-def test_conflicting_role_changes_never_pick_a_winner(tmp_path):
-    backend = _item("run_1", "backend", "a")
-    frontend = _item("run_1", "frontend", "b")
-    back_root = tmp_path / "backend"
+    # A sibling's pull request is built from the SAME base and carries only its own
+    # files: the two trees never see each other.
     front_root = tmp_path / "frontend"
-    back_root.mkdir()
-    front_root.mkdir()
-    (back_root / "package.json").write_text('{"name":"backend"}\n')
-    (front_root / "package.json").write_text('{"name":"frontend"}\n')
-    destination = tmp_path / "candidate"
-    base = tmp_path / "base"
-    base.mkdir()
+    (front_root / "ui").mkdir(parents=True)
+    (front_root / "keep.txt").write_text("before\n")
+    (front_root / "delete.txt").write_text("remove me\n")
+    (front_root / "ui" / "app.ts").write_text("console.log('ui')\n")
+    front_dest = tmp_path / "pr-frontend"
+    work_items.apply_patch(
+        str(base), frontend, str(base), str(front_root), str(front_dest))
+    assert frontend.changed_files == ["ui/app.ts"]
+    assert frontend.deleted_files == []
+    assert (front_dest / "ui" / "app.ts").is_file()
+    assert not (front_dest / "service").exists()
+    assert not (front_dest / "README.md").exists()
+    assert (front_dest / "keep.txt").read_text() == "before\n"
+    assert (front_dest / "delete.txt").is_file()
 
-    with pytest.raises(work_items.IntegrationConflict) as caught:
-        work_items.assemble_candidate(
-            str(base),
-            [(backend, str(base), str(back_root)),
-             (frontend, str(base), str(front_root))],
-            str(destination),
-        )
 
-    assert caught.value.conflicts == [{
-        "path": "package.json",
-        "first_work_id": backend.work_id,
-        "second_work_id": frontend.work_id,
-        "reason": "the integration base and this work item changed the path differently",
-    }]
-    assert not destination.exists(), "a conflicted candidate must never be published"
+def test_a_base_that_moved_under_a_pull_request_is_stale_never_a_winner(tmp_path):
+    """This is how "somebody merged before you" is detected, and it must never
+    resolve itself.
 
-    first = _item("run_1", "backend", "a")
+    The patch was computed against the exact base the role received. If the default
+    branch has since changed a path this role also changed, applying the patch would
+    quietly overwrite a change that is already merged. That is a STALE pull request:
+    the owning role refreshes and gets re-checked, exactly as a person would. No
+    winner is picked, and the tree is never published.
+    """
     stale = _item("run_1", "frontend", "b")
-    original = tmp_path / "original"
-    integrated = tmp_path / "integrated"
-    first_work = tmp_path / "first"
-    stale_work = tmp_path / "stale"
-    for root in (original, integrated, first_work, stale_work):
+    received = tmp_path / "received"        # the base this role was handed
+    moved = tmp_path / "moved"              # the default branch as it stands now
+    work = tmp_path / "work"                # what the role wrote
+    destination = tmp_path / "pr-frontend"
+    for root in (received, moved, work):
         root.mkdir()
-    (original / "contract.json").write_text('{"version":1}\n')
-    (integrated / "contract.json").write_text('{"version":2,"owner":"backend"}\n')
-    (first_work / "contract.json").write_text('{"version":2,"owner":"backend"}\n')
-    (stale_work / "contract.json").write_text('{"version":2,"owner":"frontend"}\n')
+    (received / "contract.json").write_text('{"version":1}\n')
+    (moved / "contract.json").write_text('{"version":2,"owner":"backend"}\n')
+    (work / "contract.json").write_text('{"version":2,"owner":"frontend"}\n')
 
-    with pytest.raises(work_items.IntegrationConflict) as caught:
-        work_items.assemble_candidate(
-            str(integrated),
-            [(stale, str(original), str(stale_work))],
-            str(tmp_path / "stale-candidate"),
-        )
+    with pytest.raises(work_items.StalePatch) as caught:
+        work_items.apply_patch(
+            str(moved), stale, str(received), str(work), str(destination))
 
+    assert str(caught.value).startswith("STALE_PATCH:")
     assert caught.value.conflicts[0]["path"] == "contract.json"
     assert caught.value.conflicts[0]["second_work_id"] == stale.work_id
+    assert "since this role received it" in caught.value.conflicts[0]["reason"]
+    assert not destination.exists(), (
+        "a stale pull request tree must never be published")
+    # Neither side won: the merged version on the base is untouched, and the role's
+    # proposal was not adopted.
+    assert (moved / "contract.json").read_text() == '{"version":2,"owner":"backend"}\n'
+
+    # Sharp contrast: the same path, but the base already holds EXACTLY what this
+    # role wanted. Nothing was overwritten, so nothing is stale.
+    agreeing = _item("run_1", "frontend", "c")
+    agreed_work = tmp_path / "agreed"
+    agreed_work.mkdir()
+    (agreed_work / "contract.json").write_text('{"version":2,"owner":"backend"}\n')
+    agreed_dest = tmp_path / "pr-agreeing"
+    work_items.apply_patch(
+        str(moved), agreeing, str(received), str(agreed_work), str(agreed_dest))
+    assert (agreed_dest / "contract.json").read_text() == (
+        '{"version":2,"owner":"backend"}\n')
 
 
 def test_refresh_preserves_clean_work_and_surfaces_same_path_conflicts(tmp_path):

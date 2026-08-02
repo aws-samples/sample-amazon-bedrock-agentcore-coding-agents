@@ -136,56 +136,50 @@ def test_happy_path_runs_the_real_gate_and_composes(monkeypatch):
     # local mode invokes no model for the roles: usage is zero, never inferred
     for r in run.progress.values():
         assert r.estimated is False and r.tokens == 0 and r.latency_ms >= 0
-    # The first dependency is merged, then the next owner gets one real semantic
-    # refresh against that implementation. A clean Git rebase is not enough.
+    # Each pull request is checked and reviewed ON ITS OWN. Nothing waits in line, so
+    # a builder whose work is clean spends exactly ONE turn: the extra owner turn the
+    # old merge queue forced on every downstream role is gone.
     builders = [
         item for item in run.work_items.values()
         if item.kind == "builder"
     ]
-    ordered = sorted(builders, key=lambda item: len(item.depends_on))
-    assert [item.attempt for item in ordered] == [1, 2]
-    assert ordered[1].refreshes == 1
-    assert any(
-        "SEMANTIC INTEGRATION REFRESH" in event["message"]
-        for event in run.events
-    )
-    # The validator still authors and runs one executable at every queue
-    # checkpoint, but a byte-identical candidate is not sent through a duplicate
-    # code review after the semantic owner turn.
-    assert len(run.gate_history) == len(builders) + 1
-    assert len(review_calls) == 1, [
-        (row["stage"], row["candidate_digest"])
-        for row in run.gate_history
+    assert all(item.attempt == 1 for item in builders)
+    # One executable per pull request, and one review per pull request. Each gate row
+    # names the work id it judged, which is what makes the evidence attributable.
+    assert len(run.gate_history) == len(builders)
+    assert {row["work_id"] for row in run.gate_history} == {
+        item.work_id for item in builders}
+    assert len(review_calls) == len(builders), [
+        (row["stage"], row["work_id"]) for row in run.gate_history
     ]
+    # Every pull request settled, and every one of them targeted the DEFAULT branch.
+    assert run.final_base_branch
+    assert all(item.base_branch == run.final_base_branch for item in builders)
+    assert len(run.role_prs) == len(builders)
+    assert all(row["state"] in ("merged", "awaiting_review")
+               for row in run.role_prs), run.role_prs
     engine.shutdown()
 
 
-def test_role_pr_merge_queue_revalidates_after_every_merge(monkeypatch):
+def test_each_pull_request_is_checked_and_merged_independently(monkeypatch):
+    """One pull request per role, each gated and merged ON ITS OWN.
+
+    Replaces a test that pinned the deleted merge queue (positions, one combined
+    candidate gate, then a re-gate after every merge). What survives from it, and is
+    asserted here, is the part that was ever a real guarantee: every role gets its own
+    work id, its own executable check attributed to that work id, and its own merge --
+    with no ordering imposed between the verdicts.
+    """
     review_calls = []
     real_assess = __import__("reviewer").assess
-    fixture = FixtureExecutor()
-    fixture_produce = fixture.produce
 
     def counted_assess(*args, **kwargs):
-        review_calls.append((args[1].get("summary"), args[2]))
+        review_calls.append(kwargs.get("subject") or (args[3] if len(args) > 3 else None))
         return real_assess(*args, **kwargs)
 
-    def conflicting_first_turn(run, agent_id, role):
-        path = fixture_produce(run, agent_id, role)
-        if agent_id in ("claude-code", "opencode"):
-            shared = os.path.join(run.roledir(agent_id), "shared-manifest.txt")
-            content = (
-                f"independent {agent_id}\n"
-                if run.iterations == 1
-                else "integrated backend and frontend\n"
-            )
-            with open(shared, "w", encoding="utf-8") as f:
-                f.write(content)
-        return path
-
     monkeypatch.setattr("engine.reviewer.assess", counted_assess)
-    monkeypatch.setattr(fixture, "produce", conflicting_first_turn)
-    engine = Engine(executor_obj=fixture)
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
+    engine = Engine(executor_obj=FixtureExecutor())
     run = _wait_terminal(
         engine.submit("build any useful tool", ALL_AGENTS), timeout_s=120)
     builders = [
@@ -193,92 +187,94 @@ def test_role_pr_merge_queue_revalidates_after_every_merge(monkeypatch):
         if item.kind == "builder"
     ]
 
+    assert run.status == "passed"
     assert len({item.work_id for item in builders}) == len(builders)
+    # Every pull request based on the DEFAULT branch -- never a run-scoped branch.
+    assert run.final_base_branch
+    assert all(item.base_branch == run.final_base_branch for item in builders)
+    # Each one merged on its own, and each has exactly one row of its own.
     assert all(item.merge_state == "merged" for item in builders)
-    assert len(run.merge_queue) == len(builders)
-    assert [row["state"] for row in run.merge_queue] == [
-        "merged" for _ in builders]
-    # One full-candidate gate, then one real executable gate after each merge.
-    assert len(run.gate_history) == len(builders) + 1
+    assert len(run.role_prs) == len(builders)
+    assert [row["state"] for row in run.role_prs] == ["merged"] * len(builders)
+    # ONE executable per pull request (not one combined gate plus a re-gate per
+    # merge), every row green and attributed to the work id it judged.
+    assert len(run.gate_history) == len(builders)
     assert all(row["passed"] for row in run.gate_history)
-    assert run.gate_history[-1]["stage"].startswith("after merge")
-    # The initial shared-path conflict gets one real owner reconciliation.
-    ordered = sorted(builders, key=lambda item: len(item.depends_on))
-    assert ordered[0].attempt == 1
-    assert ordered[-1].refreshes >= 2
-    assert ordered[-1].attempt == 2
-    assert any(
-        row.get("responsible_agents") == [ordered[-1].agent]
-        for row in run.retry_reasons
-    )
-    # Conflict repair already based the later role on its dependency's exact
-    # patch, so the queue does not spend a redundant third turn.
-    assert len(review_calls) == 1
+    assert {row["work_id"] for row in run.gate_history} == {
+        item.work_id for item in builders}
+    # ONE review per pull request, each handed its own subject.
+    assert len(review_calls) == len(builders)
+    assert {getattr(subject, "work_id", None) for subject in review_calls} == {
+        item.work_id for item in builders}
     engine.shutdown()
 
-    review_calls.clear()
-    fixture = FixtureExecutor()
-    fixture_produce = fixture.produce
 
-    def conflict_created_by_gate_repair(run, agent_id, role):
-        path = fixture_produce(run, agent_id, role)
-        if agent_id == "opencode":
-            shared = os.path.join(run.roledir(agent_id), "shared-after-repair.txt")
-            content = (
-                "frontend contract\n"
-                if run.iterations == 1
-                else "integrated persistence and frontend contract\n"
+def test_a_red_pull_request_does_not_block_a_green_sibling(monkeypatch):
+    """Independence is the whole point: one role's red verdict is not another's.
+
+    Under the old merge queue a blocked head stopped everything behind it. Now a
+    pull request that cannot become acceptable is recorded and the loop CONTINUES,
+    so a sibling that passed still settles, and the run reports which one is open.
+    """
+    import reviewer as _reviewer
+    real_assess = _reviewer.assess
+    engine = Engine(executor_obj=FixtureExecutor())
+    victim: dict[str, str] = {}
+
+    def reject_one_role(run, gate, round_no, *args, **kwargs):
+        subject = kwargs.get("subject") or (args[1] if len(args) > 1 else None)
+        work_id = getattr(subject, "work_id", "")
+        # Always reject the SAME pull request, including on its bounded repair, so it
+        # really reaches a terminal blocked state while its sibling passes.
+        if work_id and (not victim or victim.get("work_id") == work_id):
+            victim.setdefault("work_id", work_id)
+            return _reviewer.Verdict(
+                state="changes_requested", gate=gate, round=round_no,
+                reasons=["this pull request is not acceptable"],
+                assessment="**Assessment**: Request changes\n\nheld for the test",
             )
-            with open(shared, "w", encoding="utf-8") as f:
-                f.write(content)
-        elif agent_id == "claude-code" and run.iterations == 2:
-            shared = os.path.join(run.roledir(agent_id), "shared-after-repair.txt")
-            with open(shared, "w", encoding="utf-8") as f:
-                f.write("backend persistence repair\n")
-        return path
+        return real_assess(run, gate, round_no, *args, **kwargs)
 
-    monkeypatch.setattr(fixture, "produce", conflict_created_by_gate_repair)
-    monkeypatch.setattr(
-        "engine.integration_plan.select_repair_agents",
-        lambda *_args, **_kwargs: (
-            ["claude-code"], "the red executable check names backend persistence"),
-    )
-    repair_engine = Engine(executor_obj=fixture)
-    repaired = _wait_terminal(
-        repair_engine.submit(
-            "build any useful tool",
-            ALL_AGENTS,
-            {"fail_first_check": True},
-        ),
-        timeout_s=120,
-    )
-    repaired_builders = [
-        item for item in repaired.work_items.values()
+    monkeypatch.setattr("engine.reviewer.assess", reject_one_role)
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
+    run = _wait_terminal(
+        engine.submit("build any useful tool", ALL_AGENTS), timeout_s=180)
+    builders = [
+        item for item in run.work_items.values()
         if item.kind == "builder"
     ]
-    repaired_order = sorted(
-        repaired_builders, key=lambda item: len(item.depends_on))
-    assert repaired.status == "passed"
-    assert [row["passed"] for row in repaired.gate_history] == [
-        False, True, True, True]
-    assert [item.attempt for item in repaired_order] == [2, 2]
-    assert any(
-        row.get("responsible_agents") == [repaired_order[0].agent]
-        for row in repaired.retry_reasons
-    )
-    assert any(
-        row.get("stage") == "integration conflict"
-        and row.get("responsible_agents") == [repaired_order[1].agent]
-        for row in repaired.retry_reasons
-    )
-    repair_engine.shutdown()
+    if len(builders) < 2:  # a single-builder roster cannot show independence
+        engine.shutdown()
+        return
+
+    blocked = [row for row in run.role_prs if row["state"] == "blocked"]
+    settled = [row for row in run.role_prs
+               if row["state"] in ("merged", "awaiting_review")]
+    assert blocked, run.role_prs
+    assert settled, "a red pull request must not stop a green sibling"
+    # The run is needs_human, and next_action NAMES the work id still open, because
+    # "some merged, one red" is a real terminal shape a person has to act on.
+    assert run.status == "needs_human"
+    assert run.fail_reason.startswith("ROLE_PR_BLOCKED")
+    assert blocked[0]["work_id"] in run.fail_reason
+    assert public_result(run)["next_action"]
+    # The blocked pull request used its ONE bounded repair and no more.
+    owner = next(item for item in builders
+                 if item.work_id == blocked[0]["work_id"])
+    assert 1 <= owner.attempt <= MAX_ITERATIONS
+    engine.shutdown()
 
 
-def test_review_outage_blocks_the_queue_without_rebuilding(monkeypatch):
-    """A reviewer outage is infrastructure, not a reason to rewrite green work."""
+def test_review_outage_holds_the_pull_request_without_rebuilding(monkeypatch):
+    """A reviewer outage is infrastructure, not a reason to rewrite green work.
+
+    It holds the affected pull request open and asks NO builder to change code: a
+    model outage is not a defect in the work, and sending a builder back for one
+    would burn its single bounded repair on nothing.
+    """
     import reviewer
 
-    def unavailable(_run, gate, round_no):
+    def unavailable(_run, gate, round_no, *_args, **_kwargs):
         return reviewer.Verdict(
             state="changes_requested",
             gate=gate,
@@ -302,15 +298,19 @@ def test_review_outage_blocks_the_queue_without_rebuilding(monkeypatch):
         engine.submit("build any useful tool", ALL_AGENTS), timeout_s=120)
 
     assert run.status == "needs_human"
-    assert run.fail_reason == "REVIEW_UNAVAILABLE"
-    assert run.iterations == 1
-    assert run.merge_queue == []
+    assert run.fail_reason.startswith("REVIEW_UNAVAILABLE")
+    # Nothing merged, and no builder was sent back: every builder spent exactly the
+    # one turn it was given.
+    assert not [row for row in run.role_prs if row["state"] == "merged"]
     assert all(
         item.attempt == 1
         for item in run.work_items.values()
         if item.kind == "builder"
     )
-    assert "retry the review" in public_result(run)["next_action"].lower()
+    # The affected pull requests are NAMED, so a person knows which ones to look at.
+    blocked = [row for row in run.role_prs if row["state"] == "blocked"]
+    assert blocked and all(row["error"] == "REVIEW_UNAVAILABLE" for row in blocked)
+    assert "retry" in public_result(run)["next_action"].lower()
     engine.shutdown()
 
 
@@ -499,17 +499,31 @@ def test_bounded_iteration_retries_then_passes():
         engine.submit(CONVERT_TASK, ALL_AGENTS, options={"fail_first_check": True}),
         timeout_s=90,
     )
-    assert run.iterations == 2 <= MAX_ITERATIONS
     assert run.status == "passed"
     builders = [
         item for item in run.work_items.values()
         if item.kind == "builder"
     ]
-    ordered = sorted(builders, key=lambda item: len(item.depends_on))
-    assert [item.attempt for item in ordered] == [2, 3]
-    assert ordered[1].dependency_refreshes == 1
+    # The bound is PER PULL REQUEST. Every builder gets at most MAX_ITERATIONS turns
+    # (its first, plus at most one bounded repair), so N builders allow at most N
+    # repair rounds -- one each, never re-entrant. This is the property that keeps a
+    # red gate from becoming a runaway, so assert the CEILING, not a sequence: which
+    # pull request needed its repair depends on what the agents actually wrote.
+    assert builders, "the preset must route builders for this to mean anything"
+    for item in builders:
+        assert 1 <= item.attempt <= MAX_ITERATIONS, (
+            f"{item.work_id} spent {item.attempt} turns; the per-PR bound is "
+            f"{MAX_ITERATIONS}")
+    assert any(item.attempt > 1 for item in builders), (
+        "a red gate must really have sent one pull request back")
+    assert run.iterations <= len(builders) * MAX_ITERATIONS
+    # Every pull request still settled, and every recorded check is attributed.
+    assert all(row["state"] in ("merged", "awaiting_review")
+               for row in run.role_prs), run.role_prs
+    assert all(row["work_id"] for row in run.gate_history)
     warns = [e for e in run.events if e["level"] == "warn"]
-    assert any("changes requested" in e["message"] for e in warns)
+    assert any("bounded repair" in e["message"] for e in warns), [
+        e["message"] for e in warns]
     engine.shutdown()
 
 

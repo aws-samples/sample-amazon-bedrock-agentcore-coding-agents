@@ -1,15 +1,15 @@
-"""GitHub role-PR queue through the GitHub MCP Gateway (no PAT anywhere).
+"""Independent role pull requests through the GitHub MCP Gateway (no PAT anywhere).
 
-The workshop's final goal is a pull request on the attendee's own GitHub. In this
+The workshop's goal is real pull requests on the attendee's own GitHub. In this
 model the ONLY GitHub credential is a **GitHub App installation**, held inside the
-GitHub MCP Runtime that fronts an IAM-authenticated AgentCore Gateway. The
-The orchestrator gives every builder a branch and PR against a run-private
-integration branch. It publishes each patch atomically, comments executable
-evidence on the role PRs, and merges reviewed heads through a queue. After every
-role merge the validator authors and runs a fresh executable check. Only the
-fully validated integration branch opens a human-review PR to the repository's
-current default branch. The Gateway reads that branch; this module never changes
-repository settings.
+GitHub MCP Runtime that fronts an IAM-authenticated AgentCore Gateway.
+
+The orchestrator gives every builder its own branch and pull request against the
+repository's current DEFAULT branch, which is the ordinary team flow. It publishes
+each patch atomically and comments executable evidence on that pull request. Each
+one is checked and reviewed on its own and then merges on its own: there is no
+assembled candidate, no queue, and no separate final pull request. The Gateway
+reads the default branch; this module never changes repository settings.
 
 The credential LADDER is now a Gateway config, not a token:
 
@@ -55,8 +55,7 @@ _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO_ROOT, ".runs"
 # back-compat with the e2e GitHub-leak isolation fixture.)
 _SETTINGS = os.environ.get("WORKSHOP_GITHUB_SETTINGS",
                            os.path.join(_RUNS_DIR, "github_gateway.local.json"))
-_FINAL_MERGE_POLICY_FILE = os.path.join(
-    _RUNS_DIR, "final_merge_policy.local.json")
+_MERGE_POLICY_FILE = os.path.join(_RUNS_DIR, "merge_policy.local.json")
 _COMPOSED = os.path.join(_RUNS_DIR, "composed")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -87,10 +86,11 @@ def _git_env() -> dict:
 
 
 # Idempotent branch used only to prove the GitHub App can write before a build.
-# Actual work always uses ``workshop/runs/<run_id>/integration``.
+# Actual work always uses ``workshop/runs/<run_id>/<agent>-<suffix>``, one branch
+# per role, each based on the repository's default branch.
 DOCTOR_BRANCH = "workshop/doctor"
-FINAL_MERGE_POLICIES = ("human_review", "auto")
-_DEFAULT_FINAL_MERGE_POLICY = "human_review"
+MERGE_POLICIES = ("human_review", "auto")
+_DEFAULT_MERGE_POLICY = "human_review"
 
 
 # --- Gateway config resolution ------------------------------------------------
@@ -336,44 +336,53 @@ def repository_default_branch(cfg: dict | None = None) -> str:
     return branch
 
 
-# --- Final PR policy ----------------------------------------------------------
+# --- Merge policy -------------------------------------------------------------
 
-def _coerce_final_merge_policy(value: str | None) -> str:
+def _coerce_merge_policy(value: str | None) -> str:
     candidate = (value or "").strip().lower()
-    return (candidate if candidate in FINAL_MERGE_POLICIES
-            else _DEFAULT_FINAL_MERGE_POLICY)
+    return (candidate if candidate in MERGE_POLICIES
+            else _DEFAULT_MERGE_POLICY)
 
 
-def _save_final_merge_policy(policy: str) -> None:
+def _save_merge_policy(policy: str) -> None:
     os.makedirs(_RUNS_DIR, exist_ok=True)
-    with open(_FINAL_MERGE_POLICY_FILE, "w", encoding="utf-8") as f:
-        json.dump({"final_merge_policy": policy}, f)
+    with open(_MERGE_POLICY_FILE, "w", encoding="utf-8") as f:
+        json.dump({"merge_policy": policy}, f)
 
 
-def final_merge_policy() -> str:
-    """How the already-green final PR finishes: human review or auto-merge."""
-    env = (os.environ.get("WORKSHOP_FINAL_MERGE_POLICY")
-           or os.environ.get("WORKSHOP_MERGE_POLICY"))
+def merge_policy() -> str:
+    """How a reviewed role pull request finishes: human review, or auto-merge.
+
+    This is the human boundary. It used to govern the one final integration PR;
+    with each role pull request standing on its own there is no final PR to hold,
+    so the same choice now applies to every reviewed pull request. Under
+    ``human_review`` (the default) a green, approved pull request is left OPEN for
+    a person to merge. Branch protection still applies either way, and neither
+    setting can merge a red pull request.
+    """
+    env = (os.environ.get("WORKSHOP_MERGE_POLICY")
+           or os.environ.get("WORKSHOP_FINAL_MERGE_POLICY"))
     if env is not None:
-        return _coerce_final_merge_policy(env)
+        return _coerce_merge_policy(env)
     try:
-        with open(_FINAL_MERGE_POLICY_FILE, encoding="utf-8") as f:
-            return _coerce_final_merge_policy(
-                json.load(f).get("final_merge_policy"))
+        with open(_MERGE_POLICY_FILE, encoding="utf-8") as f:
+            payload = json.load(f)
+        return _coerce_merge_policy(
+            payload.get("merge_policy") or payload.get("final_merge_policy"))
     except (OSError, ValueError):
-        return _DEFAULT_FINAL_MERGE_POLICY
+        return _DEFAULT_MERGE_POLICY
 
 
-def set_final_merge_policy(value: str | None) -> dict[str, Any]:
-    """Change only the final PR policy; role PRs always use the merge queue."""
-    _save_final_merge_policy(_coerce_final_merge_policy(value))
+def set_merge_policy(value: str | None) -> dict[str, Any]:
+    """Change how every reviewed role pull request finishes."""
+    _save_merge_policy(_coerce_merge_policy(value))
     return status()
 
 
 # --- Settings surface (the console + terminal write here) ---------------------
 
 def save_settings(repo: str, gateway_url: str | None = None,
-                  final_policy: str | None = None) -> dict[str, Any]:
+                  merge_policy_value: str | None = None) -> dict[str, Any]:
     """Persist the Settings-pane gateway connection (ladder rung 2). NO token.
 
     ``repo`` is the attendee's template-derived repository ``owner/name`` (where
@@ -388,8 +397,8 @@ def save_settings(repo: str, gateway_url: str | None = None,
     gateway_url = (gateway_url or "").strip()
     if gateway_url:
         file["gateway_url"] = gateway_url
-    if final_policy is not None:
-        _save_final_merge_policy(_coerce_final_merge_policy(final_policy))
+    if merge_policy_value is not None:
+        _save_merge_policy(_coerce_merge_policy(merge_policy_value))
     os.makedirs(_RUNS_DIR, exist_ok=True)
     try:
         os.chmod(_RUNS_DIR, 0o700)
@@ -418,7 +427,7 @@ def status() -> dict[str, Any]:
     if not cfg:
         return {"connected": False, "mode": "local", "workshop_repo": WORKSHOP_REPO,
                 "connection_method": "gateway",
-                "final_merge_policy": final_merge_policy(),
+                "merge_policy": merge_policy(),
                 "hint": f"Use the '{WORKSHOP_REPO}' template to create your own repo, "
                         "then set GITHUB_GATEWAY_URL + GITHUB_REPO (or paste your "
                         "owner/repo in Settings once the workshop wires the gateway). "
@@ -431,14 +440,14 @@ def status() -> dict[str, Any]:
         return {"connected": False, "mode": "gateway", "connection_method": "gateway",
                 "gateway_url": cfg["gateway_url"], "target": cfg["target"],
                 "repo": cfg["repo"], "workshop_repo": WORKSHOP_REPO,
-                "final_merge_policy": final_merge_policy(),
+                "merge_policy": merge_policy(),
                 "error": f"gateway health check failed: {exc}"}
     return {"connected": True, "mode": "gateway", "connection_method": "gateway",
             "gateway_url": cfg["gateway_url"], "target": cfg["target"],
             "repo": cfg["repo"], "workshop_repo": WORKSHOP_REPO,
             "region": cfg["region"], "source": cfg["source"],
             "default_branch": default_branch,
-            "final_merge_policy": final_merge_policy(),
+            "merge_policy": merge_policy(),
             "tool_count": len(names)}
 
 
@@ -722,8 +731,19 @@ def snapshot_branch(branch: str, destination: str) -> dict[str, Any]:
     }
 
 
-def prepare_run_integration(branch: str, destination: str) -> dict[str, Any]:
-    """Create one run-scoped integration branch and clone its private snapshot."""
+def prepare_run_base(destination: str) -> dict[str, Any]:
+    """Resolve the repository's default branch and clone its snapshot.
+
+    Every role pull request bases on this branch and merges into it on its own,
+    which is the ordinary team flow: branch off the default branch, one pull
+    request each, review and merge each independently. There is no run-scoped
+    integration branch to create, because there is nothing to assemble before a
+    person sees it -- each pull request IS the reviewable unit.
+
+    The pre-flight failure stays here and stays first: role pull requests are
+    opened before any validation, so a missing Gateway must fail before any agent
+    work rather than after a ten-minute build.
+    """
     cfg = _gateway_config()
     if not cfg:
         return {
@@ -731,23 +751,8 @@ def prepare_run_integration(branch: str, destination: str) -> dict[str, Any]:
                      "validation, so the GitHub MCP Gateway must be wired first. "
                      "Run `python3 orchestrator/github.py doctor`.",
         }
-    owner, repo_name = _repo_parts(cfg)
-    try:
-        default_branch = repository_default_branch(cfg)
-        _tool(
-            cfg, "create_branch",
-            {
-                "owner": owner,
-                "repo": repo_name,
-                "branch": branch,
-                "from_branch": default_branch,
-            },
-            timeout=30.0,
-        )
-    except GatewayError as exc:
-        if not _branch_already_exists(exc):
-            return {"error": f"integration branch creation failed: {exc}"}
-    snapshot = snapshot_branch(branch, destination)
+    default_branch = repository_default_branch(cfg)
+    snapshot = snapshot_branch(default_branch, destination)
     if not snapshot.get("error"):
         snapshot["default_branch"] = default_branch
     return snapshot
@@ -906,20 +911,46 @@ def comment_on_work_item(item: Any, body_md: str) -> dict[str, Any]:
 
 
 def merge_work_item(run: Any, item: Any) -> dict[str, Any]:
-    """Squash one green role PR into this run's private integration branch."""
+    """Squash one reviewed role PR into the repository's default branch.
+
+    This is the only merge in the workshop. Each role pull request stands on its
+    own: it was gated and reviewed against the default branch as it stood, and it
+    merges by itself. A red sibling never blocks it, and it never waits for one.
+
+    Two refusals are load-bearing and both used to live on the deleted final PR:
+    the pull request must still target the branch the run pinned, and the
+    repository's default branch must not have moved under the run. Either would
+    otherwise let a merge land somewhere nobody reviewed.
+    """
     cfg = _gateway_config()
     pr = getattr(item, "pr", None) or {}
     if not cfg:
         return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
-    if pr.get("base") != run.integration_branch:
+    pinned_branch = str(getattr(run, "final_base_branch", None) or "")
+    if pr.get("base") != pinned_branch:
         return {
             "error": f"refusing to merge {item.work_id}: base "
-                     f"{pr.get('base')!r} is not {run.integration_branch!r}",
+                     f"{pr.get('base')!r} is not {pinned_branch!r}",
         }
     number = pr.get("number")
     if not number:
         return {"error": f"{item.work_id} has no PR number"}
     owner, repo_name = _repo_parts(cfg)
+    try:
+        default_branch = repository_default_branch(cfg)
+    except (GatewayError, RuntimeError) as exc:
+        return {"error": f"role PR merge failed: {exc}"}
+    if pinned_branch != default_branch:
+        return {
+            "error": f"refusing to merge {item.work_id}: repository default branch "
+                     f"changed from {pinned_branch!r} to {default_branch!r} "
+                     "during the run",
+        }
+    if not (item.head_sha or ""):
+        return {
+            "error": f"refusing to merge {item.work_id}: no reviewed head SHA to "
+                     "pin, so the merge could land a commit nobody reviewed",
+        }
     try:
         response = _tool(
             cfg, "merge_pull_request",
@@ -938,133 +969,6 @@ def merge_work_item(run: Any, item: Any) -> dict[str, Any]:
         return {"error": f"role PR merge did not complete: {response!r}"}
     item.merge_state = "merged"
     item.state = "merged"
-    return {"merged": True, "sha": response.get("sha", "")}
-
-
-def open_integration_pr(run: Any, body_md: str) -> dict[str, Any]:
-    """Open the final evidence PR from the validated run branch to default."""
-    cfg = _gateway_config()
-    if not cfg:
-        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
-    owner, repo_name = _repo_parts(cfg)
-    try:
-        default_branch = repository_default_branch(cfg)
-        pinned_branch = str(
-            getattr(run, "final_base_branch", None) or default_branch)
-        if pinned_branch != default_branch:
-            return {
-                "error": "final integration PR refused: repository default branch "
-                         f"changed from {pinned_branch!r} to {default_branch!r} "
-                         "during the run",
-            }
-        head_sha = str(_tool(
-            cfg, "get_branch_head",
-            {
-                "owner": owner,
-                "repo": repo_name,
-                "branch": run.integration_branch,
-            },
-            timeout=30.0,
-        ))
-        opened = _tool(
-            cfg, "create_pull_request",
-            {
-                "owner": owner,
-                "repo": repo_name,
-                "title": f"[integration] {run.task.splitlines()[0][:72]}",
-                "head": run.integration_branch,
-                "base": pinned_branch,
-                "body": body_md,
-            },
-            timeout=30.0,
-        )
-    except GatewayError as exc:
-        return {"error": f"final integration PR failed: {exc}"}
-    if not isinstance(opened, dict) or "url" not in opened:
-        return {"error": f"final integration PR returned no URL: {opened!r}"}
-    result = {
-        "pr_url": opened["url"],
-        "number": opened.get("number"),
-        "base": pinned_branch,
-        "head": run.integration_branch,
-        "head_sha": head_sha,
-        "default_branch": pinned_branch,
-        "source": cfg["source"],
-    }
-    try:
-        labels = _tool(
-            cfg, "ensure_labels",
-            {
-                "owner": owner,
-                "repo": repo_name,
-                "issue_number": result["number"],
-                "labels": [
-                    {
-                        "name": f"run:{run.run_id}",
-                        "color": "0969da",
-                        "description": "AgentCore workshop run id",
-                    },
-                    {
-                        "name": "integration",
-                        "color": "cf222e",
-                        "description": "Validated multi-role integration",
-                    },
-                    {
-                        "name": "gate:green",
-                        "color": "1f883d",
-                        "description": "Executable acceptance gate passed",
-                    },
-                ],
-            },
-        )
-        result["labels"] = labels
-    except GatewayError as exc:
-        result["error"] = f"final PR opened but labels failed: {exc}"
-    return result
-
-
-def merge_integration_pr(run: Any) -> dict[str, Any]:
-    """Auto-merge the already-green final PR to the default branch.
-
-    The reviewed head SHA is mandatory. A stale or protected PR fails and remains
-    open for a person; this function never bypasses branch protection.
-    """
-    cfg = _gateway_config()
-    pr = getattr(run, "pr", None) or {}
-    if not cfg:
-        return {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired"}
-    try:
-        default_branch = repository_default_branch(cfg)
-    except GatewayError as exc:
-        return {"error": f"cannot read repository default branch: {exc}"}
-    if pr.get("base") != default_branch:
-        return {
-            "error": "refusing final auto-merge: PR does not target the "
-                     f"default branch {default_branch!r}",
-        }
-    if pr.get("head") != getattr(run, "integration_branch", None):
-        return {"error": "refusing final auto-merge: unexpected PR head branch"}
-    number = pr.get("number")
-    head_sha = str(pr.get("head_sha") or "")
-    if not number or not head_sha:
-        return {"error": "final auto-merge requires a PR number and reviewed head SHA"}
-    owner, repo_name = _repo_parts(cfg)
-    try:
-        response = _tool(
-            cfg, "merge_pull_request",
-            {
-                "owner": owner,
-                "repo": repo_name,
-                "number": number,
-                "merge_method": "squash",
-                "head_sha": head_sha,
-            },
-            timeout=60.0,
-        )
-    except GatewayError as exc:
-        return {"error": f"final PR auto-merge failed: {exc}"}
-    if not isinstance(response, dict) or not response.get("merged"):
-        return {"error": f"final PR auto-merge did not complete: {response!r}"}
     return {"merged": True, "sha": response.get("sha", "")}
 
 

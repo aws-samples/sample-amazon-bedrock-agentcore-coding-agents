@@ -136,12 +136,6 @@ export interface WorkItem {
   dependency_refreshes?: number;
 }
 
-export interface IntegrationCandidate {
-  files?: string[];
-  owners?: Record<string, string[]>;
-  digest?: string;
-}
-
 export interface GateRecord {
   sequence: number;
   stage: string;
@@ -162,12 +156,13 @@ export interface ReviewPanelEntry {
   note?: string;
 }
 
-export interface MergeQueueEntry {
-  position: number;
+// One row per role pull request: its own check, review, and merge outcome. Each is
+// independent, so there is no position and nothing waits in line.
+export interface RolePrEntry {
   work_id: string;
   agent: string;
   role: string;
-  pr_url?: string;
+  pr_url?: string | null;
   state: string;
   sha?: string;
   error?: string;
@@ -190,15 +185,8 @@ export interface RunDetail extends RunSummary {
   work_items?: Record<string, WorkItem>;
   integration_brief?: IntegrationBrief | null;
   integration_base?: Record<string, unknown> | null;
-  integration_candidate?: IntegrationCandidate | null;
-  integration_conflicts?: Array<{
-    path?: string;
-    first_work_id?: string;
-    second_work_id?: string;
-    reason?: string;
-  }>;
-  integration_branch?: string | null;
-  merge_queue?: MergeQueueEntry[];
+  final_base_branch?: string | null;
+  role_prs?: RolePrEntry[];
   gate_history?: GateRecord[];
   gate?: { passed: boolean; summary?: string; checks?: GateRecord['checks'] } | null;
   review?: {
@@ -279,10 +267,8 @@ export interface RunResult {
   route?: RunRoute | null;
   work_items?: Record<string, WorkItem>;
   integration_brief?: IntegrationBrief | null;
-  integration_candidate?: IntegrationCandidate | null;
-  integration_conflicts?: RunDetail['integration_conflicts'];
-  integration_branch?: string | null;
-  merge_queue?: MergeQueueEntry[];
+  final_base_branch?: string | null;
+  role_prs?: RolePrEntry[];
   gate_history?: GateRecord[];
   next_action?: string;
   resubmission_allowed?: boolean;
@@ -448,7 +434,7 @@ export const listSuggestions = () =>
 
 /* ---------------- Module 2: GitHub connection ---------------- */
 
-export type FinalMergePolicy = 'human_review' | 'auto';
+export type MergePolicy = 'human_review' | 'auto';
 
 // The GitHub connection is a GitHub App installation held inside the GitHub MCP
 // Gateway (never a PAT). Status reports the GATEWAY health, not a token: the
@@ -465,7 +451,7 @@ export interface GithubStatus {
   default_branch?: string;
   tool_count?: number;
   workshop_repo?: string;
-  final_merge_policy?: FinalMergePolicy;
+  merge_policy?: MergePolicy;
   hint?: string;
   error?: string;
 }
@@ -479,14 +465,14 @@ export const getGithubStatus = () =>
 export const saveGithubCredential = (params: {
   repo: string;
   gateway_url?: string;
-  final_merge_policy?: FinalMergePolicy;
+  merge_policy?: MergePolicy;
 }) => post<GithubStatus>('/api/orchestrator/github', params);
 
 export const clearGithubCredential = () =>
   post<GithubStatus>('/api/orchestrator/github', { clear: true });
 
-export const setFinalMergePolicy = (final_merge_policy: FinalMergePolicy) =>
-  post<GithubStatus>('/api/orchestrator/github', { final_merge_policy });
+export const setMergePolicy = (merge_policy: MergePolicy) =>
+  post<GithubStatus>('/api/orchestrator/github', { merge_policy });
 
 /* ---------------- Kiro API key (AgentCore Identity Token Vault) ---------------- */
 

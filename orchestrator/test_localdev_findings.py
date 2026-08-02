@@ -69,13 +69,21 @@ def test_a_passing_run_that_opened_a_pr_says_where_to_look():
     assert "pull request" in action.lower()
 
 
-def test_a_passing_offline_queue_explains_how_to_create_real_prs():
-    """A fixture pass must not imply that GitHub received role or final PRs."""
+def test_a_passing_offline_run_explains_how_to_create_real_prs():
+    """A fixture pass must not imply that GitHub received any pull request.
+
+    Nothing about the offline path names a queue any more (each role pull request is
+    checked and merged on its own), but the thing this always proved still holds: a
+    run that passed with no gateway wired has produced NO pull request, and the advice
+    has to say what to do about that rather than reading as a success with a PR behind
+    it.
+    """
     pr = {"error": "PR_NO_GATEWAY: no GitHub MCP Gateway wired. Deploy the gateway..."}
     action = engine.next_action("passed", None, pr, None)
     assert "Gateway" in action, action
     assert "submit a new run" in action, action
-    assert "role and final pull requests" in action, action
+    assert "pull requests" in action, action
+    assert "without a GitHub side effect" in action, action
 
     run = engine.Run(run_id="run_000000_701", task="t", agents=[], roles={})
     run.status = "passed"

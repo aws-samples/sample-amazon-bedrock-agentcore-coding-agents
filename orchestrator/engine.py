@@ -160,6 +160,11 @@ MAX_ITERATIONS = 1 + reviewer.MAX_REVIEW_ROUNDS
 # merges. Keeping the budgets separate prevents either loop from multiplying.
 MAX_DEPENDENCY_REFRESHES = 1
 
+# The offline test double has no GitHub, so it names its own base branch rather than
+# leaving one blank: merge_work_item refuses a PR whose base is not the pinned
+# branch, and an empty string would make that guard vacuous in tests.
+_FIXTURE_BASE_BRANCH = "main"
+
 # Per-role CLI hard timeout (a single coding-agent CLI dispatch inside its deployed
 # Runtime). AGENT_EXECUTION_TIMEOUT_S (below) is the outer net; this kills one
 # wedged CLI tree.
@@ -562,14 +567,14 @@ class Run:
     work_items: dict[str, _work_items.WorkItem] = field(default_factory=dict)
     integration_brief: dict | None = None
     integration_base: dict | None = None
-    integration_candidate: dict | None = None
-    integration_conflicts: list[dict] = field(default_factory=list)
-    integration_branch: str | None = None
-    # Read once from GitHub when the run-private integration branch is created.
-    # The final PR must target this same repository default branch; the workflow
-    # never changes the repository setting.
+    # Read ONCE from GitHub before any agent work. Every role pull request targets
+    # this branch and merges into it on its own, so it is load-bearing for every
+    # merge rather than for one final PR; the workflow never changes the setting.
     final_base_branch: str | None = None
-    merge_queue: list[dict] = field(default_factory=list)
+    # One row per role pull request: its own check result, review verdict, and merge
+    # state. This replaces the single combined gate plus the merge queue -- there is
+    # no assembled candidate to have one verdict about.
+    role_prs: list[dict] = field(default_factory=list)
     gate_history: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     gate: dict | None = None
@@ -609,7 +614,13 @@ class Run:
     _integration_brief_md: str = ""
     _active_builders: set[str] | None = field(default=None, repr=False)
     _refresh_context: str = ""
-    _reviewed_candidate_digest: str | None = None
+    # work_id -> the authored check path for THAT pull request. One check per pull
+    # request, so this replaces the single _acceptance_test_file on the verdict path
+    # (which is kept for the read-only review route and the compose commit).
+    _item_checks: dict[str, str] = field(default_factory=dict)
+    # work_id -> the patch digest that was last REVIEWED. A changed pull request is
+    # reviewed again; a byte-identical one is not.
+    _reviewed_digests: dict[str, str] = field(default_factory=dict)
     # Which executor drives this run ("agentcore" shipped | "fixture" test). It
     # decides WHERE a role's coding-agent CLI runs, and therefore what belongs in
     # the per-agent terminal: on the shipped path the agent's terminal is its REAL
@@ -637,14 +648,17 @@ class Run:
         """The run-local common Git metadata shared by its isolated worktrees."""
         return os.path.join(self.workdir, "git", "repo.git")
 
-    @property
-    def candidate_dir(self) -> str:
-        """The exact merged tree the independent validator inspects and checks."""
-        return os.path.join(self.workdir, "integration-candidate")
+    def item_tree_dir(self, work_id: str) -> str:
+        """The exact tree merging ONE pull request would produce.
+
+        Keyed on the work id because each pull request is checked on its own, so a
+        run holds one of these per role rather than a single assembled candidate.
+        """
+        return os.path.join(self.workdir, "pr", work_id)
 
     @property
     def integration_base_dir(self) -> str:
-        """Latest private integration-branch snapshot used by the merge queue."""
+        """The repository default branch snapshot every pull request is built on."""
         return os.path.join(self.workdir, "integration-base")
 
     def item_base_dir(self, agent: str) -> str:
@@ -853,11 +867,8 @@ class Engine:
             },
             "integration_brief": dict(run.integration_brief or {}),
             "integration_base": dict(run.integration_base or {}),
-            "integration_candidate": dict(run.integration_candidate or {}),
-            "integration_conflicts": list(run.integration_conflicts),
-            "integration_branch": run.integration_branch,
             "final_base_branch": run.final_base_branch,
-            "merge_queue": list(run.merge_queue),
+            "role_prs": list(run.role_prs),
             "gate_history": list(run.gate_history),
             "events": (run.events or [])[-_PERSIST_LOG_TAIL:],
         }
@@ -887,62 +898,16 @@ class Engine:
             for phase_fn in (self._admission, self._hydrate, self._preflight):
                 if not phase_fn(run):
                     return  # fail-closed: phase set status/reason already
-            # Bounded iteration around the agentic step + the review (~2 rounds).
-            while True:
-                run.iterations += 1
-                begin_next_round = False
-                while not self._execute(run):
-                    if run.fail_reason != "INTEGRATION_CONFLICT":
-                        return
-                    targets = self._integration_conflict_repair_agents(run)
-                    starts_repair_round = run.iterations < MAX_ITERATIONS
-                    can_reconcile_in_round = (
-                        run.iterations == MAX_ITERATIONS
-                        and all(
-                            run.work_items[agent].attempt < MAX_ITERATIONS
-                            for agent in targets
-                        )
-                    )
-                    if not starts_repair_round and not can_reconcile_in_round:
-                        return
-
-                    reasons = [
-                        f"{c.get('path')}: {c.get('reason')}"
-                        for c in run.integration_conflicts
-                    ]
-                    run.retry_reasons.append({
-                        "round": run.iterations,
-                        "stage": "integration conflict",
-                        "gate_summary": "integration candidate could not merge",
-                        "reasons": reasons,
-                    })
-                    run.status = "running"
-                    run.fail_reason = None
-                    run._active_builders = (
-                        self._prepare_integration_conflict_repair(run))
-                    run.retry_reasons[-1]["responsible_agents"] = sorted(
-                        run._active_builders)
-                    boundary = (
-                        "one bounded repair turn"
-                        if starts_repair_round
-                        else "one reconciliation turn in the current repair round"
-                    )
-                    run.log(
-                        "integration conflict -> the later owner receives the "
-                        f"earlier patch and gets {boundary}: "
-                        + ", ".join(sorted(run._active_builders)),
-                        "warn",
-                    )
-                    if starts_repair_round:
-                        begin_next_round = True
-                        break
-                    # A gate-directed repair can make a previously clean later
-                    # work item stale. Reconcile that owner in the SAME bounded
-                    # round rather than spending an unbounded third review cycle.
-                if begin_next_round:
-                    continue
-                if self._finalize(run):
-                    return  # terminal (passed, failed, or needs_human)
+            # ONE agentic step, then per-pull-request finalization. There is no
+            # whole-run round any more: each pull request carries its own bound
+            # (``item.attempt``) inside ``_finalize``, so a repair for one role can
+            # never restart the others' work. That is what makes the bound hold at
+            # every layer instead of only in the engine.
+            run.iterations += 1
+            if not self._execute(run):
+                return  # fail-closed: the phase set status/reason already
+            self._finalize(run)
+            return  # terminal (passed, failed, or needs_human)
         except Exception as exc:  # the engine guarantee: never strand a run
             run.status, run.fail_reason = "failed", f"ENGINE_ERROR: {exc}"
             run.log(f"engine error: {exc}", "error")
@@ -1029,7 +994,6 @@ class Engine:
                 registered.capability,
                 kind=registered.kind,
             )
-        run.integration_branch = _work_items.integration_branch(run.run_id)
         # Recompute the active count from the source of truth (no drifting counter).
         active = self.active_count(exclude=run.run_id)
         if active >= self.max_concurrent:
@@ -1121,26 +1085,32 @@ class Engine:
                 run.log(f"pre-flight failed fast: {reason}", "error")
                 return False
         if not (run.route and run.route.get("read_only")):
-            if not self._prepare_integration_base(run):
+            if not self._prepare_run_base(run):
                 return False
         run.log("pre-flight green: every routed role has steering and a wired runtime")
         return True
 
-    def _prepare_integration_base(self, run: Run) -> bool:
-        """Create the private run branch and seed every isolated builder checkout."""
+    def _prepare_run_base(self, run: Run) -> bool:
+        """Read the repository default branch and seed every builder checkout.
+
+        Every role pull request is based on this one branch and merges into it on
+        its own, so there is no run-scoped branch to create. Reading it here, before
+        any agent work, is also what makes a missing Gateway fail in seconds instead
+        of after a ten-minute build.
+        """
         os.makedirs(run.workdir, exist_ok=True)
         if self.executor.name == "fixture":
             shutil.rmtree(run.integration_base_dir, ignore_errors=True)
             os.makedirs(run.integration_base_dir, exist_ok=True)
             run.integration_base = {
                 "mode": "fixture",
-                "branch": run.integration_branch,
+                "branch": _FIXTURE_BASE_BRANCH,
                 "sha": "fixture-empty-base",
                 "files": 0,
             }
+            run.final_base_branch = _FIXTURE_BASE_BRANCH
         elif self.executor.name == "agentcore":
-            snapshot = github.prepare_run_integration(
-                run.integration_branch or "", run.integration_base_dir)
+            snapshot = github.prepare_run_base(run.integration_base_dir)
             if snapshot.get("error"):
                 run.status = "failed"
                 run.fail_reason = (
@@ -1156,6 +1126,12 @@ class Engine:
         else:
             run.status, run.fail_reason = "failed", _NO_PRODUCER_ERROR
             return False
+
+        # One base for every pull request, assigned from the branch just read rather
+        # than derived per item, so a mid-run default-branch change stays detectable
+        # at merge time instead of silently retargeting a PR.
+        for item in run.work_items.values():
+            item.base_branch = run.final_base_branch or ""
 
         coordination = os.path.join(run.integration_base_dir, ".workshop")
         os.makedirs(coordination, exist_ok=True)
@@ -1192,7 +1168,7 @@ class Engine:
             self._stage_builder_checkouts(run, builders)
         run._active_builders = {item.agent for item in builders}
         run.log(
-            f"integration base ready on {run.integration_branch}: "
+            f"base ready on {run.final_base_branch}: "
             f"{(run.integration_base or {}).get('files', 0)} file(s); "
             f"{len(builders)} isolated Git worktree(s) seeded")
         return True
@@ -1392,14 +1368,6 @@ class Engine:
                 feedback = ("\n\nPrevious round's review REQUESTED CHANGES on the "
                             "pull request. Address each point:\n"
                             + "\n".join(f"- {d}" for d in failed))
-        if run.iterations > 1 and run.integration_conflicts:
-            feedback += (
-                "\n\nThe integration queue rejected overlapping changes. Resolve "
-                "these paths within your own checkout without discarding the other "
-                "role's responsibility:\n"
-                + "\n".join(
-                    f"- {c.get('path')}: {c.get('reason')}"
-                    for c in run.integration_conflicts))
         if run._refresh_context:
             feedback += "\n\n" + run._refresh_context
         # The dispatched role, not a fixed id: role.agent is whichever role the
@@ -1490,14 +1458,6 @@ class Engine:
                 "the shared brief; do not invent a service unless that assignment "
                 "requires one.\n")
         conflict_feedback = ""
-        if run.iterations > 1 and run.integration_conflicts:
-            conflict_feedback = (
-                "\n\nThe integration queue rejected overlapping changes. Resolve "
-                "these paths within your own checkout without discarding the other "
-                "role's responsibility:\n"
-                + "\n".join(
-                    f"- {c.get('path')}: {c.get('reason')}"
-                    for c in run.integration_conflicts))
         if run._refresh_context:
             conflict_feedback += "\n\n" + run._refresh_context
         prompt = (
@@ -1832,44 +1792,40 @@ class Engine:
                 f"{item.role}: role PR ready {result.get('pr_url')} "
                 f"({item.work_id})")
 
-    def _assemble_integration_candidate(self, run: Run) -> None:
-        """Build the exact tree the checker will inspect from isolated role work.
+    def _build_item_tree(self, run: Run, item: _work_items.WorkItem) -> str:
+        """Materialise the tree merging ONE pull request would produce.
 
-        This is a merge operation, not a verdict. Disjoint paths combine, identical
-        shared paths coalesce, and different bytes at one path fail as an explicit
-        integration conflict. No timestamp or roster order chooses a winner.
+        Not a verdict and not a merge of several roles: the base is the repository
+        default branch AS IT STANDS, plus this one role's patch. Building it against
+        the current base is what keeps a cross-role defect catchable -- once a
+        sibling's pull request has merged, this tree contains it, so the check and
+        the review see both sides of the seam.
+
+        A path the base changed since this role received it raises ``StalePatch``.
+        That is the ordinary "someone merged before you" case, and the owner gets one
+        bounded refresh rather than the engine silently overwriting merged work.
         """
-        builders = [
-            item for item in run.work_items.values()
-            if item.kind == roles.BUILDER
-        ]
-        ordered = _work_items.dependency_order(builders)
         try:
-            candidate = _work_items.assemble_candidate(
+            digest = _work_items.apply_patch(
                 run.integration_base_dir,
-                [
-                    (item, run.item_base_dir(item.agent),
-                     run.roledir(item.agent))
-                    for item in ordered
-                    if item.merge_state != "merged"
-                ],
-                run.candidate_dir,
+                item,
+                run.item_base_dir(item.agent),
+                run.roledir(item.agent),
+                run.item_tree_dir(item.work_id),
                 exclude=_work_patch_excluded,
             )
-        except _work_items.IntegrationConflict as exc:
-            run.integration_candidate = None
-            run.integration_conflicts = list(exc.conflicts)
+        except _work_items.StalePatch as exc:
+            item.stale = True
             run.log(
-                "integration candidate rejected: "
+                f"{item.work_id}: base moved under this pull request: "
                 + ", ".join(c["path"] for c in exc.conflicts[:8]),
                 "warn",
             )
             raise
-        run.integration_conflicts = []
-        run.integration_candidate = candidate.public()
-        run.log(
-            f"integration candidate assembled from {len(ordered)} isolated "
-            f"checkout(s): {len(candidate.files)} file(s)")
+        item.stale = False
+        run.log(f"{item.work_id}: pull request tree built on "
+                f"{run.final_base_branch} ({len(item.changed_files)} file(s))")
+        return digest
 
     def _stage_refreshed_work_item(
         self,
@@ -1911,116 +1867,19 @@ class Engine:
         )
         return staged
 
-    def _integration_conflict_repair_agents(self, run: Run) -> set[str]:
-        """Return the later merge-order owner for every current conflict."""
-        ordered = self._builder_items(run)
-        by_id = {item.work_id: item for item in ordered}
-        position = {
-            item.work_id: index for index, item in enumerate(ordered)
-        }
-        target_ids: set[str] = set()
-        for conflict in run.integration_conflicts:
-            participants = [
-                work_id
-                for work_id in (
-                    conflict.get("first_work_id"),
-                    conflict.get("second_work_id"),
-                )
-                if work_id in position
-            ]
-            if participants:
-                target_ids.add(max(participants, key=position.__getitem__))
-        if not target_ids:
-            raise RuntimeError(
-                "INTEGRATION_CONFLICT_OWNER_UNKNOWN: no conflicting work id "
-                "belongs to this run")
-        return {by_id[work_id].agent for work_id in target_ids}
+    def _prepare_checker_checkout(self, run: Run, agent_id: str,
+                                  subject: _work_items.WorkItem) -> None:
+        """Give the checker its own worktree at ONE pull request's tree.
 
-    def _prepare_integration_conflict_repair(self, run: Run) -> set[str]:
-        """Give each later conflicting owner the earlier owners' actual patches.
-
-        Builders still start independently. Once that honest parallel attempt
-        exposes a shared-file conflict, rerunning both against the same old base
-        cannot resolve it: neither role can see the bytes it must preserve. The
-        merge order already names the human-style dependency. Build a provisional
-        base from the non-conflicting predecessors, carry the later owner's clean
-        changes forward, and leave both versions of conflicting paths as evidence
-        for that owner to reconcile. The provisional tree is context, never a
-        verdict; the independent validator still authors and runs the only gate.
+        Called once per role pull request. ``reset_worktree`` wipes everything but
+        ``.git``, so nothing from the previous pull request's check can leak into the
+        next one -- each check is authored beside, and only beside, the work it
+        grades.
         """
-        ordered = self._builder_items(run)
-        position = {
-            item.work_id: index for index, item in enumerate(ordered)
-        }
-        target_agents = self._integration_conflict_repair_agents(run)
-
-        staged_rows: list[str] = []
-        active: set[str] = set()
-        for item in ordered:
-            if item.agent not in target_agents:
-                continue
-            preceding = ordered[:position[item.work_id]]
-            if not preceding:
-                raise RuntimeError(
-                    f"INTEGRATION_CONFLICT_ORDER_INVALID:{item.work_id}")
-
-            provisional = os.path.join(
-                run.workdir, f"conflict-base-{item.work_id}")
-            _work_items.assemble_candidate(
-                run.integration_base_dir,
-                [
-                    (
-                        predecessor,
-                        run.item_base_dir(predecessor.agent),
-                        run.roledir(predecessor.agent),
-                    )
-                    for predecessor in preceding
-                    if predecessor.merge_state != "merged"
-                ],
-                provisional,
-                exclude=_work_patch_excluded,
-            )
-            self._write_integration_brief(run, provisional)
-
-            seed = os.path.join(
-                run.workdir, f"conflict-refresh-{item.work_id}")
-            conflicts = _work_items.prepare_refresh_checkout(
-                item,
-                run.item_base_dir(item.agent),
-                run.roledir(item.agent),
-                provisional,
-                seed,
-                exclude=_work_patch_excluded,
-            )
-            self._write_integration_brief(run, seed)
-
-            item_base = run.item_base_dir(item.agent)
-            shutil.rmtree(item_base, ignore_errors=True)
-            shutil.copytree(provisional, item_base)
-            item.base_digest = _work_items.tree_digest(
-                item_base, exclude=_work_patch_excluded)
-            staged = self._stage_refreshed_work_item(run, item, seed)
-            staged_rows.append(
-                f"{item.work_id}: {staged} files, "
-                f"{len(conflicts)} shared-path conflict(s)")
-            active.add(item.agent)
-
-        run._refresh_context = (
-            "INTEGRATION CONFLICT REPAIR: your checkout now contains every "
-            "earlier role's actual patch plus your prior non-conflicting work. "
-            "Inspect that implementation and reconcile the listed shared paths. "
-            "Your previous versions are under `.workshop/prior-work`; preserve "
-            "both roles' assigned outcomes, then update this same work item and "
-            "pull request. Do not restart the project from the old base."
-        )
-        run.log("conflict repair checkouts staged: " + "; ".join(staged_rows))
-        return active
-
-    def _prepare_checker_checkout(self, run: Run, agent_id: str) -> None:
-        """Give the checker its own worktree at the immutable candidate."""
         import runtime_stage  # noqa: PLC0415
 
         item = run.work_items[agent_id]
+        tree = run.item_tree_dir(subject.work_id)
         dest = run.roledir(agent_id)
         if not os.path.isfile(os.path.join(dest, ".git")):
             _work_items.add_worktree(
@@ -2031,22 +1890,22 @@ class Engine:
         _work_items.reset_worktree(
             run.worktree_repo_dir,
             dest,
-            run.candidate_dir,
-            f"Candidate baseline for {item.work_id}",
+            tree,
+            f"Pull request baseline for {subject.work_id}",
         )
         if self.executor.name == "fixture":
             return
         if self.executor.name != "agentcore":
             raise RuntimeError(_NO_PRODUCER_ERROR)
 
-        staged = runtime_stage.stage_candidate(run.run_id, run.candidate_dir)
-        run.log(f"integration candidate staged for Runtime validation "
-                f"({staged} files)")
+        staged = runtime_stage.stage_item(run.run_id, subject.work_id, tree)
+        run.log(f"{subject.work_id}: pull request tree staged for Runtime "
+                f"validation ({staged} files)")
         dest_subdir = run.runtime_subdir(agent_id)
         if os.environ.get("WORKSHOP_S3FILES_DIR"):
             dest = os.path.join(runtime_stage.mnt_root(), dest_subdir)
             runtime_stage.copy_tree_files(
-                runtime_stage.candidate_path(run.run_id), dest)
+                runtime_stage.item_path(run.run_id, subject.work_id), dest)
             return
 
         import runtime_config  # noqa: PLC0415
@@ -2056,13 +1915,14 @@ class Engine:
             raise RuntimeError(f"RUNTIME_NOT_WIRED:{agent_id}")
         runtime_exec.clone_runtime_tree(
             hit[0],
-            runtime_stage.candidate_subdir(run.run_id),
+            runtime_stage.item_subdir(run.run_id, subject.work_id),
             dest_subdir,
         )
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
-                                    role: RoleResult) -> str:
-        """The validator role AUTHORS the acceptance check for THIS deliverable, and
+                                    role: RoleResult,
+                                    subject: _work_items.WorkItem) -> str:
+        """The validator role AUTHORS the acceptance check for ONE PULL REQUEST, and
         the engine reads that file back to run it.
 
         This is the whole of validation: agentic, per task, decided by the checker.
@@ -2094,9 +1954,9 @@ class Engine:
                               "already correct.")
         if run._refresh_context:
             feedback += (
-                "\n\nThe integration branch advanced during the merge queue. "
-                "Inspect the refreshed candidate as it exists now; do not assume "
-                "the prior check is still correct.")
+                "\n\nThe base branch advanced because another pull request merged. "
+                "Inspect this checkout as it exists now; do not assume the prior "
+                "check is still correct.")
         live = (f"The deliverable is running at {endpoint} .\n"
                 if endpoint else
                 "The deliverable does not expose a running service this round.\n")
@@ -2109,6 +1969,12 @@ class Engine:
             "checker in a maker-checker pair. Read CLAUDE.md in this directory for "
             "your role.\n\n"
             f"THE REQUEST the other roles were given: {run.task}\n\n"
+            f"YOU ARE CHECKING ONE PULL REQUEST: {subject.work_id} "
+            f"({subject.role}), which merges into {run.final_base_branch!r}. This "
+            "checkout is exactly what merging it would produce: the base branch as "
+            "it stands now, plus that pull request's changes. If another role's "
+            "pull request has already merged, its code is HERE and this pull request "
+            "must work with it.\n\n"
             + live +
             "TEAM INTEGRATION CONTEXT (recorded facts, not an answer key):\n"
             f"{json.dumps(integration_context, indent=2)}\n\n"
@@ -2121,16 +1987,16 @@ class Engine:
             "YOU decide what 'acceptable' means for this request. Nobody has given "
             "you a checklist, a contract, or a list of required checks, because only "
             "you have seen this particular task. Read the request, inspect the "
-            "integration candidate cloned into this checkout, and encode the checks "
+            "pull request tree cloned into this checkout, and encode the checks "
             "that would "
             "convince a skeptical engineer that the request was met. Prefer evidence "
             "over assumption: probe the running deliverable over the wire where it "
             "can prove something, and inspect the files where it cannot. This is a "
-            "team integration gate: verify one coherent product uses the routed "
-            "builders' assigned contributions through the shared seams. Reject "
-            "disconnected duplicate stacks, dead alternative implementations, or "
-            "one builder replacing a sibling's ownership merely because that path "
-            "happens to run. Do not demand a particular framework, path, or file "
+            "gate on ONE pull request: verify that what it contributes works, and "
+            "works with whatever is already on the base branch. Reject disconnected "
+            "duplicate stacks, dead alternative implementations, or this role "
+            "replacing a sibling's ownership merely because that path happens to "
+            "run. Do not demand a particular framework, path, or file "
             "count; judge the actual request, ownership, and behavior. When the "
             "request names a standard command, protocol, or library as its source "
             "of semantics, use an independent implementation as the runtime oracle "
@@ -2174,17 +2040,26 @@ class Engine:
         test_path = os.path.join(run.roledir(_validator_agent()), _ACCEPTANCE_CHECK)
         self._read_artifact(test_path, _ACCEPTANCE_CHECK, result)
         run.term(_validator_agent(), f"head -1 {_ACCEPTANCE_CHECK} && wc -l {_ACCEPTANCE_CHECK}")
-        return self._gate_dir_check_path(run, test_path)
+        return self._gate_dir_check_path(run, test_path, subject)
 
-    def _gate_dir_check_path(self, run: Run, authored: str) -> str:
-        """Run the authored check beside the exact candidate it inspected.
+    def _gate_dir_check_path(self, run: Run, authored: str,
+                             subject: _work_items.WorkItem) -> str:
+        """Run the authored check beside the exact pull request tree it inspected.
 
-        Builders no longer share a writable tree. The validator received a clone of
-        ``run.candidate_dir`` and wrote its check there, so the host gate reconstructs
-        that same shape: candidate files plus the authored executable. It never
-        re-merges role directories on the verdict path.
+        Builders never share a writable tree. The validator received a clone of ONE
+        pull request's tree and wrote its check there, so the host gate reconstructs
+        that same shape: that tree's files plus the authored executable. It never
+        merges role directories on the verdict path.
         """
-        gate_dir = os.path.join(run.workdir, "gate")
+        gate_dir = os.path.join(run.workdir, "gate", subject.work_id)
+        # Read the authored check BEFORE the rebuild below, because this same gate
+        # directory is where the previous staging left it: the validator's own
+        # worktree is reset for the next pull request, so the staged copy is the
+        # surviving one, and finalization re-stages from it. Deleting the directory
+        # first would delete the check it is about to run.
+        name = os.path.basename(authored)
+        with open(authored, "rb") as handle:
+            check_bytes = handle.read()
         # REBUILD it, never add to it. A re-implement round runs this again, and a
         # leftover from the previous round is a file the new check never saw: it
         # could satisfy a check the fixed deliverable no longer satisfies, which
@@ -2192,13 +2067,15 @@ class Engine:
         # `issues.db` (created when the check STARTED the service) sitting here for
         # round 2.
         shutil.rmtree(gate_dir, ignore_errors=True)
-        if not os.path.isdir(run.candidate_dir):
+        tree = run.item_tree_dir(subject.work_id)
+        if not os.path.isdir(tree):
             raise RuntimeError(
-                "INTEGRATION_CANDIDATE_MISSING: validator authored a check but the "
-                "candidate tree is unavailable")
-        shutil.copytree(run.candidate_dir, gate_dir)
-        staged = os.path.join(gate_dir, os.path.basename(authored))
-        shutil.copy2(authored, staged)
+                f"WORK_TREE_MISSING:{subject.work_id}: validator authored a check "
+                "but that pull request's tree is unavailable")
+        shutil.copytree(tree, gate_dir)
+        staged = os.path.join(gate_dir, name)
+        with open(staged, "wb") as handle:
+            handle.write(check_bytes)
         os.chmod(staged, os.stat(staged).st_mode | 0o755)
         run.log(f"gate workspace assembled at {gate_dir} "
                 f"({sum(len(f) for _, _, f in os.walk(gate_dir))} files, the check beside the work)")
@@ -2336,35 +2213,48 @@ class Engine:
                     "decides whether they answer the request")
 
         def validator(role: RoleResult) -> None:
-            # Builders worked in isolated checkouts. Assemble their changes before
-            # the checker sees them, then clone that immutable candidate into the
-            # checker's own writable work id. A merge conflict is structural and
-            # fails loud; the validator never grades a winner the engine guessed.
+            # ONE authored check PER PULL REQUEST. The checker is a single registered
+            # role serving the whole run, so it loops the builders' pull requests
+            # here rather than grading one assembled tree: per item, build that pull
+            # request's tree on the current default branch, reset the checker's own
+            # worktree to it, and author a check for THAT pull request.
+            #
+            # Scheduling cost, stated rather than hidden: this node does not start
+            # until every routed builder has finished (the graph's
+            # ``all_builders_done`` edge), so the first pull request's check waits for
+            # the slowest builder. That is SCHEDULING coupling, not verdict coupling.
+            # No tree is shared, no order is imposed on the verdicts, and a red pull
+            # request never blocks a green sibling from merging.
             self._publish_active_work_items(run)
-            self._assemble_integration_candidate(run)
-            self._prepare_checker_checkout(run, role.agent)
             install_harness(role.agent)
-            # The checker in the maker-checker pair. It AUTHORS the acceptance check
-            # for this deliverable; the engine executes that file in finalization and
-            # reads its real exit code. The engine starts nothing itself: if the work
-            # is a service, the authored check stands it up, because only the check
-            # knows what running means for THIS deliverable. That is why no protocol,
-            # port, or language appears anywhere on this path.
-            # No wait here: the graph does not start this node until every routed
-            # builder has finished (edge condition ``all_builders_done``), so by the
-            # time this runs the tree it grades is complete.
-            if self.executor.name == "agentcore":
-                run._acceptance_test_file = self._cli_validator_authors_test(
-                    run, endpoint.get("url", ""), role)
-            elif self.executor.name == "fixture":
-                authored = self.executor.produce(run, role.agent, role)
-                run._acceptance_test_file = self._gate_dir_check_path(
-                    run, authored)
-            else:
-                raise RuntimeError(_NO_PRODUCER_ERROR)
-            role.note = "authored the acceptance check for this deliverable"
-            run.log("validator: authored the acceptance check; its real exit code is "
-                    "the gate")
+            run._item_checks = {}
+            for item in self._builder_items(run, pending_only=True):
+                self._build_item_tree(run, item)
+                self._prepare_checker_checkout(run, role.agent, item)
+                # The checker in the maker-checker pair. It AUTHORS the acceptance
+                # check for this pull request; the engine executes that file in
+                # finalization and reads its real exit code. The engine starts
+                # nothing itself: if the work is a service, the authored check stands
+                # it up, because only the check knows what running means for THIS
+                # deliverable. That is why no protocol, port, or language appears
+                # anywhere on this path.
+                if self.executor.name == "agentcore":
+                    authored = self._cli_validator_authors_test(
+                        run, endpoint.get("url", ""), role, item)
+                elif self.executor.name == "fixture":
+                    produced = self.executor.produce(run, role.agent, role)
+                    authored = self._gate_dir_check_path(run, produced, item)
+                else:
+                    raise RuntimeError(_NO_PRODUCER_ERROR)
+                run._item_checks[item.work_id] = authored
+                # Kept for the read-only review route and the compose commit, which
+                # ship the last authored check beside the work it graded.
+                run._acceptance_test_file = authored
+                run.log(f"validator: authored the acceptance check for "
+                        f"{item.work_id}; its real exit code is that pull "
+                        "request's gate")
+            role.note = (f"authored one acceptance check per pull request "
+                         f"({len(run._item_checks)})")
 
         def frontend(role: RoleResult) -> None:
             # The backend role dispatches its CLI into a deployed Runtime, which can
@@ -2579,7 +2469,7 @@ class Engine:
         run._acceptance_test_file = getattr(target, "_acceptance_test_file", None)
         run.composed_branch = target.composed_branch
         # The check inspects the TARGET's work, not this review run's empty workdir.
-        run._review_work_dir = target.candidate_dir
+        run._review_work_dir = self._composed_source_dir(target)
         # A review of offline-double work is itself a review of a stub; carry the mark
         # so the integrated review abstains rather than judging something that implements
         # nothing. Never set on a real dispatch.
@@ -2624,13 +2514,16 @@ class Engine:
             return [item for item in items if item.merge_state != "merged"]
         return items
 
-    def _record_gate(self, run: Run, gate: dict, stage: str) -> None:
+    def _record_gate(self, run: Run, gate: dict, stage: str,
+                     item: _work_items.WorkItem | None = None) -> None:
+        """Record one executable result, attributed to the pull request it judged."""
         run.gate = gate
-        digest = str((run.integration_candidate or {}).get("digest") or "")
         row = {
             "sequence": len(run.gate_history) + 1,
             "stage": stage,
-            "candidate_digest": digest,
+            "work_id": item.work_id if item is not None else "",
+            "agent": item.agent if item is not None else "",
+            "patch_digest": str(getattr(item, "patch_digest", "") or ""),
             "passed": bool(gate.get("passed")),
             "summary": gate.get("summary") or "",
             "checks": list(gate.get("checks") or []),
@@ -2641,63 +2534,71 @@ class Engine:
             f"{'green' if row['passed'] else 'RED'} "
             f"({row['summary']})")
 
-    def _comment_work_items(
-        self,
-        run: Run,
-        items: list[_work_items.WorkItem],
-        body: str,
-    ) -> None:
+    def _comment_work_item(self, run: Run, item: _work_items.WorkItem,
+                           body: str) -> None:
+        """Post this pull request's own evidence on its own timeline.
+
+        One pull request, one comment: an attendee reading a pull request sees the
+        check and the review for THAT change, not a run-wide digest that mentions
+        work they cannot see in the diff.
+        """
         if self.executor.name == "fixture":
             return
-        for item in items:
-            posted = github.comment_on_work_item(item, body)
-            if posted.get("error"):
-                run.log(
-                    f"{item.work_id}: PR evidence comment failed: "
-                    f"{posted['error']}", "warn")
+        posted = github.comment_on_work_item(item, body)
+        if posted.get("error"):
+            run.log(
+                f"{item.work_id}: PR evidence comment failed: "
+                f"{posted['error']}", "warn")
 
-    def _assess_candidate(
+    def _assess_pull_request(
         self,
         run: Run,
+        item: _work_items.WorkItem,
         gate: dict,
         stage: str,
     ) -> bool:
-        """Run the reviewer initially and again only when candidate code changes."""
-        digest = str((run.integration_candidate or {}).get("digest") or "")
-        prior_approved = bool(
-            run.review and run.review.get("state") == "approved")
-        if (gate.get("passed") and prior_approved
-                and digest == run._reviewed_candidate_digest):
+        """Review ONE pull request, and post its check + Assessment on that PR.
+
+        Skipped only when this exact pull request was already approved and its bytes
+        have not changed since: a changed pull request is reviewed again, a
+        byte-identical one is not. The reviewer cannot turn a red gate green (that
+        branch lives in ``reviewer.assess``), and it never edits code.
+        """
+        digest = str(item.patch_digest or "")
+        prior = (item.review_rounds[-1] if item.review_rounds else {})
+        if (gate.get("passed") and prior.get("state") == "approved"
+                and digest and digest == run._reviewed_digests.get(item.work_id)):
             run.log(
-                f"reviewer not rerun at {stage}: candidate {digest[:12]} "
-                "is byte-identical to the last approved candidate")
+                f"{item.work_id}: reviewer not rerun at {stage}: "
+                f"{digest[:12]} is byte-identical to the approved version")
             assessment = (
-                "**Assessment**: unchanged candidate\n\n"
-                "The executable gate was rerun after the merge. The candidate "
-                "digest is unchanged, so the code reviewer was not run again."
+                "**Assessment**: unchanged pull request\n\n"
+                "The executable check was rerun on the current base branch. This "
+                "pull request's bytes are unchanged, so the reviewer was not run "
+                "again."
             )
             approved = True
         else:
-            verdict = reviewer.assess(run, gate, run.iterations)
+            verdict = reviewer.assess(
+                run, gate, run.iterations, subject=item)
             run.review = verdict.public()
-            run._reviewed_candidate_digest = digest
+            item.review_rounds.append(verdict.public())
+            run._reviewed_digests[item.work_id] = digest
             assessment = verdict.assessment
             approved = verdict.lgtm
             if verdict.review_unavailable:
-                run.status = "needs_human"
-                run.fail_reason = "REVIEW_UNAVAILABLE"
                 run.log(
-                    f"required review unavailable for candidate {digest[:12]}; "
-                    "the merge queue is blocked without a builder repair",
+                    f"{item.work_id}: required review unavailable; this pull "
+                    "request is not merged, and no builder is asked to repair a "
+                    "review-service outage",
                     "warn",
                 )
-            run.log(
-                f"integrated review {verdict.state} candidate {digest[:12]} at {stage}")
+                item.merge_state = "review_unavailable"
+            run.log(f"{item.work_id}: review {verdict.state} at {stage}")
 
         body = replay.gate_evidence_comment(
-            run, gate, stage=stage, candidate_digest=digest,
-            assessment=assessment)
-        self._comment_work_items(run, self._builder_items(run), body)
+            run, gate, stage=stage, item=item, assessment=assessment)
+        self._comment_work_item(run, item, body)
         return approved
 
     def _route_repair(
@@ -2718,7 +2619,6 @@ class Engine:
                 "stage": stage,
                 "gate": gate,
                 "review": run.review or {},
-                "integration_conflicts": run.integration_conflicts,
             },
             offline_fixture=(self.executor.name == "fixture"),
         )
@@ -2740,25 +2640,25 @@ class Engine:
             "routing": rationale,
         })
         run._refresh_context = (
-            f"REPAIR ROUND for {stage}. The executable/panel evidence was:\n"
+            f"REPAIR ROUND for {stage}. The executable/review evidence was:\n"
             + "\n".join(f"- {reason}" for reason in reasons[:8])
             + f"\nRouting rationale: {rationale}\n"
-            "Update this existing work item against its current integration base; "
+            "Update this existing pull request against its current base branch; "
             "do not replace another role's ownership."
         )
         targets = [
             item for item in eligible
             if item.agent in run._active_builders
         ] or eligible
-        self._comment_work_items(
-            run,
-            targets,
-            replay.gate_evidence_comment(
-                run, gate, stage=f"{stage}: repair requested",
-                candidate_digest=str(
-                    (run.integration_candidate or {}).get("digest") or ""),
-                assessment=(run.review or {}).get("assessment", "")),
-        )
+        for target in targets:
+            self._comment_work_item(
+                run,
+                target,
+                replay.gate_evidence_comment(
+                    run, gate, stage=f"{stage}: repair requested",
+                    item=target,
+                    assessment=(run.review or {}).get("assessment", "")),
+            )
         run.log(
             f"{stage}: bounded repair routed to "
             f"{', '.join(sorted(run._active_builders)) or 'validator only'} "
@@ -2777,9 +2677,11 @@ class Engine:
         """Fixture-only private-branch merge; exercises queue structure offline."""
         destination = os.path.join(
             run.workdir, f"merged-{item.work_id}")
-        candidate = _work_items.assemble_candidate(
+        digest = _work_items.apply_patch(
             run.integration_base_dir,
-            [(item, run.item_base_dir(item.agent), run.roledir(item.agent))],
+            item,
+            run.item_base_dir(item.agent),
+            run.roledir(item.agent),
             destination,
             exclude=_work_patch_excluded,
         )
@@ -2788,7 +2690,7 @@ class Engine:
         self._write_integration_brief(run, run.integration_base_dir)
         item.merge_state = "merged"
         item.state = "merged"
-        return {"merged": True, "sha": candidate.digest}
+        return {"merged": True, "sha": digest}
 
     def _merge_work_item(
         self, run: Run, item: _work_items.WorkItem
@@ -2797,7 +2699,7 @@ class Engine:
             result = self._merge_work_item_locally(run, item)
             run.integration_base = {
                 "mode": "fixture",
-                "branch": run.integration_branch,
+                "branch": run.final_base_branch,
                 "sha": result["sha"],
                 "files": sum(
                     1
@@ -2814,12 +2716,16 @@ class Engine:
         result = github.merge_work_item(run, item)
         if result.get("error"):
             return result
+        # Re-snapshot the DEFAULT branch right after the merge. This is what makes
+        # the next pull request's check see this one's code: its tree is rebuilt on
+        # the branch as it now stands, so a cross-role seam is exercised for real
+        # rather than reasoned about.
         next_base = run.integration_base_dir + ".next"
         snapshot = github.snapshot_branch(
-            run.integration_branch or "", next_base)
+            run.final_base_branch or "", next_base)
         if snapshot.get("error"):
             return {
-                "error": "role PR merged but integration snapshot failed: "
+                "error": "pull request merged but the base snapshot failed: "
                          + str(snapshot["error"]),
             }
         shutil.rmtree(run.integration_base_dir, ignore_errors=True)
@@ -2883,7 +2789,7 @@ class Engine:
                     item.state = "blocked"
                     item.merge_state = "blocked"
                     raise RuntimeError(
-                        f"MERGE_QUEUE_REFRESH_CAP:{item.work_id}: more than "
+                        f"STALE_PATCH_REFRESH_CAP:{item.work_id}: more than "
                         f"{MAX_DEPENDENCY_REFRESHES} dependency integration "
                         "refresh was requested")
                 allowed_attempts = (
@@ -2894,8 +2800,8 @@ class Engine:
                     item.state = "blocked"
                     item.merge_state = "blocked"
                     raise RuntimeError(
-                        f"MERGE_QUEUE_REFRESH_CAP:{item.work_id}: integration "
-                        "still needs an owner turn after the bounded "
+                        f"STALE_PATCH_REFRESH_CAP:{item.work_id}: this pull "
+                        "request still needs an owner turn after the bounded "
                         f"{allowed_attempts} attempts")
                 active.append(item)
                 if dependency_advanced:
@@ -2912,8 +2818,8 @@ class Engine:
             )
             if not patch.changes:
                 raise RuntimeError(
-                    f"MERGE_QUEUE_EMPTY_REFRESH:{item.work_id}: the role patch "
-                    "became empty after an earlier merge")
+                    f"STALE_PATCH_EMPTY_REFRESH:{item.work_id}: this pull "
+                    "request's patch became empty after a sibling merged")
             if self.executor.name == "fixture":
                 item.state = "in_review"
                 item.stale = False
@@ -2960,219 +2866,232 @@ class Engine:
             )
         return active
 
-    def _queue_checkpoint(
-        self,
-        run: Run,
-        pending: list[_work_items.WorkItem],
-        stage: str,
-        *,
-        active_builders: list[_work_items.WorkItem],
+    def _gate_one_pull_request(
+        self, run: Run, item: _work_items.WorkItem, stage: str
+    ) -> dict:
+        """Rebuild this pull request's tree on the CURRENT base and run its check.
+
+        Rebuilt, not reused: a sibling may have merged since the check was authored,
+        and the honest question is whether THIS pull request works against the branch
+        it is about to merge into. That is the whole cross-role guarantee.
+        """
+        check_path = run._item_checks.get(item.work_id, "")
+        if not check_path:
+            return {
+                "passed": False,
+                "checks": [{"check": "acceptance_check_authored", "passed": False,
+                            "detail": f"the validator authored no check for "
+                                      f"{item.work_id}, so nothing proved it; "
+                                      "validation is agentic only and there is no "
+                                      "fallback grade"}],
+                "summary": f"no authored check for {item.work_id}"}
+        try:
+            self._build_item_tree(run, item)
+            check_path = self._gate_dir_check_path(run, check_path, item)
+            run._item_checks[item.work_id] = check_path
+        except _work_items.StalePatch as exc:
+            return {
+                "passed": False,
+                "checks": [{"check": "pull_request_is_current", "passed": False,
+                            "detail": "the base branch changed a path this pull "
+                                      "request also changed: "
+                                      + ", ".join(c["path"] for c in
+                                                  exc.conflicts[:8])}],
+                "summary": f"{item.work_id} is behind {run.final_base_branch}"}
+        gate = reviewer.run_gate(
+            check_path,
+            os.path.dirname(check_path),
+            run.task,
+            run.artifact_endpoint or "",
+        )
+        self._record_gate(run, gate, stage, item)
+        return gate
+
+    def _merge_if_policy_allows(
+        self, run: Run, item: _work_items.WorkItem, row: dict
     ) -> bool:
-        run._active_builders = {item.agent for item in active_builders}
-        if not self._execute(run):
-            run.status = "needs_human"
-            run.fail_reason = run.fail_reason or "MERGE_QUEUE_EXECUTION_ERROR"
-            return False
-        run.phase = "finalization"
-        gate = reviewer.run_gate(run)
-        self._record_gate(run, gate, stage)
-        # The executable is newly authored and run at every checkpoint. The code
-        # reviewer is narrower: it runs again only when this refreshed candidate's
-        # digest differs from the candidate it already approved.
-        approved = self._assess_candidate(run, gate, stage)
-        if approved:
-            run._refresh_context = ""
+        """Merge this approved pull request, or leave it open for a person.
+
+        ``human_review`` (the default) is the human boundary: a green, approved pull
+        request is left OPEN. It is not a failure and not a retry -- it is the state a
+        person is supposed to act on, so it counts as success for the run.
+        """
+        if github.merge_policy() != "auto":
+            item.merge_state = "human_review"
+            row["state"] = "awaiting_review"
+            run.log(f"{item.work_id}: green and approved; left open for a person "
+                    "(WORKSHOP_MERGE_POLICY=human_review)")
             return True
-        if run.fail_reason == "REVIEW_UNAVAILABLE":
+        merged = self._merge_work_item(run, item)
+        if merged.get("error"):
+            row["state"] = "blocked"
+            row["error"] = merged["error"]
+            item.merge_state = "blocked"
+            run.log(f"{item.work_id}: merge failed: {merged['error']}", "warn")
             return False
-        if run.iterations >= MAX_ITERATIONS:
-            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
-            return False
-
-        self._route_repair(run, gate, eligible=pending, stage=stage)
-        run.iterations += 1
-        run.status, run.fail_reason = "running", None
-        if not self._execute(run):
-            run.status = "needs_human"
-            run.fail_reason = run.fail_reason or "MERGE_QUEUE_REPAIR_ERROR"
-            return False
-        run.phase = "finalization"
-        repaired_gate = reviewer.run_gate(run)
-        repaired_stage = f"{stage}: repair"
-        self._record_gate(run, repaired_gate, repaired_stage)
-        approved = self._assess_candidate(
-            run, repaired_gate, repaired_stage)
-        run._refresh_context = ""
-        if not approved and run.fail_reason != "REVIEW_UNAVAILABLE":
-            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
-        return approved
-
-    def _run_merge_queue(self, run: Run) -> bool:
-        ordered = self._builder_items(run)
-        if not run.merge_queue:
-            run.merge_queue = [{
-                "position": index,
-                "work_id": item.work_id,
-                "agent": item.agent,
-                "role": item.role,
-                "pr_url": (item.pr or {}).get("pr_url"),
-                "state": "waiting",
-            } for index, item in enumerate(ordered, start=1)]
-
-        for item in ordered:
-            row = next(
-                entry for entry in run.merge_queue
-                if entry["work_id"] == item.work_id)
-            row["state"] = "merging"
-            run.log(f"merge queue: merging {item.work_id} into "
-                    f"{run.integration_branch}")
-            merged = self._merge_work_item(run, item)
-            if merged.get("error"):
-                row["state"] = "blocked"
-                row["error"] = merged["error"]
-                run.status = "needs_human"
-                run.fail_reason = "MERGE_QUEUE_BLOCKED:" + str(merged["error"])
-                return False
-            row["state"] = "merged"
-            row["sha"] = merged.get("sha", "")
-            pending = [
-                candidate for candidate in ordered
-                if candidate.merge_state != "merged"
-            ]
-            if pending:
-                try:
-                    active_builders = self._refresh_pending_work(
-                        run, pending, item)
-                except RuntimeError as exc:
-                    if not str(exc).startswith("MERGE_QUEUE_REFRESH_CAP:"):
-                        raise
-                    blocked_work_id = str(exc).split(":", 2)[1]
-                    blocked_row = next(
-                        (entry for entry in run.merge_queue
-                         if entry["work_id"] == blocked_work_id),
-                        None,
-                    )
-                    if blocked_row is not None:
-                        blocked_row["state"] = "blocked"
-                        blocked_row["error"] = str(exc)
-                    run.status = "needs_human"
-                    run.fail_reason = str(exc)
-                    run.log(str(exc), "warn")
-                    return False
-            else:
-                active_builders = []
-                run._refresh_context = (
-                    "FINAL REMOTE CHECK: all role PRs are now merged into the "
-                    "private integration branch. Re-author the executable check "
-                    "against this exact snapshot."
-                )
-            stage = f"after merge {item.work_id}"
-            if not self._queue_checkpoint(
-                    run, pending, stage,
-                    active_builders=active_builders):
-                return False
-
-        self._compose_commit(run)
-        run.pr = github.open_integration_pr(
-            run, replay.integration_narrative(run))
-        if run.pr.get("pr_url"):
-            run.pr_url = run.pr["pr_url"]
-            if github.final_merge_policy() == "auto":
-                merged = github.merge_integration_pr(run)
-                run.pr["merge"] = merged
-                if merged.get("merged"):
-                    run.merge_state = "merged"
-                    run.log(
-                        f"final integration PR auto-merged to "
-                        f"{run.pr.get('default_branch')}: {run.pr_url}")
-                else:
-                    run.merge_state = "human_review"
-                    run.status = "needs_human"
-                    run.fail_reason = (
-                        "FINAL_MERGE_ERROR:" + str(
-                            merged.get("error") or "merge did not complete"))
-                    run.log(
-                        f"final PR remains open for human review: "
-                        f"{run.fail_reason}", "warn")
-                    self._ledger(run)
-                    return False
-            else:
-                run.merge_state = "human_review"
-                run.log(
-                    f"final integration PR opened: {run.pr_url}; default branch "
-                    "left for human review")
-        elif self.executor.name == "fixture" and run.pr.get("error"):
-            # Offline tests have no gateway. The queue and real subprocess gates
-            # still run; only the external side effect is absent.
-            run.merge_state = "queue_complete"
-        else:
-            run.status = "needs_human"
-            run.fail_reason = (
-                "FINAL_PR_ERROR:" + str(
-                    run.pr.get("error") or "no pull request URL returned"))
-            return False
-        run.status = "passed"
-        self._ledger(run)
+        row["state"] = "merged"
+        row["sha"] = merged.get("sha", "")
+        run.log(f"{item.work_id}: merged into {run.final_base_branch}")
         return True
 
-    # Phase 5: executable gate, reviewer, private merge queue, final evidence PR.
     def _finalize(self, run: Run) -> bool:
-        """Return True at a terminal state, False for one bounded repair round."""
+        """Take each pull request through its own check, review, and merge.
+
+        Independent by construction: one pull request's outcome never decides
+        another's. A red pull request is recorded and the loop CONTINUES to the next
+        one, so a green sibling still merges. The repair bound is per pull request
+        (``item.attempt``), so N builders allow at most N repair rounds, one each,
+        and this can never become re-entrant.
+
+        Returns True always on the build path: every pull request reaches its own
+        terminal state here, so there is no whole-run round to restart.
+        """
         run.phase = "finalization"
-        run.log(
-            f"gate: running the validator's authored check "
-            f"(round {run.iterations})")
-        gate = reviewer.run_gate(run)
 
         read_only = bool(run.route and run.route.get("read_only"))
         if read_only:
-            run.gate = gate
-            verdict = reviewer.assess(run, gate, run.iterations)
-            run.review = verdict.public()
-            target = self._runs.get(
-                run._review_target) if run._review_target else None
-            if target is not None and target.pr_url:
-                run.pr = dict(target.pr or {})
-                github.post_review(run, verdict.assessment)
-            if verdict.lgtm:
-                run.status = "passed"
-                self._ledger(run)
-                return True
-            if verdict.review_unavailable:
-                run.status, run.fail_reason = (
-                    "needs_human", "REVIEW_UNAVAILABLE")
-                self._ledger(run)
-                return True
-            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
-            self._ledger(run)
-            return True
+            return self._finalize_read_only(run)
 
-        stage = f"full candidate round {run.iterations}"
-        self._record_gate(run, gate, stage)
-        approved = self._assess_candidate(run, gate, stage)
-        if approved:
-            # The queue always leaves a terminal outcome: passed, or needs_human
-            # with the blocking role/final PR still open. Returning False here
-            # would restart the whole build loop after a GitHub merge failure.
-            self._run_merge_queue(run)
-            return True
-        if run.fail_reason == "REVIEW_UNAVAILABLE":
-            self._ledger(run)
-            return True
+        items = self._builder_items(run)
+        run.role_prs = [{
+            "work_id": item.work_id,
+            "agent": item.agent,
+            "role": item.role,
+            "pr_url": (item.pr or {}).get("pr_url"),
+            "state": "checking",
+        } for item in items]
 
-        if run.iterations >= MAX_ITERATIONS:
-            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
+        for item, row in zip(items, run.role_prs):
+            stage = f"{item.work_id} round {item.attempt}"
+            run.log(f"gate: running {item.work_id}'s authored check "
+                    f"on {run.final_base_branch}")
+            gate = self._gate_one_pull_request(run, item, stage)
+            approved = gate.get("passed") and self._assess_pull_request(
+                run, item, gate, stage)
+            if not approved and not gate.get("passed"):
+                # A red gate is never approved; say so on the pull request without
+                # asking the reviewer, whose own red-gate branch would say the same.
+                self._assess_pull_request(run, item, gate, stage)
+
+            if not approved and item.merge_state != "review_unavailable":
+                # ONE bounded repair for THIS pull request only.
+                if item.attempt >= MAX_ITERATIONS:
+                    row["state"] = "blocked"
+                    row["error"] = "ITERATION_CAP"
+                    item.merge_state = "blocked"
+                    run.log(f"{item.work_id}: still not acceptable after "
+                            f"{item.attempt} round(s); its pull request keeps the "
+                            "evidence", "warn")
+                    continue
+                if not self._repair_pull_request(run, item, gate, stage):
+                    row["state"] = "blocked"
+                    row["error"] = "ROLE_EXECUTION_ERROR"
+                    item.merge_state = "blocked"
+                    continue
+                stage = f"{item.work_id} round {item.attempt}"
+                gate = self._gate_one_pull_request(run, item, stage)
+                approved = gate.get("passed") and self._assess_pull_request(
+                    run, item, gate, stage)
+                if not approved:
+                    row["state"] = "blocked"
+                    row["error"] = ("ITERATION_CAP" if gate.get("passed")
+                                    else "GATE_RED")
+                    item.merge_state = "blocked"
+                    continue
+
+            if item.merge_state == "review_unavailable":
+                row["state"] = "blocked"
+                row["error"] = "REVIEW_UNAVAILABLE"
+                continue
+            self._merge_if_policy_allows(run, item, row)
+            row["pr_url"] = (item.pr or {}).get("pr_url")
+
+        self._settle_run(run, items)
+        return True
+
+    def _repair_pull_request(
+        self, run: Run, item: _work_items.WorkItem, gate: dict, stage: str
+    ) -> bool:
+        """Send the recorded reasons back to the ONE role that owns this PR.
+
+        The reviewer reports; the owner fixes. That keeps maker-is-never-checker
+        intact, and it is also what a person does: the reviewer comments, and the
+        author pushes to the same pull request.
+        """
+        self._route_repair(run, gate, eligible=[item], stage=stage)
+        run.iterations += 1
+        run.log(f"{item.work_id}: one bounded repair updates this same pull request",
+                "warn")
+        return self._execute(run)
+
+    def _settle_run(self, run: Run, items: list[_work_items.WorkItem]) -> None:
+        """Decide the run's terminal state from the pull requests' own outcomes."""
+        blocked = [i for i in items if i.merge_state == "blocked"]
+        unavailable = [i for i in items
+                       if i.merge_state == "review_unavailable"]
+        settled = [i for i in items
+                   if i.merge_state in ("merged", "human_review")]
+        # `pr_url` stays the single-role shortcut for the frozen public contract;
+        # `role_prs` is the real answer when more than one builder ran.
+        run.pr_url = (items[0].pr or {}).get("pr_url") if len(items) == 1 else None
+        # A run with no GitHub side effect at all must SAY so rather than leaving the
+        # PR field empty and letting a reader assume it just was not reported. The
+        # offline double has no gateway, and a real run without one fails pre-flight,
+        # so this is the honest report of "the build is real, the publish was not".
+        published = [item for item in items if (item.pr or {}).get("pr_url")]
+        if published:
+            run.pr = dict(published[-1].pr or {})
+        elif items:
+            skipped = (items[0].pr or {}).get("skipped")
+            run.pr = {
+                "error": "PR_NO_GATEWAY: the build completed with no GitHub side "
+                         "effect. Wire the GitHub MCP Gateway and submit a new run "
+                         "to create real pull requests."
+            } if skipped else dict(items[0].pr or {})
+        if settled:
+            self._compose_commit(run)
+        if unavailable:
+            run.status, run.fail_reason = (
+                "needs_human",
+                "REVIEW_UNAVAILABLE:" + ",".join(i.work_id for i in unavailable))
+        elif blocked:
+            run.status, run.fail_reason = (
+                "needs_human",
+                "ROLE_PR_BLOCKED:" + ",".join(i.work_id for i in blocked))
             run.log(
-                f"changes still requested after {run.iterations} rounds; "
-                "role PRs retain the executable evidence", "warn")
-            self._ledger(run)
-            return True
+                f"{len(settled)} pull request(s) settled, "
+                f"{len(blocked)} left open for a person", "warn")
+        elif not settled:
+            run.status, run.fail_reason = "needs_human", "ROLE_PR_BLOCKED:none"
+        else:
+            run.status = "passed"
+        self._ledger(run)
 
-        self._route_repair(run, gate, stage=stage)
-        run.log(
-            "changes requested -> one bounded repair updates only the "
-            "responsible role PRs", "warn")
-        return False
+    def _finalize_read_only(self, run: Run) -> bool:
+        """The review workflow: re-run the TARGET run's own authored check."""
+        check_path = getattr(run, "_acceptance_test_file", "") or ""
+        gate = reviewer.run_gate(
+            check_path,
+            getattr(run, "_review_work_dir", "") or os.path.dirname(check_path),
+            run.task,
+            run.artifact_endpoint or "",
+        )
+        run.gate = gate
+        verdict = reviewer.assess(run, gate, run.iterations)
+        run.review = verdict.public()
+        target = self._runs.get(
+            run._review_target) if run._review_target else None
+        if target is not None and target.pr_url:
+            run.pr = dict(target.pr or {})
+            github.post_review(run, verdict.assessment)
+        if verdict.lgtm:
+            run.status = "passed"
+        elif verdict.review_unavailable:
+            run.status, run.fail_reason = "needs_human", "REVIEW_UNAVAILABLE"
+        else:
+            run.status, run.fail_reason = "needs_human", "ITERATION_CAP"
+        self._ledger(run)
+        return True
 
     # The composed repo is shared by every run; git allows one writer at a time
     # (index.lock), so compose is serialized across concurrent runs. A bare Lock
@@ -3226,22 +3145,27 @@ class Engine:
         # Drop any leftover from a prior run (a file a previous run's role wrote and
         # this one did not), so the commit is exactly this run's deliverable.
         subprocess.run(["git", "-C", repo, "clean", "-fdq"], check=True, timeout=20, env=git_env)
-        # Publish the exact tree that the validator inspected and the gate ran.
-        # Integration conflicts were rejected before validation, so compose never
-        # chooses a winner or carries a CONFLICT-* side copy into a passing PR.
-        if not os.path.isdir(run.candidate_dir):
-            raise RuntimeError("INTEGRATION_CANDIDATE_MISSING")
+        # Publish the tree of the LAST pull request this run took through its gate.
+        # Every pull request tree is built on the default branch AS IT STANDS, so the
+        # last one already contains whatever merged before it: that tree IS the
+        # repository state this run produced. This is a local scratch commit for the
+        # console's Changes tab only. GitHub already holds the real record -- one pull
+        # request per role, each with its own check and review -- and nothing here is
+        # on the verdict path.
+        source = self._composed_source_dir(run)
+        if not source:
+            raise RuntimeError("WORK_TREE_MISSING: no gated pull request tree to compose")
         copied = 0
-        for dirpath, dirnames, filenames in os.walk(run.candidate_dir):
+        for dirpath, dirnames, filenames in os.walk(source):
             dirnames.sort()
             for fn in sorted(filenames):
                 full = os.path.join(dirpath, fn)
-                rel = os.path.relpath(full, run.candidate_dir)
+                rel = os.path.relpath(full, source)
                 dest = os.path.join(repo, rel)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 shutil.copy2(full, dest)
                 copied += 1
-        run.log(f"compose: copied the validated integration candidate "
+        run.log(f"compose: copied the last gated pull request tree "
                 f"({copied} file(s))")
         # The validator's authored check SHIPS WITH the deliverable, so the PR
         # reviewer (human or bot) can rerun the exact gate that passed. The review
@@ -3259,6 +3183,47 @@ class Engine:
         sha = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
                              capture_output=True, text=True, timeout=20).stdout.strip()
         run.composed_branch, run.composed_commit = branch, sha
+
+    def _composed_source_dir(self, run: Run) -> str:
+        """The tree that represents what this run produced, or "" when none exists.
+
+        When any pull request MERGED, the base-branch snapshot is that answer: each
+        merge re-snapshots the branch, so the snapshot accumulates every merged
+        role's work. Using the last single pull request's tree instead would drop the
+        earlier roles' files, which is exactly the bug this comment exists to prevent.
+
+        With nothing merged (``human_review``, or a blocked run), fall back to the
+        last pull request tree that was built at all, so a run still composes
+        something a person can read.
+        """
+        ordered = self._builder_items(run)
+        if any(item.merge_state == "merged" for item in ordered):
+            if os.path.isdir(run.integration_base_dir):
+                return run.integration_base_dir
+        # Nothing merged (human_review leaves every pull request open, which is the
+        # DEFAULT). Overlay each gated pull request's own changed files onto the base
+        # so the local Changes tab shows every role's work, not just the last one's.
+        # This is a reporting convenience only; the real record is the pull requests.
+        settled = [item for item in ordered
+                   if os.path.isdir(run.item_tree_dir(item.work_id))]
+        if not settled:
+            return ""
+        overlay = os.path.join(run.workdir, "composed-view")
+        shutil.rmtree(overlay, ignore_errors=True)
+        if os.path.isdir(run.integration_base_dir):
+            shutil.copytree(run.integration_base_dir, overlay)
+        else:
+            os.makedirs(overlay, exist_ok=True)
+        for item in settled:
+            tree = run.item_tree_dir(item.work_id)
+            for rel in item.changed_files:
+                src = os.path.join(tree, *rel.split("/"))
+                if not os.path.isfile(src):
+                    continue
+                dest = os.path.join(overlay, *rel.split("/"))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(src, dest)
+        return overlay
 
     def _ledger(self, run: Run) -> None:
         """Append the run record to the shared telemetry ledger (Stage 3 reads it)."""
@@ -3468,32 +3433,29 @@ _NEXT_ACTION = {
         "The selected model's daily token allowance is exhausted. Do not resubmit "
         "now. Wait for the allowance to reset or choose a model with available "
         "capacity, then submit the SAME request once.",
-    "INTEGRATION_CONFLICT":
-        "Two role pull requests still change the same path differently after the "
-        "bounded repair round. Review integration_conflicts and decide which role "
-        "owns each path; no candidate was selected or validated.",
-    "MERGE_QUEUE_BLOCKED":
-        "A reviewed role pull request could not merge into the run integration "
-        "branch. Open that role PR, resolve the reported branch or head-SHA problem, "
-        "then resume with a new run.",
-    "MERGE_QUEUE_EXECUTION_ERROR":
-        "A remaining role could not refresh its existing pull request against the "
-        "latest integration branch. Read that role PR's evidence and runtime output.",
-    "MERGE_QUEUE_REPAIR_ERROR":
-        "The bounded queue repair did not produce a new candidate. Read the affected "
-        "role PR's evidence and hand the remaining work to a person.",
+    "ROLE_PR_BLOCKED":
+        "One or more pull requests did not become mergeable: their check stayed red, "
+        "a review finding remained after the one bounded repair, or the merge itself "
+        "was refused. The work ids are in the reason. Open each named pull request, "
+        "read its executable check and Assessment comment, and continue from there as "
+        "a person. Pull requests that did pass are already settled; do not resubmit "
+        "the whole build to retry one of them.",
+    "STALE_PATCH_REFRESH_CAP":
+        "A pull request fell behind the default branch and used up its one bounded "
+        "refresh. Open the named pull request, update its branch yourself, and "
+        "re-run its check as a person.",
+    "STALE_PATCH_EMPTY_REFRESH":
+        "After a sibling merged, the named pull request had nothing left to "
+        "contribute: its change is already on the default branch. Close it, or open "
+        "it and confirm nothing is missing.",
+    "WORK_TREE_MISSING":
+        "The validator authored a check but the pull request tree it was authored "
+        "against is gone, so nothing could be executed. This is an engine-side "
+        "failure, not a failed agent turn: retry the same request once.",
     "REVIEW_UNAVAILABLE":
-        "The executable check passed, but the required integrated review did not run. "
-        "Keep the role pull requests open and retry the review after model access is "
+        "The executable check passed, but the required review did not run for the "
+        "named pull request(s). Keep them open and retry after model access is "
         "restored; do not ask builders to change code for this outage.",
-    "FINAL_PR_ERROR":
-        "Every role pull request merged and the executable gates passed, but the final "
-        "integration pull request to the default branch did not open. Run "
-        "`python3 orchestrator/github.py doctor` and open or retry the final PR.",
-    "FINAL_MERGE_ERROR":
-        "The final integration pull request is open and all executable gates passed, "
-        "but GitHub did not auto-merge it. Review branch protection or the reported "
-        "head-SHA error, then merge that final PR as a person.",
     "ENGINE_STALL":
         "The run ended without reaching a verdict. Resubmit; if it stalls again, the "
         "engine log for this run id is the place to look.",
@@ -3519,7 +3481,7 @@ _NEXT_ACTION = {
 
 def next_action(status: str, fail_reason: str | None,
                 pr: dict | None = None, pr_url: str | None = None,
-                conflicts: list[dict] | None = None) -> str:
+                role_prs: list[dict] | None = None) -> str:
     """One sentence telling the reader what to do about this outcome.
 
     Derived, never stored: the reason is the fact, this is how to read it. An
@@ -3533,20 +3495,28 @@ def next_action(status: str, fail_reason: str | None,
     """
     if status == "passed":
         pr = pr or {}
-        if (pr.get("merge") or {}).get("merged"):
+        rows = list(role_prs or [])
+        merged = [r for r in rows if r.get("state") == "merged"]
+        waiting = [r for r in rows if r.get("state") == "awaiting_review"]
+        if waiting:
             return (
-                "The final integration pull request was automatically merged into "
-                "the default branch after every executable gate passed.")
+                f"{len(waiting)} pull request(s) passed their check and review and "
+                "are open for you to merge. Read each one's Assessment comment, then "
+                "merge it (or set WORKSHOP_MERGE_POLICY=auto to have the engine "
+                "merge approved pull requests itself).")
+        if merged:
+            return (
+                f"{len(merged)} pull request(s) passed their own check and review "
+                "and merged into the default branch. Read each one's Assessment "
+                "comment for the evidence.")
         if pr_url:
-            return (
-                "Open the final integration pull request to the default branch and "
-                "review its role-PR, merge-queue, and executable-gate evidence.")
+            return ("Open the role pull request and read its executable check and "
+                    "Assessment comment.")
         pr_error = str(pr.get("error") or "")
         if pr_error.startswith("PR_NO_GATEWAY"):
             return (
-                "The offline queue completed without a GitHub side effect. Wire the "
-                "GitHub MCP Gateway and submit a new run to create real role and final "
-                "pull requests.")
+                "The build completed without a GitHub side effect. Wire the GitHub "
+                "MCP Gateway and submit a new run to create real pull requests.")
         if pr_error.startswith("PR_NO_CREDENTIAL"):
             return ("The build passed but the App credential did not resolve, so no PR "
                     "was opened. Re-run deploy-credential.sh, then resubmit.")
@@ -3575,6 +3545,13 @@ _RESUBMITTABLE_REASONS = {
     "ROLE_TOTAL_FAILURE",
     "ENGINE_STALL",
     "COORDINATOR_SESSION_INTERRUPTED",
+    # The validator authored a check and the engine then lost the tree it was
+    # authored against, so nothing was ever executed. That is OUR bookkeeping
+    # failure, not a judged outcome: no verdict was reached, so there is nothing
+    # for a person to read and repeating the request is the honest recovery. It is
+    # deliberately NOT grouped with ROLE_PR_BLOCKED / ITERATION_CAP, which mean a
+    # real gate or review decided against real work.
+    "WORK_TREE_MISSING",
 }
 
 
@@ -3602,11 +3579,9 @@ def public_result(run: Run) -> dict:
         },
         "integration_brief": run.integration_brief,
         "integration_base": run.integration_base,
-        "integration_candidate": run.integration_candidate,
-        "integration_conflicts": run.integration_conflicts,
-        "integration_branch": run.integration_branch,
+
         "final_base_branch": run.final_base_branch,
-        "merge_queue": run.merge_queue,
+        "role_prs": run.role_prs,
         "gate_history": run.gate_history,
         # The gate's summary is the authored check's own last line: the closest thing
         # to a human-readable verdict, so it belongs in the public payload.
@@ -3633,8 +3608,7 @@ def public_result(run: Run) -> dict:
         # tell "the gate stayed red on real work" from "a role produced nothing",
         # and those have opposite next steps.
         "next_action": next_action(
-            run.status, run.fail_reason, run.pr, run.pr_url,
-            run.integration_conflicts),
+            run.status, run.fail_reason, run.pr, run.pr_url, run.role_prs),
         "resubmission_allowed": resubmission_allowed(
             run.status, run.fail_reason),
     }

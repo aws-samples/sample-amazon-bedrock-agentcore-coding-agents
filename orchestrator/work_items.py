@@ -1,21 +1,23 @@
-"""Independent role work and deterministic integration candidates.
+"""Independent role work: one worktree, one branch, one pull request each.
 
 Each builder gets a stable work id, a local linked Git worktree, and its own GitHub
-branch. Builders may share a task and an integration brief, but they never share a
-writable tree. That mirrors a human team: separate checkouts, explicit pull
-requests, and one integration queue. The common Git metadata stays on local disk;
-only normalized source archives cross an AgentCore Runtime boundary.
+branch and pull request against the repository's default branch. Builders share a
+task and a contract, never a writable tree. That is the ordinary team flow:
+separate checkouts, one pull request each, each reviewed and merged on its own. The
+common Git metadata stays on local disk; only normalized source archives cross an
+AgentCore Runtime boundary.
 
 This module does not decide whether code is correct. It only performs structural
 work that must be deterministic:
 
 * issue collision-free work ids and branch names;
 * order declared dependencies or reject a cycle;
-* overlay role trees into a candidate, rejecting conflicting paths instead of
-  selecting a winner.
+* materialise ONE pull request's tree (its base plus its own patch) and refuse a
+  patch whose base moved under it, rather than silently overwriting a change
+  somebody else already merged.
 
-The independent validator remains the checker. It authors an executable for the
-assembled candidate, and the engine runs that executable for the verdict.
+The independent validator remains the checker. It authors an executable for each
+pull request, and the engine runs that executable for the verdict.
 """
 
 from __future__ import annotations
@@ -38,11 +40,6 @@ import fcntl
 def _slug(value: str) -> str:
     clean = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return clean or "role"
-
-
-def integration_branch(run_id: str) -> str:
-    """The private queue branch all role PRs for one run target."""
-    return f"workshop/runs/{_slug(run_id)}/integration"
 
 
 def worktree_branch(work_id: str) -> str:
@@ -81,11 +78,17 @@ class WorkItem:
 
     @classmethod
     def create(cls, run_id: str, agent: str, role: str, capability: str,
-               *, kind: str = "builder",
+               *, kind: str = "builder", base_branch: str = "",
                token: str | None = None) -> "WorkItem":
+        """One role's branch and pull request.
+
+        ``base_branch`` is the repository's default branch, passed in rather than
+        derived here: every role pull request targets it directly and merges into
+        it on its own, so there is no run-scoped branch for this function to name.
+        """
         suffix = (token or uuid.uuid4().hex[:10]).lower()
         work_id = f"work_{_slug(agent)}_{suffix}"
-        base = integration_branch(run_id)
+        base = base_branch
         return cls(
             work_id=work_id,
             agent=agent,
@@ -306,28 +309,18 @@ def dependency_order(items: Iterable[WorkItem]) -> list[WorkItem]:
     return out
 
 
-@dataclass
-class IntegrationCandidate:
-    root: str
-    files: list[str]
-    owners: dict[str, list[str]]
-    digest: str
+class StalePatch(RuntimeError):
+    """A pull request's base moved under it, or its tree is not portable.
 
-    def public(self) -> dict[str, Any]:
-        return {
-            "files": list(self.files),
-            "owners": {path: list(ids) for path, ids in self.owners.items()},
-            "digest": self.digest,
-        }
-
-
-class IntegrationConflict(RuntimeError):
-    """Two isolated work items changed the same path differently."""
+    Raised when the default branch changed a path this pull request also changed
+    since the role received its base (the role must refresh and re-check, exactly
+    as a person would), and for a tree carrying something a patch cannot represent.
+    """
 
     def __init__(self, conflicts: list[dict[str, str]]) -> None:
         self.conflicts = conflicts
         paths = ", ".join(c["path"] for c in conflicts[:8])
-        super().__init__(f"INTEGRATION_CONFLICT:{paths}")
+        super().__init__(f"STALE_PATCH:{paths}")
 
 
 @dataclass
@@ -374,7 +367,7 @@ def _tree_files(root: str, exclude: Callable[[str], bool] | None = None
             if exclude and exclude(rel):
                 continue
             if os.path.islink(full):
-                raise IntegrationConflict([{
+                raise StalePatch([{
                     "path": rel,
                     "first_work_id": "",
                     "second_work_id": "",
@@ -426,27 +419,36 @@ def diff_trees(item: WorkItem, base_root: str, work_root: str,
     return patch
 
 
-def assemble_candidate(
+def apply_patch(
     base_root: str,
-    work: Iterable[tuple[WorkItem, str, str]],
+    item: WorkItem,
+    item_base_root: str,
+    work_root: str,
     destination: str,
     *,
     exclude: Callable[[str], bool] | None = None,
-) -> IntegrationCandidate:
-    """Apply isolated role patches to a base or reject three-way conflicts.
+) -> str:
+    """Materialise ONE role's pull request tree: a base plus that role's patch.
 
-    Every patch is calculated from the exact base that role received. A change
-    applies when the current integration value still equals that base value.
-    Identical changes coalesce. If integration and the role both changed a path
-    differently, the item is stale/conflicted and no candidate is published.
+    This is what the checker gates and the reviewer reads: exactly what merging
+    this one pull request would produce, and nothing from any other role. There is
+    no assembled multi-role candidate any more, because a pull request is the unit
+    a person reviews and merges.
+
+    ``base_root`` is the repository's default branch as it stands NOW, which is why
+    a cross-role defect is still catchable: once one role's pull request has merged,
+    the next role's check and review run against a tree that already contains it.
+
+    The three-way staleness guard is kept: the patch was computed against the exact
+    base the role received, so if the default branch has since changed a path this
+    role also changed, the role's work is stale and must be refreshed rather than
+    quietly overwriting someone else's merged change. Returns the tree digest.
     """
-    entries = list(work)
     shutil.rmtree(destination, ignore_errors=True)
     scratch = destination + f".tmp-{uuid.uuid4().hex[:10]}"
     shutil.rmtree(scratch, ignore_errors=True)
     os.makedirs(scratch, exist_ok=True)
 
-    owners: dict[str, list[str]] = {}
     conflicts: list[dict[str, str]] = []
     try:
         base_files = _tree_files(base_root, exclude)
@@ -456,52 +458,38 @@ def assemble_candidate(
             with open(dest, "wb") as f:
                 f.write(content)
 
-        current = dict(base_files)
-        origin: dict[str, str] = {}
-        for item, item_base_root, work_root in entries:
-            item_base = _tree_files(item_base_root, exclude)
-            patch = diff_trees(item, item_base_root, work_root, exclude=exclude)
-            for rel, proposed in patch.changes.items():
-                original = item_base.get(rel, _MISSING)
-                now = current.get(rel, _MISSING)
-                wanted = _MISSING if proposed is None else proposed
-                if now == wanted:
-                    owners.setdefault(rel, []).append(item.work_id)
-                    continue
-                if now != original:
-                    conflicts.append({
-                        "path": rel,
-                        "first_work_id": origin.get(rel, owners.get(rel, [""])[0]),
-                        "second_work_id": item.work_id,
-                        "reason": "the integration base and this work item changed "
-                                  "the path differently",
-                    })
-                    continue
-
-                dest = os.path.join(scratch, *rel.split("/"))
-                if proposed is None:
-                    current.pop(rel, None)
-                    try:
-                        os.remove(dest)
-                    except FileNotFoundError:
-                        pass
-                else:
-                    current[rel] = proposed
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    with open(dest, "wb") as f:
-                        f.write(proposed)
-                owners.setdefault(rel, []).append(item.work_id)
-                origin.setdefault(rel, item.work_id)
+        item_base = _tree_files(item_base_root, exclude)
+        patch = diff_trees(item, item_base_root, work_root, exclude=exclude)
+        for rel, proposed in patch.changes.items():
+            original = item_base.get(rel, _MISSING)
+            now = base_files.get(rel, _MISSING)
+            wanted = _MISSING if proposed is None else proposed
+            if now == wanted:
+                continue
+            if now != original:
+                conflicts.append({
+                    "path": rel,
+                    "first_work_id": "",
+                    "second_work_id": item.work_id,
+                    "reason": "the base branch and this pull request changed the "
+                              "path differently since this role received it",
+                })
+                continue
+            dest = os.path.join(scratch, *rel.split("/"))
+            if proposed is None:
+                try:
+                    os.remove(dest)
+                except FileNotFoundError:
+                    pass
+            else:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(proposed)
         if conflicts:
-            raise IntegrationConflict(conflicts)
+            raise StalePatch(conflicts)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         os.replace(scratch, destination)
-        return IntegrationCandidate(
-            root=destination,
-            files=sorted(current),
-            owners=owners,
-            digest=tree_digest(destination),
-        )
+        return tree_digest(destination)
     except Exception:
         shutil.rmtree(scratch, ignore_errors=True)
         raise

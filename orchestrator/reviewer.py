@@ -13,22 +13,21 @@ in two layers that make one loop:
     fallback would be this repository deciding correctness, which is the thing
     the design forbids. A red gate can never pass, and nothing fabricates a
     verdict.
-  * The INTEGRATED REVIEW runs one read-only model turn over the integrated
-    artifacts. That response must contain two explicit lenses: adversarial
-    verification tries to falsify the green result at runtime and across
-    producer/consumer boundaries, while design and integration review checks
-    ownership, operability, and maintainability. A finding under either lens
-    requests changes. An unavailable review is recorded and blocks the queue
-    instead of inventing evidence or sending builders to repair an infrastructure
-    failure. The review can withhold approval on a green gate; it can never turn
-    a red gate green.
+  * The REVIEW runs one read-only model turn over ONE pull request. That response
+    must contain two explicit lenses: adversarial verification tries to falsify the
+    green result at runtime and across every seam the change touches, while design
+    and integration review checks ownership, operability, and maintainability. A
+    finding under either lens requests changes. An unavailable review is recorded
+    and stops THAT pull request instead of inventing evidence or sending builders to
+    repair an infrastructure failure. The review can withhold approval on a green
+    gate; it can never turn a red gate green.
 
-Approve admits the candidate to the run's private merge queue. Request changes
-routes evidence to the responsible existing role pull requests, bounded by
-``MAX_REVIEW_ROUNDS``, then hands to a human. The exact pass token
-``LGTM: no changes needed`` closes an approving assessment, so approval is a
-literal, checkable string, never a vibe. Every role merge is gated again, and
-only the final integration pull request targets the default branch.
+Approve makes that one pull request mergeable. Request changes routes evidence to
+the builder that owns it, bounded by ``MAX_REVIEW_ROUNDS`` PER PULL REQUEST, then
+hands to a human. The exact pass token ``LGTM: no changes needed`` closes an
+approving assessment, so approval is a literal, checkable string, never a vibe.
+Each pull request is checked and reviewed against the default branch as it stands,
+and merges on its own.
 """
 
 from __future__ import annotations
@@ -198,9 +197,13 @@ def _summary_line(out: str, code: int) -> str:
     return lines[-1].strip() or f"exit {code}"
 
 
-def run_gate(run: Any) -> dict:
+def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
     """The acceptance gate: run the check the VALIDATOR ROLE authored, read its
     real exit code. That is the whole gate.
+
+    Takes the four facts it needs rather than a whole run, because there is one
+    gate PER PULL REQUEST now: each pull request has its own authored check and its
+    own tree, so N calls per run is the normal case.
 
     Validation here is AGENTIC ONLY. The validator decided what "acceptable"
     means for this task and wrote one self-contained executable to prove it; this
@@ -222,7 +225,7 @@ def run_gate(run: Any) -> dict:
     reaches the gate without one is a red gate with a reason, never a courtesy
     pass and never a substituted verdict.
     """
-    authored = getattr(run, "_acceptance_test_file", None)
+    authored = check_path
     if not authored or not os.path.isfile(authored):
         return {
             "passed": False,
@@ -232,18 +235,12 @@ def run_gate(run: Any) -> dict:
                                   "agentic only, and there is no fallback grade"}],
             "summary": "no validator-authored acceptance check to run"}
 
-    url = getattr(run, "artifact_endpoint", "") or ""
-    # A read-only review run inspects ANOTHER run's work, so the check must be
-    # pointed at that tree rather than this run's empty one.
-    #
-    # Otherwise: the check runs from its OWN directory (cwd below), which the engine
-    # assembles to hold every role's files plus the check, i.e. the shared workspace
-    # it was authored in. Point WORKSHOP_WORK_DIR at that same directory, so a check
+    # The check runs from its OWN directory (cwd below), which the engine assembles
+    # to hold that pull request's files plus the check, i.e. the exact workspace it
+    # was authored in. WORKSHOP_WORK_DIR points at that same directory, so a check
     # that reads the env var and a check that walks its own directory see the SAME
     # tree. They disagreed before, and the env var pointed one level above the files.
-    work_dir = (getattr(run, "_review_work_dir", "")
-                or os.path.dirname(authored)
-                or getattr(run, "workdir", "") or "")
+    work_dir = work_dir or os.path.dirname(authored)
     # GATE_TIMEOUT_S is a FACT about the environment, not a hint about the verdict, so
     # handing it over changes nothing about what the check decides. Withholding it made
     # checks guess: four live runs in a row failed on a readiness poll the author had
@@ -252,7 +249,7 @@ def run_gate(run: Any) -> dict:
     # failure this file must not manufacture.
     env = {**os.environ,
            "WORKSHOP_WORK_DIR": work_dir,
-           "WORKSHOP_TASK": getattr(run, "task", "") or "",
+           "WORKSHOP_TASK": task or "",
            "WORKSHOP_GATE_TIMEOUT_S": str(GATE_TIMEOUT_S),
            "DELIVERABLE_URL": url, "MCP_ENDPOINT_URL": url}
     try:
@@ -337,33 +334,40 @@ _REVIEW_RESPONSE_CONTRACT = (
     '"design_assessment": "<concise markdown findings>"}\n'
     "Both assessment fields are required, even when they report no finding. "
     "Set approve=false when EITHER lens finds a material defect. "
-    "An approval must identify concrete usage evidence for EVERY routed builder "
-    "work id. Evidence must say how that contribution participates in the "
-    "integrated product; a changed-file list alone is not evidence. If you cannot "
-    "establish use for one work id, request changes instead of guessing. Be "
-    "decisive and report only defects that affect correctness, security, "
-    "operability, integration, or maintainability."
+    "An approval must identify concrete usage evidence for the work id under "
+    "review. Evidence must say how that contribution participates in the running "
+    "product; a changed-file list alone is not evidence. If you cannot establish "
+    "use, request changes instead of guessing. Be decisive and report only defects "
+    "that affect correctness, security, operability, integration, or "
+    "maintainability."
 )
 
 _INTEGRATED_REVIEW_SYSTEM = (
-    "You are the independent, read-only reviewer of an integrated pull-request "
-    "candidate. The makers are not allowed to grade their own work, and you do not "
-    "reuse a builder conversation or edit the code. A separate validator-authored "
-    "executable is green, but that is evidence rather than permission to approve. "
-    "Apply BOTH of these lenses in this one review:\n"
-    "1. Adversarial verification: try to falsify the result from the task, shared "
-    "contract, and artifacts. Trace at least one nontrivial value through each "
-    "producer/consumer boundary. Compare field names, enums, null semantics, "
-    "errors, and state transitions on both sides. Look for edge cases, persistence "
-    "failures, security defects, dead paths, and checks that prove only existence "
-    "or build success.\n"
-    "2. Design and integration: verify exclusive role ownership, that every "
-    "contribution is used, that the shared contract is coherent, and that there is "
-    "one operable runtime path rather than disconnected parallel stacks. Assess "
-    "data ownership, failure handling, migration compatibility, deployment and "
-    "restart behavior, accessibility where relevant, and maintainability at the "
-    "requested scope.\n"
-    "Do not demand a particular framework, filename, or layout.\n\n"
+    "You are the independent, read-only reviewer of ONE pull request. The makers are "
+    "not allowed to grade their own work, and you do not reuse a builder "
+    "conversation or edit the code. A separate validator-authored executable is "
+    "green, but that is evidence rather than permission to approve. Apply BOTH of "
+    "these lenses in this one review:\n"
+    "1. Adversarial verification: try to falsify the result from the task, the "
+    "shared contract, and the files. Trace at least one nontrivial value from this "
+    "pull request's code ACROSS EVERY SEAM IT TOUCHES -- both the seams the contract "
+    "assigns it and any code already on the base branch that it calls or is called "
+    "by. Compare field names, enums, null semantics, errors, and state transitions "
+    "on BOTH sides of each seam, using the base-branch files you were given rather "
+    "than assuming the other side matches. A mismatch between what this pull request "
+    "produces and what its counterpart consumes is a material defect even when the "
+    "executable passed, because a check can exercise one side alone. Look for edge "
+    "cases, persistence failures, security defects, dead paths, and checks that "
+    "prove only existence or build success.\n"
+    "2. Design and integration: verify that this pull request stays inside its own "
+    "ownership, that what it contributes is actually reachable and used, that it "
+    "matches the shared contract, and that it composes with the base branch as it "
+    "stands rather than adding a disconnected parallel stack. Assess data ownership, "
+    "failure handling, migration compatibility, deployment and restart behavior, "
+    "accessibility where relevant, and maintainability at the requested scope.\n"
+    "Judge THIS pull request, not whether the whole project is finished: a sibling "
+    "role's pull request may still be open, and its absence is not a defect in this "
+    "one. Do not demand a particular framework, filename, or layout.\n\n"
     + _REVIEW_RESPONSE_CONTRACT
 )
 
@@ -527,11 +531,11 @@ def _run_review_turn(
                     "work_item_evidence": {},
                     "assessment": (
                         "#### Adversarial verification\n\n"
-                        "The review could not prove every routed contribution "
-                        "participates in the integrated behavior.\n\n"
+                        "The review could not prove this pull request's "
+                        "contribution participates in the running behavior.\n\n"
                         "#### Design & integration\n\n"
-                        "Concrete integration evidence was missing, so the "
-                        "candidate cannot be approved."
+                        "Concrete usage evidence was missing, so this pull request "
+                        "cannot be approved."
                     ),
                 }
             else:
@@ -578,14 +582,14 @@ def _combine_review(
 
     if unavailable:
         summary = (
-            "The validator's executable passed, but the required integrated review "
-            "did not finish. The queue is blocked without sending builders back to change "
-            "code for a review-service failure."
+            "The validator's executable passed, but the required review did not "
+            "finish. This pull request is not merged, and no builder is sent back to "
+            "change code for a review-service failure."
         )
     elif approve:
         summary = (
-            "The validator's executable passed. The integrated review approved "
-            "both its adversarial and design lenses."
+            "The validator's executable passed. The review approved this pull "
+            "request under both its adversarial and design lenses."
         )
     else:
         summary = (
@@ -621,12 +625,13 @@ def _combine_review(
     }
 
 
-def _default_judge(run: Any, gate: dict) -> dict | None:
-    """Run one review turn that must cover adversarial and design lenses.
+def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
+    """Run one review turn over ONE pull request, covering both required lenses.
 
-    The reviewer sees the immutable candidate and no maker conversation. A
-    request-changes verdict blocks the queue. An unreachable reviewer is recorded
-    and also blocks the queue.
+    The reviewer sees that pull request's tree on the base branch as it stands, and
+    no maker conversation. A request-changes verdict stops THAT pull request from
+    merging; an unreachable reviewer is recorded and also stops it. Neither can stop
+    a sibling.
     """
     # A run whose work came from the offline test double has nothing to review: the
     # files say so themselves. Abstaining is the honest answer, and it keeps the
@@ -648,6 +653,15 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
     parts: list[str] = [f"Task: {getattr(run, 'task', '')!r}",
                         f"acceptance gate passed: {gate.get('passed')}",
                         f"gate: {json.dumps(gate.get('checks', []))[:2000]}"]
+    if subject is not None:
+        parts.insert(0, (
+            f"YOU ARE REVIEWING ONE PULL REQUEST: {subject.work_id} "
+            f"({subject.role}), which merges into "
+            f"{getattr(run, 'final_base_branch', None)!r}. The files below are that "
+            "pull request's own changes, and the check ran against the base branch "
+            "as it stands plus those changes. If another role's pull request already "
+            "merged, its code is on that base: judge whether THIS pull request works "
+            "with what is there, not whether the whole project is finished."))
     try:
         import integration_plan  # noqa: PLC0415
         context = integration_plan.review_context(
@@ -662,17 +676,17 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
     # Hand the judge the run's actual changed artifacts before any unchanged base
     # files. The complete changed-path inventory above remains visible even when a
     # large generated project exceeds the content excerpt budget.
-    for label, path in _artifact_files(run):
+    for label, path in _artifact_files(run, subject):
         if path and os.path.isfile(path):
             with open(path, encoding="utf-8", errors="replace") as f:
                 parts.append(f"--- {label} ---\n{f.read()[:3000]}")
     base_prompt = (
-        "Review this integrated pull-request candidate through both required "
-        "lenses. Do not trust a builder's self-assessment or infer success from "
-        "the green gate alone.\n\n"
+        "Review this pull request through both required lenses. Do not trust a "
+        "builder's self-assessment or infer success from the green gate alone.\n\n"
         + "\n\n".join(parts)
     )
-    required_work_ids = _builder_work_ids(run)
+    required_work_ids = ([subject.work_id] if subject is not None
+                         else _builder_work_ids(run))
     record, decision = _run_review_turn(
         llm,
         model=INTEGRATED_REVIEW_MODEL,
@@ -689,76 +703,59 @@ def _default_judge(run: Any, gate: dict) -> dict | None:
 _MAX_JUDGE_FILES = 48
 
 
-def _spread(paths: list[str]) -> list[str]:
-    """Sample both ends of an agent-chosen tree instead of one name-sorted prefix."""
-    out: list[str] = []
-    left, right = 0, len(paths) - 1
-    while left <= right:
-        out.append(paths[left])
-        left += 1
-        if left <= right:
-            out.append(paths[right])
-            right -= 1
-    return out
+def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
+    """(label, path) for the artifacts of ONE pull request under review.
 
+    READS THE TREE, names nothing. This used to look for `_server_file`, `_ui_dir`,
+    and `_chatbot_file`, attributes from the deleted fixed-shape design that nothing
+    has set since; the engine never assigned them, so the judge only ever saw the
+    authored check and reviewed a pull request whose deliverable it had not read.
 
-def _artifact_files(run: Any) -> list[tuple[str, str]]:
-    """(label, path) for every reviewable artifact the run produced.
-
-    READS THE TREE, names nothing. This used to look for `_server_file`,
-    `_ui_dir`, and `_chatbot_file`, attributes from the deleted fixed-shape design
-    that nothing has set since; the engine never assigned them, so the judge only
-    ever saw the authored check and reviewed a pull request whose deliverable it
-    had not read. It also labelled one of them `mcp_server.py`, a filename this
-    design abolished.
-
-    Review the exact assembled candidate, not the independent role clones. A role
-    checkout includes its private base and may be stale; only ``candidate_dir`` is
-    the tree the executable gate actually inspected.
+    Reads the tree the executable gate actually inspected: that pull request's own
+    tree, built on the base branch as it stands. A role checkout is not used, because
+    it includes its private base and may be stale.
     """
     files: list[tuple[str, str]] = []
     authored = getattr(run, "_acceptance_test_file", None)
+    if subject is not None:
+        authored = (getattr(run, "_item_checks", None) or {}).get(
+            subject.work_id, authored)
     if authored:
         files.append(("the validator's authored acceptance check", authored))
 
     seen = {os.path.abspath(authored)} if authored else set()
-    root = (getattr(run, "_review_work_dir", "")
-            or getattr(run, "candidate_dir", "") or "")
+    root = getattr(run, "_review_work_dir", "") or ""
+    if not root and subject is not None:
+        getter = getattr(run, "item_tree_dir", None)
+        root = getter(subject.work_id) if callable(getter) else ""
     if not os.path.isdir(root):
         return files
 
-    items = [
-        item for item in (getattr(run, "work_items", None) or {}).values()
-        if getattr(item, "kind", "") == "builder"
-    ]
-    queues = [
-        (item, _spread(sorted(getattr(item, "changed_files", None) or [])))
-        for item in items
-    ]
-    while any(paths for _item, paths in queues) and len(files) < _MAX_JUDGE_FILES:
-        for item, paths in queues:
-            if not paths or len(files) >= _MAX_JUDGE_FILES:
-                continue
-            rel = paths.pop(0)
-            full = os.path.join(root, *rel.replace("\\", "/").split("/"))
-            if not os.path.isfile(full) or os.path.abspath(full) in seen:
-                continue
-            seen.add(os.path.abspath(full))
-            files.append((
-                f"{item.work_id} ({item.capability}) changed {rel}",
-                full,
-            ))
+    # This pull request's OWN changed paths first, then the rest of the tree if the
+    # budget allows: the reviewer must see what this change does before it sees the
+    # base it sits on.
+    changed = sorted(getattr(subject, "changed_files", None) or []) if subject else []
+    for rel in changed:
+        if len(files) >= _MAX_JUDGE_FILES:
+            break
+        full = os.path.join(root, *rel.replace("\\", "/").split("/"))
+        if not os.path.isfile(full) or os.path.abspath(full) in seen:
+            continue
+        seen.add(os.path.abspath(full))
+        label = (f"{subject.work_id} ({subject.capability}) changed {rel}"
+                 if subject is not None else rel)
+        files.append((label, full))
 
     if len(files) >= _MAX_JUDGE_FILES:
         files.append((
             f"NOTE: changed-path contents were capped at {_MAX_JUDGE_FILES}; "
-            "the complete per-role inventory is in the provenance above",
+            "the complete inventory is in the provenance above",
             "",
         ))
         return files
 
-    # Older/read-only runs may not carry work-item provenance. Fill the remaining
-    # budget from the assembled candidate so those reviews still see real code.
+    # Fill the remaining budget from the tree, so a read-only review of an older run
+    # (which carries no per-item provenance) still sees real code.
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
             d for d in dirnames
@@ -769,7 +766,7 @@ def _artifact_files(run: Any) -> list[tuple[str, str]]:
                 continue
             seen.add(os.path.abspath(full))
             rel = os.path.relpath(full, root)
-            files.append((f"integration-candidate/{rel}", full))
+            files.append((f"on the base branch: {rel}", full))
             if len(files) >= _MAX_JUDGE_FILES:
                 files.append((
                     f"NOTE: artifact contents were capped at {_MAX_JUDGE_FILES}; "
@@ -795,9 +792,15 @@ def _abstained_assessment(gate: dict, approve: bool) -> str:
 
 
 def assess(run: Any, gate: dict, round_no: int,
-           judge: Any = _default_judge) -> Verdict:
-    """One review round: take the gate result, layer the integrated review, and
-    return the verdict whose markdown the engine posts on the PR.
+           judge: Any = _default_judge, subject: Any = None) -> Verdict:
+    """One review round over ONE pull request: take that pull request's gate result,
+    layer the independent review, and return the verdict whose markdown the engine
+    posts on that pull request.
+
+    ``subject`` is the work item under review. It is what makes this a per-pull-request
+    decision instead of a verdict about an assembled tree: the reviewer sees that one
+    pull request's files, on the base branch as it stands, so a sibling that already
+    merged is visible and a sibling that has not is not pretended to be.
 
     The ``judge`` is injectable (tests pass a fake or ``None`` to disable it);
     it defaults to one read-only model turn whose response must cover both
@@ -818,7 +821,7 @@ def assess(run: Any, gate: dict, round_no: int,
     jv = None
     if judge is not None:
         try:
-            jv = judge(run, gate)
+            jv = judge(run, gate, subject)
         except Exception:
             jv = None
     if jv is None:

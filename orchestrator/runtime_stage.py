@@ -54,13 +54,17 @@ def skill_path(run_id: str) -> str:
     return os.path.join(mnt_root(), f"{run_id}-skill")
 
 
-def candidate_subdir(run_id: str) -> str:
-    """The immutable integration candidate prefix visible to every Runtime."""
-    return f"{run_id}-candidate"
+def item_subdir(run_id: str, work_id: str) -> str:
+    """One pull request's immutable tree prefix, visible to the Runtime.
+
+    Keyed on the work id, not just the run: a run stages one of these per role
+    pull request, and a single per-run prefix would make them overwrite each other.
+    """
+    return f"{run_id}-pr-{work_id}"
 
 
-def candidate_path(run_id: str) -> str:
-    return os.path.join(mnt_root(), candidate_subdir(run_id))
+def item_path(run_id: str, work_id: str) -> str:
+    return os.path.join(mnt_root(), item_subdir(run_id, work_id))
 
 
 def base_subdir(run_id: str) -> str:
@@ -363,20 +367,20 @@ def copy_tree_files(source: str, destination: str, *,
     return count
 
 
-def stage_candidate(run_id: str, local_dir: str,
-                    region: str | None = None) -> int:
-    """Publish the exact integration candidate as immutable Runtime input.
+def stage_item(run_id: str, work_id: str, local_dir: str,
+               region: str | None = None) -> int:
+    """Publish ONE pull request's tree as immutable Runtime input.
 
-    A candidate is rebuilt after a repair round. The old prefix is removed first
-    so a deleted file from round one cannot survive into the tree the validator
-    inspects in round two.
+    A tree is rebuilt after a repair round. The old prefix is removed first so a
+    deleted file from round one cannot survive into the tree the validator inspects
+    in round two.
     """
     if not os.path.isdir(local_dir):
-        raise RuntimeError(f"candidate directory does not exist: {local_dir}")
+        raise RuntimeError(f"pull request tree does not exist: {local_dir}")
     if os.environ.get("WORKSHOP_S3FILES_DIR"):
-        dest = candidate_path(run_id)
+        dest = item_path(run_id, work_id)
         return copy_tree_files(local_dir, dest)
-    return _put_archive(candidate_subdir(run_id), [(local_dir, "")], region)
+    return _put_archive(item_subdir(run_id, work_id), [(local_dir, "")], region)
 
 
 def stage_base(run_id: str, local_dir: str,

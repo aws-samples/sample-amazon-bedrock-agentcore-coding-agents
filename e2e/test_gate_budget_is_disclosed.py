@@ -61,7 +61,8 @@ def test_the_budget_reaches_the_authored_check(tmp_path) -> None:
     run = _authored_check(str(tmp_path), "#!/bin/sh\n"
                                          'test -n "$WORKSHOP_GATE_TIMEOUT_S" || exit 3\n'
                                          'echo "budget=$WORKSHOP_GATE_TIMEOUT_S"\n')
-    result = reviewer.run_gate(run)
+    result = reviewer.run_gate(
+        run._acceptance_test_file, run.workdir, run.task)
     assert result["passed"], result
     assert f"budget={reviewer.GATE_TIMEOUT_S}" in str(result)
 
@@ -72,7 +73,8 @@ def test_the_budget_matches_what_the_engine_enforces(tmp_path) -> None:
 
     run = _authored_check(str(tmp_path), "#!/bin/sh\n"
                                          'echo "$WORKSHOP_GATE_TIMEOUT_S"\n')
-    result = reviewer.run_gate(run)
+    result = reviewer.run_gate(
+        run._acceptance_test_file, run.workdir, run.task)
     reported = "".join(c["detail"] for c in result["checks"] if "detail" in c) \
         if result.get("checks") else ""
     assert str(reviewer.GATE_TIMEOUT_S) in reported + str(result)
@@ -87,7 +89,8 @@ def test_the_engine_still_hands_over_no_answers(tmp_path) -> None:
     import reviewer
 
     run = _authored_check(str(tmp_path), "#!/bin/sh\nenv | sort\n")
-    reviewer.run_gate(run)
+    reviewer.run_gate(
+        run._acceptance_test_file, run.workdir, run.task)
     # Inspect the names the engine sets, from its own source of truth.
     source = open(os.path.join(_ORCH, "reviewer.py"), encoding="utf-8").read()
     block = source[source.index('"WORKSHOP_WORK_DIR":'):]

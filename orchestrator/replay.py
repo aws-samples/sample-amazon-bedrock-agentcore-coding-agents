@@ -100,14 +100,18 @@ def _role_rows(run: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _check_excerpt(run: Any) -> tuple[str, int] | None:
-    """(excerpt, total_lines) of the validator's authored check, or None.
+def _check_excerpt(run: Any, item: Any = None) -> tuple[str, int] | None:
+    """(excerpt, total_lines) of the check authored for this pull request, or None.
 
     The check is the most interesting artifact in the whole run and the least
     likely to be read, because a reviewer has to know it exists first. Show its
-    head so the PR itself says what "the gate passed" MEANT for this task.
+    head so the pull request itself says what "the check passed" MEANT here.
     """
-    path = getattr(run, "_acceptance_test_file", None)
+    path = None
+    if item is not None:
+        path = (getattr(run, "_item_checks", None) or {}).get(
+            getattr(item, "work_id", ""))
+    path = path or getattr(run, "_acceptance_test_file", None)
     if not path or not os.path.isfile(path):
         return None
     try:
@@ -262,98 +266,45 @@ def gate_evidence_comment(
     gate: dict[str, Any],
     *,
     stage: str,
-    candidate_digest: str = "",
+    item: Any = None,
     assessment: str = "",
 ) -> str:
-    """Evidence posted on role PR timelines as the queue advances."""
+    """Evidence posted on ONE pull request's timeline.
+
+    This comment is where an attendee actually reads what happened, because a PR
+    body is write-once (the Gateway exposes no ``update_pull_request``). So it
+    carries the check's own result, the base it ran against, and the review
+    Assessment for THIS pull request -- not a run-wide digest naming work that is not
+    in this diff.
+    """
     lines = [
         f"### {stage}",
         "",
         f"Executed check: **{'PASSED' if gate.get('passed') else 'FAILED'}**",
     ]
-    if candidate_digest:
-        lines.append(f"Combined version: `{candidate_digest[:12]}`")
+    base = getattr(run, "final_base_branch", None)
+    if item is not None and base:
+        lines.append(
+            f"Checked on `{base}` as it stood, plus this pull request "
+            f"(`{str(getattr(item, 'patch_digest', '') or '')[:12]}`).")
     if gate.get("summary"):
         lines += ["", f"`{_cell(str(gate['summary']), 240)}`"]
     lines += [
         "",
-        "The validator wrote this check for the request. The orchestrator ran it "
-        "and used its exit code.",
+        "The validator wrote this check for this pull request. The orchestrator ran "
+        "it and used its exit code.",
     ]
+    excerpt = _check_excerpt(run, item)
+    if excerpt:
+        body, total = excerpt
+        lines += [
+            "",
+            f"<details><summary>The check that ran ({total} lines)</summary>",
+            "", "```", body, "```", "</details>",
+        ]
     if assessment:
         lines += ["", assessment.strip()]
     return "\n".join(lines).rstrip() + "\n"
-
-
-def integration_narrative(run: Any) -> str:
-    """Final integration PR body: role PRs, gates, and queue evidence."""
-    brief = getattr(run, "integration_brief", None) or {}
-    items = [
-        item for item in (getattr(run, "work_items", None) or {}).values()
-        if getattr(item, "kind", "") == "builder"
-    ]
-    gates = list(getattr(run, "gate_history", None) or [])
-    queue = list(getattr(run, "merge_queue", None) or [])
-    lines = [
-        "## Request",
-        "",
-        "> " + str(getattr(run, "task", "") or "").replace("\n", "\n> "),
-        "",
-        "## Shared Plan",
-        "",
-    ]
-    lines.extend(f"- {row}" for row in brief.get("shared_contract") or [])
-    lines += [
-        "",
-        "## Role Pull Requests",
-        "",
-        "| role | work id | pull request | state |",
-        "|---|---|---|---|",
-    ]
-    for item in items:
-        pr = item.pr or {}
-        url = pr.get("pr_url")
-        link = f"[#{pr.get('number')}]({url})" if url else "_not available_"
-        lines.append(
-            f"| {_cell(item.role, 48)} | `{item.work_id}` | {link} | "
-            f"{item.merge_state or item.state} |")
-    lines += [
-        "",
-        "## Merge Checked Work",
-        "",
-    ]
-    if queue:
-        for row in queue:
-            lines.append(
-                f"- `{row.get('work_id', '')}`: {row.get('state', '')}"
-                + (f" at `{str(row.get('sha') or '')[:12]}`"
-                   if row.get("sha") else ""))
-    else:
-        lines.append("_No queue events were recorded._")
-    lines += [
-        "",
-        "## Checks Run",
-        "",
-        "| when | combined version | result | summary |",
-        "|---|---|---|---|",
-    ]
-    for row in gates:
-        lines.append(
-            f"| {_cell(str(row.get('stage') or ''), 60)} | "
-            f"`{str(row.get('candidate_digest') or '')[:12]}` | "
-            f"{'PASSED' if row.get('passed') else 'FAILED'} | "
-            f"{_cell(str(row.get('summary') or ''), 100)} |")
-    _append_review_panel(lines, run)
-    lines += [
-        "",
-        "Every role worked in a separate checkout and pull request. The "
-        "validator's check ran again after each merge. The behavior and design "
-        "reviews could stop a merge, but no model could change a failed check "
-        "into a pass.",
-        "",
-        f"<sub>run `{getattr(run, 'run_id', '')}` · final integration evidence</sub>",
-    ]
-    return "\n".join(lines) + "\n"
 
 
 def narrative(run: Any) -> str:

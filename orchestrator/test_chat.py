@@ -229,8 +229,8 @@ def test_system_prompt_tells_the_model_to_pass_the_task_verbatim():
     assert "VERBATIM" in chat.SYSTEM_PROMPT
     assert "tool result's `schedule` as authoritative" in chat.SYSTEM_PROMPT
     assert "selected checker is WAITING" in chat.SYSTEM_PROMPT
-    assert "Builder role PRs are published BEFORE" in chat.SYSTEM_PROMPT
-    assert "Never claim that a gate must pass before a role PR opens" in (
+    assert "Builder pull requests are published BEFORE" in chat.SYSTEM_PROMPT
+    assert "Never claim that a gate must pass before a pull request opens" in (
         chat.SYSTEM_PROMPT
     )
     assert 'Never group builders and checkers together as "agents are working"' in (

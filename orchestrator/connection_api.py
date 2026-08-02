@@ -234,11 +234,8 @@ def dispatch(method: str, path: str, body: dict | None,
                 },
                 "integration_brief": run.integration_brief,
                 "integration_base": run.integration_base,
-                "integration_candidate": run.integration_candidate,
-                "integration_conflicts": run.integration_conflicts,
-                "integration_branch": run.integration_branch,
                 "final_base_branch": run.final_base_branch,
-                "merge_queue": run.merge_queue,
+                "role_prs": run.role_prs,
                 "gate_history": run.gate_history,
                 "gate": run.gate,
                 "review": run.review,
@@ -246,7 +243,7 @@ def dispatch(method: str, path: str, body: dict | None,
                 "merge_state": run.merge_state,
                 "next_action": next_action(
                     run.status, run.fail_reason, run.pr, run.pr_url,
-                    run.integration_conflicts),
+                    run.role_prs),
                 "resubmission_allowed": resubmission_allowed(
                     run.status, run.fail_reason),
             })
@@ -271,16 +268,17 @@ def dispatch(method: str, path: str, body: dict | None,
                 return 400, {"error": "invalid JSON body"}
             if body.get("clear"):
                 return 200, github.clear_settings()
-            if (body.get("final_merge_policy") is not None
-                    and not body.get("repo")):
-                return 200, github.set_final_merge_policy(
-                    body.get("final_merge_policy"))
+            policy = (body.get("merge_policy")
+                      if body.get("merge_policy") is not None
+                      else body.get("final_merge_policy"))
+            if policy is not None and not body.get("repo"):
+                return 200, github.set_merge_policy(policy)
             # Gateway model: the attendee supplies their template-derived repo
             # (owner/name); NO token. The gateway URL is normally wired by the
             # workshop (env), but the console may also pass it.
             out = github.save_settings(body.get("repo", ""),
                                        body.get("gateway_url"),
-                                       body.get("final_merge_policy"))
+                                       policy)
             return (400, out) if "error" in out else (200, out)
         if path == "/api/kiro":
             # Paste a Kiro API key (ksk_...) -> store it SECURELY in the AgentCore

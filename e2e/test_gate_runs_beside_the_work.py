@@ -100,21 +100,29 @@ def test_supported_toolchains_cross_every_execution_boundary(
             "validator",
             "validator",
             kind="checker",
+            base_branch="main",
             token="nfs-checkout",
         )
     )
-    os.makedirs(os.path.join(checker_run.candidate_dir, "dist"))
+    # The checker is reset to ONE pull request's tree at a time, so the subject work
+    # item is what names the tree it gets.
+    subject = work_items.WorkItem.create(
+        checker_run.run_id, "claude-code", "backend-builder", "backend",
+        base_branch="main", token="nfs-subject")
+    checker_run.work_items["claude-code"] = subject
+    tree = checker_run.item_tree_dir(subject.work_id)
+    os.makedirs(os.path.join(tree, "dist"))
     shutil.copyfile(
         candidate / "dist" / "app.js",
-        os.path.join(checker_run.candidate_dir, "dist", "app.js"),
+        os.path.join(tree, "dist", "app.js"),
     )
     work_items.initialize_worktree_repo(
         checker_run.worktree_repo_dir,
-        checker_run.candidate_dir,
+        tree,
     )
     eng = engine.Engine.__new__(engine.Engine)
     eng.executor = type("Executor", (), {"name": "agentcore"})()
-    eng._prepare_checker_checkout(checker_run, "claude-code-validator")
+    eng._prepare_checker_checkout(checker_run, "claude-code-validator", subject)
     staged = (
         mount
         / checker_run.runtime_subdir("claude-code-validator")
@@ -149,8 +157,12 @@ def _run(agents):
     return engine, run
 
 
-def _assemble_candidate(engine, run, builder):
-    """Follow the production boundary: exact base + role patch -> candidate."""
+def _build_item_tree(engine, run, builder):
+    """Follow the production boundary: base branch + THIS role's patch -> its tree.
+
+    One pull request, one tree. The gate then runs beside that tree, which is the
+    invariant every test below is about.
+    """
     import work_items
 
     os.makedirs(run.integration_base_dir, exist_ok=True)
@@ -158,17 +170,19 @@ def _assemble_candidate(engine, run, builder):
     if item is None:
         item = work_items.WorkItem.create(
             run.run_id, "claude-code", "backend-builder", "backend",
-            token="gate-test")
+            base_branch="main", token="gate-test")
         run.work_items["claude-code"] = item
     item_base = run.item_base_dir("claude-code")
     os.makedirs(item_base, exist_ok=True)
-    candidate = work_items.assemble_candidate(
+    work_items.apply_patch(
         run.integration_base_dir,
-        [(item, item_base, builder)],
-        run.candidate_dir,
+        item,
+        item_base,
+        builder,
+        run.item_tree_dir(item.work_id),
         exclude=engine._work_patch_excluded,
     )
-    run.integration_candidate = candidate.public()
+    return item
 
 
 def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
@@ -194,8 +208,8 @@ def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
-        _assemble_candidate(engine, run, builder)
-        staged = eng._gate_dir_check_path(run, authored)
+        item = _build_item_tree(engine, run, builder)
+        staged = eng._gate_dir_check_path(run, authored, item)
 
         gate_dir = os.path.dirname(staged)
         assert os.path.isfile(os.path.join(gate_dir, "server.py")), (
@@ -236,9 +250,12 @@ def test_a_sibling_resolving_check_passes_through_the_real_gate():
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
-        _assemble_candidate(engine, run, builder)
-        run._acceptance_test_file = eng._gate_dir_check_path(run, authored)
-        gate = reviewer.run_gate(run)
+        item = _build_item_tree(engine, run, builder)
+        run._acceptance_test_file = eng._gate_dir_check_path(run, authored, item)
+        gate = reviewer.run_gate(
+            run._acceptance_test_file,
+            os.path.dirname(run._acceptance_test_file),
+            run.task)
 
         assert gate["passed"] is True, (
             "a correct deliverable was graded RED because the check could not see "
@@ -268,9 +285,12 @@ def test_a_genuinely_broken_deliverable_still_fails():
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
-        _assemble_candidate(engine, run, builder)
-        run._acceptance_test_file = eng._gate_dir_check_path(run, authored)
-        gate = reviewer.run_gate(run)
+        item = _build_item_tree(engine, run, builder)
+        run._acceptance_test_file = eng._gate_dir_check_path(run, authored, item)
+        gate = reviewer.run_gate(
+            run._acceptance_test_file,
+            os.path.dirname(run._acceptance_test_file),
+            run.task)
         assert gate["passed"] is False, gate
     finally:
         import shutil
@@ -303,8 +323,8 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
             f.write(_SIBLING_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
-        _assemble_candidate(engine, run, builder)
-        staged = eng._gate_dir_check_path(run, authored)
+        item = _build_item_tree(engine, run, builder)
+        staged = eng._gate_dir_check_path(run, authored, item)
         gate_dir = os.path.dirname(staged)
         # Round 1's check started the service, which dropped state in the gate dir.
         with open(os.path.join(gate_dir, "issues.db"), "w") as f:
@@ -314,8 +334,8 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
         os.remove(os.path.join(builder, "server.py"))
         with open(os.path.join(builder, "server2.py"), "w") as f:
             f.write("# round 2\n")
-        _assemble_candidate(engine, run, builder)
-        staged2 = eng._gate_dir_check_path(run, authored)
+        item = _build_item_tree(engine, run, builder)
+        staged2 = eng._gate_dir_check_path(run, authored, item)
         gate_dir2 = os.path.dirname(staged2)
         assert not os.path.exists(os.path.join(gate_dir2, "issues.db")), (
             "round 1's run-time state survived into round 2's gate workspace")
@@ -330,8 +350,8 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
         # if that ordering is ever changed.
         with open(os.path.join(builder, "acceptance_check"), "w") as f:
             f.write("#!/bin/sh\necho stale round-1 check\nexit 0\n")
-        _assemble_candidate(engine, run, builder)
-        staged3 = eng._gate_dir_check_path(run, authored)
+        item = _build_item_tree(engine, run, builder)
+        staged3 = eng._gate_dir_check_path(run, authored, item)
         with open(staged3, encoding="utf-8") as f:
             body = f.read()
         assert "stale round-1 check" not in body, (

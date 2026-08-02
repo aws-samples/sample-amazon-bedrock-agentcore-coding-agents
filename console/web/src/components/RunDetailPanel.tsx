@@ -7,7 +7,6 @@ import {
   FileCheck2,
   GitMerge,
   GitPullRequest,
-  Layers3,
   Loader2,
   ScrollText,
   ShieldCheck,
@@ -15,7 +14,7 @@ import {
 import { AgentIcon } from './AgentIcon';
 import type {
   GateRecord,
-  MergeQueueEntry,
+  RolePrEntry,
   RunDetail,
   WorkItem,
 } from '../api';
@@ -50,36 +49,34 @@ function statusLabel(status: string): string {
 
 const integerFormat = new Intl.NumberFormat();
 
+// Five stages, matching the engine: each pull request is checked, reviewed, and
+// merged on its own. There is no combined tree and no final pull request above them.
 const WORKFLOW = [
   { label: 'Shared Plan', icon: ScrollText },
   { label: 'Role PRs', icon: GitPullRequest },
-  { label: 'Combined Work', icon: Layers3 },
-  { label: 'Run Check', icon: FileCheck2 },
-  { label: 'Integrated Review', icon: ShieldCheck },
-  { label: 'Checked Merges', icon: GitMerge },
-  { label: 'Final PR', icon: GitPullRequest },
+  { label: 'Per-PR Check', icon: FileCheck2 },
+  { label: 'Per-PR Review', icon: ShieldCheck },
+  { label: 'Merged', icon: GitMerge },
 ] as const;
+
+const SETTLED_PR_STATES = ['merged', 'awaiting_review'];
 
 function workflowPosition(run: RunDetail, builders: WorkItem[]): number {
   let position = -1;
   if (run.integration_brief) position = 0;
   if (builders.some((item) => item.pr?.pr_url || item.state !== 'pending')) position = 1;
-  if (run.integration_candidate || (run.integration_conflicts?.length ?? 0) > 0) position = 2;
-  if ((run.gate_history?.length ?? 0) > 0) position = 3;
-  if (run.review?.state || (run.review?.panels?.length ?? 0) > 0) position = 4;
-  if ((run.merge_queue?.length ?? 0) > 0) position = 5;
-  if (run.pr_url || run.merge_state) position = 6;
+  if ((run.gate_history?.length ?? 0) > 0) position = 2;
+  if (run.review?.state || (run.review?.panels?.length ?? 0) > 0) position = 3;
+  if ((run.role_prs ?? []).some((row) => SETTLED_PR_STATES.includes(row.state))) position = 4;
   return position;
 }
 
 function failedPosition(run: RunDetail): number {
-  if ((run.integration_conflicts?.length ?? 0) > 0) return 2;
-  if (run.fail_reason?.startsWith('FINAL_')) return 6;
-  if ((run.merge_queue ?? []).some((row) => row.state === 'blocked')) return 5;
+  if ((run.role_prs ?? []).some((row) => row.state === 'blocked')) return 4;
   const latest = run.gate_history?.at(-1);
-  if (latest && !latest.passed && ['failed', 'needs_human'].includes(run.status)) return 3;
+  if (latest && !latest.passed && ['failed', 'needs_human'].includes(run.status)) return 2;
   if (run.review?.state === 'changes_requested'
-      && ['failed', 'needs_human'].includes(run.status)) return 4;
+      && ['failed', 'needs_human'].includes(run.status)) return 3;
   return -1;
 }
 
@@ -91,8 +88,8 @@ function Workflow({ run, builders }: { run: RunDetail; builders: WorkItem[] }) {
   return (
     <div className="overflow-x-auto pb-1">
       <ol
-        className="grid min-w-[560px] grid-cols-7 sm:min-w-0"
-        aria-label="Integration workflow"
+        className="grid min-w-[560px] grid-cols-5 sm:min-w-0"
+        aria-label="Build workflow"
       >
         {WORKFLOW.map(({ label, icon: Icon }, index) => {
           const isFailed = failed === index;
@@ -281,26 +278,39 @@ function IntegratedReview({ review }: { review: RunDetail['review'] }) {
   );
 }
 
-function Queue({ rows }: { rows: MergeQueueEntry[] }) {
+function RolePullRequests({ rows }: { rows: RolePrEntry[] }) {
   return (
     <section className="min-w-0 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">Merge Checked Work</h3>
+      <h3 className="text-xs font-semibold">Pull Requests</h3>
       {rows.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">Waiting for the checks and reviews.</p>
       ) : (
-        <ol className="mt-2 space-y-1.5">
+        <ul className="mt-2 space-y-1.5">
           {rows.map((row) => (
-            <li key={row.work_id} className="flex min-w-0 items-center gap-2 text-xs">
-              <span className="flex size-5 shrink-0 items-center justify-center rounded-full border font-mono text-[10px]">
-                {row.position}
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono" translate="no">{row.work_id}</span>
-              <Badge variant={statusVariant(row.state)} className="text-[10px]">
-                {statusLabel(row.state)}
-              </Badge>
+            <li key={row.work_id} className="min-w-0 text-xs">
+              <div className="flex min-w-0 items-center gap-2">
+                {row.pr_url ? (
+                  <a
+                    href={row.pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-w-0 flex-1 truncate font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {row.role || row.agent}
+                  </a>
+                ) : (
+                  <span className="min-w-0 flex-1 truncate">{row.role || row.agent}</span>
+                )}
+                <Badge variant={statusVariant(row.state)} className="text-[10px]">
+                  {row.state === 'awaiting_review' ? 'Ready to Merge' : statusLabel(row.state)}
+                </Badge>
+              </div>
+              {row.error && (
+                <p className="mt-0.5 break-words text-[10px] text-destructive">{row.error}</p>
+              )}
             </li>
           ))}
-        </ol>
+        </ul>
       )}
     </section>
   );
@@ -313,7 +323,7 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
   const builders = items.filter((item) => item.kind === 'builder');
   const checker = items.find((item) => item.kind === 'checker');
   const gates = run.gate_history ?? [];
-  const queue = run.merge_queue ?? [];
+  const rolePrs = run.role_prs ?? [];
   const brief = run.integration_brief;
   const done = run.status === 'passed';
   const failed = run.status === 'failed' || run.status === 'needs_human';
@@ -366,64 +376,18 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
       <WorkItemsTable builders={builders} />
 
       <div className="grid gap-4 md:grid-cols-2">
-        <section className="min-w-0 border-t border-border pt-3">
-          <h3 className="text-xs font-semibold">Combined Work</h3>
-          {run.integration_candidate?.digest ? (
-            <div className="mt-2 space-y-1 text-xs">
-              <p>
-                {run.integration_candidate.files?.length ?? 0} files from {builders.length} role PRs
-              </p>
-              <code className="block truncate text-[10px] text-muted-foreground" translate="no">
-                {run.integration_candidate.digest}
-              </code>
-            </div>
-          ) : (run.integration_conflicts?.length ?? 0) > 0 ? (
-            <ul className="mt-2 space-y-1 text-xs text-destructive">
-              {run.integration_conflicts?.map((row) => (
-                <li key={`${row.path}-${row.second_work_id}`} className="break-words">
-                  {row.path}: {row.reason}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-xs text-muted-foreground">Waiting for the developers.</p>
-          )}
-          {checker && (
-            <p className="mt-2 break-all text-[10px] text-muted-foreground">
-              Validator <code translate="no">{checker.work_id}</code>
-            </p>
-          )}
-        </section>
         <GateHistory gates={gates} />
         <IntegratedReview review={run.review} />
-        <Queue rows={queue} />
-        <section className="min-w-0 border-t border-border pt-3">
-          <h3 className="text-xs font-semibold">Final Pull Request</h3>
-          {run.pr_url ? (
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-              <a
-                href={run.pr_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <GitPullRequest aria-hidden="true" className="size-3.5" />
-                Open Final PR
-              </a>
-              {run.merge_state && (
-                <Badge variant={statusVariant(run.merge_state)} className="text-[10px]">
-                    {run.merge_state === 'merged'
-                      ? 'Auto-Merged'
-                      : statusLabel(run.merge_state)}
-                </Badge>
-              )}
-            </div>
-          ) : (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Opens against the default branch after every check and review passes.
+        <RolePullRequests rows={rolePrs} />
+        {checker && (
+          <section className="min-w-0 border-t border-border pt-3">
+            <h3 className="text-xs font-semibold">Validator</h3>
+            <p className="mt-2 break-all text-[10px] text-muted-foreground">
+              <code translate="no">{checker.work_id}</code> authored one executable
+              check per pull request. Its real exit code is that pull request's gate.
             </p>
-          )}
-        </section>
+          </section>
+        )}
       </div>
 
       {progress.some((entry) => entry.tokens > 0) && (

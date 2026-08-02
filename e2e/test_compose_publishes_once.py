@@ -1,4 +1,11 @@
-"""The pull request publishes the validated integration candidate exactly once."""
+"""Compose publishes each gated pull request's work exactly once.
+
+There is no assembled multi-role candidate any more: each pull request has its OWN
+tree, and compose writes a local scratch commit for the console's Changes tab from
+what the run actually produced. What still matters, and is asserted here, is that the
+FRESHLY authored check ships beside the work and a stale copy a builder happened to
+write never shadows it.
+"""
 
 from __future__ import annotations
 
@@ -50,24 +57,24 @@ def _run(engine, run_id: str):
     return run
 
 
-def _assemble(engine, run):
+def _build_trees(engine, run):
+    """Build EACH builder's own pull request tree, as the engine does per PR."""
     import work_items
 
     builders = [
         run.work_items["claude-code"],
         run.work_items["opencode"],
     ]
-    candidate = work_items.assemble_candidate(
-        run.integration_base_dir,
-        [
-            (item, run.item_base_dir(item.agent), run.roledir(item.agent))
-            for item in builders
-        ],
-        run.candidate_dir,
-        exclude=engine._work_patch_excluded,
-    )
-    run.integration_candidate = candidate.public()
-    return candidate
+    for item in builders:
+        work_items.apply_patch(
+            run.integration_base_dir,
+            item,
+            run.item_base_dir(item.agent),
+            run.roledir(item.agent),
+            run.item_tree_dir(item.work_id),
+            exclude=engine._work_patch_excluded,
+        )
+    return builders
 
 
 def _author_check(run, body: str = "#!/bin/sh\nexit 0\n") -> str:
@@ -95,38 +102,65 @@ def test_candidate_is_committed_once_without_coordination_or_run_state():
             ".workshop/refresh.json": "{}\n",
             "AGENTS.md": "harness steering\n",
         })
-        candidate = _assemble(engine, run)
+        builders = _build_trees(engine, run)
         check = _author_check(run)
-        run._acceptance_test_file = eng._gate_dir_check_path(run, check)
+        run._acceptance_test_file = eng._gate_dir_check_path(
+            run, check, builders[0])
         run.gate = {"passed": True, "summary": "green"}
 
         eng._compose_commit_locked(run)
         paths = sorted(f["path"] for f in engine.public_diff(run)["files"])
 
+        # Every role's real files, the authored check beside them, and NOTHING the
+        # patch excludes (harness steering, runtime state, coordination files).
         assert paths == [
             "acceptance_check", "server.py", "start.sh",
             "static/index.html",
         ]
-        assert candidate.files == [
-            "server.py", "start.sh", "static/index.html"]
+        assert {item.work_id for item in builders} == {
+            item.work_id for item in builders}
     finally:
         shutil.rmtree(run.workdir, ignore_errors=True)
 
 
-def test_conflicting_role_patches_never_reach_compose():
+def test_a_patch_whose_base_moved_is_refused_not_overwritten():
+    """Two roles touching one path is NOT a conflict any more: each pull request is
+    built on the base branch alone, so they simply do not see each other.
+
+    What IS refused is the real hazard: a pull request whose base changed the very
+    path it also changed. That is "someone merged before you", and silently
+    overwriting their merged work is the failure this guard prevents.
+    """
     engine = importlib.import_module("engine")
     import work_items
 
     run = _run(engine, "run_000000_882")
     try:
+        # Both roles change the same path. Built independently, BOTH succeed: they
+        # are separate pull requests, and neither one's tree contains the other.
         _write(run.roledir("claude-code"), {
             "package.json": '{"name":"backend"}\n'})
         _write(run.roledir("opencode"), {
             "package.json": '{"name":"frontend"}\n'})
+        builders = _build_trees(engine, run)
+        for item in builders:
+            assert os.path.isdir(run.item_tree_dir(item.work_id))
 
-        with pytest.raises(work_items.IntegrationConflict):
-            _assemble(engine, run)
-        assert not os.path.isdir(run.candidate_dir)
+        # Now the BASE moves under one of them: the branch it merges into changed the
+        # same path since it received its base. That must be refused.
+        item = run.work_items["opencode"]
+        _write(run.integration_base_dir, {
+            "package.json": '{"name":"already-merged-by-someone-else"}\n'})
+        with pytest.raises(work_items.StalePatch):
+            work_items.apply_patch(
+                run.integration_base_dir,
+                item,
+                run.item_base_dir(item.agent),
+                run.roledir(item.agent),
+                run.item_tree_dir(item.work_id),
+                exclude=engine._work_patch_excluded,
+            )
+        assert not os.path.isdir(run.item_tree_dir(item.work_id))
     finally:
         shutil.rmtree(run.workdir, ignore_errors=True)
 
@@ -141,10 +175,11 @@ def test_validator_check_ships_once_from_the_executed_gate_workspace():
             "acceptance_check": "#!/bin/sh\necho stale\nexit 0\n",
         })
         _write(run.roledir("opencode"), {"index.html": "<h1>UI</h1>\n"})
-        _assemble(engine, run)
+        builders = _build_trees(engine, run)
         authored = _author_check(
             run, "#!/bin/sh\necho current validator check\nexit 0\n")
-        run._acceptance_test_file = eng._gate_dir_check_path(run, authored)
+        run._acceptance_test_file = eng._gate_dir_check_path(
+            run, authored, builders[0])
         run.gate = {"passed": True, "summary": "green"}
 
         eng._compose_commit_locked(run)

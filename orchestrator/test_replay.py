@@ -159,45 +159,90 @@ def test_the_round_comment_exists_because_a_body_cannot_be_rewritten():
     assert "passed" in note
 
 
-def test_final_pr_reports_the_integrated_review_and_both_lenses():
-    run = _run(
-        review={
-            "state": "approved",
-            "panels": [
-                {
-                    "name": "integrated",
-                    "label": "Integrated review",
-                    "state": "changes_requested",
-                    "model": "model-a",
-                    "reasons": ["The restart path drops persisted filters."],
-                    "assessment": (
-                        "#### Adversarial verification\n\n"
-                        "Traced the API status value into the UI.\n\n"
-                        "#### Design & integration\n\n"
-                        "Persistence ownership is incomplete."
-                    ),
-                },
-            ],
-        },
-        work_items={},
-        integration_brief={"shared_contract": []},
-        gate_history=[{
-            "stage": "full candidate",
-            "candidate_digest": "abc123",
-            "passed": True,
-            "summary": "all probes passed",
-        }],
-        merge_queue=[],
+def test_each_pull_request_carries_its_own_evidence_and_both_lenses():
+    """Replaces the deleted `integration_narrative` test (there is no final PR).
+
+    The evidence a reviewer reads now lands on EACH pull request, so this pins the
+    same facts one level down: this pull request's own executed result, the base it
+    ran against, and the review Assessment carrying BOTH required lenses. A comment
+    that only said "the check passed" would hide which lens approved it, and a
+    comment naming a run-wide digest would describe work that is not in this diff.
+    """
+    tmp = tempfile.mkdtemp()
+    check = os.path.join(tmp, "acceptance_check")
+    with open(check, "w", encoding="utf-8") as f:
+        f.write("#!/usr/bin/env python3\n"
+                "# probe 1: the service starts on the handed port\n"
+                "# probe 2: a filter survives a restart\n")
+    item = types.SimpleNamespace(
+        work_id="work_claude-code_abc123",
+        agent="claude-code",
+        role="backend",
+        capability="backend",
+        base_branch="main",
+        base_sha="0123456789abcdef",
+        patch_digest="fedcba9876543210",
+        changed_files=["server.py"],
+        deleted_files=[],
     )
-    body = replay.integration_narrative(run)
-    assert "Integrated Read-only Review" in body
+    assessment = (
+        "**Assessment**: Request changes\n\n"
+        "#### Adversarial verification\n\n"
+        "Traced the API status value into the UI.\n\n"
+        "#### Design & integration\n\n"
+        "Persistence ownership is incomplete: "
+        "The restart path drops persisted filters."
+    )
+    body = replay.gate_evidence_comment(
+        _run(final_base_branch="main",
+             _item_checks={item.work_id: check}),
+        {"passed": True, "summary": "all 7 probes passed"},
+        stage=f"{item.work_id} round 1",
+        item=item,
+        assessment=assessment,
+    )
+    # THIS pull request, named, and the base it was actually checked against.
+    assert item.work_id in body, body
+    assert "`main`" in body and "as it stood" in body, body
+    assert item.patch_digest[:12] in body, body
+    # Its own executed result, and where the definition of correct came from.
+    assert "PASSED" in body and "all 7 probes passed" in body
+    assert "The validator wrote this check for this pull request" in body
+    # The check excerpt: the most interesting artifact, shown per pull request.
+    assert "a filter survives a restart" in body, body
+    # BOTH required lenses reach the pull request, plus the finding itself.
     assert "Adversarial verification" in body
     assert "Design & integration" in body
     assert "The restart path drops persisted filters." in body
-    assert (
-        "without seeing a builder's conversation or self-review"
-        in body
+
+
+def test_a_pull_request_body_reports_its_own_ownership_and_paths():
+    """The body is write-once, so it states scope; the verdict arrives as comments."""
+    item = types.SimpleNamespace(
+        work_id="work_opencode_def456",
+        agent="opencode",
+        role="frontend",
+        capability="frontend",
+        base_branch="main",
+        base_sha="abcdef0123456789",
+        patch_digest="99887766554433",
+        changed_files=["src/App.tsx", "src/api.ts"],
+        deleted_files=["src/old.tsx"],
     )
+    body = replay.work_item_narrative(
+        _run(integration_brief={
+            "shared_contract": ["the API returns `items`, snake_case"],
+            "role_assignments": {
+                "opencode": {"objective": "the interface over the same service"}},
+        }),
+        item,
+    )
+    assert item.work_id in body and "`main`" in body
+    assert "the interface over the same service" in body
+    assert "the API returns `items`, snake_case" in body
+    for path in item.changed_files:
+        assert f"`{path}`" in body, body
+    assert "`src/old.tsx` (deleted)" in body, body
 
 
 def test_a_retry_with_no_recorded_reasons_says_so_rather_than_implying_none():
@@ -326,11 +371,23 @@ def test_a_missing_check_file_is_simply_absent_not_invented():
 
 
 def test_the_engine_uses_the_narrative_as_the_pr_body():
-    """A body that is never wired up is documentation, not a feature."""
+    """A body that is never wired up is documentation, not a feature.
+
+    There is no final integration PR any more, so the wiring to check is the ONE that
+    reaches a reviewer: each role pull request's own body, and the per-pull-request
+    evidence comment that carries its check and Assessment. A PR body is write-once
+    (the Gateway exposes no update_pull_request), which is exactly why the comment
+    has to be wired too.
+    """
     engine_src = open(os.path.join(os.path.dirname(replay.__file__), "engine.py"),
                       encoding="utf-8").read()
-    assert "replay.integration_narrative(run)" in engine_src, (
-        "engine.py does not pass the queue evidence narrative to the final "
-        "integration PR")
+    assert "replay.work_item_narrative(run, item)" in engine_src, (
+        "engine.py does not use the narrative as each pull request's body")
+    assert "replay.gate_evidence_comment(" in engine_src, (
+        "engine.py does not post the per-pull-request check and review evidence")
+    assert "item=item" in engine_src or "item=target" in engine_src, (
+        "the evidence comment is not attributed to a specific pull request")
     assert "Automated build for:" not in engine_src, (
         "the old two-line PR body is still there")
+    assert "integration_narrative" not in engine_src, (
+        "the deleted final-PR narrative is still referenced")

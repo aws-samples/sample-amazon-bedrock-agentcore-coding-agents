@@ -1,4 +1,15 @@
-"""GitHub Gateway tests for role PRs, the merge queue, and the final PR."""
+"""GitHub Gateway tests for the per-pull-request flow.
+
+One pull request per role, each based on the repository's DEFAULT branch, each
+checked, reviewed, and merged on its own. There is no assembled candidate, no merge
+queue, and no final integration pull request, so nothing here pins an order between
+pull requests: a red one never blocks a green sibling.
+
+Every test in this module runs against a fake ``_gateway_rpc``, and the settings and
+merge-policy files are redirected into ``tmp_path`` (on top of the suite-wide
+``WORKSHOP_GITHUB_SETTINGS`` isolation in ``conftest.py``). No test may reach a real
+gateway or open a real pull request.
+"""
 
 from __future__ import annotations
 
@@ -36,8 +47,8 @@ def _sandbox(monkeypatch, tmp_path):
         github, "_SETTINGS", str(tmp_path / "github_gateway.local.json"))
     monkeypatch.setattr(github, "_RUNS_DIR", str(tmp_path))
     monkeypatch.setattr(
-        github, "_FINAL_MERGE_POLICY_FILE",
-        str(tmp_path / "final_merge_policy.local.json"))
+        github, "_MERGE_POLICY_FILE",
+        str(tmp_path / "merge_policy.local.json"))
 
 
 def _wire(monkeypatch, tmp_path, repo="octocat/critter-lab"):
@@ -67,30 +78,57 @@ def _archive(files: dict[str, bytes]) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def test_settings_keep_repository_and_final_policy_separate_and_fail_closed(
+def test_settings_keep_repository_and_merge_policy_separate_and_fail_closed(
         monkeypatch, tmp_path):
+    """The repository and the merge policy are separate settings, and both fail closed.
+
+    The policy used to govern one final integration pull request; with each role
+    pull request standing on its own it governs every reviewed pull request. The
+    invariants are unchanged: an unparsable repo is rejected rather than half-saved,
+    an unknown policy falls back to ``human_review`` (the human boundary, never
+    ``auto``), and neither write clobbers the other.
+    """
     _sandbox(monkeypatch, tmp_path)
     status = github.status()
     assert status["connected"] is False
     assert status["workshop_repo"] == github.WORKSHOP_REPO
-    assert status["final_merge_policy"] == "human_review"
+    assert status["merge_policy"] == "human_review"
     assert "pre-flight" in status["hint"]
     assert "error" in github.save_settings("not-a-repo")
 
     github.save_settings(
-        "octocat/my-repo", gateway_url=_GW, final_policy="auto")
+        "octocat/my-repo", gateway_url=_GW, merge_policy_value="auto")
     assert github._gateway_config()["repo"] == "octocat/my-repo"
-    assert github.final_merge_policy() == "auto"
+    assert github.merge_policy() == "auto"
     github.clear_settings()
     assert github._gateway_config() is None
-    assert github.final_merge_policy() == "auto"
+    assert github.merge_policy() == "auto"
 
     github.save_settings("octocat/my-repo", gateway_url=_GW)
-    github.set_final_merge_policy("auto")
+    github.set_merge_policy("auto")
     assert github._load_config_file()["repo"] == "octocat/my-repo"
-    github.set_final_merge_policy("not-a-policy")
-    assert github.final_merge_policy() == "human_review"
+    github.set_merge_policy("not-a-policy")
+    assert github.merge_policy() == "human_review"
     assert github._load_config_file()["repo"] == "octocat/my-repo"
+
+
+def test_the_merge_policy_env_var_wins_and_the_retired_name_still_reads(
+        monkeypatch, tmp_path):
+    """``WORKSHOP_MERGE_POLICY`` is the name; the old one keeps working for back-compat.
+
+    An operator who set ``WORKSHOP_FINAL_MERGE_POLICY`` before the final pull request
+    was removed must not silently get the opposite of what they asked for, and an
+    unknown value from either name still fails closed to the human boundary.
+    """
+    _sandbox(monkeypatch, tmp_path)
+    github.set_merge_policy("human_review")
+    monkeypatch.setenv("WORKSHOP_FINAL_MERGE_POLICY", "auto")
+    assert github.merge_policy() == "auto"
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "human_review")
+    assert github.merge_policy() == "human_review", (
+        "the retired env name overrode the current one")
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "merge-everything")
+    assert github.merge_policy() == "human_review"
 
 
 def test_status_reports_gateway_health(monkeypatch, tmp_path):
@@ -103,10 +141,19 @@ def test_status_reports_gateway_health(monkeypatch, tmp_path):
     assert status["connected"] is True
     assert status["repo"] == "octocat/critter-lab"
     assert status["default_branch"] == "trunk"
-    assert status["final_merge_policy"] == "human_review"
+    assert status["merge_policy"] == "human_review"
 
 
-def test_prepare_run_integration_snapshots_private_branch(monkeypatch, tmp_path):
+def test_prepare_run_base_reads_the_default_branch_and_creates_nothing(
+        monkeypatch, tmp_path):
+    """The run's base is the repository's DEFAULT branch, read rather than created.
+
+    This replaces the old run-scoped integration branch. Every role pull request
+    targets the branch this returns and merges into it on its own, so there is
+    nothing to assemble and nothing to create: ``create_branch`` must not be called
+    at all. Reading the branch here (before any agent work) is also what makes a
+    missing Gateway fail in seconds instead of after a ten-minute build.
+    """
     _wire(monkeypatch, tmp_path)
     calls = []
 
@@ -114,12 +161,11 @@ def test_prepare_run_integration_snapshots_private_branch(monkeypatch, tmp_path)
         calls.append(tool)
         if tool == "get_repository":
             return {"default_branch": "trunk"}
-        if tool == "create_branch":
-            assert args["from_branch"] == "trunk"
-            return "refs/heads/" + args["branch"]
         if tool == "get_branch_head":
+            assert args["branch"] == "trunk"
             return "abc123"
         if tool == "get_repository_archive":
+            assert args["ref"] == "trunk"
             return {"archive_base64": _archive({
                 "README.md": b"base\n",
                 "src/app.py": b"print('base')\n",
@@ -128,14 +174,30 @@ def test_prepare_run_integration_snapshots_private_branch(monkeypatch, tmp_path)
 
     _fake_gateway(monkeypatch, handler)
     destination = tmp_path / "checkout"
-    result = github.prepare_run_integration(
-        "workshop/runs/run-1/integration", str(destination))
+    result = github.prepare_run_base(str(destination))
     assert result["sha"] == "abc123"
     assert result["default_branch"] == "trunk"
+    assert result["branch"] == "trunk"
     assert (destination / "src" / "app.py").read_text() == "print('base')\n"
     assert calls == [
-        "get_repository", "create_branch", "get_branch_head",
-        "get_repository_archive"]
+        "get_repository", "get_branch_head", "get_repository_archive"]
+    assert "create_branch" not in calls, (
+        "the run created a branch; every role pull request bases on the default "
+        "branch directly, so there is no run-scoped branch to make")
+
+
+def test_prepare_run_base_fails_before_any_agent_work_without_a_gateway(
+        monkeypatch, tmp_path):
+    """Pre-flight, not post-mortem: no gateway is a named error, never a silent base."""
+    _sandbox(monkeypatch, tmp_path)
+
+    def handler(method, tool, args):
+        raise AssertionError("an unwired run reached the gateway")
+
+    _fake_gateway(monkeypatch, handler)
+    result = github.prepare_run_base(str(tmp_path / "checkout"))
+    assert result["error"].startswith("PR_NO_GATEWAY")
+    assert "default_branch" not in result
 
 
 def test_role_pr_publish_is_atomic_binary_safe_and_labeled(monkeypatch, tmp_path):
@@ -147,7 +209,8 @@ def test_role_pr_publish_is_atomic_binary_safe_and_labeled(monkeypatch, tmp_path
     (base / "old.txt").write_text("remove\n")
     (work / "new.bin").write_bytes(b"\x00\xff")
     item = work_items.WorkItem.create(
-        "run_1", "opencode", "frontend-builder", "frontend", token="front")
+        "run_1", "opencode", "frontend-builder", "frontend",
+        base_branch="main", token="front")
     work_items.diff_trees(item, str(base), str(work))
 
     class Run:
@@ -181,7 +244,8 @@ def test_role_pr_publish_is_atomic_binary_safe_and_labeled(monkeypatch, tmp_path
     _fake_gateway(monkeypatch, handler)
     result = github.publish_work_item(Run(), item, "body")
     assert result["pr_url"].endswith("/17")
-    assert seen["pr"]["base"] == item.base_branch
+    assert seen["pr"]["base"] == item.base_branch == "main", (
+        "a role pull request must target the repository's default branch")
     assert seen["commit"]["expected_parent"] == ""
     assert seen["commit"]["from_branch"] == item.base_branch
     assert seen["commit"]["deletions"] == ["old.txt"]
@@ -198,118 +262,228 @@ def test_role_pr_publish_is_atomic_binary_safe_and_labeled(monkeypatch, tmp_path
     assert item.head_sha == "head-sha-2"
 
 
-def test_role_merge_targets_private_integration_and_pins_reviewed_head(
+def test_role_merge_targets_the_default_branch_and_pins_the_reviewed_head(
         monkeypatch, tmp_path):
+    """One role pull request merges into the DEFAULT branch, pinned to what was reviewed.
+
+    This is the only merge in the workshop now, so the three refusals that used to
+    guard the final integration pull request live here and every one of them is
+    load-bearing: a base that is not the branch the run pinned, a default branch that
+    moved under the run, and a missing head SHA (which would let the merge land a
+    commit nobody reviewed). Each must refuse WITHOUT calling merge_pull_request.
+    """
     _wire(monkeypatch, tmp_path)
-    item = work_items.WorkItem.create(
-        "run_1", "claude-code", "backend-builder", "backend", token="back")
-    item.pr = {"number": 18, "base": item.base_branch}
-    item.head_sha = "reviewed-head"
+
+    def _item():
+        item = work_items.WorkItem.create(
+            "run_1", "claude-code", "backend-builder", "backend",
+            base_branch="main", token="back")
+        item.pr = {"number": 18, "base": item.base_branch}
+        item.head_sha = "reviewed-head"
+        return item
 
     class Run:
-        integration_branch = item.base_branch
+        final_base_branch = "main"
 
     seen = {}
 
     def handler(method, tool, args):
-        assert tool == "merge_pull_request"
+        if tool == "get_repository":
+            return {"default_branch": "main"}
+        assert tool == "merge_pull_request", f"unexpected {tool}"
         seen.update(args)
         return {"merged": True, "sha": "merged-sha"}
 
     _fake_gateway(monkeypatch, handler)
+    item = _item()
     assert github.merge_work_item(Run(), item)["merged"] is True
+    assert seen["number"] == 18
     assert seen["head_sha"] == "reviewed-head"
     assert seen["merge_method"] == "squash"
     assert item.merge_state == "merged"
 
-
-def test_final_auto_merge_refuses_an_unexpected_base(monkeypatch, tmp_path):
-    _wire(monkeypatch, tmp_path)
-
-    class Run:
-        integration_branch = "workshop/runs/run-1/integration"
-        pr = {
-            "number": 21,
-            "base": "release",
-            "head": integration_branch,
-            "head_sha": "reviewed-integration-head",
-        }
-
-    def handler(method, tool, args):
+    def refuse(method, tool, args):
         if tool == "get_repository":
             return {"default_branch": "main"}
         raise AssertionError("merge must not be called")
 
+    _fake_gateway(monkeypatch, refuse)
+
+    # 1. the pull request does not target the branch this run pinned
+    wrong_base = _item()
+    wrong_base.pr = {"number": 19, "base": "release"}
+    error = github.merge_work_item(Run(), wrong_base)["error"]
+    assert "refusing" in error and "release" in error
+
+    # 2. the repository's default branch moved under the run
+    def moved(method, tool, args):
+        if tool == "get_repository":
+            return {"default_branch": "trunk"}
+        raise AssertionError("merge must not be called")
+
+    _fake_gateway(monkeypatch, moved)
+    error = github.merge_work_item(Run(), _item())["error"]
+    assert "refusing" in error and "default branch changed" in error
+
+    # 3. nothing reviewed to pin
+    _fake_gateway(monkeypatch, refuse)
+    unpinned = _item()
+    unpinned.head_sha = ""
+    error = github.merge_work_item(Run(), unpinned)["error"]
+    assert "refusing" in error and "no reviewed head SHA" in error
+
+
+def test_a_gateway_that_declines_the_merge_is_never_reported_as_merged(
+        monkeypatch, tmp_path):
+    """Branch protection is not bypassable, and a refusal is never rounded up.
+
+    ``merge_pull_request`` answering "not merged" is exactly what a protected branch
+    looks like from here. It must surface as an error on that pull request, never as
+    a merge, and it must not mark the item merged.
+    """
+    _wire(monkeypatch, tmp_path)
+    item = work_items.WorkItem.create(
+        "run_1", "claude-code", "backend-builder", "backend",
+        base_branch="main", token="back")
+    item.pr = {"number": 20, "base": "main"}
+    item.head_sha = "reviewed-head"
+
+    class Run:
+        final_base_branch = "main"
+
+    def handler(method, tool, args):
+        if tool == "get_repository":
+            return {"default_branch": "main"}
+        return {"merged": False, "message": "required status checks are pending"}
+
     _fake_gateway(monkeypatch, handler)
-    assert "refusing" in github.merge_integration_pr(Run())["error"]
+    result = github.merge_work_item(Run(), item)
+    assert "did not complete" in result["error"]
+    assert "merged" not in result
+    assert item.merge_state is None
+    assert item.state != "merged"
 
 
-def _run_fixture_with_final_pr(
-        monkeypatch, tmp_path, policy: str, *, merge_success: bool = True):
+def _run_fixture_per_pr(monkeypatch, tmp_path, policy: str, *,
+                        red_gate: bool = False, refuse_first_merge: bool = False):
+    """Drive the engine's per-pull-request finalization offline.
+
+    The fixture executor merges locally, so no gateway call happens on this path at
+    all: the handler asserts on ANY call, which is the isolation proof for this
+    module. ``refuse_first_merge`` stands in for the gateway declining ONE merge
+    (branch protection), so the sibling's independence can be observed.
+    """
     import engine
     from fixture_executor import FixtureExecutor
 
     _wire(monkeypatch, tmp_path)
-    monkeypatch.setenv("WORKSHOP_FINAL_MERGE_POLICY", policy)
-    final_url = "https://github.test/pull/99"
-    calls = {"pull_requests": [], "merges": []}
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", policy)
+    if red_gate:
+        monkeypatch.setenv("FIXTURE_CHECK_EXIT", "1")
 
     def handler(method, tool, args):
-        if method == "tools/list":
-            return {"tools": []}
-        if tool == "get_repository":
-            return {"default_branch": "main"}
-        if tool == "get_branch_head":
-            return "reviewed-final-head"
-        if tool == "create_pull_request":
-            calls["pull_requests"].append(args)
-            return {"number": 99, "url": final_url}
-        if tool == "ensure_labels":
-            return [row["name"] for row in args["labels"]]
-        if tool == "merge_pull_request":
-            calls["merges"].append(args)
-            return {"merged": merge_success,
-                    "sha": "main-head" if merge_success else ""}
-        raise AssertionError(f"unexpected {tool}")
+        raise AssertionError(
+            f"an offline run reached the GitHub gateway: {tool}")
 
     _fake_gateway(monkeypatch, handler)
+
+    refused: list[str] = []
+    real_merge = engine.Engine._merge_work_item
+
+    def one_refusal(self, run, item):
+        if refuse_first_merge and not refused:
+            refused.append(item.work_id)
+            return {"error": "role PR merge did not complete: branch protection"}
+        return real_merge(self, run, item)
+
+    monkeypatch.setattr(engine.Engine, "_merge_work_item", one_refusal)
     instance = engine.Engine(executor_obj=FixtureExecutor())
     run = instance.submit(
         "Build a service and interface",
         ["claude-code", "claude-code-validator", "opencode"])
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 180
     while run.status not in engine.TERMINAL:
         assert time.monotonic() < deadline, f"stuck in {run.status}/{run.phase}"
         time.sleep(0.2)
-    return instance, run, calls
+    return instance, run, refused
 
 
-def test_engine_final_pr_policy_matrix_is_guarded(monkeypatch, tmp_path):
-    scenarios = [
-        ("human_review", True, "passed", "human_review", 0),
-        ("auto", True, "passed", "merged", 1),
-        ("auto", False, "needs_human", "human_review", 1),
-    ]
-    for index, (policy, merge_success, status, merge_state, merge_count) in \
-            enumerate(scenarios):
-        instance, run, calls = _run_fixture_with_final_pr(
-            monkeypatch, tmp_path / f"scenario-{index}", policy,
-            merge_success=merge_success)
+def test_the_merge_policy_decides_each_pull_request_and_never_merges_a_red_one(
+        monkeypatch, tmp_path):
+    """The human boundary, per pull request, and it cannot be talked past.
+
+    Replaces the old final-PR policy matrix: there is no final pull request, so the
+    same three questions are asked of EACH role pull request. Under ``human_review``
+    a green, approved pull request is left OPEN for a person (success, not a
+    failure); under ``auto`` the engine merges it; and under either policy a red gate
+    merges nothing and the run ends ``needs_human`` with ROLE_PR_BLOCKED naming the
+    work ids. One gate per pull request, and the repair bound stays per pull request.
+    """
+    instance, run, _ = _run_fixture_per_pr(
+        monkeypatch, tmp_path / "human-review", "human_review")
+    try:
+        assert run.status == "passed", run.fail_reason
+        assert [row["state"] for row in run.role_prs] == \
+            ["awaiting_review", "awaiting_review"]
+        items = [i for i in run.work_items.values() if i.kind == "builder"]
+        assert [i.merge_state for i in items] == ["human_review"] * 2
+        assert all(i.state != "merged" for i in items), (
+            "human_review merged a pull request a person was supposed to")
+        assert len(run.gate_history) == len(items), (
+            "one authored check ran per pull request")
+    finally:
+        instance.shutdown()
+
+    instance, run, _ = _run_fixture_per_pr(
+        monkeypatch, tmp_path / "auto", "auto")
+    try:
+        assert run.status == "passed", run.fail_reason
+        assert [row["state"] for row in run.role_prs] == ["merged", "merged"]
+        items = [i for i in run.work_items.values() if i.kind == "builder"]
+        assert [i.merge_state for i in items] == ["merged"] * 2
+        assert {row["work_id"] for row in run.role_prs} == \
+            {i.work_id for i in items}
+    finally:
+        instance.shutdown()
+
+    for policy in ("human_review", "auto"):
+        instance, run, _ = _run_fixture_per_pr(
+            monkeypatch, tmp_path / f"red-{policy}", policy, red_gate=True)
         try:
-            assert run.status == status, run.fail_reason
-            assert run.merge_state == merge_state
-            assert run.pr_url == "https://github.test/pull/99"
-            assert calls["pull_requests"][0]["head"] == run.integration_branch
-            assert calls["pull_requests"][0]["base"] == "main"
-            assert run.pr["head_sha"] == "reviewed-final-head"
-            assert len(calls["merges"]) == merge_count
-            assert len(run.gate_history) == 3
-            if calls["merges"]:
-                assert calls["merges"][0]["head_sha"] == "reviewed-final-head"
-                assert calls["merges"][0]["merge_method"] == "squash"
-            if not merge_success:
-                assert run.fail_reason.startswith("FINAL_MERGE_ERROR:")
-                assert run.iterations == 1, (
-                    "a final merge failure restarted the build loop")
+            assert run.status == "needs_human"
+            assert run.fail_reason.startswith("ROLE_PR_BLOCKED:")
+            items = [i for i in run.work_items.values() if i.kind == "builder"]
+            for item in items:
+                assert item.work_id in run.fail_reason
+                assert item.merge_state == "blocked"
+                assert item.state != "merged", (
+                    f"{policy} merged a pull request whose gate was red")
+                assert item.attempt <= 2, (
+                    "the repair bound is one round PER pull request")
+            assert [row["error"] for row in run.role_prs] == ["GATE_RED"] * 2
         finally:
             instance.shutdown()
+
+
+def test_a_refused_merge_blocks_only_its_own_pull_request(monkeypatch, tmp_path):
+    """A red pull request never blocks a green sibling. That is the whole point.
+
+    The old merge queue stopped the whole run at the first refusal, and the final
+    pull request made every role's fate one verdict. Now the sibling merges on its
+    own and only the refused work id is named for a person.
+    """
+    instance, run, refused = _run_fixture_per_pr(
+        monkeypatch, tmp_path, "auto", refuse_first_merge=True)
+    try:
+        assert refused, "the scenario never exercised a refusal"
+        blocked_id = refused[0]
+        states = {row["work_id"]: row["state"] for row in run.role_prs}
+        assert states.pop(blocked_id) == "blocked"
+        assert set(states.values()) == {"merged"}, (
+            f"a refused merge blocked a sibling too: {run.role_prs}")
+        assert run.status == "needs_human"
+        assert run.fail_reason == f"ROLE_PR_BLOCKED:{blocked_id}"
+        assert run.iterations == 1, (
+            "a refused merge restarted the build loop instead of reporting")
+    finally:
+        instance.shutdown()
