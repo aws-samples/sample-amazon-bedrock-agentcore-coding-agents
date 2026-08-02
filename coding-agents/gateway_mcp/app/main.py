@@ -312,9 +312,8 @@ def remove_label(owner: str, repo: str, issue_number: int, label: str) -> bool:
 def get_repository(owner: str, repo: str) -> dict:
     """Read repository metadata needed by the PR workflow.
 
-    The orchestrator reads ``default_branch`` to seed its run-private integration
-    branch and to target the final pull request. This tool never changes repository
-    settings.
+    The orchestrator reads ``default_branch`` because every role pull request is
+    based on it and merges into it. This tool never changes repository settings.
     """
     with httpx.Client(timeout=30) as c:
         r = c.get(
@@ -730,10 +729,10 @@ def merge_pull_request(
 ) -> dict:
     """Merge a pull request (`merge_method`: merge | squash | rebase).
 
-    Returns {merged: bool, sha}. The orchestrator uses this for reviewed role PRs
-    into a run-private integration branch and, when configured, for the final green
-    integration PR into the default branch. The caller verifies base/head policy
-    and pins ``head_sha``; this tool merges the supplied PR number.
+    Returns {merged: bool, sha}. When configured to merge, the orchestrator uses
+    this for each reviewed role pull request into the repository's default branch;
+    every pull request merges on its own. The caller verifies base/head policy and
+    pins ``head_sha``; this tool merges the supplied PR number.
     """
     with httpx.Client(timeout=30) as c:
         payload = {"merge_method": merge_method}

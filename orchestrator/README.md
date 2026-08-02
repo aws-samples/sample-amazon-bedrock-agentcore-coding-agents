@@ -15,22 +15,25 @@ configuration is an explicit error.
 4. `AgentCoreExecutor` sends each role to its deployed Runtime. It does not fall
    back to an in-process builder.
 5. Each builder gets a named linked Git worktree on local disk, a unique work id,
-   branch, and role PR against the run's private integration branch.
-6. `reviewer.py` executes the validator-authored task-specific check, then runs
-   one independent, read-only review over the integrated candidate. Its structured
+   branch, and one pull request against the repository's DEFAULT branch.
+6. Then, PER PULL REQUEST: `reviewer.py` executes the validator-authored
+   task-specific check against that pull request's tree, then runs one
+   independent, read-only review over that pull request alone. Its structured
    response must cover both adversarial-verification and design/integration
    lenses, never reuses a maker conversation, and can make a green gate stricter.
    A red executable can never pass. The exact approval token is
    `LGTM: no changes needed`.
-7. `github.py` merges approved role PRs one at a time, rerunning the executable
-   gate after every merge, then opens one final integration PR to the default
-   branch. If no Gateway resolves, pre-flight fails before agent work.
+7. `github.py` merges each approved pull request on its own. There is no combined
+   candidate, no merge queue, and no separate final PR. If no Gateway resolves,
+   pre-flight fails before agent work.
 
 There is no race and no conflict winner. Roles start independently against a shared
-contract. Red evidence buys one repair turn for the responsible existing role PR.
-Separately, when a declared dependency merges, its downstream owner gets one semantic
-integration turn against the real implementation even when Git rebases cleanly. The
-final PR supports either human review or guarded auto-merge.
+contract, and a red pull request never blocks a green sibling. Each pull request is
+checked and reviewed against the default branch AS IT STANDS, so once one role's work
+merges, the next role's check runs against a tree that contains it. Red evidence buys
+one repair turn for the responsible existing pull request. Separately, when a sibling
+merges and moves a path a still-open pull request also changed, that owner gets one
+bounded refresh. Merging supports either human review or guarded auto-merge.
 
 ## Main seams
 
@@ -120,6 +123,6 @@ Settings or `runtime_config.py`. Start the console as described in
 [console/README.md](../console/README.md), open **Tasks**, and submit an
 outcome-oriented request.
 
-The run panel must show only routed roles, their unique work ids and role PRs, the
-candidate digest, every executable checkpoint, the integrated review and both
-required lenses, the private merge queue, and the real final `pr_url`.
+The run panel must show only routed roles, their unique work ids and pull requests,
+every executable checkpoint, each pull request's independent review with both required
+lenses, and its real `pr_url` and merge state.

@@ -173,11 +173,34 @@ def test_list_presets_is_advisory_and_starts_nothing(tmp_path, monkeypatch):
                 f"{p['preset']} builds with no checker")
     assert len(chat.ENGINE.list()) == before   # advisory: nothing started
 
-def test_run_build_starts_a_buildable_route(tmp_path, monkeypatch):
+def test_run_build_routes_a_free_form_request_through_the_model(
+        tmp_path, monkeypatch):
+    """A typed request is ROUTED, not handed the whole roster.
+
+    This used to assert `agents == roster_ids()`: every role, unconditionally. That is
+    the same mistake a keyword table makes -- it dispatched a frontend builder for a
+    command line tool. What must hold now is structural, not a fixed list: whatever
+    the model picks, the route carries at least one maker plus the checker, only
+    served roles, and a recorded reason.
+    """
     _wire_all(tmp_path, monkeypatch)
-    out = json.loads(_call("run_build", task="convert the cost analyzer module to an MCP server"))
+    # The model turn is stubbed: this test pins the ROUTE CONTRACT, not a live
+    # model's opinion (that judgement is exercised against the real model elsewhere).
+    monkeypatch.setattr(
+        "integration_plan.select_capabilities",
+        lambda task, available, **kw: (
+            [available[0]], "the request needs one kind of work"))
+    out = json.loads(_call(
+        "run_build", task="write a command line tool that counts words on stdin"))
     assert out["status"] == "started" and out["run_id"].startswith("run_")
-    assert out["agents"] == list(chat._roles.roster_ids())
+    agents = out["agents"]
+    assert set(agents) <= set(chat._roles.roster_ids()), agents
+    assert [a for a in agents if a in chat._roles.builder_ids()], agents
+    assert [a for a in agents if a in chat._roles.checker_ids()], agents
+    # A narrower route really is narrower: the unchosen maker is NOT dispatched.
+    assert len(agents) < len(chat._roles.roster_ids()), agents
+    # And the reason is reported, so a run log says WHY these roles.
+    assert out["routing"], out
     assert chat.ENGINE.get(out["run_id"]) is not None
 
 

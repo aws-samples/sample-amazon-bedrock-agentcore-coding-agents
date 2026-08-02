@@ -231,10 +231,12 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None) -> str:
         agents = ([agent_id] if agent_id in checkers
                   else [agent_id] + checkers)
     elif not preset:
-        # A full build with no roles named: every served role works. The request is
-        # the user's, so there is nothing to classify; the roles are simply all of
-        # them, however many this deployment serves.
-        agents = list(_roles.roster_ids())
+        # A full build with no roles named: ASK which capabilities the request needs.
+        # "every served role works" was the old answer, and it is wrong in the same
+        # way a keyword table is: it dispatches a frontend builder for a command line
+        # tool. Routing fails OPEN to every maker when the model is unreachable, so an
+        # outage never silently drops work the attendee asked for.
+        agents = _presets.resolve(task=task).agents
     run = ENGINE.submit(task, agents=agents, preset=preset)
     return run.run_id
 
@@ -295,10 +297,14 @@ def build_tools() -> list:
                 "hint": "No run was started. Ask the user what they want built, in "
                         "their own words, or offer a starting point from list_presets.",
             })
-        agents = (
-            _presets.resolve(preset=preset).agents
-            if preset else list(_roles.roster_ids())
-        )
+        # Routing is the MODEL's decision when the attendee typed their own request:
+        # `resolve` asks which capabilities the request needs. It used to hand back
+        # the whole roster here, which dispatched a frontend builder for a command
+        # line tool. A preset carries its own declared capabilities, so it skips the
+        # model turn.
+        route = (_presets.resolve(preset=preset) if preset
+                 else _presets.resolve(task=task))
+        agents = route.agents
         schedule = []
         for agent_id in agents:
             role = _roles.BY_ID[agent_id]
@@ -316,6 +322,7 @@ def build_tools() -> list:
             "kind": "build",
             "status": "started",
             "agents": agents,
+            "routing": route.rule,
             "schedule": schedule,
         })
 

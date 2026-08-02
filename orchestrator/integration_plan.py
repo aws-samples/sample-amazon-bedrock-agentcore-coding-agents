@@ -66,6 +66,65 @@ shows the check itself is wrong and no builder code should change. This routes
 repair work; it never changes or interprets the gate verdict."""
 
 
+_ROUTE_SYSTEM = """You choose which CAPABILITIES a build request needs. Return strict
+JSON: {"capabilities": ["<capability>", "..."], "reason": "one sentence"}.
+Choose only from the supplied capability list. Judge the REQUEST, not its wording:
+select a capability when the request genuinely needs that kind of work, and leave it
+out when it does not. A command line tool or a service with no interface needs no
+frontend; a page with no data of its own needs no backend. Select at least one.
+Never select the checker capability: every build gets it structurally, because a
+build nobody can verify is not a smaller build. You are choosing WHO WORKS, never
+what they build, what language they use, or what a correct answer looks like."""
+
+
+def select_capabilities(
+    task: str,
+    available: list[str],
+    *,
+    offline_fixture: bool = False,
+) -> tuple[list[str], str]:
+    """Ask the model which maker capabilities this request needs.
+
+    This is the routing decision, and it is the model's: nothing here pattern-matches
+    the attendee's prose. That matters because the request is whatever they typed, so
+    a keyword table would answer the question before any agent saw it -- and a router
+    that always returns every role is the same mistake wearing a different hat (it
+    dispatches a frontend for a command line tool).
+
+    Fails OPEN to every capability, and says so in the reason. An unreachable model
+    must not silently narrow a build: routing too wide wastes a turn, routing too
+    narrow drops work the attendee asked for.
+    """
+    allowed = list(dict.fromkeys(available))
+    if not allowed:
+        return [], "this roster serves no maker capability"
+    if offline_fixture:
+        return allowed, "offline fixture routes every capability"
+    try:
+        response = llm.invoke(
+            PLAN_MODEL,
+            "Choose the capabilities this request needs.\n\n"
+            f"REQUEST:\n{task}\n\n"
+            f"AVAILABLE CAPABILITIES: {json.dumps(allowed)}",
+            system=_ROUTE_SYSTEM,
+            max_tokens=400,
+        )
+        parsed = _json_object(response.get("text") or "")
+        chosen = parsed.get("capabilities")
+        if not isinstance(chosen, list) or not chosen:
+            raise IntegrationPlanError("ROUTE_INVALID: capabilities is not a list")
+        selected = [str(c) for c in chosen]
+        unknown = [c for c in selected if c not in allowed]
+        if unknown or len(selected) != len(set(selected)):
+            raise IntegrationPlanError(
+                f"ROUTE_INVALID: unknown or duplicate capability {unknown}")
+        return selected, str(parsed.get("reason") or "").strip()
+    except Exception as exc:  # noqa: BLE001 (routing fails OPEN, never narrower)
+        return allowed, (
+            "capability routing was unavailable, so every maker is routed: "
+            f"{type(exc).__name__}")
+
+
 class IntegrationPlanError(RuntimeError):
     """The coordinator could not produce a usable shared contract."""
 
@@ -246,12 +305,15 @@ def markdown(task: str, plan: dict[str, Any], items: Iterable[WorkItem]) -> str:
             lines.extend(f"- {value}" for value in consumes)
             lines.append("")
     lines += [
-        "## Merge Queue",
+        "## Merge Order",
         "",
         " -> ".join(plan.get("merge_order") or []),
         "",
-        "Builders execute independently. This order controls integration and "
-        "conflict repair.",
+        "Builders execute independently and each opens its OWN pull request against "
+        "the default branch. Nothing is assembled into a combined candidate. This "
+        "order is only the sequence the coordinator prefers when two pull requests "
+        "are ready at once, and it decides who refreshes if a merge moves a path "
+        "someone else also changed.",
         "",
         "Ownership is exclusive. Implement the outcome assigned to your role, not "
         "the entire request in isolation. Your checkout is intentionally incomplete "

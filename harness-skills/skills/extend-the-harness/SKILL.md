@@ -173,7 +173,7 @@ execution -> finalization). There is NO race and NO winner; roles are composed, 
    (finalization), NOT replace the gate:
    - REVIEWER -> produces findings that finalization attaches to the PR (bounded: ~2 rounds, then
      a human), informing but not replacing the authored-check gate.
-   - DOCS -> owns a role PR whose artifacts join the gated integration candidate.
+   - DOCS -> owns its own pull request, gated and reviewed like any other.
    - SECURITY -> files threats; criticals can fail-closed before PR, mirroring the pre-flight phase.
    - extra IMPLEMENTER -> owns its sub-feature branch; its slice is covered by the validator's
      authored check for that sub-feature.

@@ -92,7 +92,6 @@ def test_presets_endpoint_is_the_one_source_the_console_renders(console, cookie)
 @pytest.mark.parametrize("body,expected", [
     ({"task": "anything at all", "preset": "no/such-preset"}, "UNKNOWN_PRESET"),
     ({"task": "anything at all", "agents": ["claude-code", "nope"]}, "UNKNOWN_ROLE"),
-    ({"task": "anything at all"}, "PRESET_NOT_SPECIFIED"),
     ({"task": "anything at all", "agents": ["claude-code"]}, "NO_CHECKER_ROUTED"),
     ({"task": "   ", "agents": ["claude-code", VALIDATOR]}, "EMPTY_TASK"),
 ])
@@ -102,3 +101,19 @@ def test_admission_fails_loud_rather_than_guessing(console, cookie, body, expect
     final = poll_terminal(console, cookie, run["run_id"])
     assert final["status"] == "failed", final
     assert final["fail_reason"].startswith(expected), final["fail_reason"]
+
+
+def test_a_bare_request_is_routed_rather_than_refused(console, cookie):
+    """A request with no preset and no explicit roles is ROUTED, not rejected.
+
+    Naming roles is the console's job, not the attendee's: they type a sentence. Two
+    wrong answers this pins out. Refusing it (the old ``PRESET_NOT_SPECIFIED``) makes
+    the plainest possible request an error, and handing it the WHOLE roster dispatches
+    a frontend builder for a command line tool, which is the defect a keyword table
+    has. Only the roles the work needs get a lane, and the run records WHY.
+    """
+    run = submit_run(console, cookie, task="a command line tool that counts words")
+    route = poll_route(console, cookie, run["run_id"])
+    assert route["agents"], route
+    assert VALIDATOR in route["agents"], "a build always routes its checker"
+    assert route.get("rule"), "the run must record why these roles were chosen"

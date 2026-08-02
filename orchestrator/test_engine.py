@@ -378,8 +378,14 @@ def test_routing_selects_roles_and_nothing_else():
 
 
 def test_routing_fails_loud_rather_than_guessing():
-    """Never invent a task or a role set: an unknown preset, an unknown role, and
-    "neither given" all fail closed."""
+    """Never invent a ROLE that does not exist: an unknown preset and an unknown role
+    both fail closed, with the offending name in the reason.
+
+    A request with no preset and no named roles is NOT a failure any more: it is the
+    normal case, and the model routes it (see
+    test_a_typed_request_is_routed_not_handed_the_whole_roster). What must never
+    happen is a nearest-match guess at a name nobody registered.
+    """
     engine = _engine()
     bad = _wait_terminal(engine.submit("anything at all", preset="no/such-preset"),
                          timeout_s=10)
@@ -387,10 +393,32 @@ def test_routing_fails_loud_rather_than_guessing():
     unknown = _wait_terminal(engine.submit("anything", ["claude-code", "nope"]),
                              timeout_s=10)
     assert unknown.status == "failed" and unknown.fail_reason == "UNKNOWN_ROLE:nope"
-    none = _wait_terminal(engine.submit("anything at all"), timeout_s=10)
-    assert none.status == "failed"
-    assert none.fail_reason.startswith("PRESET_NOT_SPECIFIED")
     engine.shutdown()
+
+
+def test_a_typed_request_is_routed_not_handed_the_whole_roster(monkeypatch):
+    """A request with no preset is ROUTED by the model, and an empty one is refused.
+
+    Routing every role unconditionally is what this replaced: it dispatched a frontend
+    builder for a command line tool, which is the same defect a keyword table has.
+    """
+    import integration_plan
+    import presets
+    import pytest
+    import roles as _roles
+
+    monkeypatch.setattr(
+        integration_plan, "select_capabilities",
+        lambda task, available, **kw: ([available[0]], "one kind of work"))
+    route = presets.resolve(task="write a command line tool that counts words")
+    assert route.preset == "routed"
+    assert len(route.agents) < len(_roles.roster_ids()), route.agents
+    assert route.rule, "the run must record WHY these roles"
+
+    # Nothing to route is still a refusal: ask, never invent a task.
+    with pytest.raises(presets.RouteError) as excinfo:
+        presets.resolve(task="")
+    assert "EMPTY_TASK" in str(excinfo.value)
 
 
 def test_a_build_always_routes_a_checker():

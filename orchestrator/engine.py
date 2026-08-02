@@ -17,16 +17,20 @@ The central design rules are:
     generates dispatch tools from the active roster and lets the Strands
     coordinator clarify an ambiguous request. Only selected roles are dispatched.
   * **A separate checker and reviewer** (``reviewer.py``). The build side never
-    approves its own work: the validator authors an executable check for the
-    assembled candidate and real execution supplies the gate verdict. The reviewer
-    then posts its Assessment on the responsible role PRs. A red gate or requested
-    change returns only the responsible roles through one bounded repair pass.
-  * **A role-PR merge queue and final PR** (``github.py``). Each builder owns an
-    isolated branch and PR against a run-private integration branch. Green heads
-    merge one at a time, with a newly authored executable gate after every merge.
-    The fully validated integration branch then opens the final PR to the default
-    branch. Without credentials the PR field carries a typed error and ``pr_url``
-    stays null.
+    approves its own work: the validator authors an executable check for the pull
+    request in front of it and real execution supplies the gate verdict. The
+    reviewer then posts its Assessment on that pull request. A red gate or a
+    requested change returns only the owning role through one bounded repair pass.
+  * **One pull request per role, each merged on its own** (``github.py``). Every
+    builder owns a named branch and opens a pull request against the repository's
+    DEFAULT branch. There is no assembled candidate, no run-scoped integration
+    branch, no merge queue, and no separate final pull request: a pull request is
+    the unit a person reviews and merges, so the engine does not invent a second
+    unit above it. Each one is checked and reviewed against the default branch AS
+    IT STANDS, which is what keeps a cross-role defect catchable: once one role's
+    pull request merges, the next role's check runs against a tree containing it.
+    A red pull request never blocks a green sibling. Without credentials the PR
+    field carries a typed error and ``pr_url`` stays null.
 
 Every role works in its own container directory and leaves a TERMINAL TRANSCRIPT:
 ``/bin/sh`` commands with their output (installing its harness by writing the
@@ -2847,8 +2851,9 @@ class Engine:
             )
         if conflict_rows:
             context.append(
-                "MERGE QUEUE CONFLICT: an earlier role PR was merged. Your "
-                "checkout contains the latest integration plus every prior "
+                "STALE PATCH: a sibling pull request merged first and moved a "
+                "path you also changed. Your "
+                "checkout contains the latest default branch plus every prior "
                 "change that rebased cleanly. Re-read "
                 "`.workshop/integration-brief.md` and "
                 "`.workshop/refresh.json`, inspect the merged implementation, "
@@ -3100,9 +3105,9 @@ class Engine:
     _COMPOSE_LEASE = _Lease(COMPOSE_LEASE_STUCK_S)
 
     def _compose_commit(self, run: Run) -> None:
-        """Record the validated integration candidate in one local evidence commit.
+        """Record the validated work in one local evidence commit.
 
-        GitHub already holds the role PRs and run integration branch. This separate
+        GitHub already holds each role's own pull request. This separate
         scratch commit powers the console's Changes view and carries the validator's
         authored check; it is never pushed as a substitute PR.
         """
@@ -3408,8 +3413,8 @@ def public_diff(run: Run) -> dict:
 # (a transport or turn failure, just resubmit). Same status, opposite next action,
 # and the raw token said neither.
 _NEXT_ACTION = {
-    # A blocked candidate may already have role PRs, but it never gets a final PR to
-    # main. ITERATION_CAP can mean a red executable OR a required review finding.
+    # A blocked run may already have merged some pull requests while another stayed
+    # red. ITERATION_CAP can mean a red executable OR a required review finding.
     "ITERATION_CAP":
         "Do not resubmit this request. The candidate still had blocking gate or "
         "review evidence after the bounded re-implement round, so no final "

@@ -9,14 +9,15 @@ engine (``engine.py``) sits underneath.
 What happens on POST /api/runs:
   - the engine drives the five-phase blueprint (admission -> context hydration ->
     pre-flight -> agent execution -> finalization) on a worker thread,
-  - every routed builder works in an isolated checkout with a unique work id,
-  - the engine assembles their patches without choosing an implementation,
-  - the validator authors an executable for that exact integration candidate,
-  - finalization runs that executable, reviews the evidence, and advances green
-    role PRs through a private queue with bounded repair.
+  - every routed builder works in an isolated checkout with a unique work id and
+    opens one pull request against the repository's DEFAULT branch,
+  - then, PER PULL REQUEST: the validator authors an executable for that pull
+    request's tree, the engine runs it, one independent review reads that pull
+    request alone, and it merges on its own with bounded repair.
 
-There is no race and no winner: builders own separate PRs, and only the validated
-integration branch can open the final PR to the default branch.
+There is no race and no winner: builders own separate pull requests, each judged
+against the default branch as it stands. No combined candidate, no queue, no final
+PR.
 
 Extra (additive, contract-safe) endpoints the engine makes possible:
   GET /api/runs/{id}/events   : the append-only phase journal (the audit trail)

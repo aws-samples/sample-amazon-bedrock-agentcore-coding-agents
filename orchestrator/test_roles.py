@@ -132,3 +132,75 @@ def test_public_roster_leaks_no_credentials_or_env():
     for row in roles.public_roster():
         assert set(row) == {"role", "label", "kind", "capability", "role_name",
                             "description", "steering_file", "model", "credential"}
+
+
+def test_maker_capabilities_come_from_the_registry():
+    """The router's choice list is DERIVED, never a literal.
+
+    The model is handed these to pick from, so a roster swap or a smaller team must
+    change what can be routed with no edit outside the registry.
+    """
+    caps = roles.maker_capabilities()
+    assert caps, "a roster with no maker capability could never route a build"
+    assert len(caps) == len(set(caps)), caps
+    # Only MAKER capabilities: the checker rides every build structurally, and asking
+    # a model whether to include it would make an invariant negotiable.
+    checker_caps = {r.capability for r in roles.checkers()}
+    assert not (set(caps) & checker_caps), (caps, checker_caps)
+    assert set(caps) == {r.capability for r in roles.builders()}
+
+
+def test_routing_fails_open_to_every_maker_when_the_model_is_unreachable(
+        monkeypatch):
+    """An unreachable router must route WIDER, never narrower.
+
+    Routing too wide wastes a turn. Routing too narrow silently drops work the
+    attendee asked for, which is the worse failure and the one that must be
+    impossible -- so the fallback is every maker, and it says so in the reason.
+    """
+    import integration_plan
+
+    def unreachable(*_args, **_kwargs):
+        raise RuntimeError("no model credentials available")
+
+    monkeypatch.setattr(integration_plan.llm, "invoke", unreachable)
+    available = list(roles.maker_capabilities())
+    chosen, reason = integration_plan.select_capabilities(
+        "build anything at all", available)
+    assert chosen == available, chosen
+    assert "unavailable" in reason.lower(), reason
+
+
+def test_a_routed_build_always_carries_a_maker_and_a_checker(monkeypatch):
+    """The structural rules hold on the MODEL-routed path too.
+
+    The model chooses which makers work. It is never asked whether a build needs a
+    checker, and it cannot return an empty route: those are invariants, so they are
+    enforced after the model answers rather than delegated to it.
+    """
+    import integration_plan
+    import presets
+
+    # The model picks exactly one maker capability.
+    monkeypatch.setattr(
+        integration_plan, "select_capabilities",
+        lambda task, available, **kw: ([available[0]], "one kind of work"))
+    route = presets.resolve(task="write me any small program")
+    assert [a for a in route.agents if a in roles.builder_ids()]
+    assert [a for a in route.agents if a in roles.checker_ids()]
+
+    # A model that returns nothing usable must not produce an unbuildable route.
+    monkeypatch.setattr(
+        integration_plan, "select_capabilities",
+        lambda task, available, **kw: ([], "returned nothing"))
+    with pytest.raises(presets.RouteError):
+        presets.resolve(task="write me any small program")
+
+
+def test_an_empty_request_is_not_routed():
+    """With no request text there is nothing to route: ASK, never invent a task."""
+    import presets
+
+    with pytest.raises(presets.RouteError) as excinfo:
+        presets.resolve(task="   ")
+    assert "EMPTY_TASK" in str(excinfo.value)

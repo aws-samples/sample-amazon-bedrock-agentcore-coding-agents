@@ -986,7 +986,7 @@ function OrchestratorVerdict({ result }: { result: RunResult }) {
               .join(', ')}
           </li>
         ) : null}
-        {result.merge_state && <li>final PR: {result.merge_state}</li>}
+        {result.merge_state && <li>merge: {result.merge_state}</li>}
         {typeof result.iterations === 'number' && <li>iterations: {result.iterations}</li>}
         {result.fail_reason && <li>reason: {result.fail_reason}</li>}
       </ul>

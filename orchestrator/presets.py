@@ -9,22 +9,28 @@ This replaced a router that pattern-matched the attendee's prose against a regis
 canned workflows, each bound to a bundled sample use case. That design answered the
 question before the agents saw it, which is the opposite of what the workshop teaches.
 
-Two ways in, both explicit, neither guessing:
+Three ways in:
 
+  * ``roles``: name the roles directly, with any request text at all.
   * ``preset``: one of the starting points below, which is a REQUEST TEXT plus a role
     set. Presets exist so an attendee who arrives without an idea starts in a minute;
     they are examples, not a menu the system is limited to.
-  * ``roles``: name the roles directly, with any request text at all. This is the real
-    surface. ``your-own`` is the headline preset for exactly this reason.
+  * a REQUEST ALONE, which is the ordinary case: the attendee types a sentence and
+    names nothing. The MODEL then reads it and picks the capabilities the work calls
+    for, so a command line tool gets no frontend builder. That decision is a judgement
+    and it is made by a model, never by a keyword table here.
 
-Fail-loud rules, all of them structural:
+Fail-loud rules, all of them structural, and none of them a judgement about the work:
 
   * An unknown preset or an unknown role raises. Never a nearest match.
-  * Neither given raises, so the coordinator ASKS instead of inventing a task.
+  * An EMPTY request raises, so the coordinator ASKS instead of inventing a task.
   * A build always routes the CHECKER. Validation is agentic: with no validator there
     is no authored acceptance check, and with no check the gate is red by definition. A
     build nobody can verify is not a smaller build, it is an unverifiable one.
   * A build always routes at least one BUILDER. A checker alone has nothing to check.
+  * An unreachable model routes EVERY builder and records why. Silently dropping work
+    the attendee asked for is worse than running a role that turns out to have nothing
+    to do.
 """
 
 from __future__ import annotations
@@ -262,11 +268,24 @@ def _validate(agents: list[str], read_only: bool, where: str) -> None:
 
 
 def resolve(task: str = "", preset: str | None = None,
-            roles: list[str] | None = None) -> Route:
-    """Resolve a request to a role set. Explicit only; never a guess.
+            roles: list[str] | None = None, *,
+            offline_fixture: bool = False) -> Route:
+    """Resolve a request to a role set.
 
-    ``roles`` wins when given (the attendee named them), then ``preset``. With neither,
-    raise so the caller can ASK, rather than inventing a task nobody requested.
+    Three ways in, in precedence order, and none of them pattern-matches prose:
+
+    * ``roles``: the attendee named them. Nothing to decide.
+    * ``preset``: a starting point, whose capabilities are declared with it.
+    * ``task`` alone: ASK THE MODEL which capabilities the request needs. This is the
+      real surface, because the attendee types whatever they like. It used to route
+      every role on the roster unconditionally, which dispatched a frontend builder
+      for a command line tool -- deterministic, and wrong for the same reason a
+      keyword table would be.
+
+    Routing decides WHO WORKS and nothing else: no target shape, no language, no
+    protocol, no expected answer. The structural rules still hold on every path (a
+    build always gets a checker and at least one maker), because those are invariants
+    rather than judgements, and the model is not asked to weigh them.
     """
     if roles:
         agents = _ordered(roles)
@@ -277,14 +296,34 @@ def resolve(task: str = "", preset: str | None = None,
         if preset not in PRESETS:
             raise RouteError(f"UNKNOWN_PRESET:{preset}")
         spec = PRESETS[preset]
-        agents = _ordered(_resolve_needs(spec))
-        read_only = bool(spec.get("read_only"))
-        _validate(agents, read_only, where=preset)
-        return Route(preset=preset, agents=agents, read_only=read_only,
-                     rule=f"preset {preset!r}: {spec['title']}")
+        # A preset that carries no request text of its own (``your-own``) is not really
+        # a preset: the attendee supplies the request, so fall through and route it the
+        # way a typed request is routed. Otherwise "type your own request" would be the
+        # one path that ignores what was typed and dispatched the whole roster.
+        supplies_its_own_task = bool(str(spec.get("task") or "").strip())
+        if supplies_its_own_task or not task.strip():
+            agents = _ordered(_resolve_needs(spec))
+            read_only = bool(spec.get("read_only"))
+            _validate(agents, read_only, where=preset)
+            return Route(preset=preset, agents=agents, read_only=read_only,
+                         rule=f"preset {preset!r}: {spec['title']}")
+    if task.strip():
+        import integration_plan  # noqa: PLC0415 (lazy: offline tests skip boto3)
+
+        capabilities = list(_roles.maker_capabilities())
+        chosen, reason = integration_plan.select_capabilities(
+            task, capabilities, offline_fixture=offline_fixture)
+        ids: list[str] = []
+        for capability in chosen:
+            ids.extend(_cap(capability))
+        ids.extend(_roles.checker_ids())
+        agents = _ordered(list(dict.fromkeys(ids)))
+        _validate(agents, read_only=False, where="routed request")
+        return Route(preset="routed", agents=agents,
+                     rule=f"model routed {', '.join(chosen)}: {reason}")
     raise RouteError(
-        "PRESET_NOT_SPECIFIED: say which roles should work on this, or pick a starting "
-        "point. Any request is fine; the roles are the only thing that must be chosen.")
+        "EMPTY_TASK: there is nothing to route. Ask what should be built, in the "
+        "user's own words, or offer a starting point.")
 
 
 def _ordered(role_ids: list[str]) -> list[str]:

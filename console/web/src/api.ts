@@ -139,7 +139,6 @@ export interface WorkItem {
 export interface GateRecord {
   sequence: number;
   stage: string;
-  candidate_digest?: string;
   passed: boolean;
   summary?: string;
   checks?: Array<{ check?: string; passed?: boolean; detail?: string }>;

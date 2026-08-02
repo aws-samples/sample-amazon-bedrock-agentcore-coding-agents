@@ -260,8 +260,8 @@ BY_ID: dict[str, Role] = {r.id: r for r in REGISTRY}
 # thing that dispatches. It has no harness directory and no steering file.
 ORCHESTRATOR = "orchestrator"
 ORCHESTRATOR_DESCRIPTION = (
-    "Coordinates the build: routes a request, integrates isolated role PRs, runs "
-    "the executable gates, and opens the final PR.")
+    "Coordinates the build: routes a request, opens one pull request per role, and "
+    "runs the executable gate and review on each one before it merges.")
 
 
 class UnknownRole(KeyError):
@@ -343,6 +343,21 @@ def by_capability(capability: str) -> tuple[str, ...]:
     legitimate answer: a preset that needs a capability nobody serves is a
     routing failure the caller reports, not something to substitute for."""
     return tuple(r.id for r in roster() if r.capability == capability)
+
+
+def maker_capabilities() -> tuple[str, ...]:
+    """The MAKER capabilities this roster serves, in dispatch order.
+
+    This is the choice the router hands the model: "which kinds of work does this
+    request need?" Derived from the registry, so a roster swap or a smaller team
+    changes what can be routed without an edit anywhere else, and nothing counts
+    roles or names them in a literal.
+    """
+    out: list[str] = []
+    for r in builders():
+        if r.capability not in out:
+            out.append(r.capability)
+    return tuple(out)
 
 
 def role_names() -> dict[str, str]:
