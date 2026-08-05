@@ -400,7 +400,7 @@ def _run_fixture_per_pr(monkeypatch, tmp_path, policy: str, *,
     instance = engine.Engine(executor_obj=FixtureExecutor())
     run = instance.submit(
         "Build a service and interface",
-        ["claude-code", "claude-code-validator", "opencode"])
+        ["claude-code", "kiro", "opencode"])
     deadline = time.monotonic() + 180
     while run.status not in engine.TERMINAL:
         assert time.monotonic() < deadline, f"stuck in {run.status}/{run.phase}"

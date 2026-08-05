@@ -36,18 +36,18 @@ def _run(engine, run_id: str):
     run = engine.Run(
         run_id=run_id,
         task="build an issue tracker",
-        agents=["claude-code", "opencode", "claude-code-validator"],
+        agents=["claude-code", "opencode", "kiro"],
         roles={
             "claude-code": "backend-builder",
             "opencode": "frontend-builder",
-            "claude-code-validator": "validator",
+            "kiro": "validator",
         },
     )
     os.makedirs(run.integration_base_dir, exist_ok=True)
     for agent, role, capability, kind, token in (
         ("claude-code", "backend-builder", "backend", roles.BUILDER, "back"),
         ("opencode", "frontend-builder", "frontend", roles.BUILDER, "front"),
-        ("claude-code-validator", "validator", "validator", roles.CHECKER, "check"),
+        ("kiro", "validator", "validator", roles.CHECKER, "check"),
     ):
         item = work_items.WorkItem.create(
             run.run_id, agent, role, capability, kind=kind, token=token)
@@ -78,7 +78,7 @@ def _build_trees(engine, run):
 
 
 def _author_check(run, body: str = "#!/bin/sh\nexit 0\n") -> str:
-    path = os.path.join(run.roledir("claude-code-validator"),
+    path = os.path.join(run.roledir("kiro"),
                         "acceptance_check")
     _write(os.path.dirname(path), {"acceptance_check": body})
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)

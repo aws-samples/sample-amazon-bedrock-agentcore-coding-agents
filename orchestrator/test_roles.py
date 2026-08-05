@@ -37,10 +37,17 @@ def test_the_served_roster_can_build_and_check():
 
 
 def test_hidden_roles_are_registered_but_not_served():
-    """A kept-but-hidden role (the Codex / Kiro restore paths) stays reachable in the
-    registry and off the served roster, which is what makes it a restore path rather
-    than dead code. Codex in particular must NOT be served: the GPT models it needs
-    are unavailable on a Workshop Studio account."""
+    """A kept-but-hidden role stays reachable in the registry and off the served
+    roster, which is what makes it a restore path rather than dead code.
+
+    Both hidden roles are hidden for a stated reason:
+      * Codex must NOT be served: the GPT-5.x models it needs are unavailable on a
+        Workshop Studio account and 401 on every dispatch.
+      * The Claude Code validator is the BEDROCK-NATIVE, NO-KEY checker, kept for any
+        account without a Kiro subscription. It is off the default roster because the
+        event now provisions per-team Kiro subscriptions (central-account.yaml), so
+        the served checker is Kiro on the attendee's own ksk_ key.
+    """
     hidden = [r.id for r in roles.REGISTRY if r.hidden]
     assert hidden, "the restore paths should stay registered, not deleted"
     served = roles.roster_ids()
@@ -48,6 +55,10 @@ def test_hidden_roles_are_registered_but_not_served():
         assert role_id in roles.BY_ID
         assert role_id not in served
     assert "codex" in hidden, "Codex is disabled at events (no GPT entitlement)"
+    assert "claude-code-validator" in hidden, (
+        "the Bedrock-native no-key checker must stay a registered restore path")
+    # And the flip is pinned in the direction it now runs: Kiro is the served checker.
+    assert roles.checker_ids() == ("kiro",), roles.checker_ids()
 
 
 def test_ordering_puts_makers_before_the_checker():
@@ -67,18 +78,20 @@ def test_dispatch_tool_names_are_unique_per_capability():
 
 def test_workshop_roles_overrides_the_roster(monkeypatch):
     """The roster is CONFIGURABLE: an operator runs a different or smaller team with
-    one env var and no code change. This is also how a hidden role is restored."""
-    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,kiro")
-    assert roles.roster_ids() == ("claude-code", "kiro")
+    one env var and no code change. This is also how a hidden role is restored: the
+    Claude Code validator is the Bedrock-native no-key checker, off the served roster
+    but one variable away."""
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,claude-code-validator")
+    assert roles.roster_ids() == ("claude-code", "claude-code-validator")
     assert roles.builder_ids() == ("claude-code",)
-    assert roles.checker_ids() == ("kiro",)          # the restored checker
+    assert roles.checker_ids() == ("claude-code-validator",)   # the restored checker
 
 
 def test_workshop_roles_reorders_to_makers_then_checker(monkeypatch):
     """Order is enforced, not taken from the variable: naming the checker first must
     not put it ahead of the builders it checks."""
-    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code-validator,claude-code")
-    assert roles.roster_ids() == ("claude-code", "claude-code-validator")
+    monkeypatch.setenv("WORKSHOP_ROLES", "kiro,claude-code")
+    assert roles.roster_ids() == ("claude-code", "kiro")
 
 
 def test_an_unknown_role_in_the_override_fails_loud(monkeypatch):
@@ -98,7 +111,7 @@ def test_get_raises_for_an_unregistered_role():
 def test_by_capability_reads_the_served_roster(monkeypatch):
     """A capability nobody serves returns empty rather than a nearest match, so the
     caller reports a real routing failure instead of substituting an agent."""
-    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,claude-code-validator")
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,kiro")
     assert roles.by_capability("backend") == ("claude-code",)
     assert roles.by_capability("frontend") == ()
 

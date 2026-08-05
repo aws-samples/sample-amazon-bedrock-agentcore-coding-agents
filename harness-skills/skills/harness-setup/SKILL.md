@@ -7,7 +7,7 @@ description: >-
   "stand up the harness", "wire up the orchestrator", or "I just cloned this, what do I run".
   Drives the full bring-up: shared infra -> GitHub MCP Gateway -> the three per-agent skills
   (backend / validator / frontend) -> orchestrator run, with a confirm-region/agents gather step
-  and a closing smoke-test checklist. Dispatches to configure-claude-code-backend, configure-claude-code-validator,
+  and a closing smoke-test checklist. Dispatches to configure-claude-code-backend, configure-kiro-validator,
   and configure-opencode-frontend rather than duplicating their steps.
 ---
 
@@ -26,14 +26,15 @@ roles are unambiguous:
 | Agent | Role | Identity model | Per-agent skill |
 |---|---|---|---|
 | **Claude Code** | **BACKEND**: implements the backend deliverable the task names and exposes it through the AgentCore Gateway | Bedrock native, runtime IAM role has `bedrock:InvokeModel`, **no API key** | `configure-claude-code-backend` |
-| **Claude Code (validator)** | **VALIDATOR**: reads the task and the builders' work, authors a self-contained executable check, the engine runs it, and its real exit code is the gate | Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), runtime IAM role has `bedrock:InvokeModel`; **no API key, no Token Vault, no ksk_** | `configure-claude-code-validator` |
+| **Kiro** | **VALIDATOR**: reads the task and the builders' work, authors a self-contained executable check, the engine runs it, and its real exit code is the gate | Token Vault (AgentCore Identity): **your own `ksk_` key**, fetched at session start, in memory only, never on disk and never a runtime env var | `configure-kiro-validator` |
 | **opencode** | **FRONTEND BUILDER**: builds the interface on top of the backend | Bedrock native, runtime IAM role through the AWS SDK credential chain | `configure-opencode-frontend` |
 
 Framing: this is an **autonomous, fire-and-forget** pipeline. The orchestrator handles the
 deterministic work (admission, context hydration, pre-flight, finalization); the three agents
-are the agentic step fanned into isolated roles, then integrated through an executable gate
-and role-PR queue. There is **no race, no winner, no fastest/cheapest ranking**: every agent
-has a job and does it.
+are the agentic step fanned into isolated roles. Each builder gets ONE pull request of its own
+against the default branch, checked and reviewed and merged on its own: no combined candidate,
+no merge queue, no separate final PR. There is **no race, no winner, no fastest/cheapest
+ranking**: every agent has a job and does it.
 
 > Per-agent **model routing** is each agent's own concern (Sonnet for new tasks,
 > Haiku for read-only review, Opus opt-in for complex repos). The umbrella skill only confirms
@@ -55,7 +56,7 @@ Ask:
 - **Shared infra + Gateway already provisioned?** (typical at an event)
   - Options: `Yes: skip to Step 4 (verify Gateway, then deploy agents)` / `No: I'm starting from scratch (run Steps 2-3)`
 - **Which agents to configure?**
-  - Options: `All three (backend + validator + frontend)` / `Backend only (Claude Code)` / `Validator only (Claude Code validator)` / `Frontend only (opencode)` / `Custom subset`
+  - Options: `All three (backend + validator + frontend)` / `Backend only (Claude Code)` / `Validator only (Kiro)` / `Frontend only (opencode)` / `Custom subset`
 
 Capture the answers; everything below keys off them. Export region once so later commands inherit it:
 
@@ -126,11 +127,13 @@ identity model and model routing stay owned in one place. Suggested order: backe
      ```bash
      cd coding-agents/claude-code && ./setup.sh && python deploy.py
      ```
-2. **VALIDATOR: Claude Code (validator)** -> run skill `configure-claude-code-validator`
-   - Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), no API key, no Token Vault, no ksk_. Roughly:
+2. **VALIDATOR: Kiro** -> run skill `configure-kiro-validator`
+   - Token Vault (AgentCore Identity) with the attendee's own `ksk_` key. Roughly:
      ```bash
-     cd coding-agents/claude-code-validator && ./setup.sh && python deploy.py
+     cd coding-agents/kiro && KIRO_API_KEY=ksk_xxx ./setup.sh && python deploy.py
      ```
+   - No key minted yet? `./setup.sh --skip-identity` builds and deploys keyless, and
+     the key is added later on the wired instance in console Settings.
 3. **FRONTEND: opencode** -> run skill `configure-opencode-frontend`
    - Bedrock native, runtime IAM role; no API key or Token Vault provider. Roughly:
      ```bash
@@ -155,7 +158,7 @@ finalization -> acceptance gate -> PR. See `orchestrator/` in this repo.
 The acceptance gate works as follows: after the builder roles complete, the validator role
 reads the task (`WORKSHOP_TASK`) and the work (`WORKSHOP_WORK_DIR`), authors one
 self-contained executable, and the engine runs it. The check's real exit code decides. A
-non-zero exit is a bounded retry (~2 rounds), then escalate to a human. Nothing in the repo
+non-zero exit is ONE bounded retry PER PULL REQUEST, then escalate to a human. Nothing in the repo
 pre-encodes what a correct answer looks like; the validator decides based on the deliverable
 in front of it.
 
@@ -170,8 +173,8 @@ Walk this before declaring the harness ready. Each item is a concrete, observabl
 - [ ] **Gateway live**: Step 4 `tools/list` returns a non-empty tool list with no JSON-RPC error.
 - [ ] **Backend (Claude Code)**: `python deploy.py` succeeded; runtime registered; an interactive
       `python connect.py` session opens (verified by `configure-claude-code-backend`).
-- [ ] **Validator (Claude Code validator)**: deployed Bedrock-native (no API key, no Token Vault);
-      runtime READY (verified by `configure-claude-code-validator`).
+- [ ] **Validator (Kiro)**: deployed with its Token Vault credential provider (the key in the
+      vault, never on the ARN); runtime READY (verified by `configure-kiro-validator`).
 - [ ] **Frontend (opencode)**: deployed AND runtime IAM role verified
       (verified by `configure-opencode-frontend`); the frontend reaches the backend MCP endpoint.
 - [ ] **End-to-end run**: submit one request to the orchestrator and confirm it reaches a terminal
@@ -179,7 +182,8 @@ Walk this before declaring the harness ready. Each item is a concrete, observabl
       decided (PR opened, or a clear fail-closed reason like `GITHUB_UNREACHABLE` /
       `REPO_NOT_FOUND_OR_NO_ACCESS`).
 - [ ] **No secrets committed**: GitHub App key/IDs, account ids, and tokens were passed by env/file
-      only and are absent from the working tree. The Claude Code validator has no API key by design.
+      only and are absent from the working tree. A `ksk_` Kiro key is NEVER committed and never
+      echoed into a terminal transcript: it lives in the Token Vault and is read at session start.
 
 If any item fails, fix it (or re-run the owning per-agent skill) before handing off. Cost is a
 first-class concern but illustrative here; a small autonomous run is dollars of Bedrock
@@ -190,8 +194,8 @@ measured per-agent metrics from the run, never vendor "Nx cheaper" claims.
 
 ```bash
 python coding-agents/claude-code/cleanup.py
-python coding-agents/claude-code-validator/cleanup.py
 python coding-agents/opencode/cleanup.py
+python coding-agents/kiro/cleanup.py
 cd coding-agents/infra && ./cleanup.sh      # removes VPC + S3 Files (keeps the S3 bucket)
 cd coding-agents/gateway_mcp && ./delete-all.sh
 ```

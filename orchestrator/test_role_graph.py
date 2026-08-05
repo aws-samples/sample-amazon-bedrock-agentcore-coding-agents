@@ -57,9 +57,9 @@ def test_checker_waits_for_every_builder_including_the_slowest():
     and grade a half-written tree."""
     order, factory = _recorder()
     # The frontend is deliberately much slower than the backend.
-    delays = {"claude-code": 0.02, "opencode": 0.35, "claude-code-validator": 0.0}
+    delays = {"claude-code": 0.02, "opencode": 0.35, "kiro": 0.0}
     _run(delays, lambda a: factory(a, delay=delays[a]))
-    assert order[-1] == "claude-code-validator", order
+    assert order[-1] == "kiro", order
     assert set(order) == set(delays), order
 
 
@@ -68,10 +68,10 @@ def test_a_failed_builder_never_hangs_the_checker():
     One role's exception becoming a whole-run hang is strictly worse than a red gate,
     because the gate can still report a real verdict on whatever was written."""
     order, factory = _recorder()
-    spec = {"claude-code": True, "opencode": False, "claude-code-validator": False}
+    spec = {"claude-code": True, "opencode": False, "kiro": False}
     _, nodes = _run(spec, lambda a: factory(a, boom=spec[a]))
-    assert "claude-code-validator" in order, "the checker must still run"
-    assert order[-1] == "claude-code-validator", order
+    assert "kiro" in order, "the checker must still run"
+    assert order[-1] == "kiro", order
     # The failure is recorded rather than swallowed, so the engine can report it.
     assert nodes["claude-code"].error is not None
     assert nodes["opencode"].error is None
@@ -81,9 +81,9 @@ def test_all_builders_failing_still_reaches_the_checker():
     """Even a total builder failure gets a verdict: the checker looks at the (empty or
     partial) tree and the gate decides. Nothing is fabricated and nothing hangs."""
     order, factory = _recorder()
-    spec = {"claude-code": True, "opencode": True, "claude-code-validator": False}
+    spec = {"claude-code": True, "opencode": True, "kiro": False}
     _, nodes = _run(spec, lambda a: factory(a, boom=spec[a]))
-    assert order[-1] == "claude-code-validator", order
+    assert order[-1] == "kiro", order
     assert all(nodes[b].error is not None for b in ("claude-code", "opencode"))
 
 
@@ -91,16 +91,16 @@ def test_two_role_roster_schedules_without_a_special_case():
     """A smaller team (one builder + the checker) is a supported roster, so it must
     schedule from the registry with no branch of its own."""
     order, factory = _recorder()
-    _run(["claude-code", "claude-code-validator"], lambda a: factory(a))
-    assert order == ["claude-code", "claude-code-validator"]
+    _run(["claude-code", "kiro"], lambda a: factory(a))
+    assert order == ["claude-code", "kiro"]
 
 
 def test_checker_only_route_runs_with_no_builders_to_wait_for():
     """The review-only route routes just the checker. An AND over an EMPTY builder set
     must be immediately true, not a stall."""
     order, factory = _recorder()
-    _run(["claude-code-validator"], lambda a: factory(a))
-    assert order == ["claude-code-validator"]
+    _run(["kiro"], lambda a: factory(a))
+    assert order == ["kiro"]
 
 
 def test_builders_actually_run_concurrently():
@@ -110,10 +110,10 @@ def test_builders_actually_run_concurrently():
     import time
     order, factory = _recorder()
     delay = 0.4
-    spec = ["claude-code", "opencode", "claude-code-validator"]
+    spec = ["claude-code", "opencode", "kiro"]
     t0 = time.monotonic()
     _run(spec, lambda a: factory(
-        a, delay=(delay if a != "claude-code-validator" else 0.0)))
+        a, delay=(delay if a != "kiro" else 0.0)))
     elapsed = time.monotonic() - t0
     assert len(order) == 3
     assert elapsed < delay * 1.8, (
@@ -129,10 +129,10 @@ def test_an_empty_route_fails_loud():
 
 def test_the_graph_reads_the_roster_from_the_registry(monkeypatch):
     """Which ids are builders and which check is the registry's answer, so a swapped
-    checker needs no change in the graph. Restore Kiro as the checker and the ordering
-    must follow it."""
-    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,kiro")
-    assert roles.checker_ids() == ("kiro",)
+    checker needs no change in the graph. Restore the Claude Code validator as the
+    checker and the ordering must follow it."""
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,claude-code-validator")
+    assert roles.checker_ids() == ("claude-code-validator",)
     order, factory = _recorder()
-    _run(["claude-code", "kiro"], lambda a: factory(a))
-    assert order == ["claude-code", "kiro"], order
+    _run(["claude-code", "claude-code-validator"], lambda a: factory(a))
+    assert order == ["claude-code", "claude-code-validator"], order

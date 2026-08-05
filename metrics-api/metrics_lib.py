@@ -244,12 +244,25 @@ def _within(row: dict[str, Any], time_range: str) -> bool:
 # (assumed-role/<PERUSER_ROLE>/<user>), that identity carries the user, so this log
 # is a real per-user cost source with no in-container collector.
 #
-# This is the native-Bedrock path: claude-code, the claude-code-validator, AND
-# opencode (the frontend, on the amazon-bedrock provider) all make real Bedrock
-# calls, so all appear here with their caller identity. See the Stage 3 observe
-# lab for how telemetry attributes per user. Fail-soft everywhere: any problem
-# (logging off, role unused, AWS unreachable, offline tests) returns {} and the callers fall
-# back to the ledger path, never an invented number.
+# This is the NATIVE-BEDROCK path, and it covers claude-code (the backend) and
+# opencode (the frontend, on the amazon-bedrock provider): both make real Bedrock
+# calls in this account, so both appear here with their caller identity. The
+# registered-but-hidden claude-code-validator restore path is native too.
+#
+# KIRO, the SERVED VALIDATOR, IS NOT ON THIS PATH, and that is a real gap rather
+# than a bug to paper over. Kiro authenticates with the attendee's own ``ksk_`` key
+# against the Kiro service, so its model calls are NOT Bedrock InvokeModel calls
+# under this account and NOTHING records them in the invocation log. AgentCore
+# meters only its COMPUTE. So a per-agent cost table over this source shows the two
+# native roles, not all three; the console's vendor types encode the same fact
+# (``BYOK_BACKENDS`` includes kiro, ``RELAY_METERED_BACKENDS`` deliberately does
+# not). Do not synthesize a Kiro model-cost number here to fill the row: there is no
+# vendor usage API wired, and an invented figure would be exactly the fabrication
+# this whole path refuses.
+#
+# See the Stage 3 observe lab for how telemetry attributes per user. Fail-soft
+# everywhere: any problem (logging off, role unused, AWS unreachable, offline tests)
+# returns {} and the callers fall back to the ledger path, never an invented number.
 # ---------------------------------------------------------------------------
 _INVOCATION_LOG_GROUP = os.getenv("BEDROCK_INVOCATION_LOG_GROUP", "/aws/bedrock/modelinvocations")
 

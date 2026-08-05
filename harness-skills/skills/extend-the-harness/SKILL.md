@@ -151,13 +151,25 @@ python deploy.py                      # registers/updates the AgentCore Runtime 
 
 ```bash
 # Bedrock-native role (Claude Code family, opencode): nothing extra;
-# runtime IAM role has bedrock:InvokeModel. This covers the backend, validator, and frontend.
+# runtime IAM role has bedrock:InvokeModel. This covers the backend and the frontend.
 cd coding-agents/<agent> && ./setup.sh && python deploy.py
+
+# Vendor-key role (Kiro, the served VALIDATOR): the key goes into the AgentCore
+# Identity Token Vault, never onto the runtime as a plaintext env var. run.sh fetches
+# it at session start with the runtime's own IAM role and holds it in memory only.
+cd coding-agents/kiro && KIRO_API_KEY=ksk_xxx ./setup.sh && python deploy.py
+cd coding-agents/kiro && ./setup.sh --skip-identity && python deploy.py   # keyless: add the key later
 ```
 
-The served roles (backend, validator, frontend) are all Bedrock-native with no API key. There
-is no Token Vault branch in the active harness. Legacy hidden roles (kiro, codex) use Token
-Vault; see their own configure skills if re-enabling them.
+So the active harness has BOTH branches, and a new role picks one. The served backend
+(Claude Code) and frontend (opencode) are Bedrock-native with no API key. The served
+VALIDATOR (Kiro) authenticates through AgentCore Identity / Token Vault with the
+attendee's own `ksk_` key, so the Token Vault branch IS live: copy `coding-agents/kiro`
+(`setup.sh`'s workload-identity + api-key-credential-provider steps and `run.sh`'s
+`get_workload_access_token` / `get_resource_api_key` fetch) for any new vendor-key role.
+The registered-but-hidden restore paths are `claude-code-validator` (Bedrock-native, no
+key) and `codex` (needs a GPT entitlement); see their own configure skills before
+restoring either.
 
 ---
 

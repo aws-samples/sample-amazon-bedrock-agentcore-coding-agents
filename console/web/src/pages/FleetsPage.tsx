@@ -75,9 +75,12 @@ const FALLBACK_MODEL: ModelOption = {
 // emits, never invented.
 const TOOL_LABEL: Record<string, string> = {
   list_presets:       'Reading build starting points',
-  dispatch_backend:   'Dispatching backend (Claude Code)',
-  dispatch_frontend:  'Dispatching frontend (opencode)',
-  dispatch_validator: 'Dispatching validator (Claude Code)',
+  // No vendor names here: WORKSHOP_ROLES decides which agent fills each capability,
+  // so a literal goes stale the moment the roster changes (it said "validator (Claude
+  // Code)" while Kiro was the served checker). The roster view names the agents.
+  dispatch_backend:   'Dispatching backend',
+  dispatch_frontend:  'Dispatching frontend',
+  dispatch_validator: 'Dispatching validator',
   run_build:          'Running the full build',
   run_status:         'Checking run status',
 };

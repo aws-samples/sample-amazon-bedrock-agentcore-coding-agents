@@ -45,7 +45,7 @@ def test_configure_wires_role_arns_execution_role_and_runtime_environment(
     assert runtime["executionRoleArn"].endswith(":role/orchestrator")
     assert env["AGENTCORE_RUNTIME_CLAUDE_CODE"].endswith("/claude-code")
     assert env["AGENTCORE_RUNTIME_OPENCODE"].endswith("/opencode")
-    assert env["AGENTCORE_RUNTIME_CLAUDE_CODE_VALIDATOR"].endswith("/claude-code-validator")
+    assert env["AGENTCORE_RUNTIME_KIRO"].endswith("/kiro")
     assert env["WORKSHOP_RUNTIME_BUCKET"] == "coding-agents-123456789012-us-west-2"
     assert env["WORKSHOP_GITHUB_STORE"] == "secretsmanager"
     assert env["WORKSHOP_FINAL_MERGE_POLICY"] == "auto"

@@ -499,7 +499,7 @@ def _checker_agents() -> tuple[str, ...]:
 
 def _validator_agent() -> str:
     """The agent id that plays the checker role in this deployment. Swapping the
-    checker (a second Claude Code today, Kiro on the restore path) is a registry
+    checker (Kiro today, a second Claude Code on the restore path) is a registry
     entry, not an edit here."""
     checkers = _checker_agents()
     if not checkers:
@@ -1391,9 +1391,13 @@ class Engine:
             and not os.environ.get("WORKSHOP_S3FILES_DIR")
             else runtime_stage.skill_path(run.run_id)
         )
+        # Registry, not a literal, for the same reason as the checker prompt below: the
+        # backend is Claude Code today (CLAUDE.md), but WORKSHOP_ROLES can serve a role
+        # whose native steering file has another name.
+        builder_steering = roles.get(agent_id).steering_file.replace("\\", "/")
         prompt = (
             "You are the backend implementer role in a multi-agent build. Read "
-            "CLAUDE.md in this directory for your role, and read the "
+            f"{builder_steering} in this directory for your role, and read the "
             "shared `.workshop/integration-brief.md` before changing code. It "
             "defines the boundary you share with the other builders, not an "
             "implementation you must copy. Read the "
@@ -1968,10 +1972,15 @@ class Engine:
             run.integration_brief or {},
             self._builder_items(run),
         )
+        # The steering FILENAME comes from the registry, never a literal: the served
+        # checker is Kiro (`.kiro/steering/validator.md`), while the claude-code-validator
+        # restore path reads `CLAUDE.md`. Hardcoding either one points the checker at a
+        # file that is not there for the other.
+        checker_steering = roles.get(checker).steering_file.replace("\\", "/")
         prompt = (
             "You are the validator role in a multi-agent build, and you are the "
-            "checker in a maker-checker pair. Read CLAUDE.md in this directory for "
-            "your role.\n\n"
+            f"checker in a maker-checker pair. Read {checker_steering} in this "
+            "directory for your role.\n\n"
             f"THE REQUEST the other roles were given: {run.task}\n\n"
             f"YOU ARE CHECKING ONE PULL REQUEST: {subject.work_id} "
             f"({subject.role}), which merges into {run.final_base_branch!r}. This "

@@ -138,11 +138,11 @@ shift 2>/dev/null || true
 PROMPT="$*"
 
 # ── Choose the working directory (mirror codex/run.sh) ───────
-# The validator reads its role + contract from the working tree it starts in. The
-# attendee stages `.kiro/steering/` and the graded module onto the shared mount, so
-# run there when it exists: a relative path like `.kiro/steering/validator.md` then
-# resolves to the STAGED file, not the image-baked ~/.kiro copy. An explicit per-run
-# cwd from the orchestrator wins; HOME is the last resort (baked steering only).
+# The validator reads its role from the working tree it starts in. The attendee stages
+# `.kiro/steering/` onto the shared mount, so run there when it exists: a relative path
+# like `.kiro/steering/validator.md` then resolves to the STAGED file, not the
+# image-baked ~/.kiro copy. An explicit per-run cwd from the orchestrator wins; HOME is
+# the last resort (baked steering only).
 if [ -n "${WORKSHOP_AGENT_WORKDIR:-}" ]; then
   RUN_DIR="$WORKSHOP_AGENT_WORKDIR"
 elif [ -d /mnt/s3files ]; then

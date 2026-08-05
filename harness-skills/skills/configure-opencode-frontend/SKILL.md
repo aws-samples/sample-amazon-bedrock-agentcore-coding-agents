@@ -11,9 +11,8 @@ description: >-
 
 # Configure the opencode frontend builder
 
-opencode builds the frontend interface. Claude Code builds the backend and a
-second Claude Code (the validator) validates the composed result. There is no race
-and no winner.
+opencode builds the frontend interface. Claude Code builds the backend and Kiro
+(the validator) validates the composed result. There is no race and no winner.
 
 ## Prerequisites
 

@@ -98,7 +98,7 @@ def test_permanent_vs_transient_classification():
     # deterministic failures: resubmit won't help -> stays failed
     for reason in ("EMPTY_TASK", "UNKNOWN_PRESET:no/such", "UNKNOWN_ROLE:nope",
                    "PRESET_NOT_SPECIFIED", "NO_CHECKER_ROUTED",
-                   "HARNESS_MISSING:claude-code-validator", "NO_RUN_TO_REVIEW"):
+                   "HARNESS_MISSING:kiro", "NO_RUN_TO_REVIEW"):
         assert _is_permanent(reason) is True, reason
     # transient failures: a human can resume -> needs_human
     for reason in ("CONCURRENCY_LIMIT", "ROLE_EXECUTION_ERROR", "ENGINE_STALL",

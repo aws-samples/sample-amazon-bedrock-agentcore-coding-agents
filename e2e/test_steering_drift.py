@@ -73,6 +73,21 @@ def test_shipped_steering_exists_for_every_registered_role():
             f"{role_id}: steering at {path} is suspiciously empty")
 
 
+def test_the_published_steering_path_names_a_file_that_exists():
+    """``Role.steering_path`` is projected to attendees through ``GET /api/agents``.
+
+    A role whose steering is staged FLAT (Kiro's nested ``.kiro/steering/validator.md``
+    is baked as ``steering/agent.md``, because a build context cannot COPY from outside
+    itself) must not publish the upstream path: an attendee who tries to open it finds
+    nothing. Checked for EVERY registered role, since a restore path is published too
+    the moment it is served.
+    """
+    for role_id in _ROLE_IDS:
+        published = os.path.join(_REPO, roles.get(role_id).steering_path)
+        assert os.path.isfile(published), (
+            f"{role_id}: /api/agents publishes {published}, which does not exist")
+
+
 def test_baked_steering_matches_the_shipped_source_for_every_role():
     """The image's copy must be byte-identical to the one source of truth.
 
@@ -170,3 +185,39 @@ def test_roles_leave_git_and_github_delivery_to_the_coordinator():
             "do not inspect or print credential-bearing environment variables"
             in text
         ), role_id
+
+
+def test_the_image_bakes_steering_at_the_path_dispatch_looks_for():
+    """The Dockerfile's COPY DESTINATION must be the registry's ``steering_file``.
+
+    ``runtime_exec.py`` stages a role's steering with
+    ``if test -f $HOME/<steering_file>; then cp ...; fi``. That guard is silent: when the
+    baked destination filename differs, nothing is copied, nothing fails, and the role
+    dispatches into its worktree with NO steering at all, so a checker becomes a generic
+    agent with no role. Kiro shipped exactly that way (baked
+    ``/home/agent/.kiro/steering/agent.md`` while the registry declared
+    ``.kiro/steering/validator.md``), and every other guard passed: the drift test
+    compares CONTENT, and the flattened SOURCE name is legitimate because a build context
+    cannot COPY from outside itself. Only the destination was wrong.
+
+    So this asserts the one thing nothing else did: for every registered role, some COPY
+    in its Dockerfile lands the steering at ``$HOME/<steering_file>``.
+    """
+    for role_id in _ROLE_IDS:
+        r = roles.get(role_id)
+        dockerfile = os.path.join(_REPO, "coding-agents", r.harness_dir, "Dockerfile")
+        if not os.path.isfile(dockerfile):
+            continue
+        with open(dockerfile, encoding="utf-8") as f:
+            body = f.read()
+        wanted = r.steering_file.replace("\\", "/")
+        destinations = [
+            line.split()[-1].rstrip("/")
+            for line in body.splitlines()
+            if line.strip().startswith("COPY") and not line.rstrip().endswith("\\")
+        ]
+        assert any(d.rstrip("/").endswith("/" + wanted) for d in destinations), (
+            f"{role_id}: no COPY in {dockerfile} bakes steering to $HOME/{wanted}. "
+            f"runtime_exec.py stages with `test -f $HOME/{wanted}` and SILENTLY skips "
+            f"when absent, so this role would dispatch with no steering. "
+            f"COPY destinations found: {destinations}")

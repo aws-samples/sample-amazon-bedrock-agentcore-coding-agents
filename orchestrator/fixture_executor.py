@@ -35,6 +35,22 @@ import stat
 from typing import Any
 
 import executor
+import roles
+
+
+def _is_checker(agent_id: str, role: Any) -> bool:
+    """Whether this dispatch is the CHECKER, read from the registry.
+
+    Deliberately not ``agent_id.endswith("validator")``: that guessed the kind from the
+    spelling of an id, so a roster whose checker is named something else (Kiro) silently
+    got a builder's stand-in and every gate went red on a passing run. The registry is
+    the one place a role declares whether it makes or checks; ``role.role`` is the
+    fallback for a fixture that dispatches an unregistered id.
+    """
+    try:
+        return roles.get(agent_id).kind == roles.CHECKER
+    except roles.UnknownRole:
+        return str(getattr(role, "role", "")) == "validator"
 
 # The validator stub, as a real executable. It checks only that the builders left
 # something behind: enough to be a true statement about the run, and nothing about
@@ -88,7 +104,7 @@ class FixtureExecutor(executor.Executor):
         run._offline_double = True
         workdir = run.roledir(agent_id)
         os.makedirs(workdir, exist_ok=True)
-        if agent_id.endswith("validator"):
+        if _is_checker(agent_id, role):
             path = os.path.join(workdir, "acceptance_check")
             body = _CHECK_BODY
             # `fail_first_check` exercises the bounded re-implement loop with a

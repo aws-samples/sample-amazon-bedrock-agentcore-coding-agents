@@ -22,9 +22,15 @@ opencode / kiro already routed the same statement through a
 ``_s3files_policy_resources()`` helper that returns account-scoped wildcards when
 the AP is unknown; claude-code was the one harness missing it.
 
-We assert every non-hidden harness resolves its mountless S3Files resources to
-real ARNs (no empty string, each ``arn:`` or ``*``), by importing each deploy
-module with a mountless (empty-AP) infra config.
+Kiro is now a SERVED role (the validator), so its deploy.py is held to the served-role
+invariants too, not just this one: see ``test_region_is_never_hardcoded.py``, which
+requires its ``REGION_MISMATCH`` same-region guard.
+
+We assert EVERY harness with a deploy.py resolves its mountless S3Files resources to
+real ARNs (no empty string, each ``arn:`` or ``*``), by importing each deploy module
+with a mountless (empty-AP) infra config. The list deliberately includes the hidden
+restore paths (``claude-code-validator``, ``codex``): a restore path whose deploy
+crashes is not a working restore.
 """
 from __future__ import annotations
 
@@ -36,8 +42,8 @@ from pathlib import Path
 _CODE_ROOT = Path(__file__).resolve().parents[1]
 _CODING_AGENTS = _CODE_ROOT / "coding-agents"
 
-# Codex is kept in the tree but hidden from the served workshop; it still ships a
-# deploy.py, so include it in the invariant. Any role with a deploy.py counts.
+# The served roster plus the kept restore paths: any role with a deploy.py counts,
+# hidden or not, because a restore path whose deploy crashes is not a restore.
 _HARNESS_ROLES = ["claude-code", "opencode", "kiro", "claude-code-validator"]
 if (_CODING_AGENTS / "codex" / "deploy.py").exists():
     _HARNESS_ROLES.append("codex")

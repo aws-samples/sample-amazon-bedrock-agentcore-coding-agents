@@ -46,7 +46,7 @@ def test_a_finished_run_is_readable_from_a_different_engine():
     eng = engine.Engine(executor_obj=fixture.FixtureExecutor())
     try:
         run = _wait(eng.submit("build a small service",
-                               ["claude-code", "claude-code-validator"]))
+                               ["claude-code", "kiro"]))
         assert run.status == "passed", run.fail_reason
         run_id = run.run_id
     finally:
@@ -79,7 +79,7 @@ def test_the_chat_tool_answers_from_the_persisted_record():
     eng = engine.Engine(executor_obj=fixture.FixtureExecutor())
     try:
         run = _wait(eng.submit("build a small service",
-                               ["claude-code", "claude-code-validator"]))
+                               ["claude-code", "kiro"]))
         run_id = run.run_id
     finally:
         eng.shutdown()

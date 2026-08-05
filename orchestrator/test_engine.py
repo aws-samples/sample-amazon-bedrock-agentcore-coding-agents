@@ -26,9 +26,13 @@ from engine import (  # noqa: E402
     public_result,
     public_run,
 )
+import roles  # noqa: E402
 from fixture_executor import FixtureExecutor  # noqa: E402
 
-ALL_AGENTS = ["claude-code", "claude-code-validator", "opencode"]
+# The served roster: two makers plus the served CHECKER (Kiro today, the Claude Code
+# validator on the restore path). `presets.resolve` rejects an unserved id at admission,
+# so these must be roles the registry actually serves.
+ALL_AGENTS = ["claude-code", "kiro", "opencode"]
 
 # Any sentence at all is a valid request now; nothing classifies it.
 CONVERT_TASK = "build a small thing and prove it works"
@@ -68,12 +72,12 @@ def test_checker_stays_pending_until_the_builder_finishes():
     engine = Engine(executor_obj=fixture)
     run = engine.submit(
         "build a small command line tool",
-        ["claude-code", "claude-code-validator"],
+        ["claude-code", "kiro"],
     )
     try:
         assert builder_started.wait(timeout=10)
         assert run.progress["claude-code"].state == "working"
-        checker = run.progress["claude-code-validator"]
+        checker = run.progress["kiro"]
         assert checker.state == "pending"
         assert "waiting for the selected builders" in checker.note
     finally:
@@ -365,13 +369,13 @@ def test_routing_selects_roles_and_nothing_else():
     engine = _engine()
     ODD = "write me a haiku about tuesday and serve it somehow"
     # explicit roles: exactly those roles work (plus nothing else)
-    fe = _wait_terminal(engine.submit(ODD, ["opencode", "claude-code-validator"]),
+    fe = _wait_terminal(engine.submit(ODD, ["opencode", "kiro"]),
                         timeout_s=120)
-    assert fe.agents == ["opencode", "claude-code-validator"]
+    assert fe.agents == ["opencode", "kiro"]
     assert fe.route["preset"] == "custom" and fe.status == "passed"
     # a preset supplies its own request text and role set
     cli = _wait_terminal(engine.submit("", preset="cli-tool"), timeout_s=120)
-    assert cli.agents == ["claude-code", "claude-code-validator"]
+    assert cli.agents == ["claude-code", "kiro"]
     assert cli.route["preset"] == "cli-tool" and cli.task, "preset supplied no task"
     assert cli.status == "passed"
     engine.shutdown()
@@ -439,7 +443,7 @@ def test_review_preset_judges_an_existing_run():
     assert built.status == "passed"
     rev = _wait_terminal(engine.submit("", preset="review-a-run"))
     assert rev.route["preset"] == "review-a-run"
-    assert rev.agents == ["claude-code-validator"]
+    assert rev.agents == ["kiro"]
     assert rev._review_target == built.run_id
     assert rev.status == "passed" and rev.review["state"] == "approved"
     assert rev.composed_commit is None  # read-only: no new compose
@@ -453,13 +457,15 @@ def test_terminals_record_real_role_shell_work():
     role runs follow from what it decided to build, which the engine does not know."""
     engine = _engine()
     run = _wait_terminal(engine.submit("build any small thing", ALL_AGENTS))
-    assert set(run.terminals) == {"claude-code", "claude-code-validator", "opencode"}
+    assert set(run.terminals) == {"claude-code", "kiro", "opencode"}
     for agent_id, lines in run.terminals.items():
         assert lines, f"{agent_id} recorded no shell work"
         assert all(line["exit"] == 0 for line in lines), f"{agent_id} had a failing command"
         # the harness install step names the role's own steering file, which is the
-        # one filename that IS part of the contract (it is the role's identity)
-        steering = "AGENTS.md" if agent_id == "opencode" else "CLAUDE.md"
+        # one filename that IS part of the contract (it is the role's identity).
+        # Read from the registry, not a per-id literal: each role declares its own
+        # native steering filename and a roster swap must not need an edit here.
+        steering = os.path.basename(roles.get(agent_id).steering_file)
         assert any(steering in line["cmd"] for line in lines), (
             f"{agent_id} never installed its steering file")
     engine.shutdown()
@@ -584,7 +590,7 @@ def test_harness_setup_block_extends_a_role():
                     "mcp:\n  - name: github\n    url: https://gw.example/mcp\n"
                     "install:\n  - echo custom-install-ran\n```\n")
         engine = _engine()
-        run = _wait_terminal(engine.submit("fix whatever needs fixing", ["claude-code", "claude-code-validator"]))
+        run = _wait_terminal(engine.submit("fix whatever needs fixing", ["claude-code", "kiro"]))
         assert run.status == "passed"
         lines = run.terminals["claude-code"]
         assert any("mcp server github registered" in line["output"] for line in lines)
@@ -627,7 +633,7 @@ def test_role_model_env_override_wires_deploy_time_default(monkeypatch):
     monkeypatch.setenv("WORKSHOP_MODEL_CLAUDE_CODE", "us.anthropic.claude-sonnet-4-6")
     assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "us.anthropic.claude-sonnet-4-6"
     # a different agent is unaffected by the claude-code-specific var
-    assert engine._role_model(run, "claude-code-validator", "auto") == "claude-sonnet-4-6"
+    assert engine._role_model(run, "kiro", "auto") == "claude-sonnet-4-6"
 
     # a per-task options model still overrides the env-wired default
     run.options = {"models": {"claude-code": "claude-opus-4-6"}}

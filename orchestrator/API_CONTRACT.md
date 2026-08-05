@@ -27,16 +27,16 @@ The API reflects that lifecycle.
   "status": "running",                  // queued | running | passed | failed | needs_human
   "phase": "agent_execution",           // the orchestration blueprint phase (see below)
   "created_at": "2026-06-09T07:40:00Z",
-  "agents": ["claude-code", "opencode", "claude-code-validator"],
+  "agents": ["claude-code", "opencode", "kiro"],
   "roles": {                            // role per agent, composed, NOT raced
     "claude-code": "backend-builder",
     "opencode": "frontend-builder",
-    "claude-code-validator": "validator"
+    "kiro": "validator"
   },
   "route": {                            // the routing verdict (additive; see below)
     "preset": "web-app",
     "rule": "preset 'web-app': Build a web app, front and back",
-    "agents": ["claude-code", "opencode", "claude-code-validator"],
+    "agents": ["claude-code", "opencode", "kiro"],
     "read_only": false
   },
   "fail_reason": null                   // machine-readable reason when status is failed/needs_human
@@ -178,13 +178,19 @@ Console renders these on the Stage 1 shelf.
   "agents": [
     {"id": "claude-code",           "label": "Claude Code", "default_role": "backend-builder",   "model": "us.anthropic.claude-opus-4-6-v1",          "credential": "bedrock-native"},
     {"id": "opencode",              "label": "opencode",    "default_role": "frontend-builder",  "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6", "credential": "runtime-iam"},
-    {"id": "claude-code-validator", "label": "Claude Code", "default_role": "validator",         "model": "us.anthropic.claude-opus-4-6-v1",          "credential": "bedrock-native"}
+    {"id": "kiro",                  "label": "Kiro",        "default_role": "validator",         "model": "",                                         "credential": "api-key"}
   ]
 }
 ```
 The list is derived from `roles.py` (the one declarative registry) and is wirable at runtime
-via `WORKSHOP_ROLES`. Kiro and Codex remain in the registry as a restore path but are not
-included in the served roster by default.
+via `WORKSHOP_ROLES`. The Claude Code validator and Codex remain in the registry as a restore
+path but are not included in the served roster by default.
+
+Kiro's `model` is EMPTY on purpose, and that is an honest fact rather than a missing value:
+`kiro-cli` takes no model flag at all, so nothing here can select one. Its model is Kiro's own
+`auto` router, written as `chat.defaultModel` into `~/.kiro/settings/cli.json` by its
+`run.sh`. Its `credential` is `api-key`: the attendee's own `ksk_`, fetched at session start
+from the AgentCore Identity Token Vault and never injected as a runtime environment variable.
 
 ### `POST /api/runs`: submit one task (fire-and-forget)
 Request:
@@ -192,7 +198,7 @@ Request:
 {
   "task": "Build a small service that converts between units",
   "preset": "service-from-scratch",    // optional; one of the ids from GET /api/presets
-  "agents": ["claude-code", "claude-code-validator"],  // optional explicit role override
+  "agents": ["claude-code", "kiro"],   // optional explicit role override
   "options": {}                        // optional per-run overrides (e.g. {"model": "..."})
 }
 ```
@@ -210,9 +216,9 @@ Returns a **Run** plus a `progress` array of **AgentProgress**:
 {
   "run_id": "run_0001", "task": "…", "status": "running", "phase": "agent_execution",
   "created_at": "…",
-  "agents": ["claude-code","opencode","claude-code-validator"],
+  "agents": ["claude-code","opencode","kiro"],
   "roles": {"claude-code":"backend-builder","opencode":"frontend-builder",
-            "claude-code-validator":"validator"},
+            "kiro":"validator"},
   "route": {"preset":"web-app","rule":"…","agents":[…],"read_only":false},
   "fail_reason": null,
   "progress": [ /* one AgentProgress per agent */ ]
@@ -233,7 +239,7 @@ Append-only audit trail of phase transitions and role activity (embedded event a
 - **`GET /api/presets`**: the starting points the console renders as chips, resolved from
   the one registry (`presets.PRESETS`) so the console and the engine cannot drift:
   `{ "presets": [ {"preset":"service-from-scratch","title":"Build a small service",
-  "roles":["claude-code","claude-code-validator"],"task":"…","read_only":false}, … ] }`.
+  "roles":["claude-code","kiro"],"task":"…","read_only":false}, … ] }`.
   Every build preset includes the checker in `roles`. `your-own` is always present with
   an empty `task` (the attendee supplies the request).
 - **`GET /api/roster`**: the SERVED roles, projected from the one declarative registry

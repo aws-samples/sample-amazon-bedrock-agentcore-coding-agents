@@ -45,6 +45,20 @@ _SERVER = os.path.join(_REPO, "console", "test_server.py")
 # harness deploy.py writes here, so empty == no agent deployed.
 _CODING_AGENTS_DIR = tempfile.mkdtemp(prefix="aa-coding-agents-")
 
+sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
+import roles  # noqa: E402
+
+
+def _served_checker() -> str:
+    """The checker id this deployment SERVES, from the registry.
+
+    The console shelf and the preset table both project the served roster only, so a
+    literal here would fail on a supported roster swap instead of on a real regression.
+    """
+    checkers = roles.checker_ids()
+    assert checkers, "a roster with no checker cannot gate anything"
+    return checkers[0]
+
 
 def _write_real_runtime_config(agent_id: str) -> str:
     """Write the runtime_config.json a harness deploy.py produces (the
@@ -242,36 +256,41 @@ def test_pty_open_type_and_read_real_output(console, cookie, stage1_session):
 #     so the deployed agent appears as an orchestrator subagent on its own.
 # ---------------------------------------------------------------------------
 def test_real_deploy_captures_agent_on_the_shelf(console, cookie):
-    """claude-code-validator is not on the shelf until a deploy lands. Write the
+    """The validator is not on the shelf until a deploy lands. Write the
     runtime_config.json `deploy.py` produces (arn:aws:bedrock-agentcore ARN); poll GET
-    /api/agents until claude-code-validator reconciles to ready with that exact ARN;
-    smart capture of a deploy, no fake shim, no local:runtime placeholder, no deploy
-    button."""
-    # Empty coding-agents dir on boot, so claude-code-validator must NOT be on the
-    # shelf yet. This pre-check makes the ready-state below provably the result of the
-    # real config we write, not stale state from a prior run.
+    /api/agents until it reconciles to ready with that exact ARN; smart capture of a
+    deploy, no fake shim, no local:runtime placeholder, no deploy button."""
+    # The SERVED validator, from the registry: the shelf only carries served roles, so
+    # naming one in a literal would break this test on a roster swap rather than on a
+    # real regression.
+    validator = _served_checker()
+    # Empty coding-agents dir on boot (a tempdir), so it must NOT be on the shelf yet.
+    # This pre-check makes the ready-state below provably the result of the real config
+    # we write, not stale state from a prior run.
     _, before = _req(console, "GET", "/api/dev/agents", headers=cookie)
-    cv0 = next(a for a in before["agents"] if a["agent_id"] == "claude-code-validator")
+    cv0 = next(a for a in before["agents"] if a["agent_id"] == validator)
     assert cv0["status"] != "ready", \
-        f"claude-code-validator already deployed before the test ran: {cv0}"
+        f"{validator} already deployed before the test ran: {cv0}"
 
-    arn = _write_real_runtime_config("claude-code-validator")  # what deploy.py writes
+    arn = _write_real_runtime_config(validator)  # what deploy.py writes
     try:
         ready = None
         for _ in range(80):
             _, lst = _req(console, "GET", "/api/dev/agents", headers=cookie)
-            cv = next(a for a in lst["agents"] if a["agent_id"] == "claude-code-validator")
+            cv = next(a for a in lst["agents"] if a["agent_id"] == validator)
             if cv["status"] == "ready" and cv["runtime_arn"] == arn:
                 ready = cv
                 break
             time.sleep(0.1)
         assert ready, \
-            f"claude-code-validator never captured on the shelf after a real deploy: {cv}"
+            f"{validator} never captured on the shelf after a real deploy: {cv}"
         assert ready["runtime_arn"].startswith("arn:aws:bedrock-agentcore:")
-        assert "runtime/claude_code_validator" in ready["runtime_arn"]
+        assert f"runtime/{validator.replace('-', '_')}" in ready["runtime_arn"]
     finally:
+        # _CODING_AGENTS_DIR is a tempfile.mkdtemp, never the tracked tree, so this
+        # removes only what this test wrote.
         try:
-            os.remove(os.path.join(_CODING_AGENTS_DIR, "claude-code-validator",
+            os.remove(os.path.join(_CODING_AGENTS_DIR, validator,
                                    "runtime_config.json"))
         except OSError:
             pass
@@ -331,10 +350,10 @@ def test_edit_agent_name_and_purpose_persists(console, cookie):
 _PRESET_CASES = [
     # (preset id, the roles it routes). Presets are STARTING POINTS: the request text
     # comes with them, and any other request works too (see the custom-roles test).
-    ("service-from-scratch", ["claude-code", "claude-code-validator"]),
-    ("web-app", ["claude-code", "opencode", "claude-code-validator"]),
-    ("cli-tool", ["claude-code", "claude-code-validator"]),
-    ("review-a-run", ["claude-code-validator"]),
+    ("service-from-scratch", ["claude-code", "kiro"]),
+    ("web-app", ["claude-code", "opencode", "kiro"]),
+    ("cli-tool", ["claude-code", "kiro"]),
+    ("review-a-run", ["kiro"]),
 ]
 
 
@@ -378,7 +397,7 @@ def test_api_s2_presets_contract(console, cookie):
         assert isinstance(p["roles"], list) and p["roles"], p
         assert isinstance(p["read_only"], bool), p
         if not p["read_only"]:
-            assert "claude-code-validator" in p["roles"], p
+            assert _served_checker() in p["roles"], p
     ids = {p["preset"] for p in items}
     assert "your-own" in ids, ids
 

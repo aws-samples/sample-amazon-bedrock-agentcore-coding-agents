@@ -24,7 +24,7 @@ Runtime exposes it natively (SIFT 5/26 gap); the surface is stable regardless.
   "session_id": "sess-9f3a",
   "invocation_number": 1,
   "runtime_arn": "arn:aws:bedrock-agentcore:us-west-2:<acct>:runtime/...",
-  "assistant_type": "claude-code",     // claude-code | kiro | codex
+  "assistant_type": "claude-code",     // claude-code | opencode | kiro (codex: hidden restore path)
   "user_id": "raj",                    // authenticated user recorded on the session
   "started_at": "2026-06-09T14:15:03Z",
   "issue_url": "https://github.com/your-org/your-repo/issues/42",
@@ -41,13 +41,13 @@ Runtime exposes it natively (SIFT 5/26 gap); the surface is stable regardless.
   "total_tokens": 1284000,
   "total_cost_usd": 12.40,
   "p95_latency_ms": 214000,
-  "by_agent": {"claude-code": 6.20, "kiro": 3.90, "codex": 2.30}   // cost split, USD
+  "by_agent": {"claude-code": 6.20, "opencode": 3.90}   // cost split, USD; see the BYOK note below
 }
 ```
 
 ### CostBreakdown
 ```json
-{ "by": "agent", "breakdown": {"claude-code": 6.20, "kiro": 3.90, "codex": 2.30}, "currency": "USD" }
+{ "by": "agent", "breakdown": {"claude-code": 6.20, "opencode": 3.90}, "currency": "USD" }
 ```
 
 ### IdentityStatus
@@ -125,4 +125,11 @@ Pure convenience for the console; it derives nothing the four metric endpoints d
 3. `static_credentials_on_agent` must remain `false`. GitHub credentials stay in the
    orchestrator or Gateway, not in a coding-agent workspace.
 4. Costs are illustrative fixtures, not live pricing. Never present Kiro vendor cost claims as fact.
+   **A BYOK role does not appear in the Bedrock cost path at all.** Kiro (the served validator)
+   authenticates with the attendee's own `ksk_` key against the Kiro service, so its model calls
+   are not Bedrock `InvokeModel` calls under the workshop account and nothing records them in the
+   model-invocation log that `metrics_lib.py` reads; AgentCore meters only its compute. A
+   per-agent breakdown over that source therefore returns TWO roles (claude-code, opencode), not
+   three. That row is absent because no usage source exists for it, and it must never be filled
+   in with an estimate.
 5. Don't change a field/enum without editing THIS file + telling the group.

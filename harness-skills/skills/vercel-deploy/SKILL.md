@@ -7,9 +7,9 @@ description: >-
   "publish the UI", "put the chatbot online", "give me a live URL for the UI",
   "promote the frontend to production", or "vercel deploy". This is the deploy half
   of the FRONTEND role; pairs with configure-opencode-frontend (which builds the UI).
-  The roles in this harness are: Claude Code = BACKEND builder, a second Claude Code =
-  VALIDATOR (it authors an executable acceptance check whose real exit code is the
-  gate), opencode = FRONTEND builder (the interface this skill deploys). The interface
+  The roles in this harness are: Claude Code = BACKEND builder, Kiro = VALIDATOR (it
+  authors an executable acceptance check whose real exit code is the gate),
+  opencode = FRONTEND builder (the interface this skill deploys). The interface
   resolves its service address at runtime and NEVER holds AWS credentials.
 ---
 

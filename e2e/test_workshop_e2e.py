@@ -117,7 +117,7 @@ def test_stage2_composes_whatever_the_roles_wrote():
     try:
         run = _wait_terminal(eng.submit(
             "Build an MCP server with a chatbot UI",
-            ["claude-code", "claude-code-validator", "opencode"]))
+            ["claude-code", "kiro", "opencode"]))
         assert run.status == "passed", run.fail_reason
         # the gate was a real execution with a real verdict
         assert run.gate["passed"] is True and run.gate["summary"]
@@ -128,9 +128,12 @@ def test_stage2_composes_whatever_the_roles_wrote():
         # the engine names no paths, and neither does this test.
         diff = engine.public_diff(run)
         paths = {f["path"] for f in diff["files"]}
+        import roles
         for agent_id in run.agents:
-            if agent_id.endswith("validator"):
-                continue          # the checker's contribution is the check, below
+            # Which role CHECKS is the registry's answer, not a guess from the
+            # spelling of its id: the checker's contribution is the check, below.
+            if roles.get(agent_id).kind == roles.CHECKER:
+                continue
             assert any(agent_id in p for p in paths), (agent_id, paths)
         # the validator's authored check ships with the deliverable so a reviewer can
         # rerun the exact gate that passed
@@ -152,7 +155,7 @@ def test_stage3_metrics_aggregate_the_real_runs():
 
     cost = metrics_lib.get_cost_breakdown(by="agent")["breakdown"]
     # the three roles all show up as attributed cost buckets (estimated, not a race)
-    assert set(cost) & {"claude-code", "claude-code-validator", "opencode"}, f"no per-agent attribution: {cost}"
+    assert set(cost) & {"claude-code", "kiro", "opencode"}, f"no per-agent attribution: {cost}"
 
     me = __import__("getpass").getuser()
     metrics = metrics_lib.get_user_metrics(me, "24h")

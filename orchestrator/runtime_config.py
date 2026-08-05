@@ -12,7 +12,7 @@ code. This module is that surface, mirroring ``github.py``'s credential ladder:
      ``agentcore deploy`` output printed, or set it from the terminal.
 
 FLEET, not singletons: a role may have MORE THAN ONE deployed runtime ("3 types"
-does not mean exactly 3 instances; the fleet may be 2 Claude Code + 5 Codex + 1
+does not mean exactly 3 instances; the fleet may be 2 Claude Code + 5 opencode + 1
 Kiro). So each role wires to a LIST of ARNs: a single string is one instance, a
 JSON list (or a comma-separated env value) is a fleet. ``pick(role)`` round-robins
 across a role's instances so concurrent runs spread their dispatch over the fleet;
@@ -51,7 +51,8 @@ def _settings_path() -> str:
 # Everything independently wirable: the orchestrator plus every role this
 # deployment SERVES. Both come from the registry (``roles.py``), which is the one
 # place the roster is declared and is configurable at runtime via WORKSHOP_ROLES.
-# A registered-but-hidden role (codex, kiro) is off this list by default, so it
+# A registered-but-hidden role (codex, claude-code-validator) is off this list by
+# default, so it
 # never appears as a wireable agent or a dispatch target, and naming it in
 # WORKSHOP_ROLES restores it with no code change.
 #
@@ -276,8 +277,9 @@ def instances(role: str) -> list[tuple[str, str]]:
          terminal writes (an attendee pasted the ARN, or grew a fleet).
       3. ``deployed``    : auto-discovered from the harness's own
          ``coding-agents/<role>/runtime_config.json`` that ``deploy.py`` wrote.
-         This is what surfaces the event-pre-provisioned Codex/Kiro as already
-         wired without the attendee pasting anything.
+         This is what surfaces a role the EVENT STACK pre-provisioned (today
+         opencode and the Kiro validator, from the prebuilt central-ECR images)
+         as already wired without the attendee pasting anything.
     Returns [] for a role with nothing wired anywhere."""
     env = os.environ.get(_env_key(role))
     if env:

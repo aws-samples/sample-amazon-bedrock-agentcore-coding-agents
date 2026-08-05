@@ -90,13 +90,13 @@ def test_supported_toolchains_cross_every_execution_boundary(
     checker_run = engine.Run(
         run_id="run_nfs_checkout",
         task="validate the candidate",
-        agents=["claude-code-validator"],
-        roles={"claude-code-validator": "validator"},
+        agents=["kiro"],
+        roles={"kiro": "validator"},
     )
-    checker_run.work_items["claude-code-validator"] = (
+    checker_run.work_items["kiro"] = (
         work_items.WorkItem.create(
             checker_run.run_id,
-            "claude-code-validator",
+            "kiro",
             "validator",
             "validator",
             kind="checker",
@@ -122,21 +122,27 @@ def test_supported_toolchains_cross_every_execution_boundary(
     )
     eng = engine.Engine.__new__(engine.Engine)
     eng.executor = type("Executor", (), {"name": "agentcore"})()
-    eng._prepare_checker_checkout(checker_run, "claude-code-validator", subject)
+    eng._prepare_checker_checkout(checker_run, "kiro", subject)
     staged = (
         mount
-        / checker_run.runtime_subdir("claude-code-validator")
+        / checker_run.runtime_subdir("kiro")
         / "dist"
         / "app.js"
     )
     assert staged.read_text() == "console.log('candidate')\n"
 
+    # Both advertised toolchains must exist where the check is AUTHORED (the served
+    # validator's image) and where it is RUN (the coordinator image). The two images
+    # get Node a different way, so assert each one's real mechanism rather than one
+    # base-image string: Kiro's is Amazon Linux 2023 installing `nodejs` via dnf, the
+    # coordinator's is a node:22-slim base.
     validator = open(os.path.join(
-        _REPO, "coding-agents", "claude-code-validator", "Dockerfile"),
+        _REPO, "coding-agents", "kiro", "Dockerfile"),
         encoding="utf-8").read()
     gate = open(os.path.join(_REPO, "orchestrator-agent", "Dockerfile"),
                 encoding="utf-8").read()
-    assert "node:22-slim" in validator and "node:22-slim" in gate
+    assert "nodejs" in validator, "the validator image has no Node toolchain"
+    assert "node:22-slim" in gate
     assert "python3" in validator and "python3" in gate
 
     rule = engine._SUPPORTED_TOOLCHAINS_RULE.lower()
@@ -186,11 +192,11 @@ def _build_item_tree(engine, run, builder):
 
 
 def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
-    engine, run = _run(["claude-code", "claude-code-validator"])
+    engine, run = _run(["claude-code", "kiro"])
     eng = engine.Engine.__new__(engine.Engine)     # no threads needed
 
     builder = run.roledir("claude-code")
-    validator = run.roledir("claude-code-validator")
+    validator = run.roledir("kiro")
     os.makedirs(builder, exist_ok=True)
     os.makedirs(validator, exist_ok=True)
     try:
@@ -234,12 +240,12 @@ def test_a_sibling_resolving_check_passes_through_the_real_gate():
     `passed: False` with the file check failing, which is a red gate on work that
     met the request.
     """
-    engine, run = _run(["claude-code", "claude-code-validator"])
+    engine, run = _run(["claude-code", "kiro"])
     reviewer = importlib.import_module("reviewer")
     eng = engine.Engine.__new__(engine.Engine)
 
     builder = run.roledir("claude-code")
-    validator = run.roledir("claude-code-validator")
+    validator = run.roledir("kiro")
     os.makedirs(builder, exist_ok=True)
     os.makedirs(validator, exist_ok=True)
     try:
@@ -268,12 +274,12 @@ def test_a_sibling_resolving_check_passes_through_the_real_gate():
 
 def test_a_genuinely_broken_deliverable_still_fails():
     """The reunion must not become a way to pass: no work, still red."""
-    engine, run = _run(["claude-code", "claude-code-validator"])
+    engine, run = _run(["claude-code", "kiro"])
     reviewer = importlib.import_module("reviewer")
     eng = engine.Engine.__new__(engine.Engine)
 
     builder = run.roledir("claude-code")
-    validator = run.roledir("claude-code-validator")
+    validator = run.roledir("kiro")
     os.makedirs(builder, exist_ok=True)
     os.makedirs(validator, exist_ok=True)
     try:
@@ -308,11 +314,11 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
     engine = importlib.import_module("engine")
     eng = engine.Engine.__new__(engine.Engine)
     run = engine.Run(run_id="run_000000_773", task="t",
-                     agents=["claude-code", "claude-code-validator"],
+                     agents=["claude-code", "kiro"],
                      roles={"claude-code": "backend-builder",
-                            "claude-code-validator": "validator"})
+                            "kiro": "validator"})
     builder = run.roledir("claude-code")
-    validator = run.roledir("claude-code-validator")
+    validator = run.roledir("kiro")
     os.makedirs(builder, exist_ok=True)
     os.makedirs(validator, exist_ok=True)
     try:

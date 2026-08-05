@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import chat  # noqa: E402
+import roles  # noqa: E402
 import runtime_config  # noqa: E402
 from fixture_executor import FixtureExecutor  # noqa: E402
 
@@ -62,7 +63,7 @@ def _wire_all(tmp_path, monkeypatch):
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     runtime_config.save_runtime("opencode", "opencode-TESTID0001")
-    runtime_config.save_runtime("claude-code-validator", "claude_code_validator-TESTID0001")
+    runtime_config.save_runtime("kiro", "kiro-TESTID0001")
 
 
 def _call_with(tools, name, **kwargs):
@@ -169,7 +170,9 @@ def test_list_presets_is_advisory_and_starts_nothing(tmp_path, monkeypatch):
     for p in out["presets"]:
         assert p["roles"], p
         if not p["read_only"]:
-            assert "claude-code-validator" in p["roles"], (
+            # The SERVED checker, read from the registry: "every build routes a
+            # checker" is the property, not any one role id.
+            assert roles.checker_ids()[0] in p["roles"], (
                 f"{p['preset']} builds with no checker")
     assert len(chat.ENGINE.list()) == before   # advisory: nothing started
 

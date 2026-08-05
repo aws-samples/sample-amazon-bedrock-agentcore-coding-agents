@@ -13,6 +13,20 @@ description: >-
   so there is no Token Vault or vendor key step.
 ---
 
+> **RESTORE PATH - NOT THE SERVED ROLE**
+>
+> The served validator is Kiro (see `configure-kiro-validator`). The event
+> provisions a per-team Kiro / Amazon Q Developer Pro subscription through IAM
+> Identity Center, and the attendee mints their own `ksk_` key, so Kiro is the
+> checker a normal event run dispatches.
+>
+> This second Claude Code is the **Bedrock-native, NO-KEY** checker: use this
+> skill when restoring it for an account with no Kiro subscription, with
+> `WORKSHOP_ROLES=claude-code,opencode,claude-code-validator`. All of its assets
+> (`coding-agents/claude-code-validator/`,
+> `orchestrator/harness/claude-code-validator/CLAUDE.md`) remain in the
+> repository as that restore path, and it is restored by that one variable alone.
+
 # Configure Claude Code as the VALIDATOR
 
 You are configuring a second Claude Code coding agent for the workshop's
@@ -23,9 +37,10 @@ not build the backend (that is the backend Claude Code) and does not build the
 frontend (that is opencode). Stay in lane.
 
 This is an autonomous, fire-and-forget pipeline. There is **no race, no winner,
-no fastest/cheapest ranking**: the three roles each do their job and the
-orchestrator validates their combined candidate, queues the builder PRs, and opens
-the final integration PR.
+no fastest/cheapest ranking**: each role does its job, and each builder gets ONE
+pull request of its own against the repository's default branch, which is checked,
+reviewed, and merged on its own. There is no combined candidate, no merge queue,
+and no separate final PR.
 
 ## Why a second Claude Code fits validation
 
@@ -145,8 +160,9 @@ that grades an agent's work. The validator decides what to check based on the ta
 and the deliverable in front of it. A red exit code can never become a pass, and
 nothing is ever fabricated.
 
-Iteration is bounded (~2 rounds): if the gate exits non-zero after the bounded
-retries, the run escalates to a human rather than looping forever.
+Iteration is bounded (ONE repair round PER PULL REQUEST): if a pull request's gate
+is still red after that, it escalates to a human rather than looping forever, and a
+red pull request never blocks a green sibling.
 
 ## Step 5: Verify and report
 
@@ -170,9 +186,10 @@ state yourself: verify, don't assume.
   nothing on disk). No Token Vault / credential-provider commands here.
 - The gate is **the validator's authored executable**. Real execution decides.
   A model's opinion never overrides the exit code.
-- No race / no winner framing. The three roles are co-equal, composed into one
-  deliverable by the orchestrator. Any cost figures are illustrative; use the
-  workshop's own measured run metrics, never vendor "Nx cheaper" claims.
+- No race / no winner framing. The roles are co-equal, each with its own pull
+  request that is checked, reviewed, and merged on its own. Any cost figures are
+  illustrative; use the workshop's own measured run metrics, never vendor
+  "Nx cheaper" claims.
 - Extensibility note: to validate a different kind of deliverable, the validator
   reads a different task and writes a different check. Nothing in the harness
   encodes what a correct answer looks like for any specific request.

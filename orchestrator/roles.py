@@ -16,8 +16,9 @@ Two properties follow, and both are the point:
   * **The roster is configurable at runtime.** ``WORKSHOP_ROLES`` selects which
     registered roles are served (see ``roster()``), so an operator can run the
     workshop with a different or smaller team without touching code. Kept-but-
-    hidden roles (Codex, Kiro) stay REGISTERED and off the default roster, which
-    is exactly what makes them a restore path rather than dead code.
+    hidden roles (Codex, the Claude Code validator) stay REGISTERED and off the
+    default roster, which is exactly what makes them a restore path rather than
+    dead code.
 
 What this module deliberately does NOT know is the WORK. It carries no protocol,
 no filename a role must produce, no expected value, and no shape of a correct
@@ -38,6 +39,10 @@ from dataclasses import dataclass, field
 # of maker" (a backend vs a frontend), which is what a preset selects on.
 BUILDER = "builder"
 CHECKER = "checker"
+
+# The code repo root (this module lives in orchestrator/), used only to resolve the
+# real on-disk steering layout for `Role.steering_path`.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @dataclass(frozen=True)
@@ -72,8 +77,24 @@ class Role:
 
     @property
     def steering_path(self) -> str:
-        """Where this role's steering lives in its deployed harness."""
-        return f"coding-agents/{self.harness_dir}/{self.steering_file}"
+        """Where this role's steering lives in its harness dir, as it is on disk.
+
+        Published to attendees through ``GET /api/agents``, so it must be a path they
+        can actually open. A Docker build context cannot COPY from outside itself, so a
+        role whose steering lives at a NESTED path upstream is staged FLAT in its
+        harness dir and the Dockerfile puts it back under the nested location inside
+        the image (Kiro's ``.kiro/steering/validator.md`` is staged as
+        ``steering/agent.md``). Resolve what is really there rather than assuming the
+        upstream layout, otherwise this names a file that does not exist.
+        """
+        role_dir = f"coding-agents/{self.harness_dir}"
+        direct = os.path.join(role_dir, self.steering_file)
+        if os.path.isfile(os.path.join(_REPO_ROOT, direct)):
+            return direct
+        flat = os.path.join(role_dir, "steering", "agent.md")
+        if os.path.isfile(os.path.join(_REPO_ROOT, flat)):
+            return flat
+        return direct   # nothing staged yet: name the canonical location
 
     @property
     def local_steering_path(self) -> str:
@@ -187,6 +208,51 @@ REGISTRY: tuple[Role, ...] = (
         needs_static_credentials=True,
     ),
     Role(
+        id="kiro",
+        label="Kiro",
+        kind=CHECKER,
+        capability="validator",
+        role_name="validator",
+        description="Validator (Kiro): decides what acceptable means for this "
+                    "task, writes the check, and never edits the work. "
+                    "Authenticates with your own ksk_ key through Token Vault.",
+        steering_file=os.path.join(".kiro", "steering", "validator.md"),
+        harness_dir="kiro",
+        # No {model} and no model_env: kiro-cli has no model flag. Its model is the
+        # `auto` router, set (if at all) by run.sh writing chat.defaultModel into
+        # ~/.kiro/settings/cli.json. So `default_model` is HONESTLY empty rather than
+        # a Bedrock model id this CLI would ignore.
+        cli="kiro-cli chat --no-interactive --trust-all-tools {prompt}",
+        default_model="",
+        skills=("configure-kiro-validator",),
+        credential="api-key",
+    ),
+    # ---- registered, off the served roster: the restore paths ----------------
+    # Both stay REGISTERED (not deleted) so each remains a one-variable restore
+    # path, reachable with WORKSHOP_ROLES alone:
+    #
+    #   * The Claude Code validator is the BEDROCK-NATIVE, NO-KEY checker. It runs
+    #     the same container as the backend builder, steered by its own
+    #     acceptance-contract ``CLAUDE.md``, and needs no API key and no Token
+    #     Vault. Restore it (``WORKSHOP_ROLES=claude-code,opencode,claude-code-
+    #     validator``) for any account without a Kiro subscription, which is the
+    #     only thing the served Kiro checker needs that Bedrock alone cannot give.
+    #     Kiro is servable BECAUSE the event now provisions that subscription:
+    #     ``static/aws/central-account.yaml`` stands up IAM Identity Center in the
+    #     one Workshop Studio central account and, off the lifecycle-notification
+    #     bus, gives each team an Identity Center user with a Kiro / Amazon Q
+    #     Developer Pro subscription. The only remaining attendee step is minting
+    #     their own ``ksk_`` key at app.kiro.dev (the Prerequisites page "Get Your
+    #     Kiro API Key") and pasting it; the harness fetches it at session start
+    #     through AgentCore Identity / Token Vault, in memory only, never as a
+    #     runtime env var.
+    #   * Codex is DISABLED at events because the GPT-5.x models it needs are not
+    #     available on a Workshop Studio account (the entitlement is allowlist-gated
+    #     and returns 401), so opencode on native Bedrock plays the frontend. Do not
+    #     put it back on the roster until GPT is actually entitled there: naming it
+    #     in WORKSHOP_ROLES on an event account produces a role that 401s on every
+    #     dispatch.
+    Role(
         id="claude-code-validator",
         label="Claude Code",
         kind=CHECKER,
@@ -202,37 +268,6 @@ REGISTRY: tuple[Role, ...] = (
         env=_CLAUDE_ENV,
         telemetry_env=_CLAUDE_TELEMETRY,
         model_env="ANTHROPIC_MODEL",
-    ),
-    # ---- registered, off the served roster: the restore paths ----------------
-    # Neither of these can run at a Workshop Studio event, which is why the served
-    # team is Bedrock-native throughout:
-    #
-    #   * Kiro needs a per-user paid subscription and a ``ksk_`` API key that cannot
-    #     be provisioned for a public clone workshop, so a second Claude Code plays
-    #     the checker instead.
-    #   * Codex is DISABLED at events because the GPT-5.x models it needs are not
-    #     available on a Workshop Studio account (the entitlement is allowlist-gated
-    #     and returns 401), so opencode on native Bedrock plays the frontend. Do not
-    #     put it back on the roster until GPT is actually entitled there: naming it
-    #     in WORKSHOP_ROLES on an event account produces a role that 401s on every
-    #     dispatch.
-    #
-    # They stay REGISTERED (not deleted) so each remains a one-variable restore path
-    # the moment its access exists.
-    Role(
-        id="kiro",
-        label="Kiro",
-        kind=CHECKER,
-        capability="validator",
-        role_name="validator",
-        description="Validator (Kiro): owns the acceptance check. Needs a Kiro "
-                    "API key; off the served roster.",
-        steering_file=os.path.join(".kiro", "steering", "validator.md"),
-        harness_dir="kiro",
-        cli="kiro-cli chat --no-interactive --trust-all-tools {prompt}",
-        default_model="",
-        skills=("configure-kiro-validator",),
-        credential="api-key",
         hidden=True,
     ),
     Role(

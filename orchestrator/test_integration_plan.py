@@ -38,7 +38,7 @@ def test_fixture_plan_names_dynamic_roles_and_sets_merge_dependencies():
     items[0].changed_files = ["api/service.py"]
     items[1].changed_files = ["web/app.tsx"]
     checker = WorkItem.create(
-        "run_1", "claude-code-validator", "acceptance-validator", "validator",
+        "run_1", "kiro", "acceptance-validator", "validator",
         kind="checker", token="check")
     checker.changed_files = ["acceptance_check"]
     context = integration_plan.review_context(plan, [*items, checker])

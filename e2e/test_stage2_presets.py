@@ -31,8 +31,8 @@ from e2e.conftest import (
     submit_run,
 )
 
-ALL_THREE = ["claude-code", "opencode", "claude-code-validator"]
-VALIDATOR = "claude-code-validator"
+ALL_THREE = ["claude-code", "opencode", "kiro"]
+VALIDATOR = "kiro"
 
 
 # --------------------------------------------------------------- any request runs

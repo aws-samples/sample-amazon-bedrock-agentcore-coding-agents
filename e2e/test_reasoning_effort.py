@@ -26,6 +26,13 @@ if _ORCH not in sys.path:
     sys.path.insert(0, _ORCH)
 
 _CLAUDE_EFFORT_VALUES = {"low", "medium", "high", "xhigh", "max"}
+# Only the roles whose CLI HAS a reasoning-effort knob. Kiro (the served validator) is a
+# DOCUMENTED EXEMPTION, not an oversight: kiro-cli has no --effort or --variant
+# equivalent and takes no model flag at all. Its model is the `auto` router, written as
+# `chat.defaultModel` into ~/.kiro/settings/cli.json by its own run.sh from a --model
+# argument. So there is no per-run knob here to assert, and inventing one would ship a
+# flag kiro-cli rejects. `test_dispatch_defaults_to_high_effort` iterates the real roster
+# and skips non-claude/non-opencode CLIs for the same reason.
 _RUN_SH = {
     "claude-code": os.path.join(_ROOT, "coding-agents", "claude-code", "run.sh"),
     "claude-code-validator": os.path.join(

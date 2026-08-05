@@ -396,9 +396,9 @@ def build_tools() -> list:
     @tool
     def agent_send(agent_id: str, message: str) -> str:
         """Send a message into a coding agent's LIVE interactive terminal (the same
-        Claude Code / opencode TUI the human is watching), then return what the
-        agent has printed so far. Use agent_id 'claude-code', 'opencode', or
-        'claude-code-validator'. The agent's terminal must already be open. Follow up
+        Claude Code / opencode / Kiro TUI the human is watching), then return what
+        the agent has printed so far. Use agent_id 'claude-code', 'opencode', or
+        'kiro'. The agent's terminal must already be open. Follow up
         with agent_read to see more output as the agent works."""
         try:
             m = _shell_mod()
@@ -414,7 +414,7 @@ def build_tools() -> list:
     @tool
     def agent_read(agent_id: str) -> str:
         """Read the current screen of a coding agent's LIVE terminal (claude-code /
-        opencode / claude-code-validator), to see what it printed since your last agent_send."""
+        opencode / kiro), to see what it printed since your last agent_send."""
         try:
             m = _shell_mod()
         except Exception:
@@ -423,7 +423,7 @@ def build_tools() -> list:
 
     @tool
     def agent_status(agent_id: str) -> str:
-        """Check whether a coding agent (claude-code / opencode / claude-code-validator)
+        """Check whether a coding agent (claude-code / opencode / kiro)
         has a LIVE terminal open that you can drive with agent_send/agent_read."""
         try:
             m = _shell_mod()

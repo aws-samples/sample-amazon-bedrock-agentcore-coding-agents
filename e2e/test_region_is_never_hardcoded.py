@@ -210,7 +210,7 @@ def test_role_deploys_refuse_a_cross_region_access_point() -> None:
     import re as _re
 
     root = os.path.dirname(_HERE)
-    for role in ("opencode", "claude-code", "claude-code-validator"):
+    for role in ("opencode", "claude-code", "kiro", "claude-code-validator"):
         path = os.path.join(root, "coding-agents", role, "deploy.py")
         with open(path, encoding="utf-8") as fh:
             src = fh.read()

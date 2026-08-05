@@ -49,6 +49,7 @@ def load_config() -> dict:
 
 
 async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
+    """Full interactive PTY: forward local stdin to shell, shell output to stdout."""
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setraw(sys.stdin.fileno())
@@ -61,14 +62,34 @@ async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
 
         loop = asyncio.get_event_loop()
         stdin_fd = sys.stdin.fileno()
+        input_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        # Read stdin from the event loop, NOT an executor thread. A blocking
+        # os.read() parked in the default executor cannot be cancelled, so closing
+        # the TUI would leave that thread holding process exit open.
+        def on_stdin_ready():
+            try:
+                data = os.read(stdin_fd, 4096)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                loop.remove_reader(stdin_fd)
+                input_queue.put_nowait(None)
+                return
+            if data:
+                input_queue.put_nowait(data)
+            else:
+                loop.remove_reader(stdin_fd)
+                input_queue.put_nowait(None)
 
         async def read_stdin():
             while True:
-                data = await loop.run_in_executor(None, os.read, stdin_fd, 4096)
-                if not data:
-                    break
+                data = await input_queue.get()
+                if data is None:
+                    return
                 await shell.send_bytes(data)
 
+        loop.add_reader(stdin_fd, on_stdin_ready)
         stdin_task = asyncio.create_task(read_stdin())
 
         try:
@@ -82,6 +103,7 @@ async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
                 elif frame.channel == ShellChannel.CLOSE:
                     break
         finally:
+            loop.remove_reader(stdin_fd)
             stdin_task.cancel()
             try:
                 await stdin_task

@@ -32,9 +32,16 @@ COPY entrypoint.sh /app/entrypoint.sh
 COPY otel-collector-config.yaml /app/otel-collector-config.yaml
 RUN chmod +x /app/run.sh /app/entrypoint.sh
 
-# Steering files (project-level instructions for kiro-cli)
+# Steering files (project-level instructions for kiro-cli).
+# The SOURCE is flat (`steering/agent.md`) because a Docker build context cannot COPY
+# from `../../orchestrator/harness/kiro/.kiro/`, but the DESTINATION filename must be
+# the one `roles.py` declares (`.kiro/steering/validator.md`). runtime_exec.py stages
+# steering with `if test -f $HOME/<steering_file>`, an UNGUARDED silent no-op when the
+# name differs, so baking this as `agent.md` dispatched the validator with no role at
+# all. kiro-cli reads every `.md` in `.kiro/steering/` with `inclusion: always`, so the
+# filename is free on its side and must match the registry on ours.
 RUN mkdir -p /home/agent/.kiro/steering && chown -R agent:agent /home/agent/.kiro
-COPY --chown=agent:agent steering/agent.md /home/agent/.kiro/steering/agent.md
+COPY --chown=agent:agent steering/agent.md /home/agent/.kiro/steering/validator.md
 
 RUN git config --global user.name "AgentCore Bot" && \
     git config --global user.email "agentcore@example.com" && \

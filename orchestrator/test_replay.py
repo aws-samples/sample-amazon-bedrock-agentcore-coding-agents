@@ -35,7 +35,7 @@ def _run(**over):
         task="build an issue tracker with five features and persistence",
         status="passed",
         iterations=1,
-        agents=["claude-code", "opencode", "claude-code-validator"],
+        agents=["claude-code", "opencode", "kiro"],
         progress={
             "claude-code": _role("claude-code", "backend",
                                  "built the backend side of this request (6 files)",
@@ -43,7 +43,7 @@ def _run(**over):
             "opencode": _role("opencode", "frontend",
                               "built the interface this request asked for (2 files)",
                               latency_ms=98_000),
-            "claude-code-validator": _role("claude-code-validator", "validator",
+            "kiro": _role("kiro", "validator",
                                            "authored the acceptance check for this "
                                            "deliverable", latency_ms=61_000),
         },
@@ -64,14 +64,14 @@ def _run(**over):
 def test_the_body_names_every_role_that_ran_and_what_it_did():
     body = replay.narrative(_run())
     for agent, role in (("claude-code", "backend"), ("opencode", "frontend"),
-                        ("claude-code-validator", "validator")):
+                        ("kiro", "validator")):
         assert agent in body and role in body, f"{agent}/{role} missing:\n{body}"
     assert "built the backend side" in body
 
 
 def test_a_role_the_router_did_not_dispatch_is_not_in_the_story():
     """The roster is configurable; the story is what RAN, not what is registered."""
-    run = _run(agents=["claude-code", "claude-code-validator"])
+    run = _run(agents=["claude-code", "kiro"])
     del run.progress["opencode"]
     body = replay.narrative(run)
     assert "opencode" not in body, body

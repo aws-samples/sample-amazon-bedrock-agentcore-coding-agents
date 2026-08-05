@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Deploy a pre-built agent (opencode or claude-code-validator) onto the attendee's
-# S3 Files mount.
+# Deploy a pre-built agent (opencode or kiro) onto the attendee's S3 Files mount.
 #
 # Normally the workshop stack already built this agent's arm64 image at bootstrap
 # (the slow, mount-independent work), so this script just runs the agent's
@@ -10,24 +9,28 @@
 # But the pre-build is best-effort and NOT guaranteed on every account. To keep ONE
 # command working everywhere (the governing test), this script self-heals: if the
 # image was not pre-built, it runs the agent's setup.sh first (build + push), then
-# deploy.py. Both opencode and the Claude Code validator are Bedrock-native, so
-# there is no vendor key to provision.
+# deploy.py. opencode is Bedrock-native with no vendor key. Kiro's IMAGE also builds
+# keyless: the key is per-attendee and is minted AFTER provisioning, then read from
+# the Token Vault at session start (see --skip-identity below).
 #
-# The kiro/codex targets are kept as hidden/legacy restore paths (both were retired
-# from the served roster): kiro's build works WITHOUT a key via --skip-identity.
+# claude-code-validator and codex stay accepted targets because both are kept
+# REGISTERED restore paths (restorable with WORKSHOP_ROLES alone): the Claude Code
+# validator is the Bedrock-native, no-key checker for an account with no Kiro
+# subscription, and codex needs a GPT entitlement a Workshop Studio account lacks.
 #
 # Usage (from coding-agents):
 #   ./deploy-prebuilt.sh opencode
-#   ./deploy-prebuilt.sh claude-code-validator       # the validator (Bedrock-native, no key)
-#   ./deploy-prebuilt.sh kiro                        # hidden/legacy: builds --skip-identity if not pre-built
+#   ./deploy-prebuilt.sh kiro                        # the served validator; builds --skip-identity if keyless
+#   ./deploy-prebuilt.sh claude-code-validator       # restore path (Bedrock-native, no key)
+#   ./deploy-prebuilt.sh codex                       # restore path (needs a GPT entitlement)
 set -euo pipefail
 
 AGENT="${1:-}"
 case "$AGENT" in
-  # opencode + claude-code-validator are the pre-provisioned pair; kiro/codex are
-  # kept as hidden/legacy restore targets.
-  opencode|claude-code-validator|kiro|codex) ;;
-  *) echo "Usage: $0 <opencode|claude-code-validator>" >&2; exit 2 ;;
+  # opencode + kiro are the pre-provisioned served pair; claude-code-validator and
+  # codex are the kept restore targets.
+  opencode|kiro|claude-code-validator|codex) ;;
+  *) echo "Usage: $0 <opencode|kiro|claude-code-validator|codex>" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,12 +46,13 @@ fi
 # it now so deploy.py has an image. deploy.py otherwise fails "ECR_URI not found".
 if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; then
   echo "No pre-built ${AGENT} image found (agent.config has no ECR_URI); building it now..."
-  # Kiro's build only needs a key to ALSO provision its Token Vault identity. With
-  # no key (the common Workshop Studio case: WS temp accounts cannot issue a ksk_),
-  # build the image WITHOUT identity via --skip-identity, exactly like the bootstrap
-  # does; deploy.py still creates the Runtime + ARN, and the attendee adds their key
-  # on the wired instance in console Settings later (run.sh reads it from Token Vault
-  # at session start). This keeps the ONE command working keyless everywhere.
+  # Kiro's build only needs a key to ALSO provision its Token Vault identity, and at
+  # image-build time there is no key yet BY DESIGN: the event provisions a per-team
+  # Kiro subscription, and the attendee then mints their OWN ksk_ at app.kiro.dev
+  # afterwards. So build the image WITHOUT identity via --skip-identity, exactly like
+  # the bootstrap does; deploy.py still creates the Runtime + ARN, and the attendee
+  # adds their key on the wired instance in console Settings later (run.sh reads it
+  # from Token Vault at session start). This keeps the ONE command working keyless.
   if [ "$AGENT" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
     echo "  No KIRO_API_KEY set; building kiro without its Token Vault identity"
     echo "  (--skip-identity). Add your ksk_ key on the wired Kiro instance in"

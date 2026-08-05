@@ -94,7 +94,7 @@ def isolated_server_env(port: int, **extra) -> dict:
 # The cost fixture for Stage 1->2->3: an m5.large priced at
 # $0.096/hr * 730h * 2 instances. Every grading contract asserts this exact value.
 LGTM_TOKEN = "LGTM: no changes needed"
-SUPPORTED_AGENTS = ("claude-code", "claude-code-validator", "opencode")
+SUPPORTED_AGENTS = ("claude-code", "kiro", "opencode")
 TERMINAL_STATUSES = ("passed", "failed", "needs_human")
 
 

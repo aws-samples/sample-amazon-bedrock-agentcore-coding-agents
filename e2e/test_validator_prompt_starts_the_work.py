@@ -13,8 +13,37 @@ from __future__ import annotations
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "orchestrator"))
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
+
+import roles  # noqa: E402
+
+
+def _served_checker() -> "roles.Role":
+    """The checker this deployment SERVES, from the registry rather than a literal.
+
+    A roster swap must carry these guards with it: pinning one role's filename kept this
+    file green while the agent that actually gates a run had none of the rules below.
+    """
+    checkers = roles.checker_ids()
+    assert checkers, "a roster with no checker cannot gate anything"
+    return roles.get(checkers[0])
+
+
+def _baked(r: "roles.Role") -> str:
+    """The copy the role's Dockerfile bakes into its image.
+
+    A build context cannot COPY from outside itself, so a role whose steering lives at a
+    NESTED path upstream is staged flat in its harness dir (Kiro's
+    ``.kiro/steering/validator.md`` is baked as ``steering/agent.md``).
+    """
+    role_dir = os.path.join(_REPO, "coding-agents", r.harness_dir)
+    for candidate in (os.path.join(role_dir, r.steering_file),
+                      os.path.join(role_dir, os.path.basename(r.steering_file)),
+                      os.path.join(role_dir, "steering", "agent.md")):
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(role_dir, r.steering_file)   # nonexistent: reported as missing
 
 
 def _validator_prompt() -> str:
@@ -67,10 +96,10 @@ def test_the_validator_syntax_checks_without_running_its_acceptance_behavior():
 
 
 def test_the_steering_says_the_same_thing_and_the_baked_copy_matches():
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    shipped = os.path.join(repo, "orchestrator", "harness",
-                           "claude-code-validator", "CLAUDE.md")
-    baked = os.path.join(repo, "coding-agents", "claude-code-validator", "CLAUDE.md")
+    r = _served_checker()
+    shipped = os.path.join(_REPO, "orchestrator", "harness",
+                           r.harness_dir, r.steering_file)
+    baked = _baked(r)
     a = open(shipped, encoding="utf-8").read()
     b = open(baked, encoding="utf-8").read()
     assert a == b, "the baked steering drifted from the shipped one"

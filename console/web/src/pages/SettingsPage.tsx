@@ -386,7 +386,10 @@ function RuntimesCard() {
   // show "key set / no key" on the wired Kiro instance and to drive the inline
   // "+ Add API key" editor below (mirrors the "+ Add description" affordance).
   const [kiro, setKiro] = useState<KiroStatus | null>(null);
-  const [kiroKeyOpen, setKiroKeyOpen] = useState(false);
+  // Keyed by ARN, not a bare boolean: this editor renders INSIDE the per-instance
+  // insts.map(), so one shared flag opened every Kiro instance's field at once and
+  // they all shared a single draft. Mirrors the descOpen pattern below.
+  const [kiroKeyOpen, setKiroKeyOpen] = useState<string | null>(null);
   const [kiroKeyDraft, setKiroKeyDraft] = useState('');
   // Which role's "add another instance" input is expanded. Collapsed by default
   // (R11): a wired role just shows its ARN(s); the add-instance field appears
@@ -435,7 +438,7 @@ function RuntimesCard() {
       if (next.error) setError(next.error);
       else {
         setKiro(next);
-        setKiroKeyOpen(false);
+        setKiroKeyOpen(null);
         setKiroKeyDraft('');
       }
     } catch (e: unknown) {
@@ -521,7 +524,7 @@ function RuntimesCard() {
           )}
         </div>
         <CardDescription>
-          The three coding-role runtimes are discovered from the Lab 1 runtime configs.
+          The coding-role runtimes are discovered from the Lab 1 runtime configs.
           Paste the coordinator ARN after its CLI deployment; use these controls only
           when replacing a runtime or adding another instance.
         </CardDescription>
@@ -627,7 +630,7 @@ function RuntimesCard() {
                             is stored in the Token Vault via the credential provider, never on the
                             ARN. */}
                         {r.role === 'kiro' && !isEnv && (
-                          kiroKeyOpen ? (
+                          kiroKeyOpen === inst.arn ? (
                             <div className="flex items-center gap-2">
                               <Input
                                 type="password"
@@ -647,7 +650,7 @@ function RuntimesCard() {
                                 {busy === inst.arn ? 'Saving…' : 'Save'}
                               </Button>
                               <Button type="button" variant="ghost" size="sm"
-                                onClick={() => { setKiroKeyOpen(false); setKiroKeyDraft(''); }}>
+                                onClick={() => { setKiroKeyOpen(null); setKiroKeyDraft(''); }}>
                                 Cancel
                               </Button>
                             </div>
@@ -657,7 +660,7 @@ function RuntimesCard() {
                               <span className="font-mono">{kiro.key_tail ? `ksk_••••${kiro.key_tail}` : 'ksk_••••'}</span>
                               <button
                                 type="button"
-                                onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(true); }}
+                                onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(inst.arn); }}
                                 className="hover:text-foreground"
                               >
                                 Replace
@@ -674,7 +677,7 @@ function RuntimesCard() {
                           ) : (
                             <button
                               type="button"
-                              onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(true); }}
+                              onClick={() => { setKiroKeyDraft(''); setKiroKeyOpen(inst.arn); }}
                               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                             >
                               <Plus aria-hidden="true" className="size-3" /> Add API key <span className="text-muted-foreground/70">(stored in Token Vault)</span>

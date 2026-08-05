@@ -59,7 +59,12 @@ if not infra:
     print("Error: infra.config not found. Run ../infra/setup.sh first.")
     sys.exit(1)
 
-REGION = infra["INFRA_REGION"]
+# Region: the env (the box exports the STACK region), then infra.config, then boto3's
+# own resolver. Never a literal: a hardcoded region deploys the Runtime somewhere the
+# attendee's mount is not.
+REGION = (os.environ.get("AWS_REGION")
+          or infra.get("INFRA_REGION")
+          or boto3.session.Session().region_name or "")
 ACCOUNT_ID = infra["INFRA_ACCOUNT_ID"]
 SUBNET_1 = infra["INFRA_SUBNET_1"]
 SUBNET_2 = infra["INFRA_SUBNET_2"]
@@ -67,6 +72,32 @@ SECURITY_GROUP = infra["INFRA_SECURITY_GROUP"]
 # Optional: empty until the attendee creates the S3 Files access point in Stage 1.
 # Empty -> deploy MOUNTLESS; re-running deploy.py after it is set attaches the mount.
 S3FILES_AP_ARN = infra.get("INFRA_S3FILES_AP_ARN", "")
+
+
+# ONE region per workshop, enforced rather than documented. The access point ARN
+# carries the region it was created in, so if the mount and this Runtime disagree the
+# Runtime comes up unable to reach /mnt/s3files, and the failure surfaces much later
+# as an agent that "wrote nothing". With two accessible regions an attendee can
+# genuinely end up here (create the file system in one terminal's region, deploy from
+# another), so refuse the deploy while the fix is still one line.
+def _assert_same_region(ap_arn: str, region: str) -> None:
+    if not ap_arn or not region:
+        return
+    parts = ap_arn.split(":")
+    ap_region = parts[3] if len(parts) > 3 else ""
+    if ap_region and ap_region != region:
+        raise SystemExit(
+            f"REGION_MISMATCH: this deploy targets {region}, but the S3 Files access\n"
+            f"point in coding-agents/infra.config was created in {ap_region}:\n"
+            f"  {ap_arn}\n"
+            "The mount and the Runtime must be in the SAME region. Either export\n"
+            f"AWS_REGION={ap_region} and re-run this deploy, or re-create the file\n"
+            f"system in {region} (Lab 1) and update infra.config."
+        )
+
+
+_assert_same_region(S3FILES_AP_ARN, REGION)
+
 S3FILES_BUCKET = infra["INFRA_BUCKET"]
 ECR_URI = local.get("ECR_URI") or os.environ.get("ECR_URI")
 
@@ -497,7 +528,8 @@ def main():
     print(f"  Runtime ARN: {runtime['runtime_arn']}")
     print(f"  S3 Files:    {S3FILES_MOUNT_PATH}")
     print("  Config:      kiro/runtime_config.json")
-    print("\n  Test: python kiro/invoke.py \"Run the grading contract against the deployed MCP endpoint and report the verdict\"")
+    print("\n  Test: python kiro/invoke.py \"List the files in your working directory "
+          "and say which steering file you are reading\"")
     print("=" * 60)
 
 

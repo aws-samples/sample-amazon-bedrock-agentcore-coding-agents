@@ -36,12 +36,26 @@ def test_gateway_mcp_trusts_agentcore_ingress_host():
 
 
 def test_validator_setup_is_executable():
-    mode = (ROOT / "coding-agents" / "claude-code-validator" / "setup.sh").stat().st_mode
-    assert mode & stat.S_IXUSR
+    """Both validators: the served Kiro and the kept Claude Code restore path."""
+    for role in ("kiro", "claude-code-validator"):
+        mode = (ROOT / "coding-agents" / role / "setup.sh").stat().st_mode
+        assert mode & stat.S_IXUSR, f"{role}/setup.sh is not executable"
 
 
 def test_mounted_role_guidance_overrides_the_image_fallback():
-    """The files attendees stage must be the project guidance the CLI reads."""
+    """The files attendees stage must be the project guidance the CLI reads.
+
+    Each role reaches that conclusion its OWN way, so assert the real mechanism rather
+    than one shape: Kiro (the served validator) picks a RUN_DIR and lets the relative
+    `.kiro/steering/` path resolve against it, while the Claude Code roles probe for a
+    staged guidance file by name.
+    """
+    kiro = (ROOT / "coding-agents" / "kiro" / "run.sh").read_text()
+    assert 'RUN_DIR="$WORKSHOP_AGENT_WORKDIR"' in kiro
+    assert 'elif [ -d /mnt/s3files ]; then' in kiro
+    assert 'RUN_DIR="/mnt/s3files"' in kiro
+    assert 'cd "$RUN_DIR"' in kiro
+
     validator = (ROOT / "coding-agents" / "claude-code-validator" / "run.sh").read_text()
     assert 'VALIDATOR_WORKDIR="/mnt/s3files/validator"' in validator
     assert 'if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then' in validator
@@ -96,7 +110,7 @@ def test_opencode_config_writer_preserves_session_telemetry(tmp_path):
 
 def test_served_role_connectors_do_not_block_on_stdin_on_exit():
     """Closing a Runtime TUI must not leave an executor thread blocking process exit."""
-    for role in ("claude-code", "claude-code-validator", "opencode"):
+    for role in ("claude-code", "kiro", "opencode", "claude-code-validator"):
         connector = (ROOT / "coding-agents" / role / "connect.py").read_text()
         assert "loop.add_reader(stdin_fd, on_stdin_ready)" in connector
         assert "run_in_executor(None, os.read" not in connector
@@ -274,6 +288,7 @@ def test_attendee_shell_scripts_parse():
         GATEWAY / "deploy-gateway.sh",
         GATEWAY / "deploy-all.sh",
         GATEWAY / "verify-gateway.sh",
+        ROOT / "coding-agents" / "kiro" / "run.sh",
         ROOT / "coding-agents" / "claude-code-validator" / "run.sh",
         ROOT / "coding-agents" / "opencode" / "run.sh",
     ]

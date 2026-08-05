@@ -84,10 +84,16 @@ def test_a_role_that_writes_nothing_never_passes(engine_mod):
     fixture_executor = importlib.import_module("fixture_executor")
 
     class SilentBuilder(fixture_executor.FixtureExecutor):
-        """Exits 0 and writes nothing for builders; validator behaves normally."""
+        """Exits 0 and writes nothing for builders; the checker behaves normally.
+
+        Which role CHECKS comes from the registry, not from the spelling of its id: an
+        id-suffix guess silenced the checker too on a roster whose validator is not
+        named "...validator", so the run failed for the wrong reason and stopped
+        proving anything about the empty-builder guard.
+        """
 
         def produce(self, run, agent_id, role):
-            if agent_id.endswith("validator"):
+            if fixture_executor._is_checker(agent_id, role):
                 return super().produce(run, agent_id, role)
             run._offline_double = True
             os.makedirs(run.roledir(agent_id), exist_ok=True)
@@ -97,7 +103,7 @@ def test_a_role_that_writes_nothing_never_passes(engine_mod):
     try:
         run = _wait_terminal(eng.submit(
             "Build a small service that converts between units",
-            ["claude-code", "claude-code-validator"]))
+            ["claude-code", "kiro"]))
         assert run.status != "passed", (
             "a builder wrote no files, yet the run passed: the empty-tree guard is "
             f"not firing (gate={run.gate}, fail_reason={run.fail_reason})")

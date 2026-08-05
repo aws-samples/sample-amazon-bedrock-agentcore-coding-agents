@@ -23,6 +23,7 @@ import pytest
 # engine, fixture_executor live), so the brain modules resolve afterwards.
 import main  # noqa: E402  the thin AgentCore Runtime wrapper over chat
 import chat  # noqa: E402  the orchestrator brain (prompt + tools + agent + stream)
+import roles  # noqa: E402
 import runtime_config  # noqa: E402
 from fixture_executor import FixtureExecutor  # noqa: E402
 
@@ -57,7 +58,7 @@ def _wire_all_roles(tmp_path, monkeypatch):
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
     runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
     runtime_config.save_runtime("opencode", "opencode-TESTID0001")
-    runtime_config.save_runtime("claude-code-validator", "claude-code-validator-TESTID0001")
+    runtime_config.save_runtime("kiro", "kiro-TESTID0001")
     main._agent = None  # drop any cached agent so it rebuilds with the wired tools
 
 
@@ -95,7 +96,8 @@ def test_list_presets_offers_starting_points_and_the_attendees_own_request():
     for p in out["presets"]:
         assert p["roles"]
         if not p["read_only"]:
-            assert "claude-code-validator" in p["roles"], p["preset"]
+            # The SERVED checker, from the registry rather than a role id literal.
+            assert roles.checker_ids()[0] in p["roles"], p["preset"]
 
 
 # ------------------------------------------------- dispatch tools (non-blocking, real)

@@ -256,7 +256,7 @@ def test_judge_controls_green_gate_and_reads_the_pull_request_under_review(tmp_p
         "run_1", "opencode", "frontend-builder", "frontend",
         base_branch="main", token="front")
     checker = WorkItem.create(
-        "run_1", "claude-code-validator", "acceptance-validator", "validator",
+        "run_1", "kiro", "acceptance-validator", "validator",
         kind="checker", base_branch="main", token="check")
     tree = tmp_path / backend.work_id
     (tree / "api").mkdir(parents=True)

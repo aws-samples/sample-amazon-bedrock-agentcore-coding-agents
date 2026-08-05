@@ -1,7 +1,9 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
-Run Claude Code, a second Claude Code validator, and opencode on Amazon Bedrock
-AgentCore Runtime. Give the team one request and receive one checked pull request.
+Run Claude Code (backend), opencode (frontend), and Kiro (validator) on Amazon
+Bedrock AgentCore Runtime. Give the team one request and receive one checked pull
+request. A second Claude Code is kept as the validator's restore path, so an account
+without a Kiro subscription runs the same workshop with one env var.
 
 Each builder works in a named linked Git worktree and separate pull request. The
 worktree is local to the coordinator or Runtime; only one normalized source archive
@@ -48,9 +50,9 @@ workspace for direct shell work in Lab 1.
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
   - `claude-code/` backend builder (Claude Code, native Bedrock)
-  - `claude-code-validator/` acceptance-contract validator (Claude Code, native Bedrock; steered by an acceptance-contract CLAUDE.md that directs it to author an executable check whose exit code is the gate)
   - `opencode/` frontend builder (opencode, native Bedrock)
-  - `kiro/` legacy restore path (hidden; kept restorable like `codex/`, not on any served roster)
+  - `kiro/` acceptance-contract validator (Kiro CLI; steered by `.kiro/steering/*.md` with `inclusion: always`, which directs it to author an executable check whose exit code is the gate; authenticates with your own `ksk_` key, fetched from the AgentCore Identity Token Vault at session start)
+  - `claude-code-validator/` restore path (hidden; kept restorable like `codex/`, not on the served roster by default): the same acceptance-check-authoring contract in a `CLAUDE.md`, Bedrock-native with no key, for an account without a Kiro subscription
 - `orchestrator/` the Strands orchestrator engine (routing, engine, executor, reviewer, github)
   - `orchestrator/roles.py` declares the served roster (`WORKSHOP_ROLES`-configurable); this is the single place role ids, kinds (builder/checker), and capabilities (backend/frontend/validator) live
 - `orchestrator-agent/` the deployable Strands agent bundle

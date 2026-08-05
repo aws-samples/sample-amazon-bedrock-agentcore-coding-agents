@@ -34,6 +34,21 @@ _ORCH = os.path.join(_ROOT, "orchestrator")
 if _ORCH not in sys.path:
     sys.path.insert(0, _ORCH)
 
+import roles  # noqa: E402
+
+
+def _served_checker_steering() -> str:
+    """The steering of the checker this deployment actually SERVES.
+
+    Derived from the registry rather than named in a literal, so a roster swap keeps
+    these guards on the agent that really gates a run. Pinning one role's filename let
+    the whole file stay green while the served checker lost every rule below.
+    """
+    checkers = roles.checker_ids()
+    assert checkers, "a roster with no checker cannot gate anything"
+    r = roles.get(checkers[0])
+    return os.path.join(_ROOT, "orchestrator", "harness", r.harness_dir, r.steering_file)
+
 
 class _Run:
     def __init__(self, tmp: str) -> None:
@@ -106,9 +121,7 @@ def test_the_engine_still_hands_over_no_answers(tmp_path) -> None:
 
 def test_the_validator_steering_warns_about_cold_start_time() -> None:
     """Local checkout removed NFS, but dependency startup still needs a real budget."""
-    path = os.path.join(_ROOT, "orchestrator", "harness",
-                        "claude-code-validator", "CLAUDE.md")
-    text = open(path, encoding="utf-8").read()
+    text = open(_served_checker_steering(), encoding="utf-8").read()
     assert "WORKSHOP_GATE_TIMEOUT_S" in text
     lowered = text.lower()
     assert "declared dependencies" in lowered
@@ -125,9 +138,7 @@ def test_the_steering_states_a_hard_MINIMUM_poll() -> None:
     can reasonably land anywhere; a floor cannot be reasoned below. So the steering
     carries one number.
     """
-    path = os.path.join(_ROOT, "orchestrator", "harness",
-                        "claude-code-validator", "CLAUDE.md")
-    text = open(path, encoding="utf-8").read()
+    text = open(_served_checker_steering(), encoding="utf-8").read()
     assert "AT LEAST 60 SECONDS" in text, (
         "a soft 'spend a real share' left a live run choosing 20s; state a floor")
 
