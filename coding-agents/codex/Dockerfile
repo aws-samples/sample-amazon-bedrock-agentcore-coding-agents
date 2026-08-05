@@ -25,6 +25,12 @@ RUN chmod +x /app/run.sh
 # with AGENTS.md in its working directory; config.toml remains under .codex/.
 RUN mkdir -p /home/agent/.codex && chown -R agent:agent /home/agent/.codex
 COPY --chown=agent:agent AGENTS.md /home/agent/.codex/AGENTS.md
+# $HOME/AGENTS.md is the path the DISPATCH stages from: runtime_exec.py copies
+# `$HOME/<Role.steering_file>` into the role's worktree, and that copy is guarded by a
+# silent `test -f`, so a role whose steering is baked ONLY under CODEX_HOME dispatches
+# with no steering and no error. Bake both: .codex/ is codex's own global-instruction
+# convention, $HOME/ is the registry path the harness resolves.
+COPY --chown=agent:agent AGENTS.md /home/agent/AGENTS.md
 
 RUN git config --global user.name "AgentCore Bot" && \
     git config --global user.email "agentcore@example.com" && \

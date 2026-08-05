@@ -155,7 +155,7 @@ vercel --token "$VERCEL_TOKEN" --yes
 
 Open the printed preview URL and run the same smoke test as Step 4 against the live
 deployment. The preview is disposable and per-deploy, ideal for letting the VALIDATOR
-(Claude Code validator) or a human eyeball the UI before promoting.
+(Kiro) or a human eyeball the UI before promoting.
 
 ---
 
@@ -195,9 +195,10 @@ Confirm the live UI is actually driving the Gateway, not just rendering:
 
 - **BACKEND (Claude Code)** deploys the AgentCore MCP server; the **Gateway** fronts it
   with IAM/JWT auth and tool routing. That Gateway URL is the contract this UI consumes.
-- **VALIDATOR (Claude Code validator)** authors and runs an acceptance check against the
-  same endpoint as the UI; the validator and the UI point at one source of truth (the
-  Gateway URL).
+- **VALIDATOR (Kiro)** AUTHORS an acceptance check against the same endpoint as the UI;
+  the ENGINE runs it and reads its real exit code as the gate. The validator never runs
+  its own check and never edits the builders' work. The validator and the UI point at
+  one source of truth (the Gateway URL).
 - **FRONTEND BUILDER (opencode)** built this chatbot UI; this skill ships it. Pairs with
   `configure-opencode-frontend`.
 - This is finalization plumbing, not a contest: there is no winner and no

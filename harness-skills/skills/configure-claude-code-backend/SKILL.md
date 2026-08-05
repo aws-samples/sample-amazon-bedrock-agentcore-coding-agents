@@ -9,7 +9,7 @@ description: >-
   or asks which agent owns the server/tools side.
   Claude Code runs Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM bedrock:InvokeModel,
   NO API key) on default model us.anthropic.claude-opus-4-6-v1. Opus suits the
-  multi-file backend work. Do NOT use this for the Claude Code validator or opencode
+  multi-file backend work. Do NOT use this for Kiro (the validator) or opencode
   (frontend builder); those have their own configure skills.
 ---
 
@@ -34,7 +34,7 @@ Why Claude Code is the backend: this role is multi-file, contract-driven server 
 Per per-task model routing, the most capable model is the right call for complex/critical
 work; Opus recognizes rabbit holes and self-corrects, where mid-tier models persist in
 unproductive loops. That is why the default model here is `us.anthropic.claude-opus-4-6-v1`
-and why Claude Code, not the Claude Code validator or opencode, owns the server.
+and why Claude Code, not Kiro or opencode, owns the server.
 
 ---
 
@@ -78,8 +78,9 @@ echo "$GATEWAY_URL"
 
 This is the Bedrock-native, **no-API-key** path. The runtime IAM role carries
 `bedrock:InvokeModel`; there is NO key in env, no Token Vault, no credential provider.
-(The Claude Code validator uses the same Bedrock-native path: `CLAUDE_CODE_USE_BEDROCK=1`,
-runtime IAM role, no API key. opencode likewise uses its Runtime IAM role for Bedrock.)
+(opencode likewise uses its Runtime IAM role for Bedrock. Kiro, the validator, is the
+one served role with a vendor key, fetched at session start from the AgentCore Identity
+Token Vault.)
 
 ---
 
@@ -135,7 +136,7 @@ does NOT build the frontend UI.
 
 ## Step 5: Backend self-check (pre-handoff)
 
-The acceptance gate is **owned by the Claude Code validator**, which authors its own
+The acceptance gate is **owned by the validator role (Kiro)**, which authors its own
 executable check after examining the deliverable. The backend agent should do a
 lightweight self-check first so it does not hand a non-starting or unreachable service
 to the gate.
@@ -160,7 +161,7 @@ completion to the orchestrator.
 - **No-key by design.** Claude Code is the Bedrock-native lane on purpose: keeping the
   credential surface minimal (IAM `bedrock:InvokeModel`, no key) is the security-by-default
   and "put the LLM in a box" tenet. Do not bolt a Token Vault / credential provider onto
-  this agent; the Claude Code validator and opencode skills each own their own credential path.
+  this agent; the Kiro validator and opencode skills each own their own credential path.
 - **Why Opus for this role.** Model routing is per-task: `pr_review` -> Haiku (cheap,
   read-only), `new_task`/`pr_iteration` -> Sonnet (balanced), complex/critical ->
   **Opus**. Backend server work is the complex/critical case, so the default stays

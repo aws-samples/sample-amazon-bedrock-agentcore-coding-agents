@@ -201,8 +201,16 @@ def test_the_image_bakes_steering_at_the_path_dispatch_looks_for():
     cannot COPY from outside itself. Only the destination was wrong.
 
     So this asserts the one thing nothing else did: for every registered role, some COPY
-    in its Dockerfile lands the steering at ``$HOME/<steering_file>``.
+    in its Dockerfile lands the steering at EXACTLY ``$HOME/<steering_file>``.
+
+    The equality is the point, and a looser ``endswith`` version of this check let a
+    second instance of the same bug through: codex baked
+    ``/home/agent/.codex/AGENTS.md`` while the registry declares ``AGENTS.md``, so the
+    dispatch looked up ``/home/agent/AGENTS.md`` and found nothing, yet a suffix test on
+    ``/AGENTS.md`` matched the nested path and passed. Compare the resolved absolute
+    destination to the exact path ``runtime_exec.py`` tests for.
     """
+    home = "/home/agent"
     for role_id in _ROLE_IDS:
         r = roles.get(role_id)
         dockerfile = os.path.join(_REPO, "coding-agents", r.harness_dir, "Dockerfile")
@@ -210,14 +218,14 @@ def test_the_image_bakes_steering_at_the_path_dispatch_looks_for():
             continue
         with open(dockerfile, encoding="utf-8") as f:
             body = f.read()
-        wanted = r.steering_file.replace("\\", "/")
+        wanted = f"{home}/" + r.steering_file.replace("\\", "/")
         destinations = [
             line.split()[-1].rstrip("/")
             for line in body.splitlines()
             if line.strip().startswith("COPY") and not line.rstrip().endswith("\\")
         ]
-        assert any(d.rstrip("/").endswith("/" + wanted) for d in destinations), (
-            f"{role_id}: no COPY in {dockerfile} bakes steering to $HOME/{wanted}. "
-            f"runtime_exec.py stages with `test -f $HOME/{wanted}` and SILENTLY skips "
-            f"when absent, so this role would dispatch with no steering. "
+        assert wanted in destinations, (
+            f"{role_id}: no COPY in {dockerfile} bakes steering to {wanted}. "
+            f"runtime_exec.py stages with `test -f $HOME/{r.steering_file}` and SILENTLY "
+            f"skips when absent, so this role would dispatch with no steering. "
             f"COPY destinations found: {destinations}")

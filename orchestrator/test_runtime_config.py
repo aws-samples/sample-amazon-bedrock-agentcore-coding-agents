@@ -345,5 +345,40 @@ def test_a_malformed_deployed_file_is_ignored():
     assert runtime_config.resolve("opencode") is None
 
 
+def test_removing_a_deployed_arn_is_refused_not_silently_ignored():
+    """``remove_runtime`` edits ONLY the settings layer, so an ARN wired from the
+    'deployed' rung cannot be removed there. It must SAY SO.
+
+    This shipped as a silent no-op, and 'deployed' is the common case, not the edge
+    one: the event stack pre-provisions every served role and sets no
+    ``AGENTCORE_RUNTIME_<ROLE>`` var, so every role at an event resolves 'deployed'.
+    The console's per-instance x button called this, got back an IDENTICAL status
+    payload, and repainted the same row: no change, no error, no explanation.
+    """
+    _write_deployed("kiro", _arn("kiro-DEPLOYED"))
+    out = runtime_config.remove_runtime("kiro", _arn("kiro-DEPLOYED"))
+    assert "error" in out, "removing a deployed ARN must be refused, not a silent no-op"
+    assert "cleanup.py" in out["error"], out["error"]
+    # and it is still wired afterwards, exactly as before the call
+    assert runtime_config.resolve("kiro") == (_arn("kiro-DEPLOYED"), "deployed")
+
+
+def test_removing_an_env_wired_arn_is_refused(monkeypatch):
+    """Same contract for the env rung: an operator override is not removable from
+    the console, and pretending otherwise is the same silent lie."""
+    monkeypatch.setenv(runtime_config._env_key("kiro"), _arn("kiro-ENV"))
+    out = runtime_config.remove_runtime("kiro", _arn("kiro-ENV"))
+    assert "error" in out and runtime_config._env_key("kiro") in out["error"], out
+    assert runtime_config.resolve("kiro") == (_arn("kiro-ENV"), "environment")
+
+
+def test_removing_a_settings_arn_still_works():
+    """The removable case is unchanged: what this pane WROTE, this pane can remove."""
+    runtime_config.save_runtime("kiro", _arn("kiro-SETTINGS"))
+    out = runtime_config.remove_runtime("kiro", _arn("kiro-SETTINGS"))
+    assert "error" not in out, out
+    assert runtime_config.resolve("kiro") is None
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

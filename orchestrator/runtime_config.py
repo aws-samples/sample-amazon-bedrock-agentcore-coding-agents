@@ -371,10 +371,29 @@ def add_runtime(role: str, arn: str) -> dict[str, Any]:
 def remove_runtime(role: str, arn: str) -> dict[str, Any]:
     """Remove ONE instance from a role's fleet (the per-instance x button). When
     it was the role's last instance the role becomes unwired. Removing an ARN that
-    is not wired is a no-op. The role's description is preserved."""
+    is not wired is a no-op. The role's description is preserved.
+
+    This edits ONLY the ``settings`` layer (``.runs/runtime.local.json``), so an ARN
+    that is wired from a HIGHER or LOWER rung of the ladder cannot be removed here and
+    is REFUSED rather than silently accepted. That silence was a real defect: every
+    role the event stack pre-provisions resolves as ``deployed``, so the console
+    re-rendered an identical payload after the click and showed no change, no error,
+    and no explanation. An ``environment`` ARN needs the env var unset; a ``deployed``
+    one is the harness's own runtime_config.json, removed by that role's cleanup.py.
+    """
     role, arn = role.strip(), arn.strip()
     if role not in roles():
         return {"error": f"unknown role {role!r} (expected one of {', '.join(roles())})"}
+    src = dict((a, s) for a, s in instances(role)).get(arn)
+    if src == "environment":
+        return {"error": f"{arn} is wired to {role} by the {_env_key(role)} environment "
+                         f"variable, so it cannot be removed here; unset that variable "
+                         f"and restart the console instead"}
+    if src == "deployed":
+        return {"error": f"{arn} is the runtime coding-agents/{_harness_dirs().get(role, role)}"
+                         f"/runtime_config.json declares for {role} (a pre-provisioned "
+                         f"deployment), so it cannot be unwired from here; tear the "
+                         f"runtime down with that role's cleanup.py instead"}
     runtimes = _load_file()
     fleet = [a for a in runtimes.get(role, []) if a != arn]
     if fleet:

@@ -107,6 +107,21 @@ def main():
     except Exception as e:
         print(f"  Warning: {e}")
 
+    # Delete the agent's ECR repository (force removes its images too), so cleanup
+    # leaves no registry residue. Repo naming mirrors setup.sh:
+    # coding-agents-<agent-name-with-dashes>. The cleanup page promises every agent
+    # folder removes "its Runtime, ECR repo, and IAM role", and this is an arm64 image
+    # of several hundred MB that keeps billing without this step.
+    ecr = session.client("ecr")
+    repo = f"coding-agents-{agent_name.replace('_', '-')}"
+    try:
+        ecr.delete_repository(repositoryName=repo, force=True)
+        print(f"  Deleted ECR repo: {repo}")
+    except ecr.exceptions.RepositoryNotFoundException:
+        print(f"  ECR repo not found: {repo}")
+    except Exception as e:
+        print(f"  Warning: {e}")
+
     # Delete AgentCore Identity resources (Token Vault)
     if args.keep_identity:
         print("  Keeping Identity resources (--keep-identity)")

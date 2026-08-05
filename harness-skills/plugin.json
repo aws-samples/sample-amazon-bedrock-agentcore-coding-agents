@@ -1,7 +1,7 @@
 {
   "name": "agentcore-harness",
   "version": "0.1.0",
-  "description": "Three roles on Bedrock-native AgentCore Runtimes: Claude Code = backend builder (implements the backend deliverable as an AgentCore MCP server), a second Claude Code = validator (authors a self-contained executable check whose real exit code is the gate), opencode = frontend builder (builds the interface). Skills cover per-agent setup/deploy, the Gateway MCP, the harness lifecycle, and extending the harness. Fire-and-forget orchestration, no race and no winner.",
+  "description": "Three roles on AgentCore Runtimes: Claude Code = backend builder (implements the backend deliverable as an AgentCore MCP server), Kiro = validator (authors a self-contained executable check; the engine runs it and its real exit code is the gate), opencode = frontend builder (builds the interface). Skills cover per-agent setup/deploy, the Gateway MCP, the harness lifecycle, and extending the harness. Fire-and-forget orchestration, no race and no winner.",
   "author": {
     "name": "AgentCore Coding Agents Workshop"
   },

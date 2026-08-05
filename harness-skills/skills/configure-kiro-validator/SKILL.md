@@ -104,8 +104,8 @@ step run in the attendee's own account.
 targets, it exits `REGION_MISMATCH` rather than producing a Runtime that cannot
 reach `/mnt/s3files`.
 
-Do NOT run Codex's credential steps here. Kiro's credential path is Token Vault
-only.
+Kiro's credential path is Token Vault only: do not bolt any other agent's credential
+steps onto it, and never inject the `ksk_` as a runtime environment variable.
 
 ## Step 3: The validator's job - author the check, not answer the task
 

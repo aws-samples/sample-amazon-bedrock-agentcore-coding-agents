@@ -499,16 +499,27 @@ export const clearKiroKey = () =>
 // Per-role AgentCore runtime wiring. The orchestrator (real-only) dispatches each
 // role to its deployed runtime; the ARNs are SET here (or via env / the
 // runtime_config surface), never hardcoded. A missing ARN fails loud.
+// Where an ARN was resolved from, matching runtime_config.instances()'s ladder:
+//   'environment' : AGENTCORE_RUNTIME_<ROLE>, an operator override.
+//   'settings'    : .runs/runtime.local.json, what THIS pane writes.
+//   'deployed'    : auto-discovered from coding-agents/<role>/runtime_config.json,
+//                   which is how every role the EVENT STACK pre-provisioned surfaces.
+// Only 'settings' is removable here: remove_runtime edits the settings layer, so
+// asking it to remove an 'environment' or 'deployed' ARN is a silent no-op. This union
+// omitted 'deployed', which is exactly why the UI never modeled that distinction and
+// offered a dead remove button on every pre-provisioned runtime.
+export type RuntimeSource = 'environment' | 'settings' | 'deployed';
+
 export interface RuntimeInstance {
   arn: string;
-  source: 'environment' | 'settings';
+  source: RuntimeSource;
   description?: string;   // per-instance: what this specific runtime does
 }
 
 export interface RuntimeRole {
   role: string;
   wired: boolean;
-  source?: 'environment' | 'settings' | null;
+  source?: RuntimeSource | null;
   arn?: string | null;          // the first instance's ARN (back-compat)
   count?: number;               // fleet size: a role may have N deployed runtimes
   instances?: RuntimeInstance[];

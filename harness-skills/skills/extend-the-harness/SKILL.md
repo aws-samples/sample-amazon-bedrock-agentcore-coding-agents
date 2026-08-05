@@ -2,7 +2,7 @@
 name: extend-the-harness
 description: >-
   Decision guide for adding a 4th+ role to OUR 3-agent AgentCore coding-agent harness
-  (Claude Code = BACKEND / implements the backend deliverable, a second Claude Code = VALIDATOR /
+  (Claude Code = BACKEND / implements the backend deliverable, Kiro = VALIDATOR /
   authors the acceptance check whose exit code decides, opencode = FRONTEND BUILDER). Use when
   the user says "add an agent to the harness", "extend the harness", "add a reviewer agent",
   "add a docs agent", "add a security/threat agent", "add a second implementer", "split the
@@ -24,7 +24,7 @@ The locked baseline you are extending:
 | Role | Agent | Job |
 |---|---|---|
 | BACKEND | Claude Code (Bedrock native) | implements the backend deliverable the task names and exposes it through the AgentCore Gateway |
-| VALIDATOR | Claude Code validator (Bedrock native, no API key) | reads the task and the builders' work; authors one self-contained executable check; the engine runs it; the real exit code is the gate |
+| VALIDATOR | Kiro (vendor `ksk_` key, fetched from the Token Vault at session start) | reads the task and the builders' work; authors one self-contained executable check; the engine runs it; the real exit code is the gate |
 | FRONTEND BUILDER | opencode (Bedrock native, Runtime IAM) | builds the interface on top of the backend |
 
 These three map cleanly to a single agentic step fanned into three distinct JOBS, then
@@ -71,7 +71,7 @@ Before deciding, get the user to name the JOB. Ask (AskUserQuestion style; pick 
    safer, and map to `pr_review` -> Haiku routing. Write roles need sandbox + least-privilege
    review (security by default).
 5. **Where does it sit in the blueprint?** Almost always inside Phase 4 (agent execution), feeding
-   Phase 5 (finalization). The VALIDATOR (Claude Code validator) stays the final gate; a new role
+   Phase 5 (finalization). The VALIDATOR (Kiro) stays the final gate; a new role
    advises or produces an artifact; it does not replace the authored-check gate.
 
 If the answers to (2) and (3) do not yield a distinct job with a distinct signal: do not add a

@@ -22,6 +22,7 @@ import {
   GithubStatus,
   MergePolicy,
   RuntimeStatus,
+  RuntimeSource,
   KiroStatus,
   clearGithubCredential,
   getGithubStatus,
@@ -504,9 +505,18 @@ function RuntimesCard() {
 
   async function removeInstance(role: string, arn: string) {
     setBusy(role);
+    setError('');
     try {
-      applyStatus(await removeRuntime(role, arn));
-    } catch { /* unchanged on error */ } finally {
+      // Surface a refusal instead of dropping it: remove_runtime rejects an ARN it
+      // does not own (an env override, or a stack-pre-provisioned 'deployed'
+      // runtime), and swallowing that response repainted an identical row with no
+      // explanation of why nothing happened.
+      const next = await removeRuntime(role, arn);
+      if (next.error) setError(next.error);
+      else applyStatus(next);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Removing the runtime failed.');
+    } finally {
       setBusy(null);
     }
   }
@@ -538,7 +548,7 @@ function RuntimesCard() {
         {!loading && status?.roles.map((r) => {
           // A role is a FLEET: instances[] is every deployed runtime wired to it
           // (env fleets are comma-separated; settings fleets grow via "add").
-          const insts = r.instances ?? (r.wired && r.arn ? [{ arn: r.arn, source: r.source as 'environment' | 'settings' }] : []);
+          const insts = r.instances ?? (r.wired && r.arn ? [{ arn: r.arn, source: r.source as RuntimeSource }] : []);
           const isEnv = r.source === 'environment';
           return (
             // Each role is its own bordered section (R11): header row, then its
@@ -568,7 +578,15 @@ function RuntimesCard() {
                       <div key={inst.arn} className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-2">
                         <div className="flex items-center gap-2">
                           <code className="flex-1 break-all font-mono text-xs">{inst.arn}</code>
-                          {!isEnv && (
+                          {/* Removable ONLY when this pane owns the wiring. remove_runtime
+                              edits the settings layer, so offering an x for an
+                              'environment' override or a 'deployed' (stack
+                              pre-provisioned) runtime promised an action the backend
+                              refuses: the click used to re-render an identical row with
+                              no change and no error. Every role the event stack
+                              pre-provisions is 'deployed', so that was the common case,
+                              not the edge one. */}
+                          {inst.source === 'settings' && (
                             <button
                               type="button"
                               disabled={busy === inst.arn}

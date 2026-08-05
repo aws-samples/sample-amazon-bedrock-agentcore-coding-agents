@@ -216,3 +216,34 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path):
         assert repaired["runtime_id"] == runtime_id
         assert repaired["runtime_arn"].endswith(f"/{runtime_id}")
         assert control.updated_ids == [runtime_id]
+
+
+def test_every_harness_cleanup_deletes_its_ecr_repository():
+    """Every role's ``cleanup.py`` must delete the ECR repo its ``setup.sh`` created.
+
+    The cleanup page promises this literally ("Each agent folder ships its own
+    cleanup.py that removes its Runtime, ECR repo, and IAM role") and its verify table
+    expects ECR to end up with "no agent / MCP / coordinator images". An arm64 agent
+    image is several hundred MB and keeps billing after an attendee has followed the
+    whole teardown, so a missing delete is a real charge on an account the attendee
+    believes is clean.
+
+    ``kiro`` shipped without it. That was invisible while kiro was hidden and the
+    served validator was ``claude-code-validator`` (whose cleanup.py DOES delete its
+    repo): the roster swap moved the teardown onto the one cleanup.py missing the step.
+    Assert it for EVERY role with a cleanup.py, hidden ones included, so a future
+    roster swap cannot re-expose the same gap.
+    """
+    for role in _HARNESS_ROLES:
+        cleanup = _CODING_AGENTS / role / "cleanup.py"
+        if not cleanup.exists():
+            continue
+        body = cleanup.read_text(encoding="utf-8")
+        assert 'client("ecr")' in body, (
+            f"coding-agents/{role}/cleanup.py never creates an ECR client, so it "
+            f"cannot delete coding-agents-{role}; the image keeps billing after "
+            f"teardown.")
+        assert "delete_repository(" in body, (
+            f"coding-agents/{role}/cleanup.py does not call ecr.delete_repository, so "
+            f"the coding-agents-{role} repo (an arm64 image) survives the documented "
+            f"cleanup and keeps billing.")
