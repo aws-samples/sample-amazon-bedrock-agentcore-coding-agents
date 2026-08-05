@@ -198,6 +198,12 @@ _CLAUDE_MODEL = os.environ.get("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opu
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
 _CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "openai.gpt-5.5")
+# Kiro names models in its OWN vendor namespace, not as Bedrock inference profiles, so
+# this cannot share _CLAUDE_MODEL. Verified against a live Runtime with
+# `kiro-cli chat --list-models`: claude-opus-5 / claude-sonnet-5 / claude-opus-4.8 /
+# auto / ... . Kept wirable like every other role's model, and read by BOTH halves of
+# the flow (this registry for the Lab 2 dispatch, run.sh for the Lab 1 session).
+_KIRO_MODEL = os.environ.get("WORKSHOP_KIRO_MODEL", "claude-opus-5")
 
 
 # --------------------------------------------------------------------- registry
@@ -261,12 +267,20 @@ REGISTRY: tuple[Role, ...] = (
                     "Authenticates with your own ksk_ key through Token Vault.",
         steering_file=os.path.join(".kiro", "steering", "validator.md"),
         harness_dir="kiro",
-        # No {model} and no model_env: kiro-cli has no model flag. Its model is the
-        # `auto` router, set (if at all) by run.sh writing chat.defaultModel into
-        # ~/.kiro/settings/cli.json. So `default_model` is HONESTLY empty rather than
-        # a Bedrock model id this CLI would ignore.
-        cli="kiro-cli chat --no-interactive --trust-all-tools {prompt}",
-        default_model="",
+        # kiro-cli DOES take `--model`, and the checker is pinned to the strongest
+        # model on the roster rather than left on the `auto` router: `auto` picks by
+        # task for "optimal usage", so a gate decision could be routed to a cheap
+        # model, and the checker is the one role whose judgement the whole workshop
+        # rests on. The Lab 1 interactive session gets the same value from run.sh
+        # writing chat.defaultModel; this is the Lab 2 dispatch half.
+        #
+        # The id is kiro-cli's OWN vendor name, NOT a Bedrock inference profile.
+        # Verified with `kiro-cli chat --list-models` in a live Runtime:
+        # `claude-opus-5` (2.20x credits, 1M context). `--model`/`--effort` were
+        # verified in `kiro-cli chat --help` there too; an earlier comment here
+        # claimed this CLI had no model flag, which was wrong.
+        cli="kiro-cli chat --no-interactive --trust-all-tools --model {model} {prompt}",
+        default_model=_KIRO_MODEL,
         skills=("configure-kiro-validator",),
         credential="api-key",
         # Kiro is the one served role whose CLI authenticates with a VENDOR key

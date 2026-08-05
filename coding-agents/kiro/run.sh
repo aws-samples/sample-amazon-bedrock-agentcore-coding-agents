@@ -104,7 +104,21 @@ else
 fi
 
 # ── Parse --model flag ───────────────────────────────────────
-MODEL="auto"
+# The validator gets the STRONGEST model on the roster, not the `auto` router, and it
+# is wirable for the same reason every other role's model is: an account without Opus
+# access must be able to run the workshop by exporting one variable.
+#
+# `auto` was the old default and it is the wrong default HERE. The checker's whole job
+# is to reason about a deliverable nobody pinned an answer for, and `auto` picks by
+# task for "optimal usage", i.e. it may route a gate decision to a cheap model. The
+# other roles already pin Opus-class models explicitly (WORKSHOP_CLAUDE_MODEL), so
+# leaving the checker on a router made it the only role whose model nobody chose.
+#
+# The id is kiro-cli's OWN vendor name, not a Bedrock inference profile: verified with
+# `kiro-cli chat --list-models` inside a live Runtime, which lists `claude-opus-5`
+# (2.20x credits, 1M context) alongside `auto`, `claude-sonnet-5`, `claude-opus-4.8`
+# and the rest. A Bedrock model id here would be silently rejected by the CLI.
+MODEL="${WORKSHOP_KIRO_MODEL:-claude-opus-5}"
 REMAINING_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
