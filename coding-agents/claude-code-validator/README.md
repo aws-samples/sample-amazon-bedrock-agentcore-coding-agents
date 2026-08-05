@@ -1,9 +1,16 @@
 # Claude Code validator on AgentCore Runtime
 
 This folder builds the validator coding assistant: a second Claude Code, steered
-by an acceptance-contract `CLAUDE.md` instead of the backend build spec. It owns
-the acceptance gate (the deterministic grading contract) that defines when a build
-is done. Like the backend, it calls Amazon Bedrock with the Runtime IAM role, so
+by an acceptance-contract `CLAUDE.md` instead of the backend build spec. It is the
+RESTORE PATH, not the served roster: the served checker is Kiro. Restore it with
+`WORKSHOP_ROLES=claude-code,opencode,claude-code-validator` for an account with no
+Kiro subscription, which is the only thing the served Kiro checker needs that
+Bedrock alone cannot give.
+
+It decides when a build is done by AUTHORING an executable check for the
+deliverable in front of it, and the engine reads that executable's real exit code.
+There is no deterministic grading contract: nothing in this repository pre-encodes
+what a correct answer looks like, because nobody knew what would be asked. Like the backend, it calls Amazon Bedrock with the Runtime IAM role, so
 no model API key is stored in the image. The deployed microVM mounts the shared
 workspace at `/mnt/s3files`.
 

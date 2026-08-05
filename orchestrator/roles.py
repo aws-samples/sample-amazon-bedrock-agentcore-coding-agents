@@ -67,6 +67,20 @@ class Role:
     # opencode's Bedrock provider (Vercel AI SDK) signs with SigV4 but does not walk
     # the AWS credential chain, so its keys must be materialized before the CLI runs.
     needs_static_credentials: bool = False
+    # --- vault-brokered credential (credential == "api-key") ------------------
+    # A role whose CLI authenticates with a VENDOR key, not with AWS credentials,
+    # cannot get it from the AWS chain: it is fetched at dispatch time from the
+    # AgentCore Identity Token Vault and exported into the CLI's own env var, in
+    # memory only. These three declare WHERE it lives and WHAT reads it, so the
+    # dispatch does not have to know which CLI it is running.
+    api_key_env: str = ""        # the env var this CLI reads its key from
+    vault_workload: str = ""     # workload identity that owns the credential provider
+    vault_provider: str = ""     # api-key credential provider holding the key
+    # The provisioning side (``kiro_config``, from the console Settings pane) and the
+    # dispatch side must never name two different providers, so both resolve the
+    # names through the SAME optional operator overrides, at call time.
+    vault_workload_env: str = ""
+    vault_provider_env: str = ""
     # Off the served roster by default: registered so it stays a restore path.
     hidden: bool = False
 
@@ -74,6 +88,35 @@ class Role:
     def dispatch_tool(self) -> str:
         """The orchestrator's tool name for dispatching this role."""
         return f"dispatch_{self.capability}"
+
+    @property
+    def brokers_api_key(self) -> bool:
+        """True when this role's CLI needs a VAULT-BROKERED vendor key to run.
+
+        The dispatch path runs a role's CLI directly, never ``/app/run.sh``, so a
+        role that authenticates with a vendor key gets NOTHING from the AWS
+        credential chain and must have its key materialized explicitly. Declared
+        rather than inferred from ``credential`` alone, because a role can be
+        ``api-key`` and still have no vault wiring yet (Codex), and silently
+        exporting an empty variable for it would look like success.
+        """
+        return bool(self.credential == "api-key" and self.api_key_env
+                    and self.vault_workload and self.vault_provider)
+
+    def vault_names(self) -> tuple[str, str]:
+        """(workload identity, credential provider) for this role's brokered key.
+
+        Resolved at CALL time through the role's declared operator-override
+        variables, so the provisioning side and the dispatch side cannot drift onto
+        two different providers when an operator renames one.
+        """
+        workload = self.vault_workload
+        provider = self.vault_provider
+        if self.vault_workload_env:
+            workload = os.environ.get(self.vault_workload_env, "").strip() or workload
+        if self.vault_provider_env:
+            provider = os.environ.get(self.vault_provider_env, "").strip() or provider
+        return workload, provider
 
     @property
     def steering_path(self) -> str:
@@ -226,6 +269,18 @@ REGISTRY: tuple[Role, ...] = (
         default_model="",
         skills=("configure-kiro-validator",),
         credential="api-key",
+        # Kiro is the one served role whose CLI authenticates with a VENDOR key
+        # rather than with AWS credentials. Lab 1's interactive session gets it from
+        # ``/app/run.sh``, but the Lab 2 dispatch runs ``kiro-cli`` directly (run.sh
+        # cd's to $HOME and would move the artifact off the run workspace), so the
+        # key has to be brokered by the dispatch itself. These three names are the
+        # SAME pair ``coding-agents/kiro/setup.sh``, ``orchestrator/kiro_config.py``
+        # and ``run.sh`` use, declared here once so no caller hardcodes them.
+        api_key_env="KIRO_API_KEY",
+        vault_workload="kiro-coding-agent",
+        vault_provider="kiro-api-key",
+        vault_workload_env="WORKSHOP_KIRO_WORKLOAD",
+        vault_provider_env="WORKSHOP_KIRO_PROVIDER",
     ),
     # ---- registered, off the served roster: the restore paths ----------------
     # Both stay REGISTERED (not deleted) so each remains a one-variable restore

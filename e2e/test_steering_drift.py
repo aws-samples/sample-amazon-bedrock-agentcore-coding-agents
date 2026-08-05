@@ -21,6 +21,7 @@ Two failure modes are pinned here, and the first one already happened:
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -229,3 +230,66 @@ def test_the_image_bakes_steering_at_the_path_dispatch_looks_for():
             f"runtime_exec.py stages with `test -f $HOME/{r.steering_file}` and SILENTLY "
             f"skips when absent, so this role would dispatch with no steering. "
             f"COPY destinations found: {destinations}")
+
+
+def test_the_interactive_session_stages_steering_at_the_registry_path(tmp_path):
+    """The THIRD staging site must name the registry's file too.
+
+    Kiro steering is staged in three places, and this file already covers two of
+    them (the shipped copy vs the baked copy, and the Dockerfile's COPY destination
+    vs the path ``runtime_exec.py`` looks for). The third is
+    ``interactive_api._stage_agent_config``, which writes the Lab 1 console session's
+    steering, and nothing read it: it wrote ``~/.kiro/steering/agent.md`` while the
+    registry declares ``.kiro/steering/validator.md``, so the ATTENDEE-VISIBLE
+    session was steered by a different file from the deployed role.
+
+    Also pins the content boundary. That staged file carried "Validate with the
+    grading contract before claiming done", naming a pinned contract that no longer
+    exists anywhere in the repository and contradicting agentic-only validation on
+    the one path an attendee actually watches.
+    """
+    sys.path.insert(0, os.path.join(_REPO, "interactive-api"))
+    import interactive_api
+
+    for role_id in _ROLE_IDS:
+        r = roles.get(role_id)
+        root = tmp_path / role_id
+        root.mkdir()
+        interactive_api._stage_agent_config({"_root": str(root), "agent_id": role_id})
+        staged = root / r.steering_file.replace("\\", os.sep)
+        if not staged.exists():
+            # Not every role stages steering into the session (Claude Code is
+            # env-only). What must never happen is staging it under a DIFFERENT name.
+            others = [p for p in root.rglob("*.md")]
+            assert not others, (
+                f"{role_id}: staged {[str(p.relative_to(root)) for p in others]} "
+                f"but the registry declares {r.steering_file}")
+            continue
+        text = staged.read_text(encoding="utf-8").lower()
+        for banned in ("grading contract", "expected output", "reference implementation"):
+            assert banned not in text, (
+                f"{role_id}: session steering at {staged} names a pinned answer "
+                f"({banned!r}); validation is agentic only")
+
+
+def test_the_session_banner_names_the_file_the_session_actually_staged():
+    """A banner that names the wrong path teaches the attendee the wrong path.
+
+    The Lab 1 console prints "configured: ~/<file>" when the session opens, and that
+    string was a hardcoded literal that drifted from the staged filename in the same
+    change. It is the only place the attendee can see WHICH steering file is live.
+
+    Scoped to MARKDOWN paths on purpose: a banner may legitimately name a role's
+    non-steering config (opencode points at ``~/.config/opencode/opencode.json``).
+    What it may not do is name a ``.md`` file that is not the registry's steering.
+    """
+    sys.path.insert(0, os.path.join(_REPO, "interactive-api"))
+    import interactive_api
+
+    md_in_home = re.compile(r"~/(\S+\.md)")
+    for role_id, banner in interactive_api._PTY_BANNER.items():
+        declared = roles.get(role_id).steering_file.replace("\\", "/")
+        named = md_in_home.findall(banner)
+        assert all(path == declared for path in named), (
+            f"{role_id}: banner names {named}, but the registry declares "
+            f"{declared!r}. The attendee is told to edit the wrong file.")

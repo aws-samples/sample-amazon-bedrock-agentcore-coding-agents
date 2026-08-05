@@ -324,3 +324,125 @@ def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
         subshell_end,
     )
     assert download < worktree < assume < subshell_end < upload
+
+
+def test_every_api_key_role_materializes_its_credential_on_dispatch():
+    """A role whose credential is a VENDOR key must get that key on dispatch.
+
+    This is the gap that shipped: ``_build_command`` runs each CLI DIRECTLY and
+    never ``/app/run.sh``, and run.sh was the ONLY thing in the repo that fetched
+    Kiro's key from the Token Vault. So the credential chain was coherent for the
+    Lab 1 interactive shell and silently broken for every Lab 2 dispatch: the
+    registry gives Kiro ``env={}``, so nothing at all exported KIRO_API_KEY and the
+    CLI fell through to an interactive login picker.
+
+    Written over the REGISTRY rather than over the id "kiro" so the next role added
+    with ``credential="api-key"`` cannot reintroduce the same hole.
+    """
+    import roles
+
+    brokered = [r for r in roles.REGISTRY if r.brokers_api_key]
+    assert brokered, "no role brokers a vault key: the seam under test is gone"
+
+    for role in brokered:
+        cmd = runtime_exec._build_command(
+            role.id, "check the work", "run_1/work/validate", None,
+            role.default_model, "us-west-2", "n1")
+        workload, provider = role.vault_names()
+
+        # The key is EXPORTED for the CLI ...
+        assert f"export {role.api_key_env}" in cmd
+        # ... fetched from the Token Vault with the runtime's own role ...
+        assert "get_workload_access_token" in cmd
+        assert "get_resource_api_key" in cmd
+        # ... naming the SAME workload/provider the provisioning side writes to ...
+        assert workload in cmd
+        assert provider in cmd
+        # ... and it fails loud instead of hanging on a login prompt when empty.
+        assert f'if [ -z "${role.api_key_env}" ]' in cmd
+
+        # It belongs INSIDE the CLI subshell: the key must not outlive the CLI,
+        # reach the archive upload, or be visible to the surrounding shell.
+        fetch = cmd.index(f"export {role.api_key_env}")
+        cd_workdir = cmd.index("cd /tmp/workshop-n1")
+        subshell_end = cmd.index("); __rc=$?", fetch)
+        upload = cmd.index("aws s3 cp /tmp/workshop-result-n1.tar.gz", subshell_end)
+        assert cd_workdir < fetch < subshell_end < upload
+
+
+def test_a_bedrock_native_role_gets_no_api_key_prelude():
+    """The vault fetch is scoped to roles that need it, not added to every dispatch.
+
+    A Bedrock-native CLI resolves the AWS chain itself, so an extra control-plane
+    call on its dispatch would be latency and a confusing failure mode for nothing.
+    """
+    import roles
+
+    for role in roles.REGISTRY:
+        if role.brokers_api_key:
+            continue
+        cmd = runtime_exec._build_command(
+            role.id, "build it", "run_1/work/backend", None,
+            role.default_model, "us-west-2", "n2")
+        assert "get_resource_api_key" not in cmd
+        assert "get_workload_access_token" not in cmd
+
+
+def test_the_dispatched_command_is_one_physical_shell_line():
+    """The dispatch is echoed and run as ONE command; a newline would hang the PTY.
+
+    The command is written into a PTY, so an embedded newline SUBMITS the partial
+    line and leaves the shell at a PS2 continuation prompt: the run then produces no
+    output and times out rather than failing. The vault prelude embeds a
+    ``python3 -c`` payload, which is exactly the kind of thing that grows a newline,
+    so this pins the property for every role.
+    """
+    import roles
+
+    for role in roles.REGISTRY:
+        cmd = runtime_exec._build_command(
+            role.id, "build it", "run_1/work/backend", None,
+            role.default_model, "us-west-2", "n3")
+        # The single trailing newline the command ends with is the RETURN that
+        # submits it; there must be no other.
+        assert cmd.count("\n") <= 1, f"{role.id}: dispatch spans multiple lines"
+
+
+def test_the_vault_prelude_python_payload_is_valid_python():
+    """The fetch is generated source, so compile it rather than trusting the string."""
+    import shlex
+
+    import roles
+
+    for role in roles.REGISTRY:
+        if not role.brokers_api_key:
+            continue
+        prelude = runtime_exec._vault_key_prelude(role, "us-west-2")
+        payload = prelude.split('"$(', 1)[1].split(')"', 1)[0]
+        tokens = shlex.split(payload)
+        source = tokens[tokens.index("-c") + 1]
+        compile(source, f"<{role.id}-vault-fetch>", "exec")
+
+
+def test_the_provisioning_side_and_the_dispatch_name_one_provider(monkeypatch):
+    """kiro_config WRITES the key where runtime_exec READS it, under overrides too.
+
+    These were two independent literals. An operator who renamed the provider with
+    WORKSHOP_KIRO_PROVIDER moved only one of them, so the console reported the key
+    stored while every dispatch fetched from the old name and failed.
+    """
+    import kiro_config
+    import roles
+
+    monkeypatch.setenv("WORKSHOP_KIRO_PROVIDER", "renamed-kiro-key")
+    monkeypatch.setenv("WORKSHOP_KIRO_WORKLOAD", "renamed-kiro-workload")
+
+    assert kiro_config._provider_name() == "renamed-kiro-key"
+    assert kiro_config._workload_name() == "renamed-kiro-workload"
+
+    cmd = runtime_exec._build_command(
+        "kiro", "check", "run_1/work/validate", None, "", "us-west-2", "n4")
+    assert "renamed-kiro-key" in cmd
+    assert "renamed-kiro-workload" in cmd
+    assert roles.get("kiro").vault_names() == (
+        "renamed-kiro-workload", "renamed-kiro-key")

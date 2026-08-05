@@ -42,12 +42,22 @@ def _settings_path() -> str:
                           os.path.join(_RUNS_DIR, "kiro.local.json"))
 
 
+# The vault names come from the ROLE REGISTRY, not from a second literal here: the
+# provisioning side (this module) and the dispatch side (``runtime_exec``) must
+# resolve the same workload identity and credential provider, or the key is written
+# where the runtime does not look. ``Role.vault_names()`` applies the same
+# WORKSHOP_KIRO_* operator overrides these functions always honoured.
+def _vault_names() -> tuple[str, str]:
+    import roles as _roles
+    return _roles.get("kiro").vault_names()
+
+
 def _provider_name() -> str:
-    return os.environ.get("WORKSHOP_KIRO_PROVIDER", "kiro-api-key")
+    return _vault_names()[1]
 
 
 def _workload_name() -> str:
-    return os.environ.get("WORKSHOP_KIRO_WORKLOAD", "kiro-coding-agent")
+    return _vault_names()[0]
 
 
 def _region() -> str:

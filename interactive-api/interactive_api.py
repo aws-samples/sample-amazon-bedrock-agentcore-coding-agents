@@ -432,13 +432,24 @@ def _stage_agent_config(session: dict) -> None:
                 "small_model": _SMALL_MODEL,
             }, f, indent=2)
     elif agent_id == "kiro":
-        d = os.path.join(root, ".kiro", "steering")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "agent.md"), "w", encoding="utf-8") as f:
+        # The staged filename comes from the REGISTRY, not a literal: this is the
+        # THIRD place Kiro steering is staged (the other two are the Dockerfile's
+        # baked copy and runtime_exec's per-dispatch stage), and all three must name
+        # the file roles.py declares. Staging it as `agent.md` here left the deployed
+        # role reading `validator.md` while the attendee-visible Lab 1 session read a
+        # different file, which is the same silent-steering bug the Dockerfile
+        # comment documents.
+        steering_rel = _roles.get(agent_id).steering_file.replace("\\", "/")
+        target = os.path.join(root, *steering_rel.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        # Session DEFAULTS only, never the role and never the work. What acceptable
+        # means is the validator's own judgement, authored per task: an instruction
+        # to "validate with the grading contract" named a pinned contract that no
+        # longer exists and contradicted agentic-only validation outright.
+        with open(target, "w", encoding="utf-8") as f:
             f.write("---\ninclusion: always\n---\n\n# Kiro session defaults\n\n"
                     "Model: auto (Kiro's router). Workspace: this session's\n"
-                    "/mnt/s3files. Validate with the grading contract before\n"
-                    "claiming done.\n")
+                    "/mnt/s3files.\n")
         # kiro-cli resolves two things THROUGH HOME, and both must exist in the
         # session HOME or kiro degrades:
         #   1. its data dir (login session, sqlite, the bundled bun/tui.js):
@@ -481,11 +492,13 @@ _PTY_BANNER = {
               f"echo 'configured: ~/.config/opencode/opencode.json -> model {_OPENCODE_MODEL}, provider amazon-bedrock ({_OPENCODE_REGION})'"),
     # The Kiro CLI binary is `kiro-cli` (the bare `kiro` is the IDE). Probe and
     # tell the attendee the real command, and start the chat TUI with
-    # `kiro-cli chat`.
+    # `kiro-cli chat`. The steering path is read from the REGISTRY so the banner
+    # cannot name a different file from the one _stage_agent_config just wrote.
     "kiro": ("command -v kiro-cli >/dev/null "
              "&& echo \"kiro-cli installed: type 'kiro-cli chat' to start it here\" "
              "|| echo 'kiro-cli not on PATH (curl -fsSL https://cli.kiro.dev/install | bash)'; "
-             "echo 'configured: ~/.kiro/steering/agent.md -> model auto (vendor key brokered, never on disk)'"),
+             f"echo 'configured: ~/{_roles.get('kiro').steering_file.replace(os.sep, '/')}"
+             " -> model auto (vendor key brokered, never on disk)'"),
 }
 
 

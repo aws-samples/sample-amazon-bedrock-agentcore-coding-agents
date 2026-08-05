@@ -3154,6 +3154,26 @@ class Engine:
         root = subprocess.run(["git", "-C", repo, "rev-list", "--max-parents=0", "main"],
                               capture_output=True, text=True, timeout=20).stdout.strip().splitlines()
         base_ref = root[-1] if root else "main"
+        # Return the SHARED work tree to a clean state BEFORE switching branches.
+        # This repo is shared by every run, and `git checkout -B` REFUSES to run when
+        # a tracked file it would overwrite is modified ("Your local changes to the
+        # following files would be overwritten by checkout"), which surfaced as a
+        # compose that failed with a bare `returned non-zero exit status 1` and looked
+        # like a race. It is not a race: a previous compose interrupted between its
+        # file copies and its commit leaves tracked modifications behind, and every
+        # later run in the same runs dir then fails deterministically until someone
+        # cleans the directory by hand.
+        #
+        # `reset --hard` discards nothing that matters: this is a local scratch
+        # evidence repo, every prior run's commit is preserved on its own branch, and
+        # each compose rewrites its whole tree from the gated pull request anyway.
+        # It must come BEFORE the checkout to be any use, and it complements rather
+        # than replaces the `clean` below (reset restores tracked files; clean removes
+        # untracked leftovers a previous run's role wrote and this one did not).
+        subprocess.run(["git", "-C", repo, "reset", "-q", "--hard"],
+                       check=False, timeout=20, env=git_env)
+        subprocess.run(["git", "-C", repo, "clean", "-fdq"],
+                       check=False, timeout=20, env=git_env)
         subprocess.run(["git", "-C", repo, "checkout", "-q", "-B", branch, base_ref],
                        check=True, timeout=20, env=git_env)
         # Drop any leftover from a prior run (a file a previous run's role wrote and

@@ -173,6 +173,66 @@ def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
     return env
 
 
+def _vault_key_prelude(role: "_roles.Role", region: str) -> str:
+    """Shell that exports a role's VENDOR API key, fetched from the Token Vault.
+
+    Returns "" for every role that authenticates with AWS credentials, so the
+    default dispatch is byte-identical to before.
+
+    Why this exists at all: ``_build_command`` runs each role's CLI DIRECTLY and
+    deliberately not through ``/app/run.sh`` (which ``cd``s to ``$HOME`` and would
+    move the artifact off the run workspace). ``run.sh`` is where the Lab 1
+    interactive session gets its key, so a role whose only credential is a vendor
+    key had NOTHING on the Lab 2 dispatch path: ``kiro-cli`` then falls through to an
+    interactive "Select login method" picker and the headless PTY hangs or fails
+    with no explanation.
+
+    Three properties are deliberate, and they are the same ones ``run.sh`` has:
+
+      * The key is fetched with the RUNTIME'S OWN role (``GetWorkloadAccessToken``
+        then ``GetResourceApiKey``) at dispatch time, so it is never a runtime
+        environment variable on the ARN, where anyone who can ``GetAgentRuntime``
+        could read it.
+      * It lives only in the CLI subshell's memory. The prelude is emitted INSIDE
+        the ``( ... )`` that wraps the CLI, so it never reaches the surrounding
+        shell, the archive upload, or the transcript.
+      * It FAILS LOUD. An empty fetch prints one actionable line naming the
+        provider to fix and returns nonzero WITHOUT running the CLI, rather than
+        letting the CLI hang on a login prompt. That mirrors ``run.sh``'s own
+        guard, which this path bypasses by never invoking run.sh.
+    """
+    if not role.brokers_api_key:
+        return ""
+    workload, provider = role.vault_names()
+    key_env = role.api_key_env
+    # The fetch is the same two Token Vault calls run.sh's fetch_api_key() makes.
+    # It MUST render as a single physical line: the whole dispatch is one shell
+    # command echoed back by the PTY, and an embedded newline would make the shell
+    # sit at a PS2 continuation prompt instead of running. So there is no try/except
+    # here (that needs newlines); a failed fetch prints boto3's own traceback on
+    # stderr, which lands in the transcript for diagnosis, and the shell guard below
+    # turns the resulting empty value into one actionable line. boto3 is in every
+    # agent image (its Dockerfile pip-installs it for exactly this call).
+    py = (
+        "import boto3,warnings;warnings.filterwarnings('ignore');"
+        "from botocore.config import Config;"
+        f"c=boto3.client('bedrock-agentcore',region_name={region!r},"
+        "config=Config(connect_timeout=5,read_timeout=10,"
+        "retries={'max_attempts':2}));"
+        f"t=c.get_workload_access_token(workloadName={workload!r})"
+        "['workloadAccessToken'];"
+        "print(c.get_resource_api_key(workloadIdentityToken=t,"
+        f"resourceCredentialProviderName={provider!r})['apiKey'],end='')"
+    )
+    return (
+        f"{key_env}=\"$(python3 -W ignore -c {shlex.quote(py)})\"; "
+        f"export {key_env}; "
+        f"if [ -z \"${key_env}\" ]; then "
+        f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Store the key with kiro_config.save_api_key(...) (console Settings > AgentCore runtimes > + Add API key) and re-run.')} >&2; "
+        "exit 1; fi; "
+    )
+
+
 def worktree_branch(run_subdir: str) -> str:
     """Derive the role's stable local worktree branch from its isolated work id."""
     leaf = run_subdir.replace("\\", "/").strip("/").rsplit("/", 1)[-1]
@@ -258,6 +318,13 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         cred_prelude = (
             'eval "$(aws configure export-credentials --format env 2>/dev/null)" '
             '2>/dev/null || true; ')
+    # A role whose CLI authenticates with a VENDOR key gets nothing at all from the
+    # AWS chain, so its key must be brokered HERE. This is the seam that was missing:
+    # ``/app/run.sh`` fetches the key for the Lab 1 interactive session, but the
+    # dispatch deliberately runs the CLI directly (run.sh cd's to $HOME and would
+    # move the artifact off the run workspace), so a dispatched Kiro ran with no
+    # KIRO_API_KEY and dropped into an interactive login picker.
+    cred_prelude += _vault_key_prelude(role, cli_region)
 
     # Per-user cost attribution (Stage 3): when a per-user role is wired
     # (PERUSER_ROLE_ARN) and we know the user, run the agent's CLI under a session

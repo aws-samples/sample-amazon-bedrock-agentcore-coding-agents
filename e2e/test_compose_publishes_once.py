@@ -209,3 +209,61 @@ def test_gate_and_pull_request_exclusions_have_different_jobs():
         ".workshop/integration-brief.md",
     ):
         assert engine._compose_excluded(rel)
+
+
+def test_compose_recovers_a_shared_worktree_left_dirty_by_a_previous_run(
+        tmp_path, monkeypatch):
+    """A dirty composed worktree must not wedge every later run in the same runs dir.
+
+    ``.runs/composed`` is SHARED by every run, and ``git checkout -B`` REFUSES to
+    switch branches while a tracked file it would overwrite is modified ("Your local
+    changes to the following files would be overwritten by checkout"). A compose
+    interrupted between its file copies and its commit leaves exactly that state, so
+    every subsequent compose died with a bare ``returned non-zero exit status 1``
+    and looked like a concurrency race. It is not a race: it is deterministic, it
+    persists until someone cleans the directory by hand, and it takes down runs that
+    have nothing to do with the one that crashed.
+
+    Reproduced here by composing once, dirtying a tracked file in the shared repo,
+    and composing again in the SAME runs dir.
+    """
+    import importlib
+
+    monkeypatch.setenv("WORKSHOP_RUNS_DIR", str(tmp_path))
+    engine = importlib.reload(importlib.import_module("engine"))
+    eng = engine.Engine.__new__(engine.Engine)
+
+    def compose(run_id: str) -> None:
+        run = _run(engine, run_id)
+        try:
+            _write(run.roledir("claude-code"), {"server.py": "# service\n"})
+            _write(run.roledir("opencode"), {"static/index.html": "<title>x</title>\n"})
+            builders = _build_trees(engine, run)
+            check = _author_check(run)
+            run._acceptance_test_file = eng._gate_dir_check_path(run, check, builders[0])
+            run.gate = {"passed": True, "summary": "green"}
+            eng._compose_commit_locked(run)
+        finally:
+            shutil.rmtree(run.workdir, ignore_errors=True)
+
+    try:
+        compose("run_000000_991")
+
+        repo = os.path.join(str(tmp_path), "composed")
+        tracked = os.path.join(repo, "server.py")
+        assert os.path.isfile(tracked), "first compose did not commit the work"
+        with open(tracked, "a", encoding="utf-8") as f:
+            f.write("# an interrupted compose left this behind\n")
+
+        # The second run is a different run in the same runs dir. Before the fix this
+        # raised CalledProcessError from `git checkout -B`.
+        compose("run_000000_992")
+
+        assert engine.subprocess.run(
+            ["git", "-C", repo, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=20).stdout.strip() == ""
+    finally:
+        # Restore the module for the rest of the session (its _RUNS_DIR is read at
+        # import time, so the reload above rebound it to tmp_path).
+        monkeypatch.delenv("WORKSHOP_RUNS_DIR", raising=False)
+        importlib.reload(importlib.import_module("engine"))

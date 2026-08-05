@@ -17,10 +17,33 @@ RUN npm install -g typescript ts-node
 # Non-root user
 RUN useradd -m -d /home/agent -u 1000 agent
 
-# Kiro CLI (installed as agent user so it lands in ~/.local/bin)
+# Kiro CLI (installed as agent user so it lands in ~/.local/bin).
+#
+# This step FAILS THE BUILD when the CLI does not land, and that is the whole point
+# of its shape. It used to end `|| true` with nothing verifying the binary
+# afterwards, so a broken install produced a green image whose first symptom was an
+# unexplained nonzero exit on the attendee's first Lab 2 gate. The CFN bootstrap
+# treats this image as fail-loud, but its guard only checks that setup.sh exited
+# zero and that agent.config has an ECR_URI, neither of which notices an absent
+# kiro-cli. Same reasoning as the otelcol step above, which has always verified.
+#
+# Two properties are borrowed from the host install in static/aws/cfn.yaml, read out
+# of the vendor installer itself:
+#   * Downloaded to a FILE rather than piped into bash, so a truncated transfer
+#     fails on curl's exit code instead of executing half a script.
+#   * `--force` skips the installer's interactive pre-existing-binary prompt, which
+#     has no tty to read here.
+# The two probes are separate on purpose: `kiro-cli` alone is not enough, because
+# `kiro-cli chat` (the ONLY form run.sh and the orchestrator dispatch ever use)
+# re-execs the sibling `kiro-cli-chat`, and a missing sibling dies at run time with
+# "No such file or directory (os error 2)".
 USER agent
 ENV HOME=/home/agent
-RUN curl -fsSL https://cli.kiro.dev/install | bash || true
+RUN curl -fsSL https://cli.kiro.dev/install -o /tmp/kiro-install.sh \
+    && bash /tmp/kiro-install.sh --force \
+    && rm -f /tmp/kiro-install.sh \
+    && "$HOME/.local/bin/kiro-cli" --version \
+    && test -x "$HOME/.local/bin/kiro-cli-chat"
 USER root
 
 # boto3 + awscurl for AgentCore Identity Token Vault and MCP tool calls
