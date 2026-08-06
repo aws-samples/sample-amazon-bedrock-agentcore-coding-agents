@@ -1,6 +1,8 @@
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023
 
-RUN dnf install -y --allowerasing git curl nodejs npm python3 python3-pip jq tar gzip unzip which findutils && dnf clean all
+RUN dnf install -y --allowerasing \
+    git curl nodejs npm python3 python3-pip jq tar gzip unzip which findutils awscli \
+    && dnf clean all
 
 # OpenTelemetry collector sidecar (otelcol-contrib): baked in so entrypoint.sh can
 # start it at container boot and re-sign the agent's unsigned OTLP to CloudWatch
@@ -46,7 +48,9 @@ RUN curl -fsSL https://cli.kiro.dev/install -o /tmp/kiro-install.sh \
     && test -x "$HOME/.local/bin/kiro-cli-chat"
 USER root
 
-# boto3 + awscurl for AgentCore Identity Token Vault and MCP tool calls
+# boto3 + awscurl for AgentCore Identity Token Vault and MCP tool calls. The AWS
+# CLI above is also required by orchestrator/runtime_exec.py for the Lab 2 source
+# archive download and result upload; the dispatched path bypasses run.sh.
 RUN pip3 install --quiet boto3 awscurl
 
 COPY --chown=agent:agent healthcheck.py /app/healthcheck.py
