@@ -1,5 +1,11 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
+[![The sample console: Claude Code, opencode and Kiro on AgentCore Runtime, with a live Claude Code session attached to its Runtime ARN](docs/media/console-walkthrough-poster.png)](docs/media/console-walkthrough.mp4)
+
+*The sample console, recorded on a real deployment: the three served roles, a live
+Runtime session, and the governance views. [Play the walkthrough
+(22s)](docs/media/console-walkthrough.mp4).*
+
 Run Claude Code (backend), opencode (frontend), and Kiro (validator) on Amazon
 Bedrock AgentCore Runtime. Give the team one request and receive one checked pull
 request. A second Claude Code is kept as the validator's restore path, so an account
