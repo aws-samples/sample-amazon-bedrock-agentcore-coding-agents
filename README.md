@@ -9,7 +9,7 @@ Each builder works in a named linked Git worktree and separate pull request. The
 worktree is local to the coordinator or Runtime; only one normalized source archive
 crosses the Runtime boundary. The validator writes an executable for that request,
 and the orchestrator runs it. One independent,
-read-only review then applies two required lenses to the combined result:
+read-only review then applies two required lenses to each pull request on its own:
 adversarial verification and design/integration. The reviewer never sees a
 builder's conversation or edits a builder's code.
 
@@ -30,15 +30,19 @@ followed by the CLI steps the workshop teaches.
 
 This repository is also a GitHub **template**. In Lab 2 of the workshop you click
 **Use this template -> Create a new repository** to get your own isolated copy (no
-fork, no shared credentials). Each builder opens a role pull request against a
-temporary branch for the run. The validator's executable must pass for the combined
-work and after every role pull request merge. One final pull request then targets
-the repository's default branch. The GitHub App authors every pull request.
+fork, no shared credentials). Each builder opens ONE role pull request against the
+repository's default branch, and each pull request is checked, reviewed, and merged
+on its own: there is no combined candidate, no merge queue, and no separate final
+pull request. The validator's executable must pass for each pull request, run
+against the default branch as it stands plus that diff. The GitHub App authors every
+pull request.
 
-Builders begin independently from the same shared plan. After an earlier role pull
-request merges, a dependent builder gets one chance to inspect and use that work on
-its existing pull request. This catches cases where separate branches each worked
-but did not agree when combined. It is separate from the one repair allowed after a
+Builders begin independently from the same shared plan. Because each pull request is
+checked and reviewed against the default branch AS IT STANDS, once an earlier role's
+pull request merges the next role's check runs against a tree that already contains
+it. When that merge moves a path a still-open pull request also changed, its owner
+gets one bounded refresh. This catches cases where separate branches each worked but
+did not agree with each other. It is separate from the one repair allowed after a
 failed check or review finding.
 
 Lab 2 deliberately keeps Git metadata off S3 Files. The deployed coordinator uses

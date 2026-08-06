@@ -204,11 +204,12 @@ def _append_review_panel(lines: list[str], run: Any) -> None:
 
     lines += [
         "",
-        "One reviewer reads the combined work without seeing a builder's "
-        "conversation or self-review. Its response must cover adversarial "
-        "verification and design/integration. A finding under either lens stops "
-        "the merge. If the review cannot run, it records that fact. The "
-        "validator's executable still has to pass.",
+        "One reviewer reads a single pull request against the default branch as it "
+        "stands, without seeing a builder's conversation or self-review. Its "
+        "response must cover adversarial verification and design/integration. A "
+        "finding under either lens stops THAT pull request from merging. If the "
+        "review cannot run, it records that fact. The validator's executable still "
+        "has to pass.",
     ]
 
 
@@ -253,8 +254,12 @@ def work_item_narrative(run: Any, item: Any) -> str:
         lines.append("_No changed paths were recorded._")
     lines += [
         "",
-        "The role worked in its own checkout. The combined work, the validator's "
-        "executed check, and each checked merge are posted as this run advances.",
+        "The role worked in its own checkout, and this pull request is judged on "
+        "its own. The validator's executed check and one independent review run "
+        f"against `{item.base_branch}` as it stands plus this diff, and this pull "
+        "request merges on its own; a sibling role's pull request is checked, "
+        "reviewed, and merged separately. This body is written once, so that "
+        "evidence arrives as comments on this timeline.",
         "",
         f"<sub>run `{getattr(run, 'run_id', '')}` · work `{item.work_id}`</sub>",
     ]
@@ -413,11 +418,14 @@ def narrative(run: Any) -> str:
     #    (the App installation cannot APPROVE its own PR), so say where to look.
     parts.append("\n## What happens next\n")
     parts.append(
-        "The role pull requests merge one at a time into a temporary branch. The "
-        "check runs after each merge. When every check and integrated review passes, "
-        "one final pull request opens against the repository's default branch. The "
-        "selected policy either leaves it for a person or merges that exact "
-        "reviewed version automatically."
+        "Each role opened its own pull request against the repository's default "
+        "branch, and each one is checked, reviewed, and merged on its own: there is "
+        "no combined branch and no separate final pull request. A pull request is "
+        "checked and reviewed against that branch AS IT STANDS, so once one role's "
+        "work merges, the next role's check runs against a tree containing it. The "
+        "selected policy either leaves an approved pull request open for a person or "
+        "merges that exact reviewed version automatically. A red pull request does "
+        "not block a green sibling."
     )
     parts.append(f"\n<sub>{getattr(run, 'run_id', 'run')} - built by a coding-agent "
                  "team on Amazon Bedrock AgentCore. This body is generated from the "
