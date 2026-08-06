@@ -128,6 +128,22 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     for var, value in os.environ.items():
         if var == "WORKSHOP_MODEL" or var.startswith("WORKSHOP_MODEL_"):
             env[var] = value
+    # WORKSHOP_ROLES rides in for the same reason, and its absence was a REAL defect:
+    # the roster is read from the coordinator's OWN process env (roles.roster()), so a
+    # facilitator who exported the documented Kiro fallback
+    # (WORKSHOP_ROLES=claude-code,opencode,claude-code-validator) and redeployed still
+    # got a coordinator serving the DEFAULT roster, which then failed pre-flight with
+    # RUNTIME_NOT_WIRED:kiro -- exactly the failure the fallback exists to avoid.
+    # `agentcore deploy` has no env flag, so this file is the only place it can enter.
+    # Only forwarded when actually set, so the default deploy is unchanged.
+    roles_override = os.environ.get("WORKSHOP_ROLES", "").strip()
+    if roles_override:
+        env["WORKSHOP_ROLES"] = roles_override
+    # Same argument for the Kiro model pin: the validator's model is resolved from the
+    # dispatching process env, so an operator override must reach the coordinator.
+    kiro_model = os.environ.get("WORKSHOP_KIRO_MODEL", "").strip()
+    if kiro_model:
+        env["WORKSHOP_KIRO_MODEL"] = kiro_model
     runtime["executionRoleArn"] = execution_role
     runtime["envVars"] = [{"name": name, "value": value} for name, value in sorted(env.items())]
 
