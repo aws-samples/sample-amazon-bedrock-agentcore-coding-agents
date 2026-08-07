@@ -109,10 +109,9 @@ export function AgentsPage() {
   }, [selected.id]);
 
   // One effect owns the tab list for the selected agent: seed from the store,
-  // then poll the server registry to restore manually opened terminals, and
-  // auto-open exactly one session when the agent is wired and none is open,
-  // unless the human just closed them all. openingRef makes the auto-open
-  // single-flight, so no second tab races in.
+  // then poll the server registry to restore human terminals AND discover PTYs
+  // opened automatically by Chat dispatch. openingRef keeps the optional manual
+  // auto-open single-flight.
   useEffect(() => {
     let stop = false;
     userClosedAllRef.current = false;
@@ -179,6 +178,11 @@ export function AgentsPage() {
           <button onClick={() => setActiveTab(t.id)} className="flex items-center gap-1.5">
             <AgentIcon agentId={selected.id} size={12} />
             Session {t.label}
+            {t.openedBy === 'orchestrator' && (
+              <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">
+                run
+              </span>
+            )}
             {isFleet && arnIndex(t.runtimeArn) > 0 && (
               <span className="text-muted-foreground">{`· #${arnIndex(t.runtimeArn)}`}</span>
             )}
@@ -271,7 +275,8 @@ export function AgentsPage() {
         <div className="relative flex-1">
           {tabs.map((t) => (
             <div key={t.id} className={`absolute inset-0 ${activeTab === t.id ? '' : 'hidden'}`}>
-              <AgentTerminal sessionId={t.id} fullHeight active={activeTab === t.id} onGone={() => pruneTab(t.id)} />
+              <AgentTerminal sessionId={t.id} fullHeight active={activeTab === t.id}
+                onGone={() => pruneTab(t.id)} />
             </div>
           ))}
         </div>
@@ -356,7 +361,8 @@ export function AgentsPage() {
                   // survive tab switches; only the active one is visible.
                   tabs.map((t) => (
                     <div key={t.id} className={`absolute inset-0 ${activeTab === t.id ? '' : 'hidden'}`}>
-                      <AgentTerminal sessionId={t.id} active={activeTab === t.id} onGone={() => pruneTab(t.id)} />
+                      <AgentTerminal sessionId={t.id} active={activeTab === t.id}
+                        onGone={() => pruneTab(t.id)} />
                     </div>
                   ))
                 )}
@@ -403,7 +409,9 @@ export function AgentsPage() {
 // One terminal bound to a specific session (tab) id. The session already exists
 // in the store (the page opens it before mounting this); this component just
 // attaches an xterm, replays the buffer, and subscribes to the live SSE stream.
-function AgentTerminal({ sessionId, fullHeight = false, active = true, onGone }: { sessionId: string; fullHeight?: boolean; active?: boolean; onGone?: () => void }) {
+function AgentTerminal({ sessionId, fullHeight = false, active = true,
+  onGone }: { sessionId: string; fullHeight?: boolean;
+    active?: boolean; onGone?: () => void }) {
   const termRef = useRef<TerminalHandle>(null);
   const mounted = useRef(false);
   // Hold the SSE unsubscribe so the useEffect cleanup closes the stream when this
@@ -449,6 +457,7 @@ function AgentTerminal({ sessionId, fullHeight = false, active = true, onGone }:
     <div className={fullHeight ? 'h-full' : 'h-full overflow-hidden rounded-lg border border-border'}>
       <Terminal
         ref={termRef}
+        connected
         onData={(d) => sendInput(sessionId, d)}
         onResize={(s) => resizeTerminal(sessionId, s)}
       />

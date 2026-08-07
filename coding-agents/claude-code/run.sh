@@ -37,8 +37,6 @@ export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
 export CLAUDE_CODE_USE_BEDROCK=1
 export HOME="/home/agent"
 
-cd "$HOME"
-
 # ── No first-run prompts (self-heal on a stale image) ─────────
 # --dangerously-skip-permissions still shows a one-time "Bypass Permissions mode?
 # 1.No 2.Yes" acceptance on a headless PTY (it would hang with no human). The
@@ -97,6 +95,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 set -- "${ARGS[@]}"
+
+# An orchestrated interactive PTY hydrates one run-local linked worktree and
+# supplies it here. Manual Lab 1 shells keep the familiar HOME default.
+RUN_DIR="${WORKSHOP_AGENT_WORKDIR:-$HOME}"
+cd "$RUN_DIR"
 
 # ── Run ──────────────────────────────────────────────────────
 if [ $# -gt 0 ]; then

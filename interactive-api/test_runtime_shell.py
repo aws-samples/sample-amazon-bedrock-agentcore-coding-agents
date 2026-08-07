@@ -154,6 +154,9 @@ class _FakeShellSession:
         self.alive = True
         self.buffer = ""
         self.sent = []
+        self.opened_by = "user"
+        self.busy = False
+        self.run_subdir = ""
         self._lock = __import__("threading").Lock()
     def emit_banner(self, text):
         with self._lock:
@@ -255,8 +258,29 @@ def test_list_sessions_reports_identity_and_liveness():
         rows = runtime_shell.list_sessions("claude-code")["sessions"]
         mine = [r for r in rows if r["session_id"] == s.session_id]
         assert mine and mine[0]["alive"] is True
-        assert "opened_by" not in mine[0] and "busy" not in mine[0]
+        assert mine[0]["opened_by"] == "user" and mine[0]["busy"] is False
+        assert mine[0]["run_subdir"] == ""
         assert mine[0]["user_id"] == "attendee@workshop.aws"
         assert mine[0]["started_at"] == "2026-07-30T07:45:21Z"
+    finally:
+        runtime_shell._sessions.pop(s.session_id, None)
+
+
+def test_orchestrator_session_remains_writable_before_and_after_the_turn():
+    """The restored mux keeps the old shared-input behavior without a new lock."""
+    s = _FakeShellSession("opencode")
+    s.opened_by = "orchestrator"
+    s.busy = True
+    s.run_subdir = "run_1/work/frontend"
+    _register(s)
+    try:
+        assert runtime_shell.send_input(s.session_id, "help\r") == {"ok": True}
+        assert s.sent == ["help\r"]
+        s.busy = False
+        assert runtime_shell.send_input(s.session_id, "follow up\r") == {"ok": True}
+        assert s.sent == ["help\r", "follow up\r"]
+        row = runtime_shell.list_sessions("opencode")["sessions"][0]
+        assert row["opened_by"] == "orchestrator"
+        assert row["run_subdir"] == "run_1/work/frontend"
     finally:
         runtime_shell._sessions.pop(s.session_id, None)

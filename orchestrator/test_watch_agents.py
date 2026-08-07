@@ -149,7 +149,7 @@ def test_unauthorized_names_the_real_cookie_and_cli_run_status():
     finally:
         srv.shutdown()
     assert "console_cognito_session" in out, out
-    assert "run_status" in out, out
+    assert "Browser cookies are not shared" in out, out
     assert '--cookie "session=..."' not in out, out
     assert "Open the console once" not in out, out
 
@@ -163,6 +163,5 @@ def test_empty_registry_does_not_claim_a_build_will_appear():
     finally:
         srv.shutdown()
         _SESSIONS["sessions"] = original
-    assert "manually opened Runtime terminal" in out, out
-    assert "Open one on the console Agents page" in out, out
-    assert "Submit a build and the roles appear" not in out, out
+    assert "no Runtime terminal is live" in out, out
+    assert "start a build from console Chat" in out, out

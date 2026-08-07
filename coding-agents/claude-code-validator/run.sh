@@ -40,7 +40,9 @@ export HOME="/home/agent"
 # The event pre-deploys this image before the attendee creates an S3 Files mount.
 # Once mounted, the staged acceptance contract is the project steering source.
 VALIDATOR_WORKDIR="/mnt/s3files/validator"
-if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then
+if [ -n "${WORKSHOP_AGENT_WORKDIR:-}" ]; then
+  cd "$WORKSHOP_AGENT_WORKDIR"
+elif [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then
   cd "$VALIDATOR_WORKDIR"
 else
   cd "$HOME"

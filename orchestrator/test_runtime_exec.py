@@ -166,6 +166,78 @@ def test_fallback_disabled_fails_loud(monkeypatch):
     assert calls == ["openai.gpt-5.5"]
 
 
+def test_interactive_dispatch_keeps_local_worktree_and_archive_boundary(monkeypatch):
+    """The restored TUI path must not regress to the Lab 1 shared NFS workspace."""
+    spec = runtime_exec._interactive_dispatch_commands(
+        "opencode", "run_1/work/frontend", "amazon-bedrock/model",
+        "us-west-2", "mux123", "s3://bucket/run_1/work/frontend.tar.gz",
+        "s3://bucket/run_1/skills.tar.gz")
+    assert "/tmp/workshop-seed-mux123" in spec["launch"]
+    assert "/tmp/workshop-mux123" in spec["launch"]
+    assert "worktree-frontend" in spec["launch"]
+    assert "WORKSHOP_AGENT_WORKDIR=/tmp/workshop-mux123" in spec["launch"]
+    assert "/app/run.sh --model amazon-bedrock/model" in spec["launch"]
+    assert "/mnt/s3files" not in spec["launch"]
+    assert "tar -C /tmp/workshop-mux123" in spec["snapshot"]
+    assert "aws s3 cp /tmp/workshop-result-mux123.tar.gz " \
+           "s3://bucket/run_1/work/frontend.tar.gz" in spec["snapshot"]
+
+
+def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatch):
+    import roles
+
+    model = roles.get("claude-code").default_model
+
+    class Session:
+        session_id = "console-mux000000000000000000000000000000000"
+        runtime_arn = ("arn:aws:bedrock-agentcore:us-west-2:111122223333:"
+                       "runtime/claude_code-X")
+        buffer = "TUI ready\n"
+        alive = True
+        busy = False
+
+        def wait_ready(self, **_kwargs):
+            return True
+
+        def emit_banner(self, text):
+            self.buffer += f"[orchestrator] {text}\n"
+
+        def send_turn(self, text):
+            self.sent = text
+            self.buffer += "built the service\n"
+
+        def wait_turn_idle(self, **_kwargs):
+            return True
+
+    session = Session()
+    monkeypatch.setattr(
+        runtime_exec, "_interactive_dispatch_commands",
+        lambda *_args, **_kwargs: {
+            "launch": "launch\n", "snapshot": "snapshot\n",
+            "workdir": "/tmp/work", "user_id": "user", "nonce": "mux123"})
+    monkeypatch.setattr(runtime_exec, "_live_session_for", lambda *_args: session)
+    monkeypatch.setattr(
+        runtime_exec, "_dispatch_once",
+        lambda *_args, **_kwargs: pytest.fail("console mux must not run headless"))
+
+    async def snapshot(*_args, **_kwargs):
+        assert session.busy, "the original mux keeps the turn busy through upload"
+        return {"raw": ("__AGENT_RUN_BEGIN__-mux123\n"
+                        "snapshot uploaded\n"
+                        "__AGENT_RUN_END__-mux123\n"),
+                "exit": 0, "session_id": "snap"}
+
+    monkeypatch.setattr(runtime_exec, "_drive_shell", snapshot)
+    out = runtime_exec.run_in_runtime(
+        runtime_arn=session.runtime_arn, agent_id="claude-code",
+        prompt="build it", run_subdir="run_1/work/backend",
+        artifact_rel=None, model=model)
+    assert session.sent == "build it"
+    assert session.busy is False
+    assert out["live_session"] is True
+    assert out["session_id"] == session.session_id
+
+
 # --- Dispatch env contract (Lab 3 telemetry seam) ---------------------------
 # _build_command assembles the env prefix for every dispatched role. These
 # tests pin what ships: telemetry EMISSION is on for every role (the agent

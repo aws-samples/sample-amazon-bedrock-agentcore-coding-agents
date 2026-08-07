@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Follow Runtime terminals manually opened in the sample console.
+"""Follow Runtime terminals multiplexed by the sample console.
 
-The sample console multiplexes each manually opened Runtime PTY: one
+The sample console multiplexes each Runtime PTY: one
 console-hosted session, many subscribers. This developer utility attaches a
-terminal to those same sessions. Orchestrated builds use isolated headless
-shells so their tracked checkout can be uploaded atomically at the end of the
-turn. Those shells are not registered here, whether the build was submitted
-through the sample-console Chat page or the deployed coordinator CLI. Use the
-Chat run details or ``run_status`` for a build.
+terminal to those same sessions. Console Chat builds register a fresh interactive
+PTY for every isolated work item, so this view and the Agents page show the native
+Claude Code / opencode / Kiro TUI. Deployed-coordinator CLI builds have no console
+registry and remain visible through ``run_status``.
 
     python3 orchestrator/watch_agents.py                 # follow every role
     python3 orchestrator/watch_agents.py --agent opencode
@@ -142,9 +141,7 @@ def watch(base: str, agent: str | None, plain: bool, cookie: str | None,
                     print("unauthorized: the sample console requires its Cognito "
                           "cookie. Pass --cookie "
                           "\"console_cognito_session=...\". Browser cookies are not "
-                          "shared with this terminal. This utility follows only "
-                          "manually opened Runtime terminals; use Chat run details "
-                          "or agentcore invoke with run_status for a build.",
+                          "shared with this terminal.",
                           file=sys.stderr)
                     return 2
                 print(f"console error: {exc}", file=sys.stderr)
@@ -163,15 +160,15 @@ def watch(base: str, agent: str | None, plain: bool, cookie: str | None,
                 f = _Follower(base, cookie, s, colour, plain, lock)
                 followers[sid] = f
                 with lock:
+                    origin = s.get("opened_by", "user")
                     print(f"{_DIM}+ attached to {s.get('agent_id')} "
-                          f"(manually opened session {sid[:8]}){_RESET}")
+                          f"({origin} session {sid[:8]}){_RESET}")
                 f.start()
 
             if not sessions and not said_empty:
                 with lock:
-                    print(f"{_DIM}no manually opened Runtime terminal is live; "
-                          f"waiting. Open one on the console Agents page to make "
-                          f"it appear here. Builds are shown in Chat/run_status."
+                    print(f"{_DIM}no Runtime terminal is live; waiting. Open one "
+                          f"on Agents or start a build from console Chat."
                           f"{_RESET}")
                 said_empty = True
             elif sessions:
@@ -189,7 +186,7 @@ def watch(base: str, agent: str | None, plain: bool, cookie: str | None,
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Follow Runtime terminals manually opened in the sample console.")
+        description="Follow Runtime terminals multiplexed by the sample console.")
     ap.add_argument("--base", default=DEFAULT_BASE,
                     help=f"console base URL (default {DEFAULT_BASE})")
     ap.add_argument("--agent", default=None,

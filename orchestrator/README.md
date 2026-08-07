@@ -59,7 +59,7 @@ bounded refresh. Merging supports either human review or guarded auto-merge.
 | `policy.py` | Guardrails every engine-run command is screened against |
 | `llm.py` | Model id resolution and Bedrock invocation |
 | `connection_api.py` | JSON and SSE adapter used by the console |
-| `watch_agents.py` | Developer client for manually opened console Runtime terminals; orchestrated builds use Chat/run_status |
+| `watch_agents.py` | Read-only follower for console-multiplexed human and orchestrator Runtime PTYs |
 | `fixture_executor.py` | TEST-ONLY deterministic producer; never on the shipped path |
 
 The wire contract is in [API_CONTRACT.md](API_CONTRACT.md).

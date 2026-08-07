@@ -361,9 +361,6 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
             "fi; "
         )
 
-    # The prompt is held in shell var $P (assigned once, safely quoted) so the CLI
-    # line stays clean and the command echo never collides with our sentinels.
-    # Sentinels are emitted via $B1..$E1 vars for the same reason.
     return (
         f"P={shlex.quote(prompt)}; "
         f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; "
@@ -400,11 +397,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"if test -f {steering_source}; then "
         f"cp {steering_source} {shlex.quote(steering_target)}; fi; "
         f"cd {shlex.quote(workdir)}; "
-        f"("
-        f"{peruser_prefix}"
-        f"{cred_prelude}"
-        f"{env_prefix} {cli}"
-        f"); "
+        f"({peruser_prefix}{cred_prelude}{env_prefix} {cli}); "
         f"__rc=$?; "
         f"tar -C {shlex.quote(workdir)} {tar_excludes} "
         f"-czf {shlex.quote(result_archive)} .; "
@@ -419,6 +412,133 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"if [ $__rc -ne 0 ]; then exit $__rc; fi; "
         f"exit $__pack_rc\n"
     )
+
+
+def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
+                                   model: str, region: str, nonce: str,
+                                   archive_uri: str,
+                                   skills_uri: str | None = None) -> dict[str, str]:
+    """Build the two commands used by a console-muxed interactive dispatch.
+
+    ``launch`` hydrates the same immutable source archive and named local Git
+    worktree as the headless path, then starts the role's native interactive TUI.
+    ``snapshot`` runs in a separate bounded shell after the TUI is idle, packs the
+    worktree, and atomically uploads the result archive. This keeps the live PTY
+    human-interactive without putting Git metadata or lock-heavy worktree lifecycle
+    on S3 Files.
+    """
+    workdir = f"/tmp/workshop-{nonce}"
+    seed_dir = f"/tmp/workshop-seed-{nonce}"
+    source_archive = f"/tmp/workshop-source-{nonce}.tar.gz"
+    result_archive = f"/tmp/workshop-result-{nonce}.tar.gz"
+    branch = worktree_branch(run_subdir)
+    role = _role(agent_id)
+
+    env = {"AWS_REGION": region, "AWS_DEFAULT_REGION": region,
+           "WORKSHOP_AGENT_WORKDIR": workdir,
+           **role.env, **role.telemetry_env}
+    if role.model_env and model:
+        env[role.model_env] = model
+
+    identity = None
+    user_id = "unknown"
+    try:
+        from identity_baggage import get_current_identity
+        identity = get_current_identity()
+        if identity is not None and not identity.is_anonymous():
+            user_id = identity.user_id
+            env.update(identity.to_env())
+            env.update(identity.to_otel_env())
+    except Exception:
+        identity = None
+
+    run_id = run_subdir.split("/", 1)[0]
+    corr = f"run.id={run_id},agent.id={agent_id}"
+    existing = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    env["OTEL_RESOURCE_ATTRIBUTES"] = f"{existing},{corr}" if existing else corr
+    env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+
+    # Fetch a vendor key under the Runtime role BEFORE the optional per-user role
+    # is assumed. run.sh then sees KIRO_API_KEY already in memory and does not need
+    # Token Vault permission on the attribution role.
+    credential_prelude = _vault_key_prelude(role, region)
+    peruser_prefix = ""
+    peruser_role = os.environ.get("PERUSER_ROLE_ARN", "")
+    if peruser_role and identity is not None and not identity.is_anonymous():
+        try:
+            from peruser import assume_as_user
+            peruser_prefix = assume_as_user(identity.user_id, peruser_role, region)
+        except Exception:
+            peruser_prefix = ""
+
+    steering = role.steering_file.replace("\\", "/")
+    steering_source = f"$HOME/{steering}"
+    steering_target = os.path.join(workdir, *steering.split("/"))
+    steering_parent = os.path.dirname(steering_target)
+    skill_setup = ""
+    if skills_uri:
+        skill_archive = f"/tmp/workshop-skills-{nonce}.tar.gz"
+        skill_setup = (
+            f"if aws s3 cp {shlex.quote(skills_uri)} "
+            f"{shlex.quote(skill_archive)} --region {shlex.quote(region)} "
+            "--only-show-errors 2>/dev/null; then "
+            f"tar --no-same-owner --no-same-permissions --touch -xzf "
+            f"{shlex.quote(skill_archive)} -C {shlex.quote(workdir)}; "
+            f"rm -f {shlex.quote(skill_archive)}; fi; "
+        )
+
+    launch = (
+        f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)} "
+        f"{shlex.quote(source_archive)}; "
+        f"mkdir -p {shlex.quote(seed_dir)}; "
+        f"aws s3 cp {shlex.quote(archive_uri)} {shlex.quote(source_archive)} "
+        f"--region {shlex.quote(region)} --only-show-errors; "
+        f"__hydrate_rc=$?; "
+        f"if [ $__hydrate_rc -eq 0 ]; then tar --no-same-owner "
+        f"--no-same-permissions --touch -xzf {shlex.quote(source_archive)} "
+        f"-C {shlex.quote(seed_dir)}; __hydrate_rc=$?; fi; "
+        f"rm -f {shlex.quote(source_archive)}; "
+        f"if [ $__hydrate_rc -eq 0 ]; then "
+        f"git -C {shlex.quote(seed_dir)} init -q -b workshop-base && "
+        f"git -C {shlex.quote(seed_dir)} config user.name "
+        f"{shlex.quote('Workshop Runtime')} && "
+        f"git -C {shlex.quote(seed_dir)} config user.email "
+        f"{shlex.quote('workshop-runtime@example.invalid')} && "
+        f"git -C {shlex.quote(seed_dir)} add -A && "
+        f"git -C {shlex.quote(seed_dir)} commit -qm "
+        f"{shlex.quote('Seed tracked checkout')} --allow-empty && "
+        f"git -C {shlex.quote(seed_dir)} worktree add -q -b "
+        f"{shlex.quote(branch)} {shlex.quote(workdir)} HEAD; "
+        f"__hydrate_rc=$?; fi; "
+        f"if [ $__hydrate_rc -ne 0 ]; then echo "
+        f"{shlex.quote('[orchestrator] failed to hydrate the isolated worktree')} "
+        f">&2; exit $__hydrate_rc; fi; "
+        f"{skill_setup}"
+        f"mkdir -p {shlex.quote(steering_parent)}; "
+        f"if test -f {steering_source}; then cp {steering_source} "
+        f"{shlex.quote(steering_target)}; fi; "
+        f"cd {shlex.quote(workdir)}; "
+        f"{credential_prelude}{peruser_prefix}"
+        f"{env_prefix} /app/run.sh --model {shlex.quote(model)}"
+    )
+
+    tar_excludes = " ".join(
+        f"--exclude={shlex.quote(name)} --exclude={shlex.quote('*/' + name)}"
+        for name in _TREE_EXCLUDES)
+    snapshot = (
+        f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; echo \"$B1\"; "
+        f"test -d {shlex.quote(workdir)}; __pack_rc=$?; "
+        f"if [ $__pack_rc -eq 0 ]; then tar -C {shlex.quote(workdir)} "
+        f"{tar_excludes} -czf {shlex.quote(result_archive)} .; "
+        f"__pack_rc=$?; fi; "
+        f"if [ $__pack_rc -eq 0 ]; then aws s3 cp "
+        f"{shlex.quote(result_archive)} {shlex.quote(archive_uri)} "
+        f"--region {shlex.quote(region)} --only-show-errors; "
+        f"__pack_rc=$?; fi; rm -f {shlex.quote(result_archive)}; "
+        f"echo \"$E1\"; exit $__pack_rc\n"
+    )
+    return {"launch": launch + "\n", "snapshot": snapshot,
+            "workdir": workdir, "user_id": user_id, "nonce": nonce}
 
 
 async def _drive_shell(runtime_arn: str, command: str, region: str,
@@ -667,6 +787,94 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
             "session_id": result["session_id"]}
 
 
+def _live_session_for(agent_id: str, runtime_arn: str, launch_command: str,
+                      run_subdir: str, user_id: str) -> Any | None:
+    """Open a console-registered PTY when this process hosts the Agents UI.
+
+    The deployed coordinator package has no ``interactive-api`` module and falls
+    through to the existing bounded headless path. The box-hosted console has it,
+    so Chat dispatches appear automatically as live, writable Agents tabs.
+    """
+    try:
+        import runtime_shell  # noqa: PLC0415 (console-only optional surface)
+    except Exception:
+        return None
+    try:
+        session = runtime_shell.ensure_dispatch_session(
+            agent_id, instance_arn=runtime_arn,
+            launch_command=launch_command, run_subdir=run_subdir,
+            user_id=user_id)
+    except Exception:
+        return None
+    if session is None or session.runtime_arn != runtime_arn:
+        return None
+    return session
+
+
+def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
+                      prompt: str, run_subdir: str, artifact_rel: str | None,
+                      region: str, snapshot_command: str, nonce: str,
+                      on_line: Callable[[str], None] | None,
+                      timeout_s: float) -> dict[str, Any]:
+    """Drive one native TUI turn, then seal and upload its isolated worktree."""
+    session.busy = True
+    transcript = ""
+    try:
+        if not session.wait_ready(timeout_s=min(120.0, timeout_s)):
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} interactive dispatch session "
+                f"{session.session_id} never connected and painted its TUI")
+        start = len(session.buffer)
+        session.emit_banner(
+            f"run {run_subdir}: {prompt[:120]}"
+            + ("..." if len(prompt) > 120 else ""))
+        session.send_turn(prompt)
+        quiet_s = float(os.environ.get("WORKSHOP_TURN_QUIET_S", "20"))
+        if not session.wait_turn_idle(quiet_s=quiet_s, timeout_s=timeout_s):
+            transcript = _clean(session.buffer[start:])
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} interactive turn exceeded "
+                f"{timeout_s:.0f}s; transcript tail:\n{transcript[-600:]}")
+        if not session.alive:
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} interactive terminal closed "
+                "before its worktree snapshot upload finished")
+        transcript = _clean(session.buffer[start:])
+        if on_line:
+            for line in transcript.splitlines():
+                on_line(line)
+
+        snapshot_session = "snap-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+        result = asyncio.run(_drive_shell(
+            runtime_arn, snapshot_command, region, None,
+            min(240.0, timeout_s), snapshot_session))
+        snapshot_transcript = _slice(
+            result["raw"], f"{_RUN_BEGIN}-{nonce}", f"{_RUN_END}-{nonce}")
+        if result["exit"] != 0:
+            raise RoleExecutionError(
+                f"ARTIFACT_TRANSFER_ERROR: {agent_id} finished its interactive "
+                f"turn but the isolated worktree snapshot failed (exit "
+                f"{result['exit']}):\n{snapshot_transcript[-600:]}")
+        session.busy = False
+        session.emit_banner(
+            "result snapshot uploaded; this PTY remains interactive")
+    except Exception:
+        session.busy = False
+        raise
+
+    artifact = ""
+    if artifact_rel:
+        artifact = _read_artifact_from_runtime(
+            runtime_arn, run_subdir, artifact_rel, region)
+        if not artifact:
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id} interactive turn completed but "
+                f"{artifact_rel} is missing/empty in its uploaded snapshot; "
+                f"transcript tail:\n{transcript[-600:]}")
+    return {"exit": 0, "transcript": transcript, "artifact": artifact,
+            "session_id": session.session_id, "live_session": True}
+
+
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
                                 artifact_rel: str | None, region: str) -> str:
     """Read a named file from the worktree's atomically uploaded result archive."""
@@ -730,12 +938,13 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     """Run ``agent_id``'s CLI inside its deployed runtime and read the artifact
     it wrote. Returns ``{exit, transcript, artifact, session_id}``.
 
-    Every orchestrated role uses a fresh bounded command shell and its native
-    headless CLI. The tracked-source archive exchange requires this boundary:
-    the turn downloads one immutable checkout archive, creates a named Git
-    worktree on Runtime-local disk, and atomically uploads one result archive
-    before the shell exits.
-    Manually opened console terminals remain a separate interactive surface.
+    When the box-hosted console is serving this process, the role gets a fresh
+    registered interactive PTY: the Agents tab and orchestrator share the native
+    TUI and both may send input. The PTY still hydrates one immutable source
+    archive into a Runtime-local named worktree; when the turn goes idle, a
+    separate bounded shell uploads the result archive without closing the TUI.
+    A deployed coordinator has no console registry and uses the existing bounded
+    headless path.
 
     Raises ``RoleExecutionError`` on a nonzero exit or a missing/empty artifact:
     the same fail-loud contract the engine's ``_read_artifact`` enforced locally.
@@ -759,12 +968,42 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
         return _run_in_local_dev(runtime_arn, agent_id, prompt, run_subdir,
                                  artifact_rel, model, on_line, timeout_s)
 
+    region = region_for(runtime_arn, region)
+
+    # Console Chat path: auto-register a run-local interactive PTY so the native
+    # Claude Code / opencode / Kiro UI appears on Agents without a manual + click.
+    # Importing runtime_shell is intentionally optional; the deployed coordinator
+    # package does not contain it and falls through to headless execution below.
+    try:
+        import runtime_stage  # noqa: PLC0415
+        nonce = uuid.uuid4().hex[:12]
+        archive_uri = runtime_stage.archive_uri(run_subdir, region)
+        run_id = run_subdir.replace("\\", "/").split("/", 1)[0]
+        skills_uri = runtime_stage.skills_archive_uri(run_id, agent_id, region)
+        interactive = _interactive_dispatch_commands(
+            agent_id, run_subdir, model, region, nonce, archive_uri, skills_uri)
+        live = _live_session_for(
+            agent_id, runtime_arn, interactive["launch"], run_subdir,
+            interactive["user_id"])
+    except Exception:
+        live = None
+        interactive = None
+    if live is not None and interactive is not None:
+        result = _run_in_muxed_pty(
+            live, runtime_arn, agent_id, prompt, run_subdir, artifact_rel,
+            region, interactive["snapshot"], interactive["nonce"], on_line,
+            timeout_s)
+        if model_quota_exhausted(result["transcript"]):
+            raise ModelQuotaError(
+                f"MODEL_QUOTA_EXHAUSTED: {agent_id} could not start because the "
+                f"account's daily token allowance for {model} is exhausted; "
+                f"transcript tail:\n{result['transcript'][-600:]}")
+        return result
+
     # The AgentCore client AND the dispatched command must use the RUNTIME's own
     # region (region_for: parsed from the ARN), never a caller default. Otherwise
     # open_shell raises a region mismatch on any runtime not in the default region
     # and the container never runs.
-    region = region_for(runtime_arn, region)
-
     import llm  # noqa: PLC0415 (lazy; only the dispatch path needs alias/fallback)
 
     run = _dispatch_once(runtime_arn, agent_id, prompt, run_subdir, artifact_rel,

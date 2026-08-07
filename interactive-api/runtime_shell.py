@@ -94,11 +94,24 @@ class RuntimeShellSession:
     """A live WebSocket shell to a deployed AgentCore Runtime."""
 
     def __init__(self, session_id: str, agent_id: str, runtime_arn: str,
-                 user_id: str = "unknown"):
+                 user_id: str = "unknown", opened_by: str = "user",
+                 launch_command: str | None = None,
+                 run_subdir: str = ""):
         self.session_id = session_id
         self.agent_id = agent_id
         self.runtime_arn = runtime_arn
         self.user_id = user_id
+        # An orchestrated session is still a REAL interactive PTY: the engine and
+        # every Agents-page subscriber share one shell and can both send input.
+        # The metadata only lets the UI distinguish an automatic run tab from a
+        # terminal the person opened with +.
+        self.opened_by = opened_by
+        self.run_subdir = run_subdir
+        self.busy = opened_by == "orchestrator"
+        # Run dispatches supply a command that hydrates their isolated local
+        # worktree before launching the native TUI. Human-opened terminals retain
+        # the ordinary /app/run.sh launch.
+        self._launch_command = launch_command
         self.started_at = (
             datetime.now(timezone.utc).isoformat(timespec="seconds")
             .replace("+00:00", "Z")
@@ -162,8 +175,12 @@ class RuntimeShellSession:
             cols, rows = self._size
             await shell.resize(cols, rows)
 
-            # Auto-launch the interactive agent CLI at the measured width.
-            await shell.send(_AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n"))
+            # Auto-launch at the measured width. A dispatched command hydrates its
+            # own run-local worktree and then execs the native interactive CLI;
+            # a manually opened terminal uses the ordinary image launcher.
+            launch = (self._launch_command
+                      or _AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n"))
+            await shell.send(launch.rstrip("\n") + "\n")
 
             async for frame in shell:
                 if frame.channel == ShellChannel.STDOUT:
@@ -196,6 +213,52 @@ class RuntimeShellSession:
         ``[orchestrator] build the server`` without looking like the human typed
         it. Fan-out (one PTY, many subscribers) means the human sees it live."""
         self._emit(f"\r\n\x1b[2m[orchestrator] {text}\x1b[0m\r\n")
+
+    def wait_ready(self, timeout_s: float = 120.0,
+                   settle_s: float = 3.0) -> bool:
+        """Wait until the WebSocket and TUI are ready to receive keystrokes."""
+        import time as _t
+        deadline = _t.monotonic() + timeout_s
+        while _t.monotonic() < deadline:
+            if not self.alive:
+                return False
+            if self._shell is not None and self.buffer:
+                break
+            _t.sleep(0.3)
+        else:
+            return False
+        return self.wait_turn_idle(
+            quiet_s=settle_s,
+            timeout_s=max(5.0, deadline - _t.monotonic()))
+
+    def send_turn(self, text: str) -> None:
+        """Paste a multiline orchestrator turn into the same TUI a human sees."""
+        import time as _t
+        body = text.rstrip("\r\n")
+        self.send_input("\x1b[200~" + body + "\x1b[201~")
+        _t.sleep(0.5)
+        self.send_input("\r")
+
+    def wait_turn_idle(self, quiet_s: float = 20.0,
+                       timeout_s: float = 900.0,
+                       poll_s: float = 0.5) -> bool:
+        """A working TUI repaints while busy; a quiet input prompt is done."""
+        import time as _t
+        deadline = _t.monotonic() + timeout_s
+        last_len = len(self.buffer)
+        quiet_since = _t.monotonic()
+        while _t.monotonic() < deadline:
+            if not self.alive:
+                return True
+            current = len(self.buffer)
+            now = _t.monotonic()
+            if current != last_len:
+                last_len = current
+                quiet_since = now
+            elif now - quiet_since >= quiet_s:
+                return True
+            _t.sleep(poll_s)
+        return False
 
     def snapshot(self, max_chars: int = 4000) -> str:
         """A thread-safe tail of the shared buffer (the current screen as text).
@@ -281,7 +344,9 @@ def get_runtime_arn(agent_id: str, instance_arn: str | None = None) -> str | Non
 
 def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
                          instance_arn: str | None = None,
-                         user_id: str = "unknown") -> dict:
+                         user_id: str = "unknown", opened_by: str = "user",
+                         launch_command: str | None = None,
+                         run_subdir: str = "") -> dict:
     """Open a real runtime shell session. Fails loud if no ARN wired (or if a
     requested instance is not one of the role's wired instances)."""
     arn = get_runtime_arn(agent_id, instance_arn)
@@ -301,13 +366,16 @@ def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
             "an interactive shell. Wire a deployed ARN (agentcore deploy) to open a terminal.")}
 
     session_id = f"console-{uuid.uuid4().hex}{uuid.uuid4().hex[:4]}"
-    session = RuntimeShellSession(session_id, agent_id, arn, user_id=user_id)
+    session = RuntimeShellSession(
+        session_id, agent_id, arn, user_id=user_id, opened_by=opened_by,
+        launch_command=launch_command, run_subdir=run_subdir)
     session.start(cols, rows)
 
     with _sessions_lock:
         _sessions[session_id] = session
 
-    return {"session_id": session_id, "agent_id": agent_id, "runtime_arn": arn}
+    return {"session_id": session_id, "agent_id": agent_id, "runtime_arn": arn,
+            "opened_by": opened_by, "run_subdir": run_subdir}
 
 
 def get_session(session_id: str) -> RuntimeShellSession | None:
@@ -342,14 +410,17 @@ def find_session_for_agent(agent_id: str) -> RuntimeShellSession | None:
 def list_sessions(agent_id: str | None = None) -> dict:
     """Every interactive terminal registered by the console.
 
-    The Agents page renders these as terminal tabs. Orchestrated build turns use
-    separate bounded headless shells and are not registered here. Dead sessions
-    are included with ``alive: false`` so the UI can prune them.
+    Both human-opened terminals and run-local orchestrator PTYs appear. The latter
+    expose the native TUI and accept the same human input as a manually opened
+    terminal, while source/result exchange remains isolated per work item.
     """
     with _sessions_lock:
         rows = [
             {"session_id": s.session_id, "agent_id": s.agent_id,
              "runtime_arn": s.runtime_arn, "alive": s.alive,
+             "opened_by": getattr(s, "opened_by", "user"),
+             "busy": getattr(s, "busy", False),
+             "run_subdir": getattr(s, "run_subdir", ""),
              "user_id": getattr(s, "user_id", "unknown"),
              "started_at": getattr(s, "started_at", ""),
              "buffer_chars": len(s.buffer)}
@@ -357,6 +428,19 @@ def list_sessions(agent_id: str | None = None) -> dict:
             if agent_id is None or s.agent_id == agent_id
         ]
     return {"sessions": rows}
+
+
+def ensure_dispatch_session(agent_id: str, instance_arn: str,
+                            launch_command: str, run_subdir: str,
+                            user_id: str = "unknown") -> RuntimeShellSession | None:
+    """Open one fresh, registered PTY for an isolated orchestrated work item."""
+    out = open_runtime_session(
+        agent_id, cols=120, rows=32, instance_arn=instance_arn,
+        user_id=user_id, opened_by="orchestrator",
+        launch_command=launch_command, run_subdir=run_subdir)
+    if "error" in out:
+        return None
+    return get_session(out["session_id"])
 
 
 # --- Explicit interactive tools <-> live PTY (server fan-out) ----------------

@@ -19,6 +19,8 @@ export interface SessionEntry {
   runtimeArn: string;
   alive: boolean;
   buffer: string;
+  /** Same PTY either way; this only marks run-created tabs in the UI. */
+  openedBy?: 'user' | 'orchestrator';
   /** Stable display number, assigned once at open. Never renumbered when an
    *  earlier tab closes, so "Session 2" stays "Session 2". */
   label: number;
@@ -106,6 +108,7 @@ export async function openSession(
     alive: true,
     buffer: '',
     label: nextLabel,
+    openedBy: data.opened_by === 'orchestrator' ? 'orchestrator' : 'user',
   };
   _sessions.set(entry.id, entry);
   _persist();
@@ -173,16 +176,15 @@ export function closeSession(id: string): void {
 }
 
 /**
- * Merge the SERVER's manually opened terminal registry into the local tab
- * store. This restores tabs after a reload and prunes tabs whose backend
- * session died. Orchestrated builds use separate headless shells and are
- * reported in Chat/run_status rather than this store.
+ * Merge the server's terminal registry into the local tab store. This includes
+ * manually opened terminals and orchestrator-created run PTYs, so a Chat build
+ * appears automatically and remains the SAME writable shell on the Agents page.
  * Returns true when anything changed (so callers re-render only on change).
  */
 export async function syncServerSessions(agentId: string): Promise<boolean> {
   _hydrate();
   let rows: { session_id: string; agent_id: string; runtime_arn: string;
-              alive: boolean }[];
+              alive: boolean; opened_by?: 'user' | 'orchestrator' }[];
   try {
     const r = await fetch(`${API}?agent_id=${encodeURIComponent(agentId)}`);
     const data = await r.json();
@@ -196,12 +198,14 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
   for (const s of rows) {
     seen.add(s.session_id);
     if (!s.alive) continue;
-    if (!_sessions.has(s.session_id)) {
+    const current = _sessions.get(s.session_id);
+    if (!current) {
       const nextLabel = (_seq.get(agentId) ?? 0) + 1;
       _seq.set(agentId, nextLabel);
       _sessions.set(s.session_id, {
         id: s.session_id, agentId, runtimeArn: s.runtime_arn,
         alive: true, buffer: '', label: nextLabel,
+        openedBy: s.opened_by === 'orchestrator' ? 'orchestrator' : 'user',
       });
       changed = true;
     }

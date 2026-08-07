@@ -415,11 +415,10 @@ async def pty_stream(session_id: str, request: Request, offset: int = 0):
 # ---- Runtime shell proxy: connect browser to a REAL AgentCore Runtime ------
 @app.get("/api/dev/runtime-sessions")
 async def runtime_session_list(request: Request, agent_id: str | None = None):
-    """Server-side registry for Runtime terminals opened on the Agents page.
+    """Registry for human terminals and run-local orchestrator PTYs.
 
-    Orchestrated builds use bounded headless shells so their tracked checkout
-    can be uploaded atomically. They are reported in Chat/run_status and do not
-    appear in this interactive-terminal registry.
+    Console Chat dispatches register their native TUI here, so Agents-page
+    subscribers and the orchestrator share output and input while the role runs.
     """
     if not _authed(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
