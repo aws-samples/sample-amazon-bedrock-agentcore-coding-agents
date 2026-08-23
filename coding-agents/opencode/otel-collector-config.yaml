@@ -52,6 +52,13 @@ exporters:
     compression: none
   # Metrics -> CloudWatch via EMF, namespace Workshop/CodingAgents.
   awsemf:
+    # Resource attributes (user.id, run.id, agent.id -- set by the dispatch via
+    # OTEL_RESOURCE_ATTRIBUTES) are RESOURCE-level, and the EMF exporter drops
+    # resource attributes unless this is on. Without it the metrics in this
+    # namespace cannot be sliced by user at all, so per-user cost is invisible
+    # in CloudWatch Metrics even though the Logs path is correctly tagged.
+    resource_to_telemetry_conversion:
+      enabled: true
     region: "${env:AWS_REGION:-us-west-2}"
     namespace: "Workshop/CodingAgents"
     log_group_name: "/workshop/coding-agents/metrics"

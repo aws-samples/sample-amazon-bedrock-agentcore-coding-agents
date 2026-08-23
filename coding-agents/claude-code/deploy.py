@@ -364,6 +364,10 @@ def deploy_runtime(role_arn: str) -> dict:
         ]
     env_vars = {
         "AWS_REGION": REGION,
+        # The collector sidecar names its CloudWatch log stream from this
+        # (otel-collector-config.yaml). Unset, every agent shared one stream
+        # literally called "agent", so you could not tell which agent wrote what.
+        "WORKSHOP_AGENT_NAME": AGENT_NAME,
     }
     # Optional deploy-time model override: pass WORKSHOP_MODEL into the runtime so
     # run.sh uses it as the default (for accounts without Opus 4.6 Marketplace
