@@ -139,7 +139,8 @@ _reconcile_loop()
 
 
 def dispatch(method: str, path: str, body: dict | None,
-             query: str = "") -> tuple[int, dict]:
+             query: str = "",
+             user_identity: dict | None = None) -> tuple[int, dict]:
     """Pure router for the Stage 2 API: (status, json-able dict).
 
     Shared by the standalone server (below) and the unified console server
@@ -147,6 +148,18 @@ def dispatch(method: str, path: str, body: dict | None,
     the raw query string (e.g. ``limit=20&offset=40``) for paged endpoints; it is
     optional so existing 3-arg callers keep working.
     """
+    # Propagate the authenticated user into the engine context, the same way
+    # chat_stream does. POST /api/runs calls ENGINE.submit() from HERE, and the
+    # engine captures identity at admission (run.user_identity). Without this,
+    # every run created over the REST path was admitted ANONYMOUS, so the
+    # dispatch skipped to_otel_env() and the telemetry landed with run.id and
+    # agent.id but no user.id -- the whole fleet grouped as UNTAGGED in the
+    # Lab 3 per-user query. Set inside this call because the console runs it in
+    # a worker thread and a ContextVar does not cross that boundary.
+    if user_identity:
+        from identity_baggage import UserIdentity, set_current_identity
+        set_current_identity(UserIdentity.from_dict(user_identity))
+
     if method == "GET":
         if path == "/api/health":
             # executor: which execution seam produces artifacts. Shipped is

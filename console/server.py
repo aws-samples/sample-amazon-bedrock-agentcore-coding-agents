@@ -209,7 +209,8 @@ def _stop_live_runtime_session(session_id: str) -> tuple[int, dict] | None:
     return 200, {"session_id": session_id, "stopped": True, **result}
 
 
-def _route_api(method: str, full_path: str, query: str, body: dict | None):
+def _route_api(method: str, full_path: str, query: str, body: dict | None,
+               user_identity: dict | None = None):
     """Forward /api/<mount>/<resource> to the right engine.
     full_path looks like /api/orchestrator/runs -> mount=orchestrator, sub=/api/runs."""
     parts = full_path.split("/", 3)  # ['', 'api', 'orchestrator', 'runs']
@@ -220,7 +221,8 @@ def _route_api(method: str, full_path: str, query: str, body: dict | None):
     if mount == "dev":
         return interactive_api.dispatch(method, sub, body)
     if mount == "orchestrator":
-        return connection_api.dispatch(method, sub, body, query)
+        return connection_api.dispatch(method, sub, body, query,
+                                       user_identity=user_identity)
     if mount == "metrics":
         if method == "POST" and sub.startswith("/api/sessions/") and sub.endswith("/stop"):
             session_id = unquote(sub.removeprefix("/api/sessions/").removesuffix("/stop"))
@@ -568,7 +570,12 @@ async def api(rest: str, request: Request):
     # this async route would block the single uvicorn event loop and freeze EVERY
     # page (the recurring "localhost died" hang). Offload to a worker thread so the
     # loop stays responsive while a slow engine call runs.
-    code, out = await run_in_threadpool(_route_api, request.method, full_path, query, body)
+    # Thread the signed-in user through the REST path too, not just Chat: a run
+    # created here must carry identity or its telemetry is UNTAGGED (Lab 3).
+    _api_user = _current_user(request)
+    _api_baggage = _api_user.to_baggage() if _api_user else {}
+    code, out = await run_in_threadpool(_route_api, request.method, full_path, query,
+                                        body, _api_baggage)
     return JSONResponse(out, status_code=code)
 
 
