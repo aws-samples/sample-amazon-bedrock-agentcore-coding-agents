@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy a pre-built agent (opencode or kiro) onto the attendee's S3 Files mount.
+# Deploy a pre-built agent onto the attendee's S3 Files mount.
 #
 # Normally the workshop stack already built this agent's arm64 image at bootstrap
 # (the slow, mount-independent work), so this script just runs the agent's
@@ -18,7 +18,12 @@
 # validator is the Bedrock-native, no-key checker for an account with no Kiro
 # subscription, and codex needs a GPT entitlement a Workshop Studio account lacks.
 #
+# claude-code is accepted for the same reason, from the other direction: the stack
+# pre-builds its IMAGE but deliberately does NOT create its Runtime, so this is the
+# one command that turns that image into the attendee's own mounted backend Runtime.
+#
 # Usage (from coding-agents):
+#   ./deploy-prebuilt.sh claude-code                 # the backend; image pre-built, Runtime created here
 #   ./deploy-prebuilt.sh opencode
 #   ./deploy-prebuilt.sh kiro                        # the served validator; builds --skip-identity if keyless
 #   ./deploy-prebuilt.sh claude-code-validator       # restore path (Bedrock-native, no key)
@@ -27,10 +32,10 @@ set -euo pipefail
 
 AGENT="${1:-}"
 case "$AGENT" in
-  # opencode + kiro are the pre-provisioned served pair; claude-code-validator and
+  # claude-code + opencode + kiro are the served roster; claude-code-validator and
   # codex are the kept restore targets.
-  opencode|kiro|claude-code-validator|codex) ;;
-  *) echo "Usage: $0 <opencode|kiro|claude-code-validator|codex>" >&2; exit 2 ;;
+  claude-code|opencode|kiro|claude-code-validator|codex) ;;
+  *) echo "Usage: $0 <claude-code|opencode|kiro|claude-code-validator|codex>" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
