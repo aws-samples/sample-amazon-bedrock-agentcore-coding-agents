@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import json
 import os
 import secrets
@@ -51,6 +52,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KEY_PATH = REPO_ROOT / "agentcore-github-mcp.private-key.pem"
 ENV_FILE = Path(__file__).resolve().parent / "github-app.env"
 GITHUB_API = "https://api.github.com"
+# Unbuffered by construction. This script's whole job is to print ONE url and then
+# block, so a buffered stdout is not a cosmetic problem: piped or wrapped, the url
+# never appears and the attendee stares at a silent terminal waiting for the thing
+# they are supposed to open. A tty happens to line-buffer, which makes the bug
+# invisible in the exact place it was authored.
+print = functools.partial(print, flush=True)  # noqa: A001 (deliberate shadow)
 # GitHub voids the temporary code one hour after the manifest is submitted, and an
 # attendee who wandered off is better served by a clear timeout than by a hung script.
 INSTALL_WAIT_S = 600
