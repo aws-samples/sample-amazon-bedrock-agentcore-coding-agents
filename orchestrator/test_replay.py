@@ -101,6 +101,51 @@ def test_the_body_shows_what_the_check_actually_asserted():
     assert "reference answer" in body
 
 
+def test_a_red_gate_comment_says_WHY_on_the_pull_request():
+    """The failing lines have to be ON the PR, not only in the engine's memory.
+
+    A live run posted "Executed check: FAILED ... See the failing checks" with the
+    check's SOURCE attached and nothing else: 43 of its 45 assertions had passed and
+    the two that failed were nowhere a GitHub reviewer could read them. The engine had
+    them the whole time, in gate["output"].
+    """
+    output = "\n".join(
+        [f"PASS [1.0s] probe {i}" for i in range(1, 44)]
+        + ["FAIL [3.0s] malformed JSON is rejected -- got HTTP 500",
+           "RESULT: 43/45 checks passed in 4.8s",
+           "failed checks:",
+           "  - framework: routing comes from a declared dependency",
+           "  - malformed JSON is rejected and does not take the service down",
+           "VERDICT: REJECT"])
+    item = types.SimpleNamespace(work_id="work_backend_1", patch_digest="1de33ba511bc")
+    body = replay.gate_evidence_comment(
+        _run(final_base_branch="main"),
+        {"passed": False, "summary": "VERDICT: REJECT", "output": output},
+        stage=f"{item.work_id} round 1",
+        item=item,
+        assessment="**Assessment**: Request changes",
+    )
+    assert "FAILED" in body
+    # The reason, in the check's own words, is what a reviewer needs.
+    assert "failed checks:" in body, body
+    assert "malformed JSON is rejected" in body, body
+    assert "framework: routing comes from a declared dependency" in body, body
+    assert "RESULT: 43/45" in body, body
+    # Bounded: a 4000-character output cannot push the comment past what GitHub renders.
+    assert len(body) < 8000, len(body)
+
+
+def test_a_gate_with_no_captured_output_still_renders():
+    """No output is not an error; the comment just carries the verdict it has."""
+    item = types.SimpleNamespace(work_id="work_backend_1", patch_digest="deadbeefcafe")
+    body = replay.gate_evidence_comment(
+        _run(final_base_branch="main"),
+        {"passed": True, "summary": "all 7 probes passed"},
+        stage=f"{item.work_id} round 1", item=item)
+    assert "What the check reported" not in body
+    assert "PASSED" in body and "all 7 probes passed" in body
+
+
 def test_a_long_check_is_excerpted_not_pasted():
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, "acceptance_check")

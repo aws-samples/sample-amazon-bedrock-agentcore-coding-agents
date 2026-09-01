@@ -299,6 +299,13 @@ def gate_evidence_comment(
         "The validator wrote this check for this pull request. The orchestrator ran "
         "it and used its exit code.",
     ]
+    reported = _gate_output_excerpt(gate)
+    if reported:
+        body, shown, total = reported
+        head = (f"What the check reported (last {shown} of {total} lines)"
+                if shown < total else f"What the check reported ({total} lines)")
+        lines += ["", f"<details><summary>{head}</summary>",
+                  "", "```", body, "```", "</details>"]
     excerpt = _check_excerpt(run, item)
     if excerpt:
         body, total = excerpt
@@ -310,6 +317,34 @@ def gate_evidence_comment(
     if assessment:
         lines += ["", assessment.strip()]
     return "\n".join(lines).rstrip() + "\n"
+
+
+# A red gate has to say WHY on the pull request itself. The engine keeps the check's
+# real stdout in gate["output"], and a reviewer arriving from a GitHub notification
+# can reach neither the engine log nor the coordinator session, so a comment that
+# shows only the check's SOURCE and "see the failing checks" names evidence the reader
+# cannot see. A live run made exactly that comment: 43 of 45 assertions passed and the
+# two that failed were nowhere on the PR. The tail is the useful end (per-check lines,
+# then the RESULT and the failed-check list), and it stays bounded because the source
+# excerpt is already in the same comment.
+_GATE_OUTPUT_TAIL_LINES = 40
+_GATE_OUTPUT_MAX_CHARS = 3000
+
+
+def _gate_output_excerpt(gate: dict[str, Any]) -> tuple[str, int, int] | None:
+    raw = str((gate or {}).get("output") or "").strip()
+    if not raw:
+        return None
+    all_lines = raw.splitlines()
+    tail = all_lines[-_GATE_OUTPUT_TAIL_LINES:]
+    body = "\n".join(tail)
+    if len(body) > _GATE_OUTPUT_MAX_CHARS:
+        body = body[-_GATE_OUTPUT_MAX_CHARS:]
+        cut = body.find("\n")
+        if cut != -1:
+            body = body[cut + 1:]
+        tail = body.splitlines()
+    return body, len(tail), len(all_lines)
 
 
 def narrative(run: Any) -> str:
