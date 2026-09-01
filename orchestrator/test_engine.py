@@ -269,6 +269,50 @@ def test_a_red_pull_request_does_not_block_a_green_sibling(monkeypatch):
     engine.shutdown()
 
 
+def test_a_final_red_gate_still_posts_its_evidence_on_the_pull_request(monkeypatch):
+    """The blocking round has to be ON the pull request, not only in the engine.
+
+    A live routed run ended `ROLE_PR_BLOCKED` with round 1 posted and round 2 -- the
+    round that actually blocked the merge -- posted nowhere, because
+    `approved = gate.passed and self._assess_pull_request(...)` short-circuits on a red
+    gate and round 2 had no explicit re-post the way round 1 does. Meanwhile the log
+    said the pull request "keeps the evidence", and `next_action` told a person to go
+    open it and read exactly that.
+    """
+    engine = _engine()
+    posted: list[tuple[str, str]] = []
+    real_comment = Engine._comment_work_item
+
+    def record(self, run, item, body):
+        posted.append((item.work_id, body.split("\n")[0]))
+        return real_comment(self, run, item, body)
+
+    monkeypatch.setattr(Engine, "_comment_work_item", record)
+    # Every gate run is RED, so each owner uses its one bounded repair and stays red.
+    monkeypatch.setattr(
+        "engine.reviewer.run_gate",
+        lambda *a, **k: {"passed": False,
+                         "summary": "RESULT: REJECT -- 1 check failed",
+                         "checks": [{"check": "acceptance_check_authored",
+                                     "passed": False,
+                                     "detail": "held red by the test"}],
+                         "output": "FAIL [1.0s] the one thing that matters\nVERDICT: REJECT"})
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
+    run = _wait_terminal(engine.submit(CONVERT_TASK, ALL_AGENTS), timeout_s=180)
+    engine.shutdown()
+
+    assert run.status == "needs_human", run.status
+    assert run.fail_reason.startswith("ROLE_PR_BLOCKED"), run.fail_reason
+    blocked = [row for row in run.role_prs if row["state"] == "blocked"]
+    assert blocked, run.role_prs
+    for row in blocked:
+        heads = {head for work_id, head in posted if work_id == row["work_id"]}
+        assert any("round 1" in h and "repair" not in h for h in heads), heads
+        assert any("round 2" in h for h in heads), (
+            f"the round that blocked {row['work_id']} was never posted on its pull "
+            f"request: {sorted(heads)}")
+
+
 def test_review_outage_holds_the_pull_request_without_rebuilding(monkeypatch):
     """A reviewer outage is infrastructure, not a reason to rewrite green work.
 

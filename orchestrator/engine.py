@@ -3006,6 +3006,15 @@ class Engine:
                 gate = self._gate_one_pull_request(run, item, stage)
                 approved = gate.get("passed") and self._assess_pull_request(
                     run, item, gate, stage)
+                if not approved and not gate.get("passed"):
+                    # Exactly as in round 1: a red gate is never approved, and it must
+                    # SAY SO on the pull request. Without this the `and` above
+                    # short-circuits, nothing is posted, and the pull request a person
+                    # is then told to go open carries only its first round -- while the
+                    # log claims it "keeps the evidence". A live routed run ended
+                    # ROLE_PR_BLOCKED with the blocking round visible nowhere but the
+                    # engine's own memory.
+                    self._assess_pull_request(run, item, gate, stage)
                 if not approved:
                     row["state"] = "blocked"
                     row["error"] = ("ITERATION_CAP" if gate.get("passed")
