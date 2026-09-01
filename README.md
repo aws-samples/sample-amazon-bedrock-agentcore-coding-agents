@@ -102,6 +102,36 @@ To prove write permission, that check idempotently resets the
 Every finished run also persists its verdict, so `run_status <run_id>` still answers
 from a NEW coordinator session, and `list_runs` finds it when the run id is lost.
 
+## Gotchas worth knowing before you debug
+
+Each of these cost real time on a live run, and each has a cheap tell.
+
+- **opencode needs a pseudo-terminal.** Version 1.17.20's default formatter blocks when
+  stdout is not a tty, so a non-PTY invocation hangs with no output, no error and almost
+  no CPU, its debug log stopping right after `init`. The served paths already run it in a
+  PTY (`agentcore exec --it`, and a Runtime PTY per dispatched turn). If you must drive it
+  from a script, add `--format json`. Do not go hunting the flags or the credentials.
+- **Enabling Claude Code telemetry is not exporting it.** A dispatched run gets seven
+  variables from `_CLAUDE_TELEMETRY` in `orchestrator/roles.py`. With only
+  `CLAUDE_CODE_ENABLE_TELEMETRY=1` the CLI collects and sends nowhere, and Logs Insights
+  stays empty. Check the sidecar too: inside the Runtime,
+  `curl -fsS http://127.0.0.1:13133` answers `"status":"Server available"`.
+- **Only stage steering a role actually reads.** Everything under `/mnt/s3files` is
+  visible to every role whose launcher works there, including the validator. Claude Code
+  keeps `$HOME` in a hand-opened shell and reads its baked `CLAUDE.md`; opencode and Kiro
+  pick `/mnt/s3files` when steering is there.
+- **A session id must be at least 33 characters**, which is why every example generates a
+  UUID. And `.bashrc` exports reach interactive shells only, so scripted runs must pass
+  the environment explicitly.
+- **Trust the pull request, not the chat turn.** The coordinator's prose is a model
+  summarising state and can overstate; `role_prs`, `gate_history`, `review_rounds`,
+  `fail_reason` and `next_action` are what the engine recorded.
+- **You cannot create a GitHub App from an API.** `coding-agents/gateway_mcp/create-github-app.py`
+  automates everything around it (manifest, redirect, conversion, installation id
+  discovery), but a human still presses **Create GitHub App** and installs it. Adding a
+  new repository to an App installation you own also needs a browser: a user token gets
+  `403 You do not have permission to modify this app`.
+
 ## License
 
 MIT-0. See `LICENSE`.
