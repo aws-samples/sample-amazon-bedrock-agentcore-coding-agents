@@ -99,8 +99,12 @@ _MAX_WORK_DIRS = int(os.environ.get("WORKSHOP_MAX_WORK_DIRS", "40"))
 _PERSIST_LOG_TAIL = 60
 # Active runs need a durable pulse too. Without it a Runtime recycle kills the
 # daemon worker and leaves no evidence that the persisted "running" state is stale.
+# 10s, not 30s: this pulse is now also the refresh rate of the live activity feed a
+# watcher reads, and a build the attendee is watching should not look frozen for half a
+# minute at a time. The snapshot is one small object, and one run is active at a time in
+# a workshop, so the extra writes are cheap. Raise it if you ever run many concurrently.
 _PERSIST_HEARTBEAT_S = float(os.environ.get(
-    "WORKSHOP_RUN_STATE_HEARTBEAT_S", "30"))
+    "WORKSHOP_RUN_STATE_HEARTBEAT_S", "10"))
 
 
 def _new_run_id() -> str:
@@ -189,6 +193,41 @@ HARNESS_ROLE_TIMEOUT_S = int(os.environ.get("HARNESS_ROLE_TIMEOUT_S", "1200"))
 _EVENT_TEXT_CAP = 4000
 _ROLE_EVENT_CAP = 200
 
+# The WATCHABLE slice of the live feed: how many recent events per role are persisted,
+# and how much of each line survives. Deliberately small. The full feed is up to
+# _ROLE_EVENT_CAP events of _EVENT_TEXT_CAP characters per role, and the snapshot is
+# rewritten on every heartbeat, so persisting all of it would turn a liveness pulse into
+# a megabyte-scale write every few seconds. A watcher only needs "what is happening now".
+_ACTIVITY_EVENTS_PER_ROLE = 12
+_ACTIVITY_TEXT_CAP = 240
+
+
+def _persistable_activity(run: "Run") -> dict:
+    """A compact, bounded view of what each role is doing, for an outside watcher.
+
+    Keeps the event KIND (text / thinking / tool_use / tool_result) because that is what
+    makes the feed legible as work rather than as log spam, and keeps the tool name when
+    there is one. Truncates every body, and never grows with the length of a run."""
+    out: dict[str, list[dict]] = {}
+    with run._lock:
+        feeds = {agent: list(evs) for agent, evs in run.role_events.items()}
+    for agent, events in feeds.items():
+        recent = []
+        for ev in events[-_ACTIVITY_EVENTS_PER_ROLE:]:
+            item = {"kind": ev.get("kind", "text")}
+            if ev.get("name"):
+                item["name"] = str(ev["name"])[:80]
+            body = ev.get("text") or ev.get("result") or ev.get("input") or ""
+            if not isinstance(body, str):
+                body = json.dumps(body, default=str)
+            body = " ".join(body.split())
+            if body:
+                item["text"] = body[:_ACTIVITY_TEXT_CAP]
+            recent.append(item)
+        if recent:
+            out[agent] = recent
+    return out
+
 # Single fixed budget for the one agentic phase. A role dispatched to its deployed
 # AgentCore Runtime drives a real CLI over the command shell; the per-role hard
 # timeout (HARNESS_ROLE_TIMEOUT_S) is the inner net, this is the outer one.
@@ -233,6 +272,36 @@ _NO_PRODUCER_ERROR = (
 # port flag, waiting for it needs a readiness convention, and a declared manifest is
 # still a schema we invented. One subprocess, no conventions.
 _ACCEPTANCE_CHECK = "acceptance_check"
+
+# How many of the check's own failing lines a repair round is given. The check writes
+# whatever it likes, so this reads the lines rather than parsing a format: a line that
+# announces a failure is one starting with FAIL, or one that says "failed"/"error"
+# without being a PASS line. Capped because the output is already truncated to 4000
+# characters upstream and a builder prompt is not the place for a full test log.
+_MAX_FAIL_LINES = 25
+
+
+def _gate_fail_lines(output: str) -> list[str]:
+    """Pull the failing lines out of a validator-authored check's own output.
+
+    No format is assumed or required. The validator picks its own language and its own
+    reporting style, so this looks for the words a failure is announced with and keeps
+    the order they appeared in. Returning nothing is fine and normal: some checks say
+    only "VERDICT: REJECT", and the caller simply has less to pass on."""
+    hits: list[str] = []
+    for raw in (output or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith(("PASS", "OK", "INFO", "SKIP")):
+            continue
+        if upper.startswith(("FAIL", "ASSERT", "ERROR", "NOT OK", "✗", "×")) or (
+                "FAILED" in upper and "0 FAILED" not in upper):
+            hits.append(line[:300])
+        if len(hits) >= _MAX_FAIL_LINES:
+            break
+    return hits
 
 # What compose must NOT publish. Two kinds, and both were observed on a live run:
 #   * the HARNESS we installed into the role's working directory (its steering file
@@ -875,6 +944,14 @@ class Engine:
             "role_prs": list(run.role_prs),
             "gate_history": list(run.gate_history),
             "events": (run.events or [])[-_PERSIST_LOG_TAIL:],
+            # What each role is DOING right now, so a run can be watched from outside
+            # the process that is running it. The console renders `public_events(run)`
+            # in-process, but the served path is a DEPLOYED coordinator: its engine runs
+            # inside an AgentCore Runtime the attendee cannot attach to, so without this
+            # the only window is a chat turn per poll, which is a minute of model time
+            # to learn one line of state. This is the same feed, bounded hard because it
+            # is rewritten on every heartbeat.
+            "activity": _persistable_activity(run),
         }
         with self._persist_lock:
             run_store.save(_RUNS_DIR, run.run_id, saved, run.log)
@@ -1372,6 +1449,21 @@ class Engine:
                 feedback = ("\n\nPrevious round's review REQUESTED CHANGES on the "
                             "pull request. Address each point:\n"
                             + "\n".join(f"- {d}" for d in failed))
+            # ...and the check's OWN FAIL lines, which are the only thing that says
+            # WHICH assertion broke. Measured on a live run: the check reported
+            # "141 checks run, 1 failed" and the builder received only that one-line
+            # summary, so its repair round spent 11 minutes rediscovering the failure
+            # by re-reading its own code. The evidence already existed in
+            # gate["output"] and already reached the pull request; it just never
+            # reached the role that had to act on it.
+            #
+            # This does NOT tell the builder what to build. It reports what the
+            # checker OBSERVED, exactly as a CI log does, and the check still decides.
+            fail_lines = _gate_fail_lines((run.review.get("gate") or {}).get("output", ""))
+            if fail_lines:
+                feedback += ("\n\nThe check's own failing lines (it decides the gate, "
+                             "so treat these as the specification of what to fix):\n"
+                             + "\n".join(f"  {line}" for line in fail_lines))
         if run._refresh_context:
             feedback += "\n\n" + run._refresh_context
         # The dispatched role, not a fixed id: role.agent is whichever role the
@@ -2055,6 +2147,36 @@ class Engine:
         run.term(_validator_agent(), f"head -1 {_ACCEPTANCE_CHECK} && wc -l {_ACCEPTANCE_CHECK}")
         return self._gate_dir_check_path(run, test_path, subject)
 
+    # Where a round's authored check is kept so the NEXT round can re-run it. It cannot
+    # live in the validator's worktree (that is reset per pull request) and it cannot
+    # live in the gate directory (``_gate_dir_check_path`` rebuilds that from scratch
+    # every round, on purpose, so a previous round's artefacts cannot satisfy a check).
+    # So it gets its own place under the run directory.
+    def _kept_check_path(self, run: Run, subject: _work_items.WorkItem) -> str:
+        return os.path.join(run.workdir, "authored-checks", subject.work_id,
+                            _ACCEPTANCE_CHECK)
+
+    def _keep_check_for_later_rounds(self, run: Run, subject: _work_items.WorkItem,
+                                     authored: str) -> None:
+        """Copy a freshly authored check aside, so a repair round can re-run THIS one."""
+        kept = self._kept_check_path(run, subject)
+        os.makedirs(os.path.dirname(kept), exist_ok=True)
+        shutil.copyfile(authored, kept)
+
+    def _prior_check(self, run: Run, subject: _work_items.WorkItem) -> str:
+        """The check a previous round authored for this pull request, if there is one.
+
+        Returns "" on the first round, and on any round where the copy is missing or
+        empty -- in which case the caller authors a new one. A missing copy must never
+        become a skipped gate: there is no fallback grade anywhere on this path."""
+        kept = self._kept_check_path(run, subject)
+        try:
+            if os.path.isfile(kept) and os.path.getsize(kept) > 0:
+                return kept
+        except OSError:
+            pass
+        return ""
+
     def _gate_dir_check_path(self, run: Run, authored: str,
                              subject: _work_items.WorkItem) -> str:
         """Run the authored check beside the exact pull request tree it inspected.
@@ -2243,6 +2365,36 @@ class Engine:
             run._item_checks = {}
             for item in self._builder_items(run, pending_only=True):
                 self._build_item_tree(run, item)
+                # A REPAIR ROUND RE-RUNS THE CHECK IT ALREADY HAS. It does not ask the
+                # validator to write a new one, and that is a correctness argument
+                # before it is a speed one.
+                #
+                # The check is authored against the REQUEST, not against the code. A
+                # repair changes the code and leaves the request alone, so the same
+                # check is still the right check -- and re-running it is exactly what
+                # re-running CI on a pushed fix does. Re-authoring after seeing the fix
+                # is the checker adapting to the work, which is the one thing the
+                # maker-checker split exists to prevent: a second check written with
+                # the repaired code in view can be softer than the one that caught the
+                # defect, and nothing would reveal that.
+                #
+                # It is also where the clock went. Measured on a live run: authoring
+                # took 5m49s, the repair 11m03s, and RE-authoring for round 2 another
+                # 9m44s -- to run a check that executes in 4.9 seconds. Reuse gives
+                # that back.
+                #
+                # One case genuinely invalidates the prior check: the base branch moved
+                # because a sibling pull request merged, so the checkout it was written
+                # against no longer exists. Then, and only then, author again.
+                reused = None if run._refresh_context else self._prior_check(run, item)
+                if reused:
+                    run._item_checks[item.work_id] = self._gate_dir_check_path(
+                        run, reused, item)
+                    run._acceptance_test_file = run._item_checks[item.work_id]
+                    run.log(f"validator: re-running the check already authored for "
+                            f"{item.work_id} against the repaired tree (not "
+                            "re-authoring: the request did not change)")
+                    continue
                 self._prepare_checker_checkout(run, role.agent, item)
                 # The checker in the maker-checker pair. It AUTHORS the acceptance
                 # check for this pull request; the engine executes that file in
@@ -2260,6 +2412,7 @@ class Engine:
                 else:
                     raise RuntimeError(_NO_PRODUCER_ERROR)
                 run._item_checks[item.work_id] = authored
+                self._keep_check_for_later_rounds(run, item, authored)
                 # Kept for the read-only review route and the compose commit, which
                 # ship the last authored check beside the work it graded.
                 run._acceptance_test_file = authored

@@ -35,6 +35,10 @@ RUN mkdir -p /home/agent/.claude && \
 COPY --chown=agent:agent settings.json /home/agent/.claude/settings.json
 
 ENV CLAUDE_CODE_USE_BEDROCK=1
+# Same reason as the backend image: the CLI is installed as root, so the agent
+# user's auto-updater fails and prints a red error in a hand-opened shell. The
+# dispatch env sets this, an interactive shell does not, so bake it.
+ENV DISABLE_AUTOUPDATER=1
 # Log stream name the collector writes to in /workshop/coding-agents/telemetry.
 ENV WORKSHOP_AGENT_NAME=claude_code_validator
 WORKDIR /app

@@ -38,6 +38,16 @@ RUN mkdir -p /home/agent/.claude && \
 COPY --chown=agent:agent settings.json /home/agent/.claude/settings.json
 
 ENV CLAUDE_CODE_USE_BEDROCK=1
+# The CLI is installed globally as root, so the `agent` user cannot write the npm
+# prefix and its auto-updater fails. In a DISPATCHED run this never showed, because
+# roles.py passes DISABLE_AUTOUPDATER=1 in the role env; a HAND-OPENED Lab 1 shell gets
+# no dispatch env, so it printed a persistent red
+# `✘ Auto-update failed: no write permission to npm prefix · Run claude doctor`
+# in the TUI footer. Seen on a live event box (2026-09-01, CLI 2.1.257). That is the
+# first thing an attendee sees inside the backend agent, at exactly the point the page
+# says "confirm it is alive", and it reads as a broken environment. Setting it here
+# covers every process in the image, so the interactive and dispatched paths agree.
+ENV DISABLE_AUTOUPDATER=1
 # Log stream name the collector writes to in /workshop/coding-agents/telemetry.
 ENV WORKSHOP_AGENT_NAME=claude_code
 WORKDIR /app
