@@ -238,6 +238,82 @@ def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatc
     assert out["session_id"] == session.session_id
 
 
+class _MuxSession:
+    """The RuntimeShellSession surface _run_in_muxed_pty touches, scripted."""
+    session_id = "console-mux000000000000000000000000000000000"
+    runtime_arn = "arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/claude_code-X"
+    alive = True
+    busy = False
+
+    def __init__(self, turn_output: str):
+        self.buffer = "TUI ready\n"
+        self.turn_output = turn_output
+
+    def wait_ready(self, **_kwargs):
+        return True
+
+    def emit_banner(self, text):
+        self.buffer += f"\n[orchestrator] {text}\n"
+
+    def send_turn(self, text):
+        self.sent = text
+        self.buffer += self.turn_output
+
+    def wait_turn_idle(self, **_kwargs):
+        return True
+
+
+def _mux_snapshot_ok(monkeypatch):
+    async def snapshot(*_args, **_kwargs):
+        return {"raw": ("__ROLE_RUN_BEGIN__-mux123\nsnapshot uploaded\n"
+                        "__ROLE_RUN_END__-mux123\n"), "exit": 0, "session_id": "snap"}
+    monkeypatch.setattr(runtime_exec, "_drive_shell", snapshot)
+
+
+def test_an_interactive_turn_reaches_the_watcher_inside_the_same_window(monkeypatch):
+    """A console-dispatched role stayed invisible to the watcher: the transcript had
+    no sentinels, so the engine's output window never opened."""
+    _mux_snapshot_ok(monkeypatch)
+    session = _MuxSession("Writing src/app.js\nWriting src/routes.js\n")
+    seen: list[str] = []
+    out = runtime_exec._run_in_muxed_pty(
+        session, session.runtime_arn, "claude-code", "build it", "run_1/work/backend",
+        None, "us-west-2", "snapshot\n", "mux123", seen.append, 600.0)
+    assert out["live_session"] is True
+    markers = [runtime_exec.run_window_marker(l) for l in seen]
+    assert markers[0] == "begin" and markers[-1] == "end"
+    assert "Writing src/app.js" in seen and "Writing src/routes.js" in seen
+
+
+def test_a_tui_that_quit_to_a_shell_is_a_launcher_failure_not_the_roles(monkeypatch):
+    """Live: Claude Code's workspace-trust dialog took the pasted prompt's Enter as
+    "No, exit", the TUI quit, and the empty snapshot was reported as the role having
+    "finished but changed nothing". The shell prompt at the end of the transcript is
+    the tell, and it must be named as OUR failure."""
+    _mux_snapshot_ok(monkeypatch)
+    dialog = ("Quick safety check: Is this a project you created or one you trust?\n"
+              "  No, exit\n  Yes, I trust this folder\n"
+              "agent@localhost:/tmp/workshop-7b18b8044156$ \n")
+    session = _MuxSession(dialog)
+    with pytest.raises(runtime_exec.RoleExecutionError) as excinfo:
+        runtime_exec._run_in_muxed_pty(
+            session, session.runtime_arn, "claude-code", "build it",
+            "run_1/work/backend", None, "us-west-2", "snapshot\n", "mux123", None, 600.0)
+    msg = str(excinfo.value)
+    assert "exited to a shell prompt" in msg and "launcher or platform" in msg
+    assert "Quick safety check" in msg, "the evidence must travel with the error"
+    assert session.busy is False
+
+
+def test_a_dollar_sign_inside_tui_output_is_not_a_shell_prompt():
+    assert not runtime_exec._tui_exited_to_shell(
+        "Total cost: $0.42\nnpm start binds PORT\n")
+    assert runtime_exec._tui_exited_to_shell(
+        "  No, exit\nagent@localhost:/tmp/workshop-abc$ \n"
+        "[orchestrator] result snapshot uploaded; this PTY remains interactive\n"), \
+        "the orchestrator's own banner follows the prompt and must be skipped"
+
+
 # --- Dispatch env contract (Lab 3 telemetry seam) ---------------------------
 # _build_command assembles the env prefix for every dispatched role. These
 # tests pin what ships: telemetry EMISSION is on for every role (the agent

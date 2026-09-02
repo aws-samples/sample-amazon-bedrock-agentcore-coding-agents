@@ -37,6 +37,10 @@ export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
 export CLAUDE_CODE_USE_BEDROCK=1
 export HOME="/home/agent"
 
+# An orchestrated interactive PTY hydrates one run-local linked worktree and
+# supplies it here. Manual Lab 1 shells keep the familiar HOME default.
+RUN_DIR="${WORKSHOP_AGENT_WORKDIR:-$HOME}"
+
 # ── No first-run prompts (self-heal on a stale image) ─────────
 # --dangerously-skip-permissions still shows a one-time "Bypass Permissions mode?
 # 1.No 2.Yes" acceptance on a headless PTY (it would hang with no human). The
@@ -44,7 +48,16 @@ export HOME="/home/agent"
 # ~/.claude/settings.json. It is baked into the image, but we also merge it in here
 # so an already-deployed image that predates the bake self-heals with no rebuild.
 # Runs silently (the file lives under HOME, never echoed to the PTY).
-python3 - <<'PYSETTINGS' >/dev/null 2>&1 || true
+#
+# The SECOND block marks the working directory TRUSTED in ~/.claude.json. The image
+# pre-trusts only /home/agent, and the interactive TUI asks "Is this a project you
+# trust?" for any other directory, with "No, exit" preselected. A console-dispatched
+# turn runs in a fresh /tmp/workshop-<nonce> worktree, so on a live run the pasted
+# prompt plus Enter answered that dialog with "No, exit", the TUI quit to a shell
+# prompt, and the engine reported the role "finished but changed nothing". The
+# headless --print path never shows the dialog, which is why only the interactive
+# path broke. Same block the validator launcher already carries.
+CLAUDE_PROJECT_DIR="$RUN_DIR" python3 - <<'PYSETTINGS' >/dev/null 2>&1 || true
 import json, os
 p = os.path.expanduser("~/.claude/settings.json")
 os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -56,6 +69,24 @@ cfg.setdefault("permissionMode", "dontAsk")
 cfg["hasCompletedOnboarding"] = True
 cfg["skipDangerousModePermissionPrompt"] = True
 json.dump(cfg, open(p, "w"), indent=2)
+
+project_path = os.environ["CLAUDE_PROJECT_DIR"]
+project_config_path = os.path.expanduser("~/.claude.json")
+try:
+    project_config = json.load(open(project_config_path))
+except Exception:
+    project_config = {}
+projects = project_config.setdefault("projects", {})
+if not isinstance(projects, dict):
+    projects = {}
+    project_config["projects"] = projects
+project = projects.setdefault(project_path, {})
+if not isinstance(project, dict):
+    project = {}
+    projects[project_path] = project
+project["hasTrustDialogAccepted"] = True
+project["hasCompletedProjectOnboarding"] = True
+json.dump(project_config, open(project_config_path, "w"), indent=2)
 PYSETTINGS
 
 # ── Configure MCP Gateway (needs GATEWAY_URL from runtime env) ──
@@ -96,9 +127,6 @@ while [ $# -gt 0 ]; do
 done
 set -- "${ARGS[@]}"
 
-# An orchestrated interactive PTY hydrates one run-local linked worktree and
-# supplies it here. Manual Lab 1 shells keep the familiar HOME default.
-RUN_DIR="${WORKSHOP_AGENT_WORKDIR:-$HOME}"
 cd "$RUN_DIR"
 
 # ── Run ──────────────────────────────────────────────────────

@@ -837,6 +837,22 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
             "session_id": result["session_id"]}
 
 
+# A bash prompt at the END of an interactive transcript means the role's TUI is no
+# longer running: the launcher's shell got the terminal back. Matched on the shape the
+# agent images print (`user@host:cwd$ `), anchored to the last non-empty line so a `$`
+# inside the TUI's own output cannot trigger it.
+_SHELL_PROMPT_RE = re.compile(r"^\S+@\S+:\S*\$\s*$")
+
+
+def _tui_exited_to_shell(transcript: str) -> bool:
+    lines = [ln.strip() for ln in transcript.splitlines() if ln.strip()]
+    # The orchestrator's own banner is appended AFTER the shell prompt appears, so
+    # skip trailing banner lines before looking for the prompt.
+    while lines and lines[-1].startswith("[orchestrator]"):
+        lines.pop()
+    return bool(lines) and _SHELL_PROMPT_RE.match(lines[-1]) is not None
+
+
 def _live_session_for(agent_id: str, runtime_arn: str, launch_command: str,
                       run_subdir: str, user_id: str) -> Any | None:
     """Open a console-registered PTY when this process hosts the Agents UI.
@@ -891,8 +907,27 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                 "before its worktree snapshot upload finished")
         transcript = _clean(session.buffer[start:])
         if on_line:
+            # Bracket the transcript with the same sentinels the headless path prints,
+            # so the engine's watchable-window logic treats an interactive turn the
+            # same way. Without them a console-dispatched role stayed invisible to the
+            # watcher: the window never opened.
+            on_line(f"{_RUN_BEGIN}-{nonce}")
             for line in transcript.splitlines():
                 on_line(line)
+            on_line(f"{_RUN_END}-{nonce}")
+        if _tui_exited_to_shell(transcript):
+            # The TUI is gone and a shell prompt is what went quiet. Whatever put it
+            # there (a first-run dialog answered by the pasted prompt, a crash, a
+            # CLI that refused to start) is the launcher's or the platform's failure,
+            # not the request's, and it must be reported as such: the empty snapshot
+            # that follows would otherwise be read as "the role finished but changed
+            # nothing", which blames an agent that never got its turn. Observed
+            # live: Claude Code's workspace-trust dialog took the prompt's Enter as
+            # "No, exit".
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: {agent_id}'s interactive TUI exited to a "
+                "shell prompt before the turn ran; this is a launcher or platform "
+                f"failure, not the request. Transcript tail:\n{transcript[-900:]}")
 
         snapshot_session = "snap-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
         result = asyncio.run(_drive_shell(
