@@ -263,11 +263,29 @@ class _MuxSession:
         return True
 
 
-def _mux_snapshot_ok(monkeypatch):
-    async def snapshot(*_args, **_kwargs):
+def _mux_snapshot_ok(monkeypatch, seen_sessions=None):
+    async def snapshot(*args, **_kwargs):
+        if seen_sessions is not None:
+            seen_sessions.append(args[5])          # session_id
         return {"raw": ("__ROLE_RUN_BEGIN__-mux123\nsnapshot uploaded\n"
                         "__ROLE_RUN_END__-mux123\n"), "exit": 0, "session_id": "snap"}
     monkeypatch.setattr(runtime_exec, "_drive_shell", snapshot)
+
+
+def test_the_snapshot_runs_in_the_ptys_own_session(monkeypatch):
+    """A runtimeSessionId IS a microVM. Measured on a live runtime: a marker created in
+    session A is visible from a second SHELL of session A and absent from session B. So
+    a snapshot opened under its own session id packed a worktree that existed only in
+    the PTY's microVM -- and the empty result was then reported as the role having
+    "changed nothing", which is how a live console build failed after doing real work."""
+    sessions: list[str] = []
+    _mux_snapshot_ok(monkeypatch, sessions)
+    session = _MuxSession("built it\n")
+    runtime_exec._run_in_muxed_pty(
+        session, session.runtime_arn, "claude-code", "build it", "run_1/work/backend",
+        None, "us-west-2", "snapshot\n", "mux123", None, 600.0)
+    assert sessions == [session.session_id], \
+        "the snapshot must share the PTY's microVM, not open a fresh one"
 
 
 def test_an_interactive_turn_reaches_the_watcher_inside_the_same_window(monkeypatch):

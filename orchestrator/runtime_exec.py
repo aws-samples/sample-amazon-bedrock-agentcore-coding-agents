@@ -929,10 +929,16 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                 "shell prompt before the turn ran; this is a launcher or platform "
                 f"failure, not the request. Transcript tail:\n{transcript[-900:]}")
 
-        snapshot_session = "snap-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+        # The snapshot MUST run in the PTY's OWN session. A runtimeSessionId is a
+        # microVM: a fresh session id gets a fresh /tmp, so a snapshot opened under its
+        # own id packed a worktree that only ever existed somewhere else. Measured on a
+        # live runtime: a marker created in session A is visible from a SECOND SHELL of
+        # session A and absent from session B. A different shell_id within the session
+        # is what keeps this legal (the SDK forbids two clients on one shell_id), and
+        # _drive_shell already generates a fresh one per call.
         result = asyncio.run(_drive_shell(
             runtime_arn, snapshot_command, region, None,
-            min(240.0, timeout_s), snapshot_session))
+            min(240.0, timeout_s), session.session_id))
         snapshot_transcript = _slice(
             result["raw"], f"{_RUN_BEGIN}-{nonce}", f"{_RUN_END}-{nonce}")
         if result["exit"] != 0:
