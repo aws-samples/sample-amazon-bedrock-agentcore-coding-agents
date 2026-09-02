@@ -40,7 +40,8 @@ import run_store  # noqa: E402
 _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", ".runs")
 
 # One glyph per event kind, so a glance separates thinking from doing.
-_KIND = {"tool_use": "*", "tool_result": "<", "thinking": "~", "text": " "}
+_KIND = {"tool_use": "*", "tool_result": "<", "thinking": "~", "text": " ",
+         "output": ">"}   # ">" is a line the role's CLI printed, as it printed it
 
 _STATE_ORDER = ("queued", "running", "done", "failed", "skipped")
 
@@ -60,11 +61,37 @@ class _Ink:
     def cyan(self, t): return self(t, "36")
 
 
-def _latest_run_id() -> str:
+def _attach_to_the_mirror() -> str:
+    """Point this process at the deployed coordinator's run-state mirror.
+
+    The SERVED Lab 2 build runs inside the coordinator's own Runtime, whose
+    filesystem dies with the microVM, so it mirrors every snapshot to S3. Nothing on
+    the workshop host sets ``WORKSHOP_RUNTIME_BUCKET`` (the stack exports the region,
+    the account id and the model ids, not the bucket), and a live run showed the
+    cost: with a build underway, this command answered "no runs found" while its
+    snapshot sat in the mirror. So resolve the same bucket the writer was handed and
+    read from it too. Never fatal: an unresolvable mirror still leaves local runs
+    watchable.
+
+    Returns the bucket in use, or "" when only local disk is readable.
+    """
+    if not os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip():
+        bucket = run_store.reader_mirror_bucket()
+        if bucket:
+            os.environ["WORKSHOP_RUNTIME_BUCKET"] = bucket
+    return os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
+
+
+def _where_it_looked(bucket: str) -> str:
+    local = f"{_RUNS_DIR}/state"
+    return f"{local} or s3://{bucket}/{run_store._STATE_PREFIX}" if bucket else local
+
+
+def _latest_run_id(bucket: str) -> str:
     recent = run_store.recent(_RUNS_DIR, limit=1)
     if not recent:
-        sys.exit(f"no runs found under {_RUNS_DIR}/state. Submit a build first, or pass "
-                 "a run id.")
+        sys.exit(f"no runs found in {_where_it_looked(bucket)}. Submit a build "
+                 "first, or pass a run id.")
     return recent[0].get("run_id", "")
 
 
@@ -127,8 +154,12 @@ def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
             lines.append(f"    {num:<6} {pr.get('role', pr.get('agent', '?')):<12}"
                          f" {pr.get('state', '') or ''}  {ink.dim(url)}")
     for entry in (rec.get("gate_history") or [])[-6:]:
-        lines.append(f"    gate {entry.get('work_id', '?')} round "
-                     f"{entry.get('round', '?')}: {_gate_mark(entry, ink)}"
+        # A gate entry records `sequence` (the nth check of the run) and puts the round
+        # in `stage`; there is no `round` key, so asking for one printed "round ?" on
+        # every line. Prefer the sequence, which is the number this row actually has.
+        nth = entry.get("round", entry.get("sequence", "?"))
+        lines.append(f"    gate {entry.get('work_id', '?')} #{nth}: "
+                     f"{_gate_mark(entry, ink)}"
                      f"  {ink.dim(' '.join(str(entry.get('summary', '')).split())[:70])}")
 
     nxt = rec.get("next_action")
@@ -150,13 +181,14 @@ def main() -> int:
     args = ap.parse_args()
 
     ink = _Ink(not args.plain and sys.stdout.isatty())
-    run_id = args.run_id or _latest_run_id()
+    bucket = _attach_to_the_mirror()
+    run_id = args.run_id or _latest_run_id(bucket)
     terminal = ("passed", "failed", "needs_human")
     last = ""
     while True:
         rec = run_store.load(_RUNS_DIR, run_id)
         if rec is None:
-            print(f"no durable record for {run_id} yet "
+            print(f"no durable record for {run_id} yet in {_where_it_looked(bucket)} "
                   f"(a run appears here at its first heartbeat)")
             if args.once:
                 return 1

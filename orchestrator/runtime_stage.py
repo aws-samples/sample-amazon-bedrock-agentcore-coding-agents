@@ -165,6 +165,19 @@ def _bucket_name(region: str) -> str:
     return _bucket(region, _account_id(region))
 
 
+def runtime_bucket(region: str = "") -> str:
+    """This account's runtime bucket, by the one naming convention.
+
+    Public because a READER needs the same answer a writer was handed: the deployed
+    coordinator is TOLD its bucket (``WORKSHOP_RUNTIME_BUCKET``, set by
+    ``configure_deploy``), while a read-only tool on the workshop host has to derive
+    it. Exposing the resolver keeps that name in one place instead of a second
+    literal in ``run_store``. Raises when the region cannot be resolved, for the
+    reason ``_bucket`` documents: a blank region builds a WRONG name, not a default.
+    """
+    return _bucket_name(region)
+
+
 def archive_uri(subdir: str, region: str | None = None) -> str:
     region = region or _s3_region()
     return f"s3://{_bucket_name(region)}/{archive_key(subdir)}"

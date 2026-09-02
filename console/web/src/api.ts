@@ -279,8 +279,9 @@ export const getRunResult = (runId: string) =>
 // One structured event from a role's real CLI session, the way the agent emitted
 // it: assistant prose, extended reasoning, a tool call, or that call's result.
 // `name` === 'Task' marks a subagent spawn.
+// `output` is a line the role's CLI printed, forwarded as it printed it.
 export interface AgentEvent {
-  kind: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+  kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'output';
   text?: string;
   id?: string;
   name?: string;

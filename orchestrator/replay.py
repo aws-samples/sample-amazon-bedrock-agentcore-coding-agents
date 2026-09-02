@@ -273,6 +273,7 @@ def gate_evidence_comment(
     stage: str,
     item: Any = None,
     assessment: str = "",
+    note: str = "",
 ) -> str:
     """Evidence posted on ONE pull request's timeline.
 
@@ -281,12 +282,20 @@ def gate_evidence_comment(
     carries the check's own result, the base it ran against, and the review
     Assessment for THIS pull request -- not a run-wide digest naming work that is not
     in this diff.
+
+    ``note`` says who a red result is actually addressed to, when that is not the
+    obvious answer. A live run posted "round 1 FAILED" and then "round 1 PASSED" on
+    the same pull request with the SAME patch digest, because the failure was in the
+    validator's own check and the builder was never asked to change anything -- true,
+    and unreadable without a sentence saying so.
     """
     lines = [
         f"### {stage}",
         "",
         f"Executed check: **{'PASSED' if gate.get('passed') else 'FAILED'}**",
     ]
+    if note:
+        lines += ["", note.strip()]
     base = getattr(run, "final_base_branch", None)
     if item is not None and base:
         lines.append(

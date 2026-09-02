@@ -65,9 +65,11 @@ Run it (always via the HTTP shell, ``connection_api.py``):
 
 from __future__ import annotations
 
+import collections
 import getpass
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -201,19 +203,64 @@ _ROLE_EVENT_CAP = 200
 _ACTIVITY_EVENTS_PER_ROLE = 12
 _ACTIVITY_TEXT_CAP = 240
 
+# The rolling tail of what a dispatched role is PRINTING right now. `role_events`
+# cannot serve this: it is a never-drop feed that FREEZES at _ROLE_EVENT_CAP, which is
+# correct for a permanent record and useless for a live window, because after the cap a
+# watcher would keep re-reading the oldest lines for the rest of a 20-minute build. So
+# the tail is a separate ring of the newest lines only.
+#
+# Why it exists at all: on a live run the persisted activity for BOTH roles was one
+# line each ("[backend-builder] built on AgentCore Runtime ..."), the engine's own
+# fallback for a role with no feed, while Lab 2 promised a watcher showing what each
+# role is doing inside its Runtime. The dispatch had the lines all along -- every
+# executor path already calls `on_line` per line -- and threw them away.
+_OUTPUT_TAIL_PER_ROLE = 12
+# The PTY echoes the whole dispatch command back before running it: one enormous line
+# carrying the prompt and the wrapper. It is not what the role is doing, and it is the
+# only line long enough to matter, so length alone separates them.
+_OUTPUT_LINE_MAX = 1000
+# Agent output is arbitrary text, and this tail is persisted to the runtime bucket. No
+# credential is on the dispatch path by construction (roles authenticate with the
+# Runtime's own IAM role, and a brokered vendor key is command-substituted, never
+# echoed), so this is defence in depth for a role that prints one anyway.
+_SECRET_RE = re.compile(
+    r"\b(?:ksk_[A-Za-z0-9_-]{8,}"
+    r"|gh[pousr]_[A-Za-z0-9]{8,}"
+    r"|(?:AKIA|ASIA)[0-9A-Z]{8,}"
+    r"|sk-[A-Za-z0-9_-]{12,})")
+# Escape-sequence remains, after runtime_exec's per-line clean has already run. A frame
+# boundary can split ESC from the rest of a sequence, so the parameters and the final
+# byte arrive with nothing left to identify them as control: `[?2004h` (bracketed paste,
+# sent on every prompt redraw), `[2K` (erase line), and a TUI's 256-colour `[38;5;244m`.
+# A DIGIT before the final letter is required, so ordinary bracketed prose (`[abc]`,
+# `array[10]`) is never eaten.
+_PTY_RESIDUE_RE = re.compile(r"\[\??[\d;]*\d[A-Za-z]")
+# A line worth showing has a letter or a digit in it. Prompt furniture (`>`, box-drawing,
+# spinner frames) does not, and a TUI emits a great deal of it.
+_WORDLIKE_RE = re.compile(r"[A-Za-z0-9]")
+
+
+def _redact(text: str) -> str:
+    return _SECRET_RE.sub("[redacted]", text)
+
 
 def _persistable_activity(run: "Run") -> dict:
     """A compact, bounded view of what each role is doing, for an outside watcher.
 
-    Keeps the event KIND (text / thinking / tool_use / tool_result) because that is what
-    makes the feed legible as work rather than as log spam, and keeps the tool name when
-    there is one. Truncates every body, and never grows with the length of a run."""
+    Keeps the event KIND (text / thinking / tool_use / tool_result / output) because
+    that is what makes the feed legible as work rather than as log spam, and keeps the
+    tool name when there is one. Truncates every body, and never grows with the length
+    of a run.
+
+    The structured events come first and the live output tail last, so the newest thing
+    the role printed is the newest thing the watcher shows."""
     out: dict[str, list[dict]] = {}
     with run._lock:
         feeds = {agent: list(evs) for agent, evs in run.role_events.items()}
-    for agent, events in feeds.items():
+        tails = {agent: list(lines) for agent, lines in run.role_output.items()}
+    for agent in list(feeds) + [a for a in tails if a not in feeds]:
         recent = []
-        for ev in events[-_ACTIVITY_EVENTS_PER_ROLE:]:
+        for ev in feeds.get(agent, [])[-_ACTIVITY_EVENTS_PER_ROLE:]:
             item = {"kind": ev.get("kind", "text")}
             if ev.get("name"):
                 item["name"] = str(ev["name"])[:80]
@@ -222,8 +269,12 @@ def _persistable_activity(run: "Run") -> dict:
                 body = json.dumps(body, default=str)
             body = " ".join(body.split())
             if body:
-                item["text"] = body[:_ACTIVITY_TEXT_CAP]
+                item["text"] = _redact(body[:_ACTIVITY_TEXT_CAP])
             recent.append(item)
+        for line in tails.get(agent, []):
+            recent.append({"kind": "output",
+                           "text": _redact(line[:_ACTIVITY_TEXT_CAP])})
+        recent = recent[-(_ACTIVITY_EVENTS_PER_ROLE + _OUTPUT_TAIL_PER_ROLE):]
         if recent:
             out[agent] = recent
     return out
@@ -660,10 +711,16 @@ class Run:
     pr: dict | None = None                 # github finalization result ({pr_url} | {skipped} | {error})
     compose_base: dict | None = None       # external-repo compose base ({mode: external|local, ...})
     terminals: dict[str, list[dict]] = field(default_factory=dict)  # per-role shell transcript
-    # Per-role STRUCTURED agent events (text/thinking/tool_use/tool_result), in
-    # arrival order, parsed from each role's real CLI event stream. This is what
-    # the console renders as live tool calls + reasoning (not the raw transcript).
+    # Per-role STRUCTURED events (text/thinking/tool_use/tool_result) in arrival
+    # order: the permanent, never-drop record the console renders. Today the engine
+    # is the only producer (phase summaries), so it is NOT a substitute for what the
+    # role is printing -- that is `role_output` below.
     role_events: dict[str, list[dict]] = field(default_factory=dict)
+    # Per-role ROLLING TAIL of the lines the role's CLI is actually printing, newest
+    # last, fed by the dispatch `on_line` callback. Bounded by construction (a deque
+    # per role), because unlike role_events this must never freeze: it is the live
+    # window, so old lines are meant to fall off.
+    role_output: dict[str, Any] = field(default_factory=dict)
     pr_url: str | None = None              # real PR when GitHub is connected; null locally
     merge_state: str | None = None         # queue_complete | human_review | merged | null
     user_identity: dict = field(default_factory=dict)  # Cognito baggage: {user_id, user_email, user_name}
@@ -829,6 +886,34 @@ class Run:
             role = self.progress.get(agent)
             if role is not None:
                 role.last_beat = time.monotonic()
+
+    def add_output(self, agent: str, line: str) -> None:
+        """Record one line the role's CLI just printed, for the live watcher.
+
+        A rolling tail, not a log: the deque drops the oldest line so the window stays
+        the NEWEST activity for the whole run. `add_event` deliberately cannot do this
+        (it freezes at its cap to keep a permanent record honest), which is why the two
+        are separate.
+
+        Skips what is not work: blanks, the over-long line the PTY echoes back (the whole
+        dispatch command), terminal-control residue, and prompt furniture. All three were
+        real on a live run: the frame boundary can split an escape sequence so the ESC
+        byte is cleaned on one frame and `[?2004h` arrives on the next with nothing left
+        to mark it as control, and a TUI redraws its `>` prompt constantly.
+        """
+        # Residue first, THEN collapse whitespace: the other order leaves the gap the
+        # removed sequence was sitting in.
+        line = " ".join(_PTY_RESIDUE_RE.sub("", str(line)).split())
+        if not line or len(line) > _OUTPUT_LINE_MAX:
+            return
+        if not _WORDLIKE_RE.search(line):
+            return
+        with self._lock:
+            tail = self.role_output.get(agent)
+            if tail is None:
+                tail = collections.deque(maxlen=_OUTPUT_TAIL_PER_ROLE)
+                self.role_output[agent] = tail
+            tail.append(line)
 
     def transition(self, to_status: str, *expected: str,
                    reason: str | None = None) -> bool:
@@ -1341,8 +1426,22 @@ class Engine:
         t0 = time.monotonic()
         collected: list[str] = []
 
+        # The watchable feed shows the CLI'S OWN output, which is the slice between the
+        # same sentinels runtime_exec uses to capture it. Everything before the first one
+        # is archive download, worktree setup and the echoed dispatch command: real
+        # transcript, but not the role working, and it filled the whole 12-line window on
+        # a live run. `window` is per attempt, so a retry starts closed again.
+        window = {"open": False}
+
         def on_line(line: str) -> None:
             collected.append(line)
+            marker = runtime_exec.run_window_marker(line)
+            if marker is not None:
+                window["open"] = marker == "begin"
+            elif window["open"]:
+                # The ONLY place a dispatched role's own output becomes visible to
+                # someone who cannot attach to its Runtime.
+                run.add_output(agent_id, line)
             with run._lock:
                 role.last_beat = time.monotonic()
 
@@ -2816,13 +2915,26 @@ class Engine:
             item for item in eligible
             if item.agent in run._active_builders
         ] or eligible
+        # When the router selects no builder, the evidence is the CHECK's own failure
+        # (a live run: the validator's script crashed on its own format string before
+        # it exercised any builder code). The comment still belongs on the pull request
+        # being judged -- that is where the evidence is read -- but it must not read as
+        # a change request to a builder who has nothing to fix.
+        checker_only = not run._active_builders
+        heading = ("check re-authored by the validator" if checker_only
+                   else "repair requested")
+        note = ("The failure is in the validator's own check, not in this pull "
+                "request. Its code is unchanged and its builder has nothing to do: "
+                "the validator repairs the check and the orchestrator re-runs it "
+                "against this same tree." if checker_only else "")
         for target in targets:
             self._comment_work_item(
                 run,
                 target,
                 replay.gate_evidence_comment(
-                    run, gate, stage=f"{stage}: repair requested",
+                    run, gate, stage=f"{stage}: {heading}",
                     item=target,
+                    note=note,
                     assessment=(run.review or {}).get("assessment", "")),
             )
         run.log(
@@ -3550,10 +3662,21 @@ def public_terminals(run: Run) -> dict:
 
 
 def public_events(run: Run) -> dict:
-    """Per-role STRUCTURED agent events (text/thinking/tool_use/tool_result), in
-    arrival order; the console renders these as live tool calls + reasoning."""
+    """Per-role events the console renders as one feed, in arrival order.
+
+    Structured events (text/thinking/tool_use/tool_result) first, then the rolling
+    tail of what the role's CLI is PRINTING (kind ``output``). Both, for the same
+    reason the watcher shows both: on a dispatched run the engine is the only producer
+    of structured events, so a feed of those alone showed one summary line per role
+    while the role was working.
+    """
     with run._lock:
-        return {agent: [dict(e) for e in evs] for agent, evs in run.role_events.items()}
+        feeds = {agent: [dict(e) for e in evs]
+                 for agent, evs in run.role_events.items()}
+        for agent, lines in run.role_output.items():
+            feeds.setdefault(agent, []).extend(
+                {"kind": "output", "text": _redact(line)} for line in lines)
+    return feeds
 
 
 def public_diff(run: Run) -> dict:

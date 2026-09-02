@@ -45,6 +45,18 @@ export function AgentEventFeed({ events, live }: { events: AgentEvent[]; live: b
           // Rendered inline with its tool_use above; skip the standalone copy.
           return null;
         }
+        if (e.kind === 'output') {
+          // A line the role's CLI printed. Monospace, so it does not read as the
+          // agent's own prose.
+          return (
+            <p
+              key={key}
+              className="truncate font-mono text-xs leading-relaxed text-muted-foreground"
+            >
+              {e.text}
+            </p>
+          );
+        }
         // assistant prose
         return (
           <p key={key} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">

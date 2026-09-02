@@ -111,7 +111,12 @@ def test_a_successful_conversion_reaches_the_waiting_script(module, server):
     # On the CLASS, not the discarded handler instance.
     assert module.Handler.result["id"] == 42
     assert module.Handler.result["pem"].startswith("-----BEGIN")
-    assert module.Handler.done.is_set()
+    # wait(), not is_set(): the receiver sets `done` AFTER writing the response,
+    # on purpose (main() answers `done` with server.shutdown(), and a shutdown
+    # racing the write costs the attendee the install-the-App page). So the
+    # client can legitimately see its answer first. A flag that is never set
+    # still fails here.
+    assert module.Handler.done.wait(5)
 
 
 def test_a_refused_conversion_is_reported_not_swallowed(module, server):
@@ -123,7 +128,12 @@ def test_a_refused_conversion_is_reported_not_swallowed(module, server):
         _get(server, "/callback?code=abc&state=st4te")
     assert excinfo.value.code == 502
     assert "error" in module.Handler.result
-    assert module.Handler.done.is_set()
+    # wait(), not is_set(): the receiver sets `done` AFTER writing the response,
+    # on purpose (main() answers `done` with server.shutdown(), and a shutdown
+    # racing the write costs the attendee the install-the-App page). So the
+    # client can legitimately see its answer first. A flag that is never set
+    # still fails here.
+    assert module.Handler.done.wait(5)
 
 
 def test_the_env_file_carries_the_three_values_deploy_all_reads(module, tmp_path,

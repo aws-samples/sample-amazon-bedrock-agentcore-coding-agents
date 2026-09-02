@@ -233,13 +233,20 @@ class Handler(BaseHTTPRequestHandler):
             created = github("POST", f"/app-manifests/{code}/conversions")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode()[:400]
+            # The ordering here is deliberate and has TWO halves, because there are two
+            # observers. Record the outcome BEFORE responding: main() reads
+            # Handler.result the instant `done` releases it, so an assignment after the
+            # response leaves the two disagreeing for however long the thread takes to
+            # reach the next line. Then set `done` AFTER responding, because main()
+            # answers `done` with server.shutdown(), and a shutdown that races the write
+            # costs the attendee the page telling them to install the App. Assign on the
+            # CLASS, not on self: the handler instance is discarded after this request,
+            # so an instance attribute would never reach main() at all.
+            Handler.result = {"error": f"conversion failed: HTTP {exc.code}"}
             self._send(502, result_page(
                 "GitHub refused the conversion",
                 f"<p>HTTP {exc.code}. The code is valid for one hour and once only.</p>"
                 f"<pre>{detail}</pre>"))
-            # Assign on the CLASS, not on self: the handler instance is discarded after
-            # this request, so an instance attribute would never reach main().
-            Handler.result = {"error": f"conversion failed: HTTP {exc.code}"}
             self.done.set()
             return
         Handler.result = created

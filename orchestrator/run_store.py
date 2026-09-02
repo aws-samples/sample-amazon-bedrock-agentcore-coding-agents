@@ -54,6 +54,38 @@ def _s3_key(run_id: str) -> str:
     return f"{_STATE_PREFIX}/{run_id}.json"
 
 
+def reader_mirror_bucket() -> str:
+    """The mirror a READ-ONLY tool should look in when nothing told it where.
+
+    Writers are TOLD their bucket: ``configure_deploy`` puts
+    ``WORKSHOP_RUNTIME_BUCKET`` in the deployed coordinator's environment, which is
+    the only process that mirrors. A reader on the workshop host has no such
+    variable, and a live run proved what that costs: with a build underway and its
+    snapshot already in the mirror, the taught command
+    ``python3 orchestrator/watch_run.py`` answered "no runs found", because the
+    coordinator's state was in S3 and the watcher only knew about local disk.
+
+    So a reader derives the same name the writer was given, from the same
+    convention (``runtime_stage``), rather than a second literal here. Returns ""
+    when it cannot be resolved (no SDK, no credentials, no region), because a
+    watcher that cannot reach the mirror must still show local runs instead of
+    failing.
+
+    This is deliberately NOT wired into ``_s3()``. Making every caller resolve a
+    bucket would also point the box console's own run list at the deployed
+    coordinator's runs, and the two registries are separate on purpose: the console
+    hosts the engine in-process and cannot stream a run it did not dispatch.
+    """
+    explicit = os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
+    if explicit:
+        return explicit
+    try:
+        import runtime_stage  # noqa: PLC0415 (lazy: keeps the offline import light)
+        return runtime_stage.runtime_bucket()
+    except Exception:  # noqa: BLE001 (no SDK / no credentials / no region)
+        return ""
+
+
 def _s3() -> tuple[Any, str] | None:
     """(client, bucket) when a durable mirror is configured, else None.
 

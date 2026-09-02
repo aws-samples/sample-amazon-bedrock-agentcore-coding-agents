@@ -60,6 +60,31 @@ def _clean(text: str) -> str:
 _RUN_BEGIN = "__ROLE_RUN_BEGIN__"
 _RUN_END = "__ROLE_RUN_END__"
 
+
+_RUN_MARKER_RE = re.compile(
+    rf"^(?:{re.escape(_RUN_BEGIN)}|{re.escape(_RUN_END)})(?:-\S+)?$")
+
+
+def run_window_marker(line: str) -> str | None:
+    """``"begin"`` / ``"end"`` when this transcript line IS a run sentinel, else None.
+
+    Public so a live watcher can show the same slice the engine captures, rather than
+    the wrapper around it: before the first marker the transcript is archive download,
+    worktree setup and the echoed dispatch command, which is scaffolding, not the role
+    working.
+
+    The whole-line rule is the one ``_slice`` documents and is load-bearing for the
+    same reason: the command ECHO contains the sentinel VALUES mid-line (in the
+    ``B1=...; E1=...`` assignment), so a substring match opens the window on the echo
+    itself and the wrapper leaks in. Only the EXECUTED ``echo "$B1"`` puts a sentinel
+    alone on its own line. Observed live: a watcher that matched the prefix showed the
+    tar command's own arguments as the role's work.
+    """
+    stripped = _clean(line).strip()
+    if not _RUN_MARKER_RE.match(stripped):
+        return None
+    return "begin" if stripped.startswith(_RUN_BEGIN) else "end"
+
 # Directories a build creates that are not source. They are reproducible from the
 # manifest the agent wrote and never cross the Runtime exchange boundary.
 #
@@ -565,6 +590,7 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
         await asyncio.wait_for(shell.send(command),
                                timeout=max(1.0, deadline - time.monotonic()))
         frames = shell.__aiter__()
+        pending = ""   # the half line a frame boundary cut in two
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -586,8 +612,28 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
                 text = frame.text
                 out.append(text)
                 if on_line:
-                    for line in text.splitlines():
-                        on_line(line)
+                    # A frame boundary falls wherever the network put it, so the last
+                    # piece of a frame is usually HALF A LINE. Emitting it as a line
+                    # made one sentence arrive as a dozen one-word "lines", which is
+                    # what a live watcher then showed. Hold the tail until the next
+                    # frame completes it; `out` (and therefore `raw`) is untouched.
+                    #
+                    # Normalize CR the way _slice does, and for the same reason: the PTY
+                    # emits CRLF, and a TUI redraws a line with a bare CR. Splitting on
+                    # LF alone glues those redraws into one line -- observed live as
+                    # words losing their first letter, because the joined text then
+                    # looked like an escape sequence to the display filter.
+                    pending += text.replace("\r\n", "\n").replace("\r", "\n")
+                    if "\n" in pending:
+                        *complete, pending = pending.split("\n")
+                        for line in complete:
+                            # Clean PER LINE, the way the local-dev path already does.
+                            # Buffering is what makes this possible AND necessary: a
+                            # sequence split across two frames is whole here, and a bare
+                            # ESC that reaches a display makes the terminal eat the
+                            # characters after it (observed live: " - Completed" rendered
+                            # as "ompleted").
+                            on_line(_clean(line))
             elif ch == ShellChannel.STDERR:
                 out.append(frame.text)
             elif ch == ShellChannel.STATUS:
@@ -595,6 +641,10 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
                 break
             elif ch == ShellChannel.CLOSE:
                 break
+        # A shell can end without a trailing newline; flush what it left rather than
+        # dropping the last thing the role said.
+        if on_line and pending:
+            on_line(_clean(pending))
     return {"raw": "".join(out), "exit": exit_code if exit_code is not None else 0,
             "session_id": session_id}
 
