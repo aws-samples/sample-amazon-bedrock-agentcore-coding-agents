@@ -59,6 +59,7 @@ for _cand in (os.path.join(_HERE, "orchestrator"),
 
 
 import chat as _chat              # noqa: E402  the orchestrator brain (prompt+tools+agent)
+import session_keepalive as _keepalive  # noqa: E402  keeps this microVM alive mid-build
 
 app = BedrockAgentCoreApp()
 log = app.logger
@@ -102,6 +103,14 @@ async def invoke(payload: dict[str, Any], context: Any = None):
         yield "No prompt found. Send {\"prompt\": \"<your task>\"}."
         return
 
+    # The keepalive ping. Answered HERE, before the agent exists, so it costs no model
+    # turn and touches no run: its only job is to be inbound traffic on this session so
+    # the platform does not reclaim the microVM a fire-and-forget build is running in.
+    # See session_keepalive.py for the measurement that made this necessary.
+    if prompt.strip() == _keepalive.KEEPALIVE_PROMPT:
+        yield "warm"
+        return
+
     # Propagate user identity (Cognito baggage) into the engine context
     user_identity = (payload or {}).get("user_identity")
     if user_identity:
@@ -112,6 +121,15 @@ async def invoke(payload: dict[str, Any], context: Any = None):
             pass
 
     log.info("orchestrator invoked: %s", prompt[:200])
+    # Arm the keepalive for THIS session before the turn runs: a dispatch tool inside the
+    # turn starts a background build that outlives this request, and the session it needs
+    # is the one this request arrived on.
+    session_id = getattr(context, "session_id", None) or ""
+    _keepalive.ensure_started(
+        session_id,
+        lambda: _chat.ENGINE.active_count(),
+        log=lambda msg: log.info("%s", msg),
+    )
     agent = _get_or_create_agent()
     async for event in agent.stream_async(prompt):
         if "data" in event and isinstance(event["data"], str):
