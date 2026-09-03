@@ -111,8 +111,19 @@ def _s3() -> tuple[Any, str] | None:
 def save(runs_dir: str, run_id: str, payload: dict[str, Any],
          log=None) -> None:
     """Persist one run's public result. Never raises."""
-    body = json.dumps({**payload, "_saved_at": time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2)
+    # default=str, and inside the guard: this ran ABOVE the first try, so one value
+    # json could not encode raised TypeError straight out of a function whose whole
+    # contract is not to. The caller is the liveness heartbeat, and an unwritten
+    # snapshot is read two minutes later as COORDINATOR_SESSION_INTERRUPTED, whose
+    # next_action tells the attendee to resubmit a build that is still running. A
+    # degraded field is worth vastly more than a lost pulse.
+    try:
+        body = json.dumps({**payload, "_saved_at": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2, default=str)
+    except (TypeError, ValueError) as exc:
+        if log:
+            log(f"run state not serializable, snapshot skipped: {exc}", "warn")
+        return
     try:
         os.makedirs(_local_dir(runs_dir), exist_ok=True)
         # A heartbeat and the terminal write can land together. Give each writer

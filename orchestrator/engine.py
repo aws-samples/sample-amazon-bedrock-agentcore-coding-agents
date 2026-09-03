@@ -1042,12 +1042,23 @@ class Engine:
             run_store.save(_RUNS_DIR, run.run_id, saved, run.log)
 
     def _heartbeat(self, run: Run) -> None:
-        """Refresh an active run's durable snapshot until it becomes terminal."""
+        """Refresh an active run's durable snapshot until it becomes terminal.
+
+        One failed beat may never end the pulse. This loop had no guard, so a single
+        exception killed the thread for the rest of the run, and from then on every
+        persisted read of a perfectly healthy build answered
+        COORDINATOR_SESSION_INTERRUPTED with "submit the SAME request again" -- the
+        resubmission runaway, produced by a reporting bug rather than a dead
+        coordinator. Reporting may degrade; it may not invent a verdict.
+        """
         while run.status in ("queued", "running"):
             time.sleep(max(1.0, _PERSIST_HEARTBEAT_S))
             if run.status not in ("queued", "running"):
                 return
-            self._persist_run(run)
+            try:
+                self._persist_run(run)
+            except Exception as exc:  # noqa: BLE001 (a beat is never worth the pulse)
+                run.log(f"run state heartbeat skipped a beat: {exc}", "warn")
 
     def _cleanup_runtime_exchange(self, run: Run) -> None:
         """Remove deployed Runtime transfer objects after the verdict is durable."""
