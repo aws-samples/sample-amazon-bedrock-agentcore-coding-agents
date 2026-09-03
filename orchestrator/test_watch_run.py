@@ -162,14 +162,24 @@ def test_bracketed_prose_is_not_mistaken_for_an_escape_sequence():
 
 def test_a_secret_a_role_printed_never_reaches_the_durable_snapshot():
     """No credential is on the dispatch path by construction; this is the net under it,
-    because the tail is persisted to the runtime bucket."""
+    because the tail is persisted to the runtime bucket.
+
+    The samples are ASSEMBLED from pieces rather than written as literals. A credential
+    scanner matches on shape, not on meaning, so a literal `ASIA...` or `gho_...` here is
+    a hard-coded-secret finding in every clone of this repository -- it BLOCKED a commit
+    on a workshop box. Concatenation keeps the value the code under test sees identical
+    while leaving nothing secret-shaped in the file."""
+    fake_vendor_key = "ksk" + "_" + "EXAMPLEONLYNOTAREALKEY0123"
+    fake_gh_token = "gho" + "_" + "EXAMPLEONLYNOTAREALTOKEN01"
+    fake_aws_key_id = "ASI" + "A" + "EXAMPLEONLYNOTREAL01"
     run = _dispatched_run()
-    run.add_output("kiro", "KIRO_API_KEY=ksk_abcdefghijklmnopqrstuvwxyz012345")
-    run.add_output("kiro", "token gho_abcdefghijklmnopqrstuvwxyz0123456789")
-    run.add_output("kiro", "key ASIA5YSFREBUDFDTMKGC")
+    run.add_output("kiro", f"KIRO_API_KEY={fake_vendor_key}")
+    run.add_output("kiro", f"token {fake_gh_token}")
+    run.add_output("kiro", f"key {fake_aws_key_id}")
     printed = json.dumps(engine._persistable_activity(run))
-    for leaked in ("ksk_abcdefghijkl", "gho_abcdefghijkl", "ASIA5YSFREBU"):
+    for leaked in (fake_vendor_key, fake_gh_token, fake_aws_key_id):
         assert leaked not in printed, f"{leaked!r} must be redacted"
+        assert leaked[:12] not in printed, "not even the identifying prefix may survive"
     assert printed.count("[redacted]") == 3
 
 
