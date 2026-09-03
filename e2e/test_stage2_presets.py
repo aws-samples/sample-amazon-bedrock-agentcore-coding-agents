@@ -60,6 +60,7 @@ def test_named_roles_are_the_only_roles_that_run(console, cookie):
 
 # ------------------------------------------------------------------- the presets
 @pytest.mark.parametrize("preset,expected_roles", [
+    ("game-from-scratch", ["claude-code", VALIDATOR]),
     ("service-from-scratch", ["claude-code", VALIDATOR]),
     ("web-app", ["claude-code", "opencode", VALIDATOR]),
     ("cli-tool", ["claude-code", VALIDATOR]),

@@ -186,6 +186,45 @@ def test_prepare_run_base_reads_the_default_branch_and_creates_nothing(
         "branch directly, so there is no run-scoped branch to make")
 
 
+def test_checkout_brings_the_merged_default_branch_to_a_box_that_holds_no_token(
+        monkeypatch, tmp_path, capsys):
+    """The moment after the build: the attendee wants to RUN what the team built, and the
+    workshop host deliberately holds no GitHub credential, so `git clone` of their
+    private repository cannot work there. `checkout` is the same read the coordinator
+    stages every run from, through the Gateway, into a local directory. It reads only:
+    no branch is created and nothing is written back."""
+    _wire(monkeypatch, tmp_path)
+    calls = []
+
+    def handler(method, tool, args):
+        calls.append(tool)
+        if tool == "get_repository":
+            return {"default_branch": "trunk"}
+        if tool == "get_branch_head":
+            return "abc123"
+        if tool == "get_repository_archive":
+            assert args["ref"] == "trunk"
+            return {"archive_base64": _archive({
+                "README.md": b"# game\n",
+                "src/server.js": b"serve()\n",
+            })}
+        raise AssertionError(f"unexpected {tool}")
+
+    _fake_gateway(monkeypatch, handler)
+    destination = tmp_path / "play"
+    rc = github._main(["checkout", str(destination)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert (destination / "src" / "server.js").read_text() == "serve()\n"
+    assert "trunk" in out and "abc123"[:12] in out and "2 file(s)" in out
+    assert all(t in ("get_repository", "get_branch_head", "get_repository_archive")
+               for t in calls), f"checkout must only READ; it called {calls}"
+    # Usage errors are exit 2 and never touch the Gateway.
+    calls.clear()
+    assert github._main(["checkout"]) == 2
+    assert calls == []
+
+
 def test_prepare_run_base_fails_before_any_agent_work_without_a_gateway(
         monkeypatch, tmp_path):
     """Pre-flight, not post-mortem: no gateway is a named error, never a silent base."""

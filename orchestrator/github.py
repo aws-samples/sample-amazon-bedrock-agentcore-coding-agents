@@ -999,14 +999,40 @@ def post_review(run: Any, body_md: str) -> dict[str, Any]:
 # --- CLI ----------------------------------------------------------------------
 
 def _main(argv: list[str]) -> int:
-    """`python3 orchestrator/github.py doctor`: check the PR path from a terminal.
+    """`python3 orchestrator/github.py doctor|status|checkout <dir> [branch]`.
 
     A module entrypoint rather than a new script: the checks have to run through
     the same config resolution and the same signed calls a build uses, or they
     would be verifying something else.
+
+    ``checkout`` exists for the moment after the build: the attendee wants to RUN what
+    the team built, and the box deliberately holds no GitHub credential, so a plain
+    `git clone` of their private repository cannot work there. The Gateway can read
+    it (the same ``get_repository_archive`` the coordinator stages every run from), so
+    this snapshots the default branch (or a named one) into a local directory. It
+    reads; it never writes.
     """
-    if len(argv) != 1 or argv[0] not in ("doctor", "status"):
-        print("usage: python3 orchestrator/github.py doctor|status")
+    usage = "usage: python3 orchestrator/github.py doctor|status|checkout <dir> [branch]"
+    if not argv or argv[0] not in ("doctor", "status", "checkout"):
+        print(usage)
+        return 2
+    if argv[0] == "checkout":
+        if len(argv) not in (2, 3):
+            print(usage)
+            return 2
+        destination = os.path.abspath(argv[1])
+        if len(argv) == 3:
+            result = snapshot_branch(argv[2], destination)
+        else:
+            result = prepare_run_base(destination)
+        if result.get("error"):
+            print(f"NOT CHECKED OUT: {result['error']}")
+            return 1
+        print(f"{result['repo']} @ {result.get('branch')} ({str(result.get('sha'))[:12]}) "
+              f"-> {destination}: {result['files']} file(s)")
+        return 0
+    if len(argv) != 1:
+        print(usage)
         return 2
     if argv[0] == "status":
         print(json.dumps(status(), indent=2))

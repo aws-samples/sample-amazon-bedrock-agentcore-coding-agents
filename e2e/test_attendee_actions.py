@@ -350,6 +350,7 @@ def test_edit_agent_name_and_purpose_persists(console, cookie):
 _PRESET_CASES = [
     # (preset id, the roles it routes). Presets are STARTING POINTS: the request text
     # comes with them, and any other request works too (see the custom-roles test).
+    ("game-from-scratch", ["claude-code", "kiro"]),
     ("service-from-scratch", ["claude-code", "kiro"]),
     ("web-app", ["claude-code", "opencode", "kiro"]),
     ("cli-tool", ["claude-code", "kiro"]),

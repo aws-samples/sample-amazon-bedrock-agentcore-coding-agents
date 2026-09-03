@@ -87,6 +87,7 @@ echo
 # The preset here MUST match the one the Run-a-Build page tells the room to submit.
 # It used to say project-from-scratch, which is the take-home version: measured at 82
 # minutes because each pull request is gated in turn, so an attendee who followed the
-# terminal instead of the page started a build the session cannot wait for.
+# terminal instead of the page started a build the session cannot wait for. The room's
+# build is the one-service browser game the whole room plays at the end of Lab 2.
 echo "Coordinator deployed. Submit your build from $PROJECT_DIR with:"
-echo "    agentcore invoke --session-id \"\$(python3 -c 'import uuid;print(uuid.uuid4())')\" --stream \"preset=service-from-scratch\""
+echo "    agentcore invoke --session-id \"\$(python3 -c 'import uuid;print(uuid.uuid4())')\" --stream \"preset=game-from-scratch\""

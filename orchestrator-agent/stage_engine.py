@@ -108,6 +108,21 @@ def stage() -> list[str]:
         shutil.rmtree(harness_dst, ignore_errors=True)
         shutil.copytree(harness_src, harness_dst)
         copied.append("harness/")
+    # The role SKILLS must ship too. Each steering file's `harness:setup` block names
+    # its skill by a path relative to itself (`../../../harness-skills/skills/<name>`),
+    # and the engine stages that directory into the role's Runtime on every dispatch.
+    # Inside the coordinator container the steering lives at
+    # /app/orchestrator/harness/<role>/, so that path resolves to /app/harness-skills,
+    # which nothing put there: the engine logged `skill path not found` into the role's
+    # terminal lane and the builder fell back to whatever copy was baked into its own
+    # image, so an edit to SKILL.md never reached a served build. Found on a live event
+    # box by reading the dispatch transcript, not by a test, which is why one exists now.
+    skills_src = os.path.abspath(os.path.join(_HERE, "..", "harness-skills"))
+    if os.path.isdir(skills_src):
+        skills_dst = os.path.join(_HERE, "harness-skills")
+        shutil.rmtree(skills_dst, ignore_errors=True)
+        shutil.copytree(skills_src, skills_dst)
+        copied.append("harness-skills/")
     # Nothing else ships. There is no sample module and no grading contract to bundle:
     # the request is whatever the attendee types, and the acceptance check is authored
     # per run by the validator role inside its own container.

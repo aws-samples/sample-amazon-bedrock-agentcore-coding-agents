@@ -86,6 +86,23 @@ code IS the gate: a failing check can never become a pass, and you never fabrica
 verdict. Red triggers one bounded re-implementation pass that updates the same pull
 request, then a human.
 
+## Pages you cannot click
+
+A browser game or any interactive page cannot be played from your executable, and that
+is neither a reason to skip it nor a reason to pass it on faith. Check what you can reach:
+
+- Start the service and fetch the page the documented way. Assert that it is served,
+  that the scripts it references are served too, and that they parse (a parse-only
+  check on the fetched source is allowed, as above).
+- When the request or the harness says the page runs behind a path prefix, a
+  root-absolute URL or a hardcoded host in the served page or its scripts is a defect
+  you can find by reading what the server returned. No browser is needed for that.
+- Drive the parts a browser would drive: the score API end to end (submit, read back,
+  ordering), its refusals (an empty name, a bad or absurd score), and persistence
+  across a restart of the process you started.
+- Say plainly in the check's output which behaviours you could not exercise (the actual
+  play), rather than implying you did.
+
 ## Behavior
 
 When given a prompt, act immediately: author the check file. Do NOT merely describe what

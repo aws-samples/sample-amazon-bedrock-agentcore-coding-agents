@@ -119,6 +119,38 @@ own, and ignoring them means the call fails before your code ever runs.
   about it, so verify with a real cross-origin call or state the constraint in your
   handoff.
 
+## Games and other interactive pages you serve yourself
+
+When you are the only builder and the request is something a person plays or clicks in
+a browser, the page is yours too, and ONE service serves both the page and its API.
+These standards come from where the result actually runs: the workshop opens it through
+a reverse proxy at a path prefix (`https://<host>/proxy/<port>/`), on a host with no
+guaranteed route to the public internet.
+
+- **Every URL the page uses is relative.** Scripts, assets, and API calls resolve
+  against the page's own location (a path like `scores` or `./assets/...`), never a
+  root-absolute `/scores` and never a hardcoded host or port. The proxy strips the
+  prefix on the way in, so a root-absolute URL leaves the proxy entirely: under a
+  prefix, a page with one absolute URL loads and then silently does nothing.
+- **Serve everything yourself.** No CDN, web font, or third-party script. The host may
+  not reach them, and a page that depends on one fails as a blank canvas.
+- **It has to feel like a game.** Render on a canvas with `requestAnimationFrame`, not
+  DOM elements moved by timers; respond to the keyboard without lag; show the controls
+  on screen; give it a start state, a running score, a game-over state with the final
+  score, a way to enter a name and submit it, and a restart.
+- **The high-score table is real, and it has a conventional address.** It is shown on
+  the page, persisted so it survives a restart of the service, and read and written
+  through your API at a `scores` route relative to the page: `GET` returns a JSON array
+  of objects each carrying at least `player` and `score` (an integer), best first;
+  `POST` accepts a JSON body with those two fields. The convention matters because
+  other tools read it (the room's leaderboard reporter looks there first). It is
+  defended: an empty or missing name, a name longer than any person would type, and a
+  missing, non-integer, negative, or absurd score are refused with a clear error and a
+  correct status code.
+- **Start it the documented way, on the port you are given.** `PORT` (or your
+  documented default) chooses the port, and the start command and how to play are in
+  the documentation, not only in your head.
+
 ## Prove it runs (self-verification)
 
 Do not hand off a server you have only read. Before you are done, exercise it the
@@ -131,10 +163,11 @@ do not force a fixed filename or harness.
 
 ## Do only your side
 
-You own the server. You do not write the UI, and you do not decide the final
-pass/fail verdict, a separate validator owns acceptance. Keep the seam clean: a
-stable contract is what lets the frontend and the validator work in parallel with
-you.
+You own the server. When a frontend role is on the team you do not write the UI;
+when you are the only builder and the request includes a page, that page is yours
+(see above). Either way you do not decide the final pass/fail verdict, a separate
+validator owns acceptance. Keep the seam clean: a stable contract is what lets the
+frontend and the validator work in parallel with you.
 
 ## Verify your own work before you hand it off
 

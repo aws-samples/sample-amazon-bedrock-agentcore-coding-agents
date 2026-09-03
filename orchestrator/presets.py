@@ -94,6 +94,27 @@ class RouteError(ValueError):
 # route gets it structurally in `_resolve_needs`, because a build nobody can verify
 # is not a valid route.
 PRESETS: dict[str, dict[str, Any]] = {
+    # THE ROOM'S BUILD. One service, so one pull request and the same ~11-minute clock
+    # as the library API, but the deliverable is something the whole room can PLAY at
+    # the end of Lab 2, each team its own game on its own box through code-server's
+    # /proxy/<port>/ path.
+    #
+    # The prompt is deliberately three sentences. Everything that makes the result
+    # runnable where the room runs it (one service serving page and API, relative URLs
+    # behind a path prefix, no CDN, PORT, persistence, validation, documentation) is the
+    # HARNESS's job -- `harness-skills/skills/backend-engineering/SKILL.md` and the
+    # validator steering -- not the prompt's. That is the point the workshop makes: a
+    # person states the goal once, and the loop carries the standards. A prompt that
+    # spelled all of that out would be prompting in disguise, and the attendee would
+    # rightly conclude the agents only work when you write their spec for them.
+    "game-from-scratch": {
+        "title": "Build a browser game (the room's build)",
+        "needs": ["backend"],
+        "task": (
+            "Build a small browser arcade game with a persistent high-score table. "
+            "Pick a classic (Snake, Breakout, 2048, or something equally simple and "
+            "real-time) and make it genuinely fun to play in a browser tab."),
+    },
     "service-from-scratch": {
         "title": "Build an HTTP API (backend only)",
         "needs": ["backend"],
