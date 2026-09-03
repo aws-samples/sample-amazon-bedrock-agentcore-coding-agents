@@ -180,7 +180,7 @@ else
     --policy-document "$EXECUTION_POLICY"
 
   echo "Waiting for role to propagate..."
-  sleep 10
+  sleep 20
 fi
 state_set "iam_role_arn" "$ROLE_ARN"
 state_set "iam_role_name" "$IAM_ROLE_NAME"
@@ -226,16 +226,42 @@ if [[ -n "$EXISTING_RUNTIME" ]]; then
   RUNTIME_ARN=$(echo "$EXISTING_RUNTIME" | jq -r '.agentRuntimeArn')
 else
   echo "Creating runtime '${RUNTIME_NAME}'..."
-  RUNTIME_RESPONSE=$(aws bedrock-agentcore-control create-agent-runtime \
-    --agent-runtime-name "$RUNTIME_NAME" \
-    --region "$AWS_REGION" \
-    --agent-runtime-artifact "{\"containerConfiguration\": {\"containerUri\": \"${IMAGE_URI}\"}}" \
-    --role-arn "$ROLE_ARN" \
-    --network-configuration "{\"networkMode\": \"${RUNTIME_NETWORK_MODE}\"}" \
-    --protocol-configuration "{\"serverProtocol\": \"${RUNTIME_PROTOCOL}\"}" \
-    --environment-variables "GITHUB_APP_SECRET_ARN=${SECRET_ARN}" \
-    --lifecycle-configuration "{\"idleRuntimeSessionTimeout\": ${RUNTIME_IDLE_TIMEOUT}, \"maxLifetime\": ${RUNTIME_MAX_LIFETIME}}" \
-    --output json)
+  # Retry ONLY "Role validation failed", which means the control plane cannot yet
+  # assume the execution role this script just made. For a role created seconds ago
+  # that is IAM propagation, not a wrong trust policy: the same document works on the
+  # pre-deployed runtimes. Seen live on 2026-09-03, where a fresh event account
+  # refused a 10s-old role for 18 minutes and this script exited 254 three times in a
+  # row, so re-running the page's one command could not clear it. Every other error
+  # still fails immediately, and a genuinely wrong role fails after the budget.
+  RUNTIME_CREATE_DEADLINE=$(( $(date +%s) + 300 ))
+  RUNTIME_CREATE_ATTEMPT=0
+  while :; do
+    RUNTIME_CREATE_ATTEMPT=$(( RUNTIME_CREATE_ATTEMPT + 1 ))
+    set +e
+    RUNTIME_RESPONSE=$(aws bedrock-agentcore-control create-agent-runtime \
+      --agent-runtime-name "$RUNTIME_NAME" \
+      --region "$AWS_REGION" \
+      --agent-runtime-artifact "{\"containerConfiguration\": {\"containerUri\": \"${IMAGE_URI}\"}}" \
+      --role-arn "$ROLE_ARN" \
+      --network-configuration "{\"networkMode\": \"${RUNTIME_NETWORK_MODE}\"}" \
+      --protocol-configuration "{\"serverProtocol\": \"${RUNTIME_PROTOCOL}\"}" \
+      --environment-variables "GITHUB_APP_SECRET_ARN=${SECRET_ARN}" \
+      --lifecycle-configuration "{\"idleRuntimeSessionTimeout\": ${RUNTIME_IDLE_TIMEOUT}, \"maxLifetime\": ${RUNTIME_MAX_LIFETIME}}" \
+      --output json 2>&1)
+    RUNTIME_CREATE_RC=$?
+    set -e
+    if [[ $RUNTIME_CREATE_RC -eq 0 ]]; then
+      break
+    fi
+    if ! grep -q "Role validation failed" <<<"$RUNTIME_RESPONSE" \
+       || [[ $(date +%s) -ge $RUNTIME_CREATE_DEADLINE ]]; then
+      echo "$RUNTIME_RESPONSE" >&2
+      exit $RUNTIME_CREATE_RC
+    fi
+    echo "  Role not assumable by the service yet (attempt ${RUNTIME_CREATE_ATTEMPT});"
+    echo "  IAM is still propagating the new role. Retrying in 20s..."
+    sleep 20
+  done
   RUNTIME_ID=$(echo "$RUNTIME_RESPONSE" | jq -r '.agentRuntimeId')
   RUNTIME_ARN=$(echo "$RUNTIME_RESPONSE" | jq -r '.agentRuntimeArn')
 fi
