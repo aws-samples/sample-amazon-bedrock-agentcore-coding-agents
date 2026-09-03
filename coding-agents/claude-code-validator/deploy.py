@@ -362,7 +362,13 @@ def _create_runtime_with_role_retry(control, kwargs: dict, budget_s: int = 240):
         attempt += 1
         try:
             return control.create_agent_runtime(**kwargs)
-        except control.exceptions.ValidationException as exc:
+        except Exception as exc:  # noqa: BLE001 - narrowed on the very next line
+            # Deliberately NOT control.exceptions.ValidationException: that attribute is
+            # generated per API version, so naming it can itself raise AttributeError
+            # inside the error path, which is the worst possible place to learn that.
+            # The message is what identifies this condition, and anything else re-raises
+            # unchanged on the next line, including the ConflictException the caller
+            # handles.
             if "Role validation failed" not in str(exc) or time.monotonic() >= deadline:
                 raise
             print(f"  Role not assumable by the service yet (attempt {attempt}); "
