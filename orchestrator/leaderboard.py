@@ -47,10 +47,14 @@ SCORE_PATHS = ("scores", "api/scores", "highscores", "api/highscores",
 def best_entry(table: Any) -> dict[str, Any] | None:
     """The top entry of a game's `GET /scores` table, or None when there is none.
 
-    Tolerant on shape: the request asks for a JSON array of {player, score, at}, but
-    a game that wraps it (`{"scores": [...]}`) or names the fields slightly differently
-    (`name` for player) is still readable. Anything without an integer score is skipped
-    rather than crashing the bridge: the board should show what CAN be read.
+    Tolerant on shape, because the prompt names no field: the game exposes a score
+    table, and this bridge reads whatever it finds. A wrapper (`{"scores": [...]}`) is
+    unwrapped, and the player name is taken from whichever of the common keys is
+    present. `initials` earns its place in that list from live runs: an arcade game
+    built from the three-sentence prompt reliably calls the name field `initials` (the
+    classic three-letter high-score name), and without it every team would post as
+    "anonymous" and the board would be a column of the same word. Anything without an
+    integer score is skipped rather than crashing the bridge.
     """
     if isinstance(table, dict):
         for key in ("scores", "items", "results", "data"):
@@ -72,8 +76,10 @@ def best_entry(table: Any) -> dict[str, Any] | None:
         if score < 0 or score > MAX_SCORE:
             continue
         if best is None or score > best["score"]:
-            best = {"score": score,
-                    "player": str(row.get("player") or row.get("name") or "anonymous")[:40]}
+            name = next((str(row[k]) for k in ("player", "name", "initials",
+                                                 "user", "handle", "alias")
+                         if row.get(k)), "anonymous")
+            best = {"score": score, "player": name[:40]}
     return best
 
 

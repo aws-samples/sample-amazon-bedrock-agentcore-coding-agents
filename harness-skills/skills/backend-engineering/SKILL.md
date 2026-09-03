@@ -140,13 +140,12 @@ guaranteed route to the public internet.
   score, a way to enter a name and submit it, and a restart.
 - **The high-score table is real, and it has a conventional address.** It is shown on
   the page, persisted so it survives a restart of the service, and read and written
-  through your API at a `scores` route relative to the page: `GET` returns a JSON array
-  of objects each carrying at least `player` and `score` (an integer), best first;
-  `POST` accepts a JSON body with those two fields. The convention matters because
-  other tools read it (the room's leaderboard reporter looks there first). It is
-  defended: an empty or missing name, a name longer than any person would type, and a
-  missing, non-integer, negative, or absurd score are refused with a clear error and a
-  correct status code.
+  through your API at a `scores` route relative to the page. `GET` returns a JSON array
+  of rows, best first, each with an integer `score` and a player-name field (name it as
+  the game wants: `player`, `name`, and `initials` are all read by tools downstream);
+  `POST` accepts a JSON body with a name and a score. It is defended: an empty or
+  missing name, a name longer than any person would type, and a missing, non-integer,
+  negative, or absurd score are refused with a clear error and a correct status code.
 - **Start it the documented way, on the port you are given.** `PORT` (or your
   documented default) chooses the port, and the start command and how to play are in
   the documentation, not only in your head.
