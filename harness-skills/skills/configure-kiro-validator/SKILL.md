@@ -137,8 +137,10 @@ With those inputs the validator's job is:
    - Exit 0 to accept, non-zero to reject.
    - Print one line per check so the output is readable in the run log.
 3. Write that executable as `acceptance_check` at the root of the workspace. The
-   engine picks it up by that name; there is nothing to declare (`run.json`
-   belongs to the BUILDERS, who use it to say how their deliverable starts).
+   engine picks it up by that name; there is nothing to declare and no
+   declaration file to read. Work out how to start the deliverable from what the
+   builders actually wrote (their manifest, their documentation, the tree), because
+   nothing hands you a start command.
 
 **CRITICAL: real execution decides; a model's opinion never overrides it.** Kiro
 AUTHORS the check; the ENGINE runs it; the EXIT CODE is the verdict. If the check
@@ -149,12 +151,11 @@ and steering is the only honest judge).
 
 ## Step 4: Run the gate
 
-The engine calls the validator role, which AUTHORS the check and stops there. It
-does not run it and does not declare the deliverable's entrypoint: `run.json`
-(with `start`, and optional `port_env` / `health`) is written by the BUILDER
-roles, since only they know how their work starts. The engine then starts what it
-was told to start, polls what it was told to poll, runs the authored check, and
-reads its real exit code.
+The engine calls the validator role, which AUTHORS the check and stops there. The
+engine then RUNS that check and reads its real exit code. It starts nothing itself
+and knows nothing about the deliverable: starting it, waiting for it, and probing
+it are all inside the check, which is the only thing that knows what "running"
+means for this artifact.
 
 Keeping those apart is the whole point. A validator that ran its own check would
 be grading and reporting in one breath, and the exit code the engine reads is the

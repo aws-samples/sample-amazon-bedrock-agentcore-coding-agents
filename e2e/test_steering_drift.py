@@ -293,3 +293,22 @@ def test_the_session_banner_names_the_file_the_session_actually_staged():
         assert all(path == declared for path in named), (
             f"{role_id}: banner names {named}, but the registry declares "
             f"{declared!r}. The attendee is told to edit the wrong file.")
+
+
+def test_no_shipped_skill_or_steering_promises_a_declaration_file_nothing_reads():
+    """`run.json` was the engine's old start contract and NOTHING has read it for a long
+    time: reviewer.run_gate only executes the validator's check and reads its exit code.
+    Two validator skills still told the validator that builders declare their entrypoint
+    there, so a check could have trusted a file no builder writes. Verified live: a
+    PASSING run's pull request contained no run.json at all. If the declaration ever comes
+    back, make the CODE read it first, then say so here."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    reader = (root / "orchestrator").rglob("*.py")
+    code_hits = [p for p in reader if "run.json" in p.read_text()]
+    assert not code_hits, f"code reads run.json again: {code_hits}; update the skills too"
+    shipped = list((root / "harness-skills").rglob("SKILL.md"))
+    shipped += list((root / "orchestrator" / "harness").rglob("*.md"))
+    shipped += list((root / "coding-agents").rglob("*.md"))
+    offenders = [str(p.relative_to(root)) for p in shipped if "run.json" in p.read_text()]
+    assert not offenders, f"these promise run.json but no code reads it: {offenders}"

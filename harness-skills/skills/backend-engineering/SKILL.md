@@ -148,7 +148,11 @@ guaranteed route to the public internet.
   negative, or absurd score are refused with a clear error and a correct status code.
 - **Start it the documented way, on the port you are given.** `PORT` (or your
   documented default) chooses the port, and the start command and how to play are in
-  the documentation, not only in your head.
+  the documentation, not only in your head. Write that documentation as a file in the
+  tree (a README is the obvious choice), because the next reader is a person or another
+  agent who has your code and nothing else: the checker has to work out how to start
+  this from what you wrote, and at the end of the workshop a human clones the merged
+  branch and asks an agent to run it. A deliverable nobody can start is not done.
 
 ## Prove it runs (self-verification)
 
