@@ -3874,6 +3874,15 @@ def next_action(status: str, fail_reason: str | None,
                 "whole build to finish one pull request.")
     if reason in _NEXT_ACTION:
         return _NEXT_ACTION[reason]
+    if reason.startswith("PR_PREFLIGHT_ERROR"):
+        # The reason string carries the specific cause (which half of the GitHub
+        # config is missing). Without this branch a terminal needs_human/failed run
+        # answered next_action: "" -- the one field whose whole job is to say what to
+        # do, empty, on a run that stopped before any agent started.
+        detail = (fail_reason or "").split(":", 2)[-1].strip()
+        return ("The run stopped in pre-flight, before any agent work or cost: "
+                + (detail or "the GitHub pull-request destination did not resolve.")
+                + " Fix that, then resubmit.")
     if reason.startswith("RUNTIME_NOT_WIRED"):
         return ("A routed role has no wired runtime ARN. Deploy that role (Lab 1) or "
                 "wire its ARN, then resubmit; the engine never falls back to a local "

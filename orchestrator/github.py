@@ -746,16 +746,41 @@ def prepare_run_base(destination: str) -> dict[str, Any]:
     """
     cfg = _gateway_config()
     if not cfg:
-        return {
-            "error": "PR_NO_GATEWAY: this workflow opens role pull requests before "
-                     "validation, so the GitHub MCP Gateway must be wired first. "
-                     "Run `python3 orchestrator/github.py doctor`.",
-        }
+        # Name the half that is actually missing. _gateway_config() returns None when
+        # EITHER the gateway URL or the target repo is unknown, and the old message
+        # blamed the Gateway both times: a console run whose gateway auto-discovered
+        # fine but whose repo was never set in Settings was told to wire the Gateway
+        # and to run `doctor`, which passes in a shell that exports GITHUB_REPO. The
+        # reader then has a red run, a green check, and no idea which is lying.
+        return {"error": "PR_NO_GATEWAY: " + _missing_gateway_config_hint()}
     default_branch = repository_default_branch(cfg)
     snapshot = snapshot_branch(default_branch, destination)
     if not snapshot.get("error"):
         snapshot["default_branch"] = default_branch
     return snapshot
+
+
+def _missing_gateway_config_hint() -> str:
+    """Which of the two required values is missing, and where to put it."""
+    file = _load_config_file()
+    have_url = bool((os.environ.get("GITHUB_GATEWAY_URL")
+                     or file.get("gateway_url")
+                     or _discover_gateway_url() or "").strip())
+    repo = (os.environ.get("GITHUB_REPO") or file.get("repo") or "").strip()
+    have_repo = bool(_REPO_RE.match(repo))
+    tail = ("This workflow opens role pull requests before validation, so both must "
+            "be known before any agent runs.")
+    if have_url and not have_repo:
+        return ("the GitHub Gateway is wired, but no target repository is set. Put "
+                f"your owner/name in the console Settings pane{'' if not repo else f' (got {repo!r}, which is not owner/name)'}, "
+                f"or export GITHUB_REPO. {tail}")
+    if have_repo and not have_url:
+        return ("the target repository is set, but no GitHub MCP Gateway URL "
+                "resolved. Deploy the Gateway (it writes .deployed-state.json, which "
+                f"is auto-discovered) or export GITHUB_GATEWAY_URL. {tail}")
+    return ("neither the GitHub MCP Gateway URL nor the target repository resolved. "
+            "Deploy the Gateway and set your owner/name, then run "
+            f"`python3 orchestrator/github.py doctor`. {tail}")
 
 
 def _item_labels(run: Any, item: Any) -> list[dict[str, str]]:

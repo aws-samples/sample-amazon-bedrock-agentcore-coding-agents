@@ -115,3 +115,20 @@ def test_an_interrupted_coordinator_with_nothing_published_is_still_resubmittabl
     assert "Submit the SAME request again" in action
     assert engine.resubmission_allowed("needs_human", reason, [])
     assert engine.resubmission_allowed("needs_human", reason)
+
+
+def test_a_preflight_failure_says_what_to_do():
+    """A run that stops before any agent work still has to say what to fix.
+
+    Live on 2026-09-03 a console-dispatched run failed pre-flight and answered
+    `next_action: ""`, so the one field whose job is to say what to do said nothing.
+    """
+    reason = ("PR_PREFLIGHT_ERROR:PR_NO_GATEWAY: the GitHub Gateway is wired, but no "
+              "target repository is set. Put your owner/name in the console Settings "
+              "pane, or export GITHUB_REPO.")
+    action = engine.next_action("failed", reason)
+    assert action, "a terminal pre-flight failure must not answer with an empty string"
+    assert "pre-flight" in action
+    assert "no target repository is set" in action, (
+        "the specific cause must survive into the advice, not be replaced by it")
+    assert "before any agent work or cost" in action
