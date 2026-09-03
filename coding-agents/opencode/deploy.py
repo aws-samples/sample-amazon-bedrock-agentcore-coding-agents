@@ -340,6 +340,7 @@ def create_execution_role() -> str:
         ],
     }
 
+    created_now = True
     try:
         resp = iam.create_role(
             RoleName=role_name,
@@ -350,6 +351,7 @@ def create_execution_role() -> str:
         print(f"\nCreated IAM role: {role_arn}")
     except iam.exceptions.EntityAlreadyExistsException:
         role_arn = f"arn:aws:iam::{ACCOUNT_ID}:role/{role_name}"
+        created_now = False
         print(f"\nIAM role exists: {role_arn}")
 
     iam.put_role_policy(
@@ -358,9 +360,40 @@ def create_execution_role() -> str:
         PolicyDocument=json.dumps(inline_policy),
     )
 
-    print("Waiting 10s for IAM propagation...")
-    time.sleep(10)
+    if created_now:
+        # A role the service can see is not yet a role the service can ASSUME: the trust
+        # policy replicates to STS on its own clock. Ten seconds was enough on every
+        # earlier event box; on 2026-09-03 a fresh account rejected a 10s-old role and
+        # a 30s-old one alike, so the wait is a floor and deploy_runtime() below also
+        # retries the validation failure itself instead of dying on the first answer.
+        print("Waiting 20s for IAM propagation (new role)...")
+        time.sleep(20)
     return role_arn
+
+
+def _create_runtime_with_role_retry(control, kwargs: dict, budget_s: int = 240):
+    """CreateAgentRuntime, retrying ONLY the 'Role validation failed' answer.
+
+    That answer means the control plane could not yet assume the execution role it was
+    handed, which for a role created seconds ago is IAM propagation, not a wrong trust
+    policy (the policy is the same one the pre-deployed roles pass with). Seen live on
+    2026-09-03: a 10s-old role and a 30s-old role both got it, and a one-shot script that
+    dies on it leaves an attendee re-running a command that then fails the same way. The
+    retry says what it is waiting for and gives up loudly after the budget so a genuinely
+    wrong role still fails, later but honestly. Every OTHER error is raised immediately.
+    """
+    deadline = time.monotonic() + budget_s
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return control.create_agent_runtime(**kwargs)
+        except control.exceptions.ValidationException as exc:
+            if "Role validation failed" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            print(f"  Role not assumable by the service yet (attempt {attempt}); "
+                  f"IAM is still propagating the new role. Retrying in 20s...")
+            time.sleep(20)
 
 
 def deploy_runtime(role_arn: str) -> dict:
@@ -429,7 +462,7 @@ def deploy_runtime(role_arn: str) -> dict:
     if not existing_id:
         print(f"\nCreating runtime '{AGENT_NAME}'...")
         try:
-            response = control.create_agent_runtime(
+            response = _create_runtime_with_role_retry(control, dict(
                 agentRuntimeName=AGENT_NAME,
                 agentRuntimeArtifact=artifact,
                 roleArn=role_arn,
@@ -438,7 +471,7 @@ def deploy_runtime(role_arn: str) -> dict:
                 environmentVariables=env_vars,
                 description="opencode PTY agent",
                 **fs_kwargs,
-            )
+            ))
             runtime_id = response["agentRuntimeId"]
             runtime_arn = response["agentRuntimeArn"]
         except control.exceptions.ConflictException:
