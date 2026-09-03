@@ -259,7 +259,7 @@ def dispatch(method: str, path: str, body: dict | None,
                     run.status, run.fail_reason, run.pr, run.pr_url,
                     run.role_prs),
                 "resubmission_allowed": resubmission_allowed(
-                    run.status, run.fail_reason),
+                    run.status, run.fail_reason, run.role_prs),
             })
             return 200, out
         return 404, {"error": "not found", "path": path}

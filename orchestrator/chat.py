@@ -354,7 +354,7 @@ def build_tools() -> list:
                         saved.get("pr_url"),
                         saved.get("role_prs")),
                     "resubmission_allowed": _engine.resubmission_allowed(
-                        "needs_human", reason),
+                        "needs_human", reason, saved.get("role_prs")),
                     "source": "persisted",
                 })
             return json.dumps({**saved, "source": "persisted"})

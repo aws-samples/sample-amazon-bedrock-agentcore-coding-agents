@@ -3855,6 +3855,23 @@ def next_action(status: str, fail_reason: str | None,
                     "`python3 orchestrator/github.py doctor`.")
         return ""
     reason = (fail_reason or "").split(":")[0].strip()
+    if reason == "COORDINATOR_SESSION_INTERRUPTED":
+        # A recycled coordinator does not un-open the pull requests it already
+        # published, and telling the reader to "submit the SAME request again" when
+        # one of them is green and approved is how you get a duplicate sixty-minute
+        # three-role build. Seen live (2026-09-03): the backend pull request had
+        # passed 65 checks and been approved, the frontend one was red, and this
+        # sentence still said resubmit. Same principle the ITERATION_CAP text
+        # already states: pull requests that did pass are settled.
+        rows = list(role_prs or [])
+        opened = [r for r in rows if r.get("pr_url")]
+        if opened:
+            return (
+                f"The coordinator Runtime was recycled, but {len(opened)} pull "
+                "request(s) it already opened are unaffected. Open each one and read "
+                "its executable check and Assessment comment: that is the durable "
+                "record. Continue from there as a person, and do NOT resubmit the "
+                "whole build to finish one pull request.")
     if reason in _NEXT_ACTION:
         return _NEXT_ACTION[reason]
     if reason.startswith("RUNTIME_NOT_WIRED"):
@@ -3885,12 +3902,23 @@ _RESUBMITTABLE_REASONS = {
 }
 
 
-def resubmission_allowed(status: str, fail_reason: str | None) -> bool:
-    """Whether immediately repeating the same request can recover this outcome."""
+def resubmission_allowed(status: str, fail_reason: str | None,
+                         role_prs: list[dict] | None = None) -> bool:
+    """Whether immediately repeating the same request can recover this outcome.
+
+    ``role_prs`` is what makes this honest for an interrupted coordinator: a run that
+    already published pull requests has real, judged work on GitHub, so repeating the
+    request duplicates it rather than recovering it. Resubmission stays allowed only
+    while nothing was published yet.
+    """
     if status not in ("failed", "needs_human"):
         return False
     reason = (fail_reason or "").split(":")[0].strip()
-    return reason in _RESUBMITTABLE_REASONS
+    if reason not in _RESUBMITTABLE_REASONS:
+        return False
+    if any(row.get("pr_url") for row in (role_prs or [])):
+        return False
+    return True
 
 
 def public_result(run: Run) -> dict:
@@ -3940,5 +3968,5 @@ def public_result(run: Run) -> dict:
         "next_action": next_action(
             run.status, run.fail_reason, run.pr, run.pr_url, run.role_prs),
         "resubmission_allowed": resubmission_allowed(
-            run.status, run.fail_reason),
+            run.status, run.fail_reason, run.role_prs),
     }

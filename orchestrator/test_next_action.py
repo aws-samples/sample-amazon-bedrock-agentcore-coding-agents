@@ -83,3 +83,35 @@ def test_the_public_result_carries_it():
     payload = engine.public_result(run)
     assert payload["next_action"], payload
     assert payload["resubmission_allowed"] is False
+
+
+def test_an_interrupted_coordinator_does_not_invite_a_duplicate_build():
+    """A recycled coordinator does not un-open the pull requests it already opened.
+
+    Live on 2026-09-03: the backend pull request had passed 65 checks and been
+    approved, the frontend one was red, and the payload still said
+    `resubmission_allowed: true` with "Submit the SAME request again". Following that
+    duplicates a sixty-minute three-role build, which is the resubmission runaway the
+    iteration bound exists to prevent.
+    """
+    reason = "COORDINATOR_SESSION_INTERRUPTED"
+    rows = [{"agent": "claude-code", "pr_url": "https://github.com/o/r/pull/24",
+             "state": "awaiting_review"},
+            {"agent": "opencode", "pr_url": "https://github.com/o/r/pull/25",
+             "state": "checking"}]
+
+    action = engine.next_action("needs_human", reason, None, None, rows)
+    assert "2 pull request(s)" in action
+    assert "do NOT resubmit" in action
+    assert "Submit the SAME request again" not in action
+    assert not engine.resubmission_allowed("needs_human", reason, rows), (
+        "published pull requests make a resubmission a duplicate, not a recovery")
+
+
+def test_an_interrupted_coordinator_with_nothing_published_is_still_resubmittable():
+    """The original case still works: nothing opened, so repeating it recovers."""
+    reason = "COORDINATOR_SESSION_INTERRUPTED"
+    action = engine.next_action("needs_human", reason, None, None, [])
+    assert "Submit the SAME request again" in action
+    assert engine.resubmission_allowed("needs_human", reason, [])
+    assert engine.resubmission_allowed("needs_human", reason)
