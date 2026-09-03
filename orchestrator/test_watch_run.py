@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -315,6 +316,15 @@ def _persist(tmp, payload):
     run_store.save(tmp, payload["run_id"], payload, lambda *_a, **_k: None)
 
 
+def _persist_raw(tmp, payload):
+    """Write the record verbatim. `save()` stamps `_saved_at` with NOW, which is exactly
+    the field a staleness test has to control."""
+    d = os.path.join(tmp, "state")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, payload["run_id"] + ".json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+
 def test_the_watcher_renders_a_live_run_without_invoking_anything():
     with tempfile.TemporaryDirectory() as tmp:
         _persist(tmp, {
@@ -365,6 +375,45 @@ def _watch_once(runs_dir: str, run_id: str) -> tuple[str, int]:
         if saved_env is not None:
             os.environ["WORKSHOP_RUNTIME_BUCKET"] = saved_env
     return buf.getvalue(), rc
+
+
+def test_a_run_whose_coordinator_vanished_is_reported_not_waited_on():
+    """Live: a coordinator microVM was recycled mid-repair. `run_status` correctly said
+    `needs_human` / COORDINATOR_SESSION_INTERRUPTED -- computed when the coordinator is
+    ASKED, and never written back to the record -- while this watcher, the command the
+    page tells you to leave running, sat on `running` forever."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {
+            "run_id": "run_053732_288b05d8ea64",
+            "status": "running", "phase": "agent_execution", "iterations": 2,
+            "task": "Build an HTTP API for a personal library",
+            # Older than run_store.ACTIVE_STALE_AFTER_S, which is what "its heartbeat
+            # stopped" means.
+            "_saved_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(time.time() - run_store.ACTIVE_STALE_AFTER_S - 60)),
+            "progress": [{"agent": "claude-code", "role": "backend",
+                          "state": "running", "note": ""}],
+        })
+        out, rc = _watch_once(tmp, "run_053732_288b05d8ea64")
+        assert rc == 0
+        assert "needs_human" in out, out
+        assert "COORDINATOR_SESSION_INTERRUPTED" in out, \
+            f"the reason has to be visible, not just the advice:\n{out}"
+        # next_action is truncated to the terminal width, so assert on its opening.
+        assert "next: the coordinator Runtime was recycled" in out, out
+
+
+def test_a_healthy_heartbeat_is_left_alone():
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {
+            "run_id": "run_fresh", "status": "running", "phase": "agent_execution",
+            "_saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "progress": [{"agent": "claude-code", "role": "backend",
+                          "state": "running", "note": ""}],
+        })
+        out, _rc = _watch_once(tmp, "run_fresh")
+        assert "running" in out and "COORDINATOR_SESSION_INTERRUPTED" not in out
 
 
 def test_a_run_with_no_record_yet_says_so_instead_of_crashing():

@@ -111,9 +111,31 @@ def _gate_mark(entry: dict, ink: _Ink) -> str:
     return ink.red("FAIL")
 
 
+def _interrupted(rec: dict) -> bool:
+    """A non-terminal record whose heartbeat stopped: its coordinator is gone.
+
+    The engine already recognises this (``run_store.active_snapshot_is_stale``, which
+    ``chat.py`` turns into ``COORDINATOR_SESSION_INTERRUPTED``), but that verdict is
+    computed when the coordinator is ASKED and is never written back to the record. A
+    watcher reading the record therefore sat on "running" forever, which is the one thing
+    this repository refuses to do: a run that cannot advance is a failure to report, not
+    a wait. Observed live -- a coordinator microVM was recycled mid-repair, `run_status`
+    said `needs_human`, and this watcher still said `running`.
+    """
+    return run_store.active_snapshot_is_stale(rec)
+
+
 def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
     lines: list[str] = []
     status = rec.get("status", "?")
+    if _interrupted(rec):
+        # Report the same reason the coordinator would, and say what to do. Reading a
+        # record can never CHANGE one: this is the reporting path.
+        status = "needs_human"
+        rec = {**rec, "fail_reason": "COORDINATOR_SESSION_INTERRUPTED",
+               "next_action": "the coordinator Runtime was recycled before this run "
+                              "finished, so nothing can advance it; resubmit the same "
+                              "request."}
     colour = {"passed": ink.green, "failed": ink.red,
               "needs_human": ink.yellow}.get(status, ink.cyan)
     lines.append(f"{ink.bold(rec.get('run_id', '?'))}   {colour(status)}"
@@ -123,6 +145,11 @@ def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
     task = " ".join(str(rec.get("task") or "").split())
     if task:
         lines.append(ink.dim("  " + task[:width - 2]))
+    # The REASON, not only the advice: a reader who sees `needs_human` needs the label to
+    # look up, and the frame rendered next_action while dropping fail_reason entirely.
+    reason = rec.get("fail_reason")
+    if reason:
+        lines.append("  " + ink.red(str(reason)))
     lines.append("")
 
     # --- roles: what each one is, and what state it is in
