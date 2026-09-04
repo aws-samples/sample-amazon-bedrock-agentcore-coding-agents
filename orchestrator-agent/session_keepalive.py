@@ -27,6 +27,18 @@ past that the platform reclaims as it does today and the watcher reports
 COORDINATOR_SESSION_INTERRUPTED, which is already honest. A failed ping is swallowed: the
 worst outcome of a broken keepalive must be the reclaim that happens without it.
 
+WHY ONLY THE COORDINATOR NEEDS THIS. The reclaim we measured is of a session with no
+request in flight, which is unique to the coordinator: its build outlives the request that
+started it. Every other session in the workshop is either held open or cheap to lose.
+A dispatched ROLE session is driven over an open WebSocket that streams the agent's output
+while it works, and live runs have completed single role turns of 19 minutes inside one
+session; if one ever were reclaimed, `runtime_exec`'s per-frame deadline turns it into a
+reported failure rather than a hang. The GitHub MCP Gateway runtime is invoked per tool
+call and holds nothing, so a reclaimed Gateway session simply means the next call opens a
+new one. The console hosts this same engine in an ordinary process on the box, where there
+is no session at all. So this file exists for exactly one gap, and widening it would be
+speculation.
+
 This is platform glue, NOT the verdict path. It submits nothing, decides nothing, reads no
 gate, and writes no run state.
 """
@@ -47,8 +59,15 @@ KEEPALIVE_PROMPT = "__workshop_session_keepalive__"
 # Ping interval. The observed reclaim is ~15 minutes of silence, so 4 minutes leaves a
 # margin of three-plus missed pings before a build is at risk.
 INTERVAL_S = float(os.environ.get("WORKSHOP_KEEPALIVE_S", "240"))
-# Total time a single in-flight window may be kept warm.
-MAX_S = float(os.environ.get("WORKSHOP_KEEPALIVE_MAX_S", "5400"))
+# Fallback cap on how long ONE in-flight window may be kept warm. The real bound is
+# passed in by the caller, which knows the engine's own definition of a run that is still
+# legitimately alive (`engine.STRANDED_AFTER_S`, 118 minutes by default). Keeping warm for
+# LESS than that would abandon a run the engine still considers healthy, which is what a
+# literal 90 minutes did; keeping warm for longer would hold a microVM for a run that is
+# stranded by the engine's own reckoning. This module deliberately does not import the
+# engine to learn that number: it stays off the verdict path (see the module docstring),
+# so the coupling lives in main.py where the engine is already in scope.
+MAX_S = float(os.environ.get("WORKSHOP_KEEPALIVE_MAX_S", "7080"))
 # How often the loop wakes to look at the world. Cheap: it only reads a counter.
 TICK_S = float(os.environ.get("WORKSHOP_KEEPALIVE_TICK_S", "15"))
 
@@ -98,7 +117,17 @@ def keepalive_loop(
     last_ping: float | None = None
     exhausted = False
     while not stop():
-        if in_flight() <= 0:
+        try:
+            work = in_flight()
+        except Exception as exc:  # noqa: BLE001 - see below
+            # Reading the counter is the one thing this loop must never die on: the thread
+            # is a daemon, so an escaped exception would end the keepalive SILENTLY and the
+            # build would be reclaimed 15 minutes later with nothing to explain why.
+            if on_event:
+                on_event(f"keepalive could not read the in-flight count ({exc}); "
+                         "assuming work is in flight and pinging anyway")
+            work = 1
+        if work <= 0:
             # Nothing to protect. Forget the window so the next build starts fresh, and
             # let the platform reclaim an idle coordinator as it should.
             window_start = last_ping = None
@@ -152,7 +181,8 @@ def _default_ping(arn: str, session_id: str) -> Callable[[], None]:
 
 
 def ensure_started(session_id: str, in_flight: Callable[[], int],
-                   log: Callable[[str], None] | None = None) -> bool:
+                   log: Callable[[str], None] | None = None,
+                   max_s: float | None = None) -> bool:
     """Start the keepalive thread once, for the session this runtime is serving.
 
     Returns True when a thread is running after the call. A no-op (False) when this is
@@ -161,21 +191,35 @@ def ensure_started(session_id: str, in_flight: Callable[[], int],
     """
     global _thread
     arn = self_runtime_arn()
-    if not arn or not session_id:
+    if not arn:
+        # Not a deployed AgentCore Runtime: the console hosts the same engine in an
+        # ordinary process on the box, where there is no session to reclaim.
+        return False
+    if not session_id:
+        # Deployed, but the request carried no session id, so there is no session to keep
+        # warm and a long build here WILL be reclaimed. Say so: a silent no-op is how this
+        # class of failure stayed invisible for so long.
+        if log:
+            log("session keepalive NOT armed: this request carried no runtimeSessionId, "
+                "so a build started here will be reclaimed after about 15 minutes idle")
         return False
     with _lock:
         if _thread is not None and _thread.is_alive():
             return True
         ping = _default_ping(arn, session_id)
+        # An explicit WORKSHOP_KEEPALIVE_MAX_S always wins; otherwise take the caller's
+        # engine-derived bound, and only then the module fallback.
+        cap = MAX_S if os.environ.get("WORKSHOP_KEEPALIVE_MAX_S") else (
+            float(max_s) if max_s else MAX_S)
         _thread = threading.Thread(
             target=keepalive_loop,
             args=(in_flight, ping),
-            kwargs={"on_event": log},
+            kwargs={"on_event": log, "max_s": cap},
             name="workshop-session-keepalive",
             daemon=True,
         )
         _thread.start()
     if log:
         log(f"session keepalive armed for {session_id} every {INTERVAL_S:.0f}s "
-            f"while a run is in flight (cap {MAX_S:.0f}s)")
+            f"while a run is in flight (cap {cap:.0f}s)")
     return True

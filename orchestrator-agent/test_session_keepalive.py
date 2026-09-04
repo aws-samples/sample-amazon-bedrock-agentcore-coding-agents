@@ -161,3 +161,76 @@ def test_the_keepalive_is_not_on_the_verdict_path():
     src = (_HERE / "session_keepalive.py").read_text()
     for forbidden in ("import llm", "import reviewer", "import engine", "run_store"):
         assert forbidden not in src, forbidden
+
+
+def test_the_cap_comes_from_the_caller_not_a_literal(monkeypatch):
+    """The keepalive must stay warm exactly as long as the ENGINE thinks the run is alive.
+
+    A literal 90 minutes abandoned a build the engine still considered healthy for 118
+    (STRANDED_AFTER_S). main.py passes that number in, because this module may not import
+    the engine, and an explicit env override still wins over both.
+    """
+    arn = ("arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/x-1")
+    monkeypatch.setenv("AGENTCORE_RUNTIME_URL",
+                       "https://bedrock-agentcore.us-west-2.amazonaws.com/runtimes/"
+                       + arn.replace(":", "%3A").replace("/", "%2F") + "/invocations")
+    monkeypatch.delenv("WORKSHOP_KEEPALIVE_MAX_S", raising=False)
+    seen: dict = {}
+
+    def fake_thread(target=None, args=(), kwargs=None, **rest):
+        seen.update(kwargs or {})
+
+        class _T:
+            @staticmethod
+            def is_alive():
+                return False
+
+            @staticmethod
+            def start():
+                return None
+        return _T()
+
+    monkeypatch.setattr(ka.threading, "Thread", fake_thread)
+    monkeypatch.setattr(ka, "_thread", None)
+    ka.ensure_started("sess-1", lambda: 1, max_s=7080.0)
+    assert seen["max_s"] == 7080.0
+
+    monkeypatch.setenv("WORKSHOP_KEEPALIVE_MAX_S", "111")
+    monkeypatch.setattr(ka, "MAX_S", 111.0)
+    monkeypatch.setattr(ka, "_thread", None)
+    seen.clear()
+    ka.ensure_started("sess-1", lambda: 1, max_s=7080.0)
+    assert seen["max_s"] == 111.0, "an explicit operator override wins"
+
+
+def test_a_broken_in_flight_counter_cannot_silently_end_the_keepalive():
+    """The thread is a daemon: an escaped exception would stop pinging with no trace, and
+    the build would die 15 minutes later for no visible reason. So a raising counter is
+    treated as 'assume work' and reported."""
+    calls = {"n": 0}
+
+    def in_flight() -> int:
+        calls["n"] += 1
+        raise RuntimeError("engine lock timeout")
+
+    sent: list[int] = []
+    events: list[str] = []
+    _run(in_flight, ticks=40, ping=lambda: sent.append(1), events=events)  # must not raise
+    assert calls["n"] > 1, "the loop kept going"
+    assert sent, "it kept the session warm rather than abandoning the build"
+    assert any("could not read the in-flight count" in e for e in events), events
+
+
+def test_a_deployed_runtime_with_no_session_id_says_so(monkeypatch):
+    arn = "arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/x-1"
+    monkeypatch.setenv("AGENTCORE_RUNTIME_URL",
+                       "https://bedrock-agentcore.us-west-2.amazonaws.com/runtimes/"
+                       + arn.replace(":", "%3A").replace("/", "%2F") + "/invocations")
+    said: list[str] = []
+    assert ka.ensure_started("", lambda: 1, log=said.append) is False
+    assert any("NOT armed" in m for m in said), said
+
+
+def test_main_passes_the_engine_bound():
+    src = (_HERE / "main.py").read_text()
+    assert "STRANDED_AFTER_S" in src, "main.py must hand the engine's own bound to the keepalive"

@@ -129,6 +129,12 @@ async def invoke(payload: dict[str, Any], context: Any = None):
         session_id,
         lambda: _chat.ENGINE.active_count(),
         log=lambda msg: log.info("%s", msg),
+        # Keep the session warm for exactly as long as the engine still considers a run
+        # legitimately alive, and not one second longer. STRANDED_AFTER_S is the engine's
+        # own answer to that question (MAX_ITERATIONS rounds of execution plus gate, plus
+        # slack), so the keepalive can neither abandon a healthy build nor hold a microVM
+        # for a run that is stranded by the engine's own reckoning.
+        max_s=getattr(_chat._engine, "STRANDED_AFTER_S", None),
     )
     agent = _get_or_create_agent()
     async for event in agent.stream_async(prompt):
