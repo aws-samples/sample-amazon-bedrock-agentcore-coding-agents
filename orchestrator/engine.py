@@ -3392,10 +3392,9 @@ class Engine:
         self._ledger(run)
         return True
 
-    # The composed repo is shared by every run; git allows one writer at a time
-    # (index.lock), so compose is serialized across concurrent runs. A bare Lock
-    # would deadlock the whole engine if one compose ever hung while holding it,
-    # so this is a self-healing lease that auto-evicts a wedged holder.
+    # Serialize threads with a bounded lease and processes with an OS file lock.
+    # Git's index.lock protects individual commands, not checkout -> copy -> commit.
+    # Two console processes sharing a runs directory must hold the entire sequence.
     _COMPOSE_LEASE = _Lease(COMPOSE_LEASE_STUCK_S)
 
     def _compose_commit(self, run: Run) -> None:
@@ -3405,9 +3404,29 @@ class Engine:
         scratch commit powers the console's Changes view and carries the validator's
         authored check; it is never pushed as a substitute PR.
         """
+        import fcntl  # POSIX hosts: the workshop runs on Linux.
+
         Engine._COMPOSE_LEASE.acquire(run.run_id)
         try:
-            self._compose_commit_locked(run)
+            os.makedirs(_RUNS_DIR, exist_ok=True)
+            # Keep the lock outside the worktree that compose resets and cleans.
+            # The OS releases it on process exit; an on-disk filename is not a lease.
+            with open(os.path.join(_RUNS_DIR, "compose.lock"), "a") as lock:
+                deadline = time.monotonic() + COMPOSE_LEASE_STUCK_S
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                "COMPOSE_LOCK_TIMEOUT: another process is recording "
+                                "its evidence; no concurrent Git write was attempted")
+                        time.sleep(0.05)
+                try:
+                    self._compose_commit_locked(run)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
         finally:
             Engine._COMPOSE_LEASE.release(run.run_id)
 
