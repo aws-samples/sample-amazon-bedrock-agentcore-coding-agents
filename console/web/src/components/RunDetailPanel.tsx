@@ -1,9 +1,8 @@
 import { Badge } from '@foxl/ui';
 import {
   AlertCircle,
-  Check,
   CheckCircle2,
-  Circle,
+  Clock3,
   FileCheck2,
   GitMerge,
   GitPullRequest,
@@ -12,6 +11,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { AgentIcon } from './AgentIcon';
+import { presentRunDecision, recordedPullRequests, type DecisionTone } from '../lib/runPresentation';
 import type {
   GateRecord,
   RolePrEntry,
@@ -19,19 +19,11 @@ import type {
   WorkItem,
 } from '../api';
 
-function StatusIcon({ status }: { status: string }) {
-  if (status === 'passed') {
-    return <CheckCircle2 aria-hidden="true" className="size-4 text-emerald-600" />;
-  }
-  if (status === 'failed' || status === 'needs_human') {
-    return <AlertCircle aria-hidden="true" className="size-4 text-destructive" />;
-  }
-  return (
-    <Loader2
-      aria-hidden="true"
-      className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none"
-    />
-  );
+function StatusIcon({ tone }: { tone: DecisionTone }) {
+  if (tone === 'success') return <CheckCircle2 aria-hidden="true" className="size-5 text-success" />;
+  if (tone === 'waiting') return <Clock3 aria-hidden="true" className="size-5 text-warning" />;
+  if (tone === 'danger') return <AlertCircle aria-hidden="true" className="size-5 text-destructive" />;
+  return <Loader2 aria-hidden="true" className="size-5 animate-spin text-signal motion-reduce:animate-none" />;
 }
 
 function statusVariant(status: string): 'default' | 'secondary' | 'outline' | 'destructive' {
@@ -49,107 +41,43 @@ function statusLabel(status: string): string {
 
 const integerFormat = new Intl.NumberFormat();
 
-// Five stages, matching the engine: each pull request is checked, reviewed, and
-// merged on its own. There is no combined tree and no final pull request above them.
-const WORKFLOW = [
-  { label: 'Shared Plan', icon: ScrollText },
-  { label: 'Role PRs', icon: GitPullRequest },
-  { label: 'Per-PR Check', icon: FileCheck2 },
-  { label: 'Per-PR Review', icon: ShieldCheck },
-  { label: 'Merged', icon: GitMerge },
-] as const;
-
-const SETTLED_PR_STATES = ['merged', 'awaiting_review'];
-
-function workflowPosition(run: RunDetail, builders: WorkItem[]): number {
-  let position = -1;
-  if (run.integration_brief) position = 0;
-  if (builders.some((item) => item.pr?.pr_url || item.state !== 'pending')) position = 1;
-  if ((run.gate_history?.length ?? 0) > 0) position = 2;
-  if (run.review?.state || (run.review?.panels?.length ?? 0) > 0) position = 3;
-  if ((run.role_prs ?? []).some((row) => SETTLED_PR_STATES.includes(row.state))) position = 4;
-  return position;
-}
-
-function failedPosition(run: RunDetail): number {
-  if ((run.role_prs ?? []).some((row) => row.state === 'blocked')) return 4;
-  const latest = run.gate_history?.at(-1);
-  if (latest && !latest.passed && ['failed', 'needs_human'].includes(run.status)) return 2;
-  if (run.review?.state === 'changes_requested'
-      && ['failed', 'needs_human'].includes(run.status)) return 3;
-  return -1;
-}
-
-function Workflow({ run, builders }: { run: RunDetail; builders: WorkItem[] }) {
-  const current = workflowPosition(run, builders);
-  const failed = failedPosition(run);
-  const terminalPass = run.status === 'passed';
-
+/** Record counts, not inferred green stages. Parallel PRs can settle differently. */
+function Workflow({ run }: { run: RunDetail }) {
+  const prs = recordedPullRequests(run).filter((row) => row.pr_url);
+  const checks = run.gate_history?.length ?? 0;
+  const decision = presentRunDecision(run);
+  const records = [
+    { label: 'Shared plan', icon: ScrollText, detail: run.integration_brief ? 'Recorded' : 'Not recorded yet', recorded: !!run.integration_brief },
+    { label: 'Pull requests', icon: GitPullRequest, detail: `${prs.length} opened`, recorded: prs.length > 0 },
+    { label: 'Executable checks', icon: FileCheck2, detail: `${checks} execution${checks === 1 ? '' : 's'}`, recorded: checks > 0 },
+    { label: 'Independent review', icon: ShieldCheck, detail: run.review?.state ? statusLabel(run.review.state) : 'Not recorded yet', recorded: !!run.review?.state },
+    { label: 'PR outcome', icon: GitMerge, detail: decision.title, recorded: run.status === 'passed' },
+  ];
   return (
-    <div className="overflow-x-auto pb-1">
-      <ol
-        className="grid min-w-[560px] grid-cols-5 sm:min-w-0"
-        aria-label="Build workflow"
-      >
-        {WORKFLOW.map(({ label, icon: Icon }, index) => {
-          const isFailed = failed === index;
-          const isDone = index < current || (index === current && terminalPass);
-          const isActive = index === current && !isDone && !isFailed;
-          return (
-            <li key={label} className="relative min-w-0 px-1 text-center">
-              {index > 0 && (
-                <span
-                  aria-hidden="true"
-                  className={`absolute left-0 right-1/2 top-3 h-px ${
-                    isDone || isActive || isFailed ? 'bg-foreground/40' : 'bg-border'
-                  }`}
-                />
-              )}
-              {index < WORKFLOW.length - 1 && (
-                <span
-                  aria-hidden="true"
-                  className={`absolute left-1/2 right-0 top-3 h-px ${
-                    index < current ? 'bg-foreground/40' : 'bg-border'
-                  }`}
-                />
-              )}
-              <span
-                className={`relative mx-auto flex size-6 items-center justify-center rounded-full border bg-background ${
-                  isFailed
-                    ? 'border-destructive text-destructive'
-                    : isDone
-                      ? 'border-foreground bg-foreground text-background'
-                      : isActive
-                        ? 'border-foreground text-foreground'
-                        : 'border-border text-muted-foreground'
-                }`}
-              >
-                {isDone
-                  ? <Check aria-hidden="true" className="size-3.5" />
-                  : isFailed
-                    ? <AlertCircle aria-hidden="true" className="size-3.5" />
-                    : isActive
-                      ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
-                      : <Circle aria-hidden="true" className="size-2.5" />}
-              </span>
-              <span className="mt-1.5 flex min-h-8 items-start justify-center text-[11px] font-medium leading-4">
-                {label}
-              </span>
-              <Icon aria-hidden="true" className="mx-auto mt-1 size-3 text-muted-foreground" />
-            </li>
-          );
-        })}
+    <section aria-label="Build workflow">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium">Evidence trail</h3>
+        <span className="text-xs text-muted-foreground">Each PR is checked independently</span>
+      </div>
+      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {records.map(({ label, icon: Icon, detail, recorded }) => (
+          <li key={label} className="min-w-0 rounded-lg border border-border bg-background/60 p-3">
+            <Icon aria-hidden="true" className={`mb-3 size-[18px] ${recorded ? 'text-signal' : 'text-muted-foreground'}`} />
+            <div className="text-xs font-medium">{label}</div>
+            <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div>
+          </li>
+        ))}
       </ol>
-    </div>
+    </section>
   );
 }
 
 function WorkItemsTable({ builders }: { builders: WorkItem[] }) {
   if (builders.length === 0) return null;
   return (
-    <section className="border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">Role Pull Requests</h3>
-      <div className="mt-2 overflow-x-auto">
+    <section className="evidence-surface">
+      <h3 className="text-sm font-semibold">Role Pull Requests</h3>
+      <div className="mt-3 overflow-x-auto">
         <table className="w-full min-w-[700px] text-left text-xs">
           <thead className="text-muted-foreground">
             <tr>
@@ -201,7 +129,7 @@ function WorkItemsTable({ builders }: { builders: WorkItem[] }) {
                   )}
                 </td>
                 <td className="py-2 text-right">
-                  <Badge variant={statusVariant(item.merge_state ?? item.state)} className="text-[10px]">
+                  <Badge variant={statusVariant(item.merge_state ?? item.state)} className="text-[11px]">
                     {statusLabel(item.merge_state ?? item.state)}
                   </Badge>
                 </td>
@@ -216,8 +144,8 @@ function WorkItemsTable({ builders }: { builders: WorkItem[] }) {
 
 function GateHistory({ gates }: { gates: GateRecord[] }) {
   return (
-    <section className="min-w-0 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">Checks Run</h3>
+    <section className="evidence-surface min-w-0">
+      <h3 className="text-sm font-semibold">Checks Run</h3>
       {gates.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">Waiting for the validator.</p>
       ) : (
@@ -225,7 +153,7 @@ function GateHistory({ gates }: { gates: GateRecord[] }) {
           {gates.map((gate) => (
             <li key={`${gate.sequence}-${gate.stage}`} className="flex min-w-0 items-start gap-2 text-xs">
               {gate.passed
-                ? <CheckCircle2 aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+                ? <CheckCircle2 aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-success" />
                 : <AlertCircle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" />}
               <span className="min-w-0 flex-1">
                 <span className="font-medium">{gate.stage}</span>
@@ -244,12 +172,12 @@ function GateHistory({ gates }: { gates: GateRecord[] }) {
 function IntegratedReview({ review }: { review: RunDetail['review'] }) {
   const panels = review?.panels ?? [];
   return (
-    <section className="min-w-0 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">Integrated Read-only Review</h3>
+    <section className="evidence-surface min-w-0">
+      <h3 className="text-sm font-semibold">Independent review</h3>
       {panels.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">
           {review?.state
-            ? 'No integrated review was recorded for this run.'
+            ? 'No review panels were recorded for this run.'
             : 'Waiting for the adversarial and design review lenses.'}
         </p>
       ) : (
@@ -261,15 +189,17 @@ function IntegratedReview({ review }: { review: RunDetail['review'] }) {
                 <span className="min-w-0 flex-1 truncate font-medium">
                   {panel.label ?? statusLabel(panel.name)}
                 </span>
-                <Badge variant={statusVariant(panel.state)} className="text-[10px]">
+                <Badge variant={statusVariant(panel.state)} className="text-[11px]">
                   {statusLabel(panel.state)}
                 </Badge>
               </div>
-              {(panel.reasons?.[0] || panel.note) && (
-                <p className="mt-1 break-words pl-5.5 text-muted-foreground">
-                  {panel.reasons?.[0] ?? panel.note}
-                </p>
-              )}
+              {(panel.reasons?.length ?? 0) > 0 ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                  {panel.reasons!.map((reason, index) => <li key={index} className="break-words leading-5">{reason}</li>)}
+                </ul>
+              ) : panel.note ? (
+                <p className="mt-2 break-words text-muted-foreground">{panel.note}</p>
+              ) : null}
             </li>
           ))}
         </ol>
@@ -280,8 +210,8 @@ function IntegratedReview({ review }: { review: RunDetail['review'] }) {
 
 function RolePullRequests({ rows }: { rows: RolePrEntry[] }) {
   return (
-    <section className="min-w-0 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">Pull Requests</h3>
+    <section className="evidence-surface min-w-0">
+      <h3 className="text-sm font-semibold">Pull Requests</h3>
       {rows.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">Waiting for the checks and reviews.</p>
       ) : (
@@ -301,8 +231,8 @@ function RolePullRequests({ rows }: { rows: RolePrEntry[] }) {
                 ) : (
                   <span className="min-w-0 flex-1 truncate">{row.role || row.agent}</span>
                 )}
-                <Badge variant={statusVariant(row.state)} className="text-[10px]">
-                  {row.state === 'awaiting_review' ? 'Ready to Merge' : statusLabel(row.state)}
+                <Badge variant={statusVariant(row.state)} className="text-[11px]">
+                  {row.state === 'awaiting_review' ? 'Awaiting your review' : statusLabel(row.state)}
                 </Badge>
               </div>
               {row.error && (
@@ -325,19 +255,18 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
   const gates = run.gate_history ?? [];
   const rolePrs = run.role_prs ?? [];
   const brief = run.integration_brief;
-  const done = run.status === 'passed';
-  const failed = run.status === 'failed' || run.status === 'needs_human';
+  const decision = presentRunDecision(run);
 
   return (
     <div className="space-y-4 py-1">
-      <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
-        <StatusIcon status={run.status} />
-        <span className="text-sm font-medium">
-          {done ? 'Passed' : failed ? 'Needs a Human' : 'Running'}
-        </span>
-        <code className="ml-auto truncate font-mono text-xs text-muted-foreground" translate="no">
-          {run.run_id}
-        </code>
+      <div className="flex flex-wrap items-start gap-3 rounded-xl border border-border bg-card p-4" role="status" aria-live="polite">
+        <div className="mt-0.5"><StatusIcon tone={decision.tone} /></div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold">{decision.title}</h2>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">{decision.detail}</p>
+          {run.next_action && <p className="mt-3 text-sm leading-6"><span className="font-medium">Next: </span>{run.next_action}</p>}
+        </div>
+        <code className="max-w-full break-all font-mono text-[11px] text-muted-foreground" translate="no">{run.run_id}</code>
       </div>
 
       {route && (
@@ -352,12 +281,12 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
         </div>
       )}
 
-      <Workflow run={run} builders={builders} />
+      <Workflow run={run} />
 
       {brief && (
-        <section className="border-t border-border pt-3">
+        <section className="evidence-surface">
           <div className="flex min-w-0 items-center gap-2">
-            <h3 className="text-xs font-semibold">Shared Plan</h3>
+            <h3 className="text-sm font-semibold">Shared Plan</h3>
             {brief.merge_order?.length ? (
               <code className="min-w-0 truncate text-[10px] text-muted-foreground" translate="no">
                 {brief.merge_order.join(' -> ')}
@@ -380,8 +309,8 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
         <IntegratedReview review={run.review} />
         <RolePullRequests rows={rolePrs} />
         {checker && (
-          <section className="min-w-0 border-t border-border pt-3">
-            <h3 className="text-xs font-semibold">Validator</h3>
+          <section className="evidence-surface min-w-0">
+            <h3 className="text-sm font-semibold">Validator</h3>
             <p className="mt-2 break-all text-[10px] text-muted-foreground">
               <code translate="no">{checker.work_id}</code> authored one executable
               check per pull request. Its real exit code is that pull request's gate.
@@ -396,11 +325,7 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
         </p>
       )}
 
-      {run.next_action && failed && (
-        <p role="status" className="border-t border-border pt-3 text-xs text-muted-foreground">
-          {run.next_action}
-        </p>
-      )}
+
     </div>
   );
 }

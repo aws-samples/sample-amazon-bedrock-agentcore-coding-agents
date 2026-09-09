@@ -28,9 +28,7 @@
  * text-muted-foreground, border-input, etc. resolve.
  */
 @theme inline {
-  /* DESIGN.md radius ladder: the in-app base (--geist-radius) is 6px. md=6,
-     sm=4, lg=8: tight, engineered corners, NOT the 100px marketing pill (that
-     shape is reserved for hero CTAs, not in-product chrome). */
+  /* Derive component radii from the shared UI base token. */
   --radius-lg: calc(var(--radius) + 2px);
   --radius-md: var(--radius);
   --radius-sm: calc(var(--radius) - 2px);
@@ -58,12 +56,11 @@
   --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
-  /* Semantic status tones: a single blue success (DESIGN.md: success doubles
-     as the link blue, NOT green) and the amber warning. Components use
-     text-success / bg-warning instead of literal green-600 / amber-500, so a
-     theme switch moves every status pill at once. */
+  /* Semantic tokens keep status readable in both themes. */
   --color-success: hsl(var(--success));
   --color-warning: hsl(var(--warning));
+  --color-signal: hsl(var(--signal));
+  --color-insight: hsl(var(--insight));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -84,10 +81,7 @@
     "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
     Consolas, "Liberation Mono", "Courier New", monospace;
 
-  /* DESIGN.md elevation: STACKED subtle shadows (multiple small offsets at
-     4 to 12% black) + an inset hairline ring, NEVER a single heavy drop. These
-     override Tailwind's default shadow-sm/shadow/shadow-md/shadow-lg so every
-     `shadow-*` utility app-wide adopts the Vercel calm-elevation feel. */
+  /* Small layered shadows distinguish floating surfaces without heavy edges. */
   --shadow-2xs: 0 1px 1px rgb(0 0 0 / 0.04);
   --shadow-xs: 0 1px 1px rgb(0 0 0 / 0.04);
   --shadow-sm: 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
@@ -124,6 +118,49 @@
   --motion-fast: 150ms;
   --motion-base: 200ms;
   --motion-slow: 300ms;
+  --background: 195 18% 98%;
+  --foreground: 200 16% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 200 16% 14%;
+  --primary: 200 16% 14%;
+  --primary-foreground: 0 0% 100%;
+  --muted: 195 16% 95%;
+  --muted-foreground: 206 10% 40%;
+  --border: 200 14% 88%;
+  --input: 200 14% 82%;
+  --signal: 184 61% 30%;
+  --insight: 266 32% 47%;
+  --success: 184 61% 30%;
+  --warning: 32 90% 32%;
+  --ring: 184 61% 30%;
+  --sidebar-background: 0 0% 100%;
+  --sidebar-foreground: 200 16% 20%;
+  --sidebar-accent: 184 25% 95%;
+  --sidebar-accent-foreground: 184 61% 25%;
+  --sidebar-border: 200 14% 90%;
+}
+
+.dark {
+  --background: 200 15% 9%;
+  --foreground: 190 12% 94%;
+  --card: 200 12% 12%;
+  --card-foreground: 190 12% 94%;
+  --primary: 190 12% 94%;
+  --primary-foreground: 200 16% 14%;
+  --muted: 200 10% 16%;
+  --muted-foreground: 200 10% 67%;
+  --border: 200 9% 23%;
+  --input: 200 9% 32%;
+  --signal: 178 46% 66%;
+  --insight: 266 60% 78%;
+  --success: 178 46% 66%;
+  --warning: 38 88% 65%;
+  --ring: 178 46% 66%;
+  --sidebar-background: 200 15% 10%;
+  --sidebar-foreground: 190 12% 88%;
+  --sidebar-accent: 184 18% 18%;
+  --sidebar-accent-foreground: 178 46% 76%;
+  --sidebar-border: 200 9% 22%;
 }
 
 @keyframes accordion-down {
@@ -182,10 +219,146 @@
   code, pre, .font-mono {
     font-family: var(--font-mono);
   }
-  /* DESIGN.md: display sizes carry aggressive NEGATIVE tracking (part of the
-     voice; reverting to default tracking breaks the brand). Headings get a
-     small global default; per-size tracking is tuned at the call site. */
+  /* Slightly tighten headings while keeping labels at normal tracking. */
   h1, h2, h3 { letter-spacing: -0.02em; }
+  :where(button, a, input, textarea, select, summary):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
+  }
+}
+
+/* Shared workshop chrome. Content keeps the width; dense evidence lives in
+   readable white surfaces. Color identifies a relationship or an action. */
+.console-topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 48px;
+  gap: 8px;
+  padding: 8px clamp(16px, 2vw, 32px);
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+}
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  transform: translateY(-150%);
+}
+.skip-link:focus { transform: translateY(0); }
+.console-sidebar [data-sidebar='menu-button'] {
+  min-height: 36px;
+  border-radius: 8px;
+}
+.console-sidebar [data-sidebar='group-label'] {
+  margin: 12px 0 4px;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+.console-sidebar [data-sidebar='menu-button'][data-active='true'] {
+  box-shadow: inset 2px 0 hsl(var(--signal));
+  font-weight: 600;
+}
+.console-page {
+  width: 100%;
+  max-width: 1280px;
+  margin-inline: auto;
+  padding: 32px clamp(20px, 3vw, 44px) 48px;
+}
+.build-welcome {
+  width: 100%;
+  max-width: 1220px;
+  margin: auto;
+  padding: clamp(28px, 5vh, 64px) clamp(20px, 3vw, 48px) 32px;
+}
+.build-welcome-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr);
+  align-items: center;
+  gap: clamp(28px, 4vw, 64px);
+}
+.build-welcome h1 {
+  font-size: clamp(30px, 3.1vw, 44px);
+  line-height: 1.12;
+  letter-spacing: -.045em;
+  font-weight: 600;
+  text-wrap: balance;
+}
+.loop-illustration {
+  --loop-blue: #0070f0;
+  --loop-purple: #7828c8;
+  --loop-green: #0f766e;
+  padding: 20px 16px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 20px;
+  background:
+    radial-gradient(ellipse at 85% 0%, hsl(var(--insight) / .07), transparent 60%),
+    radial-gradient(ellipse at 10% 90%, hsl(var(--signal) / .07), transparent 65%),
+    hsl(var(--card));
+  box-shadow: 0 2px 3px hsl(var(--foreground) / .02), 0 16px 36px -24px hsl(var(--foreground) / .15);
+}
+.loop-illustration > svg { width: 100%; height: auto; overflow: visible; }
+.loop-node > rect { fill: hsl(var(--card)); stroke: hsl(var(--border)); stroke-width: 1.5; }
+.loop-node-builder > rect { stroke: color-mix(in srgb, var(--loop-blue) 50%, transparent); }
+.loop-node-checker > rect { stroke: color-mix(in srgb, var(--loop-purple) 50%, transparent); }
+.loop-node-decision > rect { stroke: color-mix(in srgb, var(--loop-green) 50%, transparent); }
+.loop-title { fill: hsl(var(--foreground)); font-family: var(--font-sans); font-size: 17px; font-weight: 600; }
+.loop-caption { fill: hsl(var(--muted-foreground)); font-family: var(--font-sans); font-size: 12px; }
+.loop-icon { color: var(--loop-blue); }
+.loop-node-checker .loop-icon { color: var(--loop-purple); }
+.loop-node-decision .loop-icon { color: var(--loop-green); }
+.loop-path { color: var(--loop-blue); }
+.loop-path path { stroke-dasharray: 5 5; animation: loop-flow 8s linear infinite; }
+.loop-path .loop-repair, .loop-path .loop-check { color: var(--loop-purple); }
+.loop-path .loop-decision { color: var(--loop-green); }
+.loop-repair-label { fill: var(--loop-purple); font-family: var(--font-sans); font-size: 13px; font-weight: 600; }
+.dark .loop-illustration {
+  --loop-blue: #69aafa;
+  --loop-purple: #b98de8;
+  --loop-green: #7bd8c8;
+}
+@keyframes loop-flow { to { stroke-dashoffset: -80; } }
+.suggestion-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 84px;
+  padding: 17px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.6;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.suggestion-card:hover:not(:disabled) {
+  border-color: hsl(var(--signal) / .55);
+  box-shadow: 0 0 0 3px hsl(var(--signal) / .06);
+}
+.suggestion-card:disabled { color: hsl(var(--muted-foreground)); }
+.evidence-surface {
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--card));
+  padding: 16px;
+}
+@media (max-width: 1050px) {
+  .build-welcome-grid { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .loop-illustration { max-width: 560px; width: 100%; }
+  .build-welcome h1 { max-width: 620px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loop-path path { animation: none; }
+  .suggestion-card { transition: none; }
 }
 
 /* Slim scrollbar */
@@ -328,13 +501,8 @@ button:disabled,
    its scroll box, so suppress it there (the prose text above already streams). */
 .md-stream > pre:last-child::after { content: none; }
 
-/* ── Vercel brand signatures (DESIGN.md) ───────────────────────────────────
- * The mesh gradient is the brand's ENTIRE decorative system. It lives at hero
- * scale only, never miniaturised to an icon, never reduced to a single colour.
- * Three stop-pairs (develop blue→teal · preview violet→pink · ship coral→amber)
- * collapse into one multi-stop wash used as an atmospheric backdrop behind a
- * page header. Use as a positioned ::before-style layer with low opacity so ink
- * text stays legible on top.                                                  */
+/* Legacy decorative utilities retained for downstream compositions.
+   Current console pages use neutral surfaces and the signal/insight tokens. */
 @utility mesh-gradient {
   background-image:
     radial-gradient(at 18% 8%, #007cf022 0px, transparent 52%),
@@ -344,8 +512,7 @@ button:disabled,
     radial-gradient(at 5% 40%, #00dfd81c 0px, transparent 44%);
 }
 
-/* The brand wordmark / hero accent: a multi-stop gradient clipped to the
-   glyphs. Uses the develop→preview→ship stops as one object (do not reorder). */
+/* Optional gradient text for downstream compositions. */
 @utility text-gradient-brand {
   background-image: linear-gradient(
     100deg, #007cf0, #00dfd8 28%, #7928ca 52%, #ff0080 74%, #f9cb28
@@ -357,9 +524,7 @@ button:disabled,
   color: transparent;
 }
 
-/* Section eyebrow: the small mono label above a heading that signals the
-   "technical platform" voice (DESIGN.md: caption-mono, uppercase effect via
-   tracking). 11px, mono, wide tracking, muted. */
+/* Small section label above a heading. */
 @utility eyebrow {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -369,9 +534,7 @@ button:disabled,
   color: hsl(var(--muted-foreground));
 }
 
-/* Inset-hairline elevation ring: the brand's "you can see this card" cue.
-   Pairs an inset 1px ring with the stacked drop so the card edge stays crisp
-   even where the drop is nearly invisible on the soft canvas. */
+/* A hairline preserves a floating surface's edge on the light canvas. */
 @utility ring-hairline {
   box-shadow:
     inset 0 0 0 1px rgb(0 0 0 / 0.06),

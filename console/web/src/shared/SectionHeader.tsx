@@ -26,12 +26,12 @@ export function SectionHeader({
   className?: string;
 }) {
   return (
-    <div className={cn('flex items-start justify-between gap-6', className)}>
+    <div className={cn('flex flex-wrap items-start justify-between gap-4', className)}>
       <div className="min-w-0">
         {eyebrow && <div className="eyebrow mb-1.5">{eyebrow}</div>}
         {/* Display heading: weight 600, aggressive negative tracking (DESIGN.md). */}
-        <h1 className="text-2xl font-semibold tracking-[-0.03em] text-foreground">{title}</h1>
-        {subtitle && <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">{subtitle}</p>}
+        <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.035em] text-foreground">{title}</h1>
+        {subtitle && <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{subtitle}</p>}
         {source && (
           <div className="mt-2.5 flex items-center gap-2">
             <span

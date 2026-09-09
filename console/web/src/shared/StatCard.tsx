@@ -27,8 +27,8 @@ export function StatCard({
   return (
     <div
       className={cn(
-        'animate-enter-up relative overflow-hidden rounded-lg border bg-card px-5 py-4 shadow-sm',
-        accent ? 'border-primary/30' : 'border-border',
+        'animate-enter-up relative min-w-0 overflow-hidden rounded-xl border bg-card px-5 py-5',
+        accent ? 'border-signal/30' : 'border-border',
         className,
       )}
       style={{ animationDelay: `${delay}ms` }}
@@ -36,9 +36,9 @@ export function StatCard({
       {/* Mono eyebrow label: the technical-platform voice on a metric. */}
       <div className="eyebrow">{label}</div>
       {/* Display value: weight 600, tabular, negative tracking. */}
-      <div className="mt-2 text-[26px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-foreground">{value}</div>
+      <div className="mt-3 break-words text-[30px] font-semibold leading-tight tracking-[-0.035em] tabular-nums text-foreground">{value}</div>
       {(trend || hint) && (
-        <div className="mt-2 flex items-center gap-2 text-[11px]">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs leading-5">
           {trend && (
             <span
               className={cn(

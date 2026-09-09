@@ -13,13 +13,7 @@ type By = 'agent' | 'user';
 type Row = { key: string; usd: number; share: number };
 type K = 'key' | 'usd' | 'share';
 
-/**
- * The per-user cost surface, the P0 of Module 3. A segmented toggle switches the
- * projection between by-agent (which role spent) and by-user (the OBO chargeback
- * view). A bar chart up top, a sortable share table below. The numbers are the
- * exact `/cost-breakdown` payload; the share column is computed locally from the
- * total so it always sums to 100%.
- */
+/** Recorded estimates, with the API's actual source and explicit coverage. */
 export function CostSection() {
   const [by, setBy] = useState<By>('agent');
   const [data, setData] = useState<CostBreakdown | null>(null);
@@ -69,17 +63,19 @@ export function CostSection() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           {by === 'agent'
-            ? 'Spend attributed per agent role. No race, no winner.'
-            : 'Spend grouped by the authenticated user recorded in the run ledger.'}
+            ? 'Usage estimates grouped by the recorded agent role.'
+            : 'Usage estimates grouped by the recorded user label.'}
         </p>
         {/* Segmented by-dimension toggle */}
         <div className="flex items-center rounded-lg border border-border bg-card p-0.5 text-xs font-medium">
           {(['agent', 'user'] as By[]).map((opt) => (
             <button
               key={opt}
+              type="button"
+              aria-pressed={by === opt}
               onClick={() => setBy(opt)}
               className={cn(
                 'rounded-md px-3 py-1 capitalize transition-colors',
@@ -97,16 +93,16 @@ export function CostSection() {
       ) : err ? (
         <ErrorState error={err} />
       ) : rows.length === 0 ? (
-        <EmptyState title="No spend recorded yet" hint="A run that invoked a model attributes its cost here." />
+        <EmptyState title="No usage estimates recorded" hint="Open Attribution for the Lab 3 CloudWatch request events. This view does not include every source of cost." />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <StatCard accent label="Total spend" value={fmtUsd(total)} hint={`${data?.currency ?? 'USD'} · ${rows.length} ${by}s`} />
-            <StatCard label="Top spender" value={chart[0]?.key ?? '-'} hint={chart[0] ? fmtUsd(chart[0].usd) : ''} />
-            <StatCard label="Projection" value={`By ${by}`} hint="forgiving dimension param" />
+            <StatCard accent label="Recorded estimate" value={fmtUsd(total)} hint={`${data?.currency ?? 'USD'} · ${rows.length} ${by}s`} />
+            <StatCard label="Largest recorded share" value={chart[0]?.key ?? '-'} hint={chart[0] ? fmtUsd(chart[0].usd) : ''} />
+            <StatCard label="Source" value={data?.source === 'ledger' ? 'Host ledger' : data?.source === 'bedrock-invocation-log' ? 'Invocation logs' : 'Not reported'} hint="Source returned by the API" />
           </div>
 
-          <ChartCard title={`Cost by ${by}`} subtitle="Token counts priced at published Bedrock rates.">
+          <ChartCard title={`Recorded estimates by ${by}`} subtitle="Missing usage is outside this estimate. Kiro and infrastructure costs require separate accounting.">
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={chart} margin={{ top: 8, right: 16, left: -12, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="2 4" stroke={theme.grid} />
@@ -127,8 +123,8 @@ export function CostSection() {
             </ResponsiveContainer>
           </ChartCard>
 
-          <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
+            <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-muted/40">
                 <tr>
                   <SortableTh<K> label={label} k="key" sortKey={sortKey} sortDir={sortDir} onClick={toggle} align="left" />

@@ -1,28 +1,13 @@
-"""Governance & Metrics API (Stage 3, Connect layer).
-
-The Stage 3 backend. Stdlib only, runs instantly:
+"""Governance API for host records and explicit CloudWatch attribution queries.
 
     python3 metrics-api/metrics_api.py        # serves http://localhost:8092
 
-API-first (Chandra's P0): every number the console shows comes from `metrics_lib`,
-the co-equal Python library. This HTTP layer is a thin shell: each handler calls
-a lib function and serializes the result. The lib and REST share ONE data path, so
-a Python caller and a REST caller can never diverge.
-
-metrics_lib aggregates the shared telemetry ledger (`.runs/telemetry.jsonl`) that
-Stage 1 sessions and Stage 2 engine runs append to as they run on this machine.
-No seed dataset; run nothing and the numbers are zero. Identity is the OS user
-(the local stand-in for the on-behalf-of chain). The kill switch signals the
-recorded process.
-
-On AgentCore the rows come from the sdlc session-tracking DynamoDB +
-CloudWatch/X-Ray instead of the local ledger, and identity comes from
-AgentCore Identity. The HTTP shapes here do NOT change; contract-first.
-
-Per-user attribution is DERIVED from session metadata until Runtime exposes it
-natively (SIFT 5/26 gap). Costs are estimates (measured latency at published
-Bedrock rates), never live billing, and the per-agent split is attribution only:
-no race, no winner.
+metrics_lib reads the host's recorded sessions, estimates, and operations.
+attribution.py separately queries the workshop's real CloudWatch request events
+with boto3. An empty host ledger is not evidence of zero exported usage.
+The standalone server and console/server.py share this router; the console
+mounts it under /api/metrics. Cognito labels and manual telemetry labels are
+attribution data, not OAuth delegation or a complete AWS bill.
 """
 
 from __future__ import annotations
@@ -34,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 # When run as a script, ensure the file's own directory is importable so `metrics_lib`
-# resolves regardless of the caller's CWD. (The lib is the single shared data path.)
+# resolves regardless of the caller's CWD.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import metrics_lib  # noqa: E402  (import after sys.path tweak, intentional)
@@ -52,10 +37,8 @@ def _first(qs: dict, key: str):
 def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int, dict]:
     """Pure router for the Stage 3 API: (status, json-able dict).
 
-    Shared by the standalone server (below) and the unified console server
-    (`console/server.py`) so both read the SAME metrics_lib data path.
-    `query` is the raw query string (e.g. "by=agent"); `body` is unused here
-    except to keep the signature uniform across the three backends.
+    Shared by the standalone server and console/server.py. `query` is the raw
+    query string; Attribution accepts only a bounded time window in `body`.
     """
     qs = parse_qs(query or "")
 
@@ -97,6 +80,9 @@ def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int
             return 200, metrics_lib.get_dashboard()
         if path == "/api/runtimes":
             return 200, metrics_lib.list_runtimes()
+        if path == "/api/attribution":
+            import attribution
+            return 200, attribution.configuration()
         parts = path.split("/")
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "users" and parts[4] == "metrics":
             return 200, metrics_lib.get_user_metrics(parts[3], _first(qs, "time_range") or "24h")
@@ -108,6 +94,16 @@ def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int
         return 404, {"error": "not found", "path": path}
 
     if method == "POST":
+        if path == "/api/attribution/query":
+            import attribution
+            try:
+                if body is not None and (not isinstance(body, dict) or set(body) - {"window_hours"}):
+                    raise attribution.AttributionError(
+                        "INVALID_REQUEST", "Only window_hours may be supplied; the query and log group are server configured.", 400)
+                return 200, attribution.query_attribution((body or {}).get("window_hours", 3))
+            except attribution.AttributionError as exc:
+                return exc.status, {"error": str(exc), "code": exc.code,
+                                    "source": "cloudwatch-logs-insights"}
         parts = path.split("/")
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "sessions" and parts[4] == "stop":
             result = metrics_lib.stop_session(parts[3])
@@ -178,11 +174,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        # drain any request body (ignored) so the socket stays clean
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        if length:
-            self.rfile.read(length)
-        code, out = dispatch("POST", parsed.path.rstrip("/") or "/", parsed.query, None)
+        # Attribution accepts a bounded JSON time window; other operations ignore it.
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            self._send(400, {"error": "invalid Content-Length"})
+            return
+        if length < 0:
+            self._send(400, {"error": "invalid Content-Length"})
+            return
+        if length > 4096:
+            self._send(413, {"error": "request body is too large"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length)) if length else None
+        except (ValueError, UnicodeDecodeError):
+            self._send(400, {"error": "request body must be JSON"})
+            return
+        code, out = dispatch("POST", parsed.path.rstrip("/") or "/", parsed.query, body)
         self._send(code, out)
 
 
@@ -192,10 +201,10 @@ def main() -> None:
     print(
         "Endpoints: GET /api/health  GET /api/sessions  GET /api/users/{id}/metrics  "
         "GET /api/cost-breakdown  GET /api/latency/p95  GET /api/sessions/{id}/identity  "
-        "POST /api/sessions/{id}/stop  GET /api/policies  GET /api/dashboard"
+        "POST /api/sessions/{id}/stop  GET /api/policies  GET /api/dashboard  "
+        "GET /api/attribution  POST /api/attribution/query"
     )
-    print("All data flows through metrics_lib (API-first) over the real run ledger "
-          "(.runs/telemetry.jsonl).")
+    print("Host records: metrics_lib. Attribution: explicit CloudWatch Logs Insights queries.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

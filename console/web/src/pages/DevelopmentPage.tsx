@@ -20,13 +20,13 @@ export function DevelopmentPage() {
     // a child caps it. Without this cap a long file tree makes the WHOLE main
     // scroll, so the sidebar and editor move together; capping at the viewport
     // makes each inner pane (tree / editor / terminal) own its OWN scroll instead.
-    <div className="flex h-svh min-h-0 flex-col overflow-hidden">
+     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Slim IDE title bar. The Explorer row below shows the live folder root. */}
       <div className="flex items-center gap-2.5 border-b border-border bg-sidebar/40 px-4 py-2.5">
         <SquareTerminal className="size-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Development</span>
+        <h1 className="text-sm font-medium">Development</h1>
         <span className="ml-auto hidden font-mono text-[11px] text-muted-foreground sm:inline">
-          box workspace
+           Workshop host · local workspace
         </span>
       </div>
       {/* The IDE itself fills the rest of the height. */}

@@ -1,44 +1,57 @@
-# Per-user metrics API
+# Governance and attribution API
 
-Governance is API-first. `metrics_lib.py` owns one data path and `metrics_api.py`
-is a thin REST adapter over it. The React console consumes the same responses a
-customer can query directly.
+The console exposes two distinct evidence sources through one router:
 
-## Python surface
+- `metrics_lib.py` reads host session and run records, calculates configured-rate
+  estimates, and exposes session controls and local policy information.
+- `attribution.py` queries actual CloudWatch Logs Insights request events. This
+  is Lab 3's source and is independent of the host ledger.
 
-```python
-list_sessions(filters=None)
-get_user_metrics(user_id, time_range="24h")
-get_cost_breakdown(by="agent")
-get_cost_breakdown(by="user")
-get_latency_p95(scope=None)
-```
+`metrics_api.py` serves both directly on port 8092. The console mounts the same
+router at `/api/metrics`. See [API_CONTRACT.md](API_CONTRACT.md).
 
-The matching HTTP contract is documented in [API_CONTRACT.md](API_CONTRACT.md).
-
-## Evidence and limits
-
-The workshop reads `.runs/telemetry.jsonl`, which Module 1 sessions and Module 2
-runs append as work happens. There is no seeded dashboard dataset.
-
-- User identity is the submitter recorded on the run. It supports audit and cost
-  grouping, but does not attest GitHub authorship or OAuth OBO delegation.
-- Token counts come from model API usage fields. A path that invokes no model
-  reports zero.
-- Cost is calculated from configured Bedrock rates. It is attribution data, not
-  an AWS bill or live Pricing API quote.
-- Runtime ARNs are resolved from the same runtime configuration the coordinator
-  uses. An unwired role reports null, never a fabricated ARN.
-
-## Run it
+## Query exported attribution
 
 ```bash
 python3 metrics-api/metrics_api.py
-curl -fsS http://127.0.0.1:8092/api/dashboard | jq
+curl -fsS http://127.0.0.1:8092/api/attribution
+curl -fsS -X POST http://127.0.0.1:8092/api/attribution/query \
+  -H 'Content-Type: application/json' -d '{"window_hours":3}'
 ```
 
-Run the socket-free library tests with:
+The server derives its AWS region from the environment or SDK configuration.
+`WORKSHOP_TELEMETRY_LOG_GROUP` defaults to
+`/workshop/coding-agents/telemetry`. The caller may choose 1, 3, or 24 hours;
+it cannot supply a query or log group.
+
+The fixed query filters `claude_code.api_request`, groups on `resource.user.id`,
+and sums the exported request and token fields. Only a complete result becomes
+a table. Untagged rows remain visible. Missing token aggregates remain null;
+an empty completed query has no coverage percentage. A missing group, denied
+request, incomplete query, or absent credentials is an error.
+
+The query permits two concurrent requests, uses a 20-second polling budget and
+bounded SDK calls, and attempts to cancel a still-pending query on failure.
+Unconfirmed cancellation is reported. The host needs `logs:StartQuery`,
+`logs:GetQueryResults`, and `logs:StopQuery` for this path. No model runs.
+
+## Host records and their limits
+
+The Python surface remains `list_sessions`, `get_user_metrics`,
+`get_cost_breakdown`, and `get_latency_p95`. These read the host's recorded
+sessions, not all sessions or builds in the AWS account. Optional legacy
+Bedrock invocation-log configuration can supply user usage; the current
+workshop does not deploy that source. Responses identify it when used.
+
+A zero estimate can mean usage was not recorded. Configured rates are not a
+live pricing quote, and neither evidence source includes a complete AWS bill.
+Kiro's vendor usage is separate. Submitter labels support attribution; they do
+not establish GitHub authorship, OAuth delegation, or authorization.
 
 ```bash
-python3 -m pytest metrics-api/test_metrics_lib.py -q
+python3 -m pytest -q metrics-api/test_metrics_lib.py metrics-api/test_attribution.py
 ```
+
+The attribution tests exercise response handling with controlled SDK doubles.
+A real event traversal is still required to prove its region, permissions,
+exported events, and console query end to end.

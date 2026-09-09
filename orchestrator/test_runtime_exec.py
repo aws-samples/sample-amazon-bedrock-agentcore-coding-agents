@@ -186,6 +186,10 @@ def test_interactive_dispatch_keeps_local_worktree_and_archive_boundary(monkeypa
 def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatch):
     import roles
 
+    # Archive naming is part of preparation, even when shell transport is stubbed.
+    # Supply its normal configuration seam so an offline test never asks STS for
+    # an account ID and silently misses the console path it intends to exercise.
+    monkeypatch.setenv("WORKSHOP_RUNTIME_BUCKET", "workshop-runtime-test")
     model = roles.get("claude-code").default_model
 
     class Session:
@@ -222,9 +226,9 @@ def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatc
 
     async def snapshot(*_args, **_kwargs):
         assert session.busy, "the original mux keeps the turn busy through upload"
-        return {"raw": ("__AGENT_RUN_BEGIN__-mux123\n"
+        return {"raw": ("__ROLE_RUN_BEGIN__-mux123\n"
                         "snapshot uploaded\n"
-                        "__AGENT_RUN_END__-mux123\n"),
+                        "__ROLE_RUN_END__-mux123\n"),
                 "exit": 0, "session_id": "snap"}
 
     monkeypatch.setattr(runtime_exec, "_drive_shell", snapshot)

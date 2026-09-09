@@ -1,14 +1,16 @@
 import { Suspense, lazy } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { SquareTerminal, Boxes, ShieldCheck, Bot, Settings, PanelLeftClose, PanelLeft } from 'lucide-react';
+import { SquareTerminal, Boxes, ShieldCheck, Bot, Settings, PanelLeftClose, PanelLeft, BookOpen, ChevronRight } from 'lucide-react';
 import {
-  AppShell, NavSidebar, type NavSidebarGroup, Toaster, useSidebar,
+  AppShell, NavSidebar, type NavSidebarGroup, Toaster, useSidebar, SidebarTrigger,
   SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuItem, SidebarMenuButton,
 } from '@foxl/ui';
 import { Brand } from './components/Brand';
 import { AgentsSubNav } from './components/AgentsSubNav';
 import { ChatList } from './components/ChatList';
 import { GovernanceSubNav } from './components/GovernanceSubNav';
+import { OnboardingModal } from './components/OnboardingChecklist';
+import { openOnboarding } from './hooks/useOnboarding';
 
 // Routes are code-split: each page is its own chunk loaded on navigation, so
 // the landing route (/agents) no longer ships the chat's markdown + syntax
@@ -24,17 +26,18 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ de
 // spinner. Honors reduced-motion via the shared utility.
 function RouteFallback() {
   return (
-    <div className="flex h-full items-center justify-center">
-      <span className="size-2 animate-pulse rounded-full bg-muted-foreground/40" />
+    <div className="flex h-full items-center justify-center gap-3" role="status">
+      <span aria-hidden="true" className="size-2 animate-pulse rounded-full bg-success motion-reduce:animate-none" />
+      <span className="text-sm text-muted-foreground">Loading workspace…</span>
     </div>
   );
 }
 
 const NAV = [
   { id: 'development', label: 'Development', sub: 'Build & deploy in a live shell', icon: SquareTerminal, path: '/development' },
-  { id: 'agents', label: 'Agents', sub: 'Wire & deploy the coding agents', icon: Bot, path: '/agents' },
-  { id: 'fleets', label: 'Chat', sub: 'Talk to the orchestrator; it runs the fleet', icon: Boxes, path: '/fleets' },
-  { id: 'governance', label: 'Governance', sub: 'Cost, identity & audit', icon: ShieldCheck, path: '/governance' },
+  { id: 'agents', label: 'Agents', sub: 'Runtime sessions and role responsibilities', icon: Bot, path: '/agents' },
+  { id: 'fleets', label: 'Chat', sub: 'Plan a task and inspect its evidence', icon: Boxes, path: '/fleets' },
+  { id: 'governance', label: 'Governance', sub: 'Usage, identity & audit', icon: ShieldCheck, path: '/governance' },
 ];
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -46,22 +49,24 @@ function Shell({ children }: { children: React.ReactNode }) {
   //     workspace), so this stays false for all -- adding the wrapper would
   //     double-center / narrow them.
   //   - scroll: whether <main> owns the vertical scroll. Every page scrolls as a
-  //     whole EXCEPT Chat (/fleets), which pins a top bar + bottom composer and
+  //     whole EXCEPT Chat (/fleets) and Development, which pins a top bar + bottom composer and
   //     manages its own inner scroll region; main scrolling there would drag the
   //     pinned chrome. Before scroll isolation main was always overflow-y-auto,
   //     so anything other than Chat losing its scroll is a regression.
-  const scroll = !pathname.startsWith('/fleets');
+  const scroll = !pathname.startsWith('/fleets') && !pathname.startsWith('/development');
   const groups: NavSidebarGroup[] = [
     {
+      label: 'Workspace',
       items: NAV.map((n) => ({
         id: n.id,
         label: n.label,
         icon: n.icon,
+        tooltip: n.sub,
         isActive: pathname.startsWith(n.path),
         onSelect: () => nav(n.path),
         // Inline sub-lists under a nav item: the Module 1 workspaces under
         // "Agents" (deep-linkable at /agents/<env>), the run history under
-        // "Tasks" (deep-linkable at /fleets/<id>), and the governance sections
+        // "Chat" (deep-linkable at /fleets/<id>), and the governance sections
         // under "Governance" (deep-linkable at /governance/<section>).
         after:
           n.id === 'agents' ? <AgentsSubNav />
@@ -75,9 +80,12 @@ function Shell({ children }: { children: React.ReactNode }) {
     <AppShell
       contained={false}
       scroll={scroll}
+      className="console-surface"
+      topbar={<ConsoleTopbar />}
       sidebar={
         <NavSidebar
           header={<SidebarHeaderContent />}
+          className="console-sidebar"
           groups={groups}
           footer={<SidebarFooterContent active={pathname.startsWith('/settings')} onSettings={() => nav('/settings')} />}
         />
@@ -90,17 +98,42 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+function ConsoleTopbar() {
+  const { pathname } = useLocation();
+  const current = NAV.find((n) => pathname.startsWith(n.path))?.label ?? 'Settings';
+  return (
+    <header className="console-topbar">
+      <a href={`${pathname}#console-main`} className="skip-link">Skip to workspace</a>
+      <SidebarTrigger className="mr-1 md:hidden" />
+      <div className="flex min-w-0 items-center gap-2 text-xs">
+        <span className="hidden text-muted-foreground sm:inline">Coding agent workshop</span>
+        <ChevronRight aria-hidden="true" className="hidden size-3 text-muted-foreground sm:inline" />
+        <span className="font-medium">{current}</span>
+      </div>
+      <span className="ml-auto rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground"
+        title="Chats and builds on this console use the host's coordinator. Runs submitted to a deployed coordinator have their own history.">
+        Host console
+      </span>
+    </header>
+  );
+}
 
 function SidebarFooterContent({ active, onSettings }: { active: boolean; onSettings: () => void }) {
   // Mirror the nav items' EXACT wrapper chain (SidebarGroup p-2 ->
   // SidebarGroupContent -> SidebarMenu -> SidebarMenuButton) so Settings sits in
-  // the same icon column as Development/Agents/Tasks/Governance, collapsed or not.
+  // the same icon column as Development/Agents/Chat/Governance, collapsed or not.
   // Wrapping in only a bare SidebarMenu drops the SidebarGroup's p-2 and the icon
   // shifts left of the nav icons when collapsed.
   return (
     <SidebarGroup className="py-1">
       <SidebarGroupContent>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={openOnboarding} tooltip="Setup guide" className="w-full">
+              <BookOpen aria-hidden="true" className="h-4 w-4" />
+              <span>Setup guide</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton isActive={active} onClick={onSettings} tooltip="Settings" className="w-full">
               <Settings className="h-4 w-4" />
@@ -125,6 +158,7 @@ function SidebarHeaderContent() {
       <button
         onClick={toggleSidebar}
         title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
       >
         {collapsed ? <PanelLeft className="size-4" /> : <PanelLeftClose className="size-4" />}
@@ -152,6 +186,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/development" replace />} />
       </Routes>
       <Toaster richColors closeButton position="bottom-right" />
+      <OnboardingModal />
     </>
   );
 }

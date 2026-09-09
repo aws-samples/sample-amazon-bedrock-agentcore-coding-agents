@@ -9,6 +9,7 @@ import { CostSection } from './governance/CostSection';
 import { AuditSection } from './governance/AuditSection';
 import { PoliciesSection } from './governance/PoliciesSection';
 import { AnalyzeSection } from './governance/AnalyzeSection';
+import { AttributionSection } from './governance/AttributionSection';
 
 /**
  * The governance mini-dashboard. The section nav lives in the app's LEFT
@@ -23,7 +24,7 @@ export function GovernancePage() {
   const current = govSection(section);
 
   return (
-    <div className="animate-enter-up mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-8">
+    <div className="console-page animate-enter-up flex flex-col gap-6">
       {/* Small-screen fallback nav (the sidebar sub-nav is hidden when collapsed). */}
       <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 md:hidden">
         {GOV_SECTIONS.map((s) => {
@@ -45,13 +46,14 @@ export function GovernancePage() {
 
       <SectionHeader
         title={current.title}
+        eyebrow="Observe and understand"
         subtitle={current.subtitle}
-        source={current.id === 'sessions' ? undefined : 'ledger'}
       />
 
       {current.id === 'overview' && <OverviewSection />}
       {current.id === 'runtimes' && <RuntimesSection />}
       {current.id === 'sessions' && <SessionsSection />}
+      {current.id === 'attribution' && <AttributionSection />}
       {current.id === 'cost' && <CostSection />}
       {current.id === 'audit' && <AuditSection />}
       {current.id === 'policies' && <PoliciesSection />}

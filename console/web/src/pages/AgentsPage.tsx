@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, CardHeader, CardTitle, CardContent,
   Badge, Button, Input,
@@ -19,6 +19,7 @@ import {
 
 export function AgentsPage() {
   const { env } = useParams();
+  const navigate = useNavigate();
   // The roster is fetched (it is the deployment's own configurable team), so it is
   // briefly unknown on first paint. Track it in state and render a loading state
   // below until it lands, rather than inventing a role to show.
@@ -210,7 +211,7 @@ export function AgentsPage() {
       <Button
         variant="ghost" size="sm" className="h-7 shrink-0 px-2"
         onClick={() => openTab(isFleet ? targetArn : undefined)}
-        disabled={opening || !isWired} title="New session"
+        disabled={opening || !isWired} title="New session" aria-label="New session"
       >
         {opening ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
       </Button>
@@ -285,11 +286,37 @@ export function AgentsPage() {
   }
 
   return (
-    <div className="animate-enter-up mx-auto w-full max-w-6xl space-y-6 px-6 py-8">
+      <div className="console-page animate-enter-up space-y-6">
       <SectionHeader
         title="Agents"
-        subtitle="Connect to each agent's AgentCore Runtime. Run agentcore dev locally or wire a deployed ARN."
+        eyebrow="Your coding team"
+        subtitle="Each role has its own responsibility and Runtime sessions. Select a role to inspect its connection and open a live shell."
       />
+
+      <nav className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3" aria-label="Coding agent roles">
+        {roles.map((agent) => {
+          const configured = agent.instances.some((instance) => runtimes?.roles.some((row) => row.role === instance.id && row.wired));
+          const selected = agent.id === selectedRole.id;
+          return (
+            <button key={agent.id} type="button" aria-pressed={selected}
+              onClick={() => navigate(`/agents/${agent.id}`)}
+              className={`min-w-0 rounded-xl border bg-card p-4 text-left transition-colors ${selected ? 'border-signal shadow-sm' : 'border-border hover:border-signal/40'}`}>
+              <span className="flex items-center gap-3">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+                  <AgentIcon agentId={agent.id} size={24} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold">{agent.label}</span>
+                  <span className={`mt-0.5 block text-xs ${configured ? 'text-signal' : 'text-muted-foreground'}`}>
+                    {configured ? 'Runtime configured' : 'Not configured'}
+                  </span>
+                </span>
+              </span>
+              <span className="mt-3 block text-xs leading-5 text-muted-foreground">{agent.blurb}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       <Card>
         <CardHeader className="gap-1.5">
@@ -334,7 +361,7 @@ export function AgentsPage() {
               </DropdownMenu>
             )}
             {isWired ? (
-              <Badge variant="success" className="ml-2">connected</Badge>
+              <Badge variant="success" className="ml-2">Runtime configured</Badge>
             ) : (
               <Badge variant="outline" className="ml-2 text-muted-foreground">not wired</Badge>
             )}

@@ -1,135 +1,110 @@
-# Governance & Metrics API: FROZEN CONTRACT (Stage 3, Connect layer)
+# Governance and metrics API
 
-> Stage 3 backend (Raj). Two things the console needs: (1) the **API-first per-user cost
-> surface** (Chandra's P0: a Python lib + co-equal REST, AWS naming `list_*`/`get_*`), and
-> (2) the **governance surfaces** (sessions, user attribution, the kill switch, Cedar
-> policy view). Same contract-first discipline: console builds against this; the real local
-> implementation (`metrics_api.py` over `metrics_lib` + the run ledger) returns it today; the
-> AgentCore implementation (session-inspector DynamoDB + CloudWatch + X-Ray) returns it
-> later, unchanged.
+This contract describes `metrics_api.dispatch`, shared by the standalone server
+and console. The standalone prefix is `/api`; in the console it is
+`/api/metrics`. Examples below use the console prefix. Authentication is supplied
+by the hosting deployment; the standalone server is not a Cognito service.
 
-Base URL (local engine): `http://localhost:8092`. JSON bodies. CORS open.
+## CloudWatch attribution
 
-Grounded in `aws-samples/sample-agent-assisted-sdlc` (inspector DynamoDB schema, routes) and
-`metrics-api/README.md`. **Per-user attribution is DERIVED from session metadata** until
-Runtime exposes it natively (SIFT 5/26 gap); the surface is stable regardless.
+### `GET /api/metrics/attribution`
 
----
+Returns `source: "cloudwatch-logs-insights"`, the configured `region` (nullable),
+`log_group`, and fixed `query`. This reads configuration and does not start a
+CloudWatch query.
 
-## Data shapes
+### `POST /api/metrics/attribution/query`
 
-### Session  (from the inspector's session-tracking DynamoDB)
-```json
-{
-  "session_id": "sess-9f3a",
-  "invocation_number": 1,
-  "runtime_arn": "arn:aws:bedrock-agentcore:us-west-2:<acct>:runtime/...",
-  "assistant_type": "claude-code",     // claude-code | opencode | kiro (codex: hidden restore path)
-  "user_id": "raj",                    // authenticated user recorded on the session
-  "started_at": "2026-06-09T14:15:03Z",
-  "issue_url": "https://github.com/your-org/your-repo/issues/42",
-  "claude_running": true               // inspector probes the microVM /proc table
-}
-```
+Accepts only `{"window_hours": 1 | 3 | 24}`; an omitted value defaults to 3.
+Other fields and invalid windows return 400. The client cannot choose the query
+or log group.
 
-### UserMetrics  (the per-user roll-up, the P0)
-```json
-{
-  "user_id": "raj",
-  "time_range": "24h",
-  "runs": 7,
-  "total_tokens": 1284000,
-  "total_cost_usd": 12.40,
-  "p95_latency_ms": 214000,
-  "by_agent": {"claude-code": 6.20, "opencode": 3.90}   // cost split, USD; see the BYOK note below
-}
-```
+A 200 response always has `status: "Complete"` and these fields:
 
-### CostBreakdown
-```json
-{ "by": "agent", "breakdown": {"claude-code": 6.20, "opencode": 3.90}, "currency": "USD" }
-```
+| Field | Type and meaning |
+|---|---|
+| `source` | `"cloudwatch-logs-insights"` |
+| `query_id` | Actual CloudWatch query identifier |
+| `region`, `log_group`, `query` | Actual source and query |
+| `start_time`, `end_time` | Query bounds, Unix seconds |
+| `rows` | Array of `{user, requests, input_tokens, output_tokens}` |
+| `rows[].user` | String, or null for an untagged group |
+| `rows[].requests` | Nonnegative integer |
+| `rows[].input_tokens`, `rows[].output_tokens` | Nonnegative integers, or null if absent |
+| `total_requests`, `tagged_requests`, `untagged_requests` | Counts from completed result rows |
+| `coverage_percent` | Tagged requests / total requests, rounded to one decimal; null when total is zero |
 
-### IdentityStatus
-```json
-{
-  "session_id": "sess-9f3a",
-  "recorded_user": "raj",             // who started the run
-  "user_email": "raj@example.com",
-  "user_name": "Raj",
-  "auth_provider": "cognito",
-  "environment": "agentcore",
-  "attribution_source": "run-ledger",
-  "github_actor": "credential-dependent",
-  "static_credentials_on_agent": false
-}
-```
+The query filters `body = "claude_code.api_request"` and groups on
+`resource.user.id`. It does not count Kiro usage or the whole AWS bill. A manual
+resource label does not attest an authenticated identity.
 
-This record proves session attribution only. It does not claim OAuth delegation
-or a particular pull request author. GitHub authorship is determined separately
-by the PAT or GitHub App credential used during finalization.
+Errors return `{error, code, source}` with a non-200 status. Key cases:
 
-### CedarDecision  (governance guardrail view, read-only here)
-```json
-{
-  "tier": "hard",                     // hard (absolute) | soft (deny-by-default, grantable)
-  "rule_id": "pr_review_forbid_write",
-  "effect": "forbid",
-  "summary": "pr_review agents may never invoke Write/Edit"
-}
-```
+| Status | Meaning |
+|---|---|
+| 400 | Invalid request fields or time window |
+| 403 | CloudWatch access denied |
+| 404 | Telemetry log group not found |
+| 429 | Both query slots are occupied |
+| 503 | Missing region or unavailable/expired credentials |
+| 504 | Console query wait budget exceeded |
+| 502 | Failed, cancelled, malformed, truncated, or otherwise unavailable query result |
 
----
+`Running` results are never returned as completed counts. The service attempts
+to cancel a query still pending when it fails. If cancellation is not confirmed,
+the error says so. The 20-second poll deadline is separate from the bounded SDK
+calls; it is not a promise of an exact 20-second HTTP response.
 
-## Endpoints: Metrics (API-FIRST; the lib + REST are co-equal)
+## Host session and run records
 
-The Python lib mirrors these 1:1 (`list_sessions`, `get_user_metrics`, `get_cost_breakdown`,
-`get_latency_p95`). UI is a thin layer on top, never the only way in.
+These endpoints use `metrics_lib`. They describe records available to this host.
+They are not the CloudWatch attribution table and do not discover every account
+session.
 
-### `GET /api/health` → `200 {"status":"ok","mode":"engine"}`
+| Method and path after `/api/metrics` | Parameters / response |
+|---|---|
+| `GET /health` | `{status: "ok", mode: "engine"}` |
+| `GET /sessions` | Optional `user_id`, `assistant_type`, `window` in minutes; `{sessions: [...]}` |
+| `GET /users/{user_id}/metrics` | Optional `time_range`; user, range, runs, tokens, configured-rate estimate, p95, by-agent split, and source |
+| `GET /cost-breakdown` | `by=agent` or `by=user`; `{by, breakdown, currency, source}` |
+| `GET /latency/p95` | Optional `assistant_type`, `user_id`; `{p95_latency_ms, scope}` |
+| `GET /sessions/{session_id}/identity` | Recorded submitter and attribution source; 404 if absent |
+| `GET /policies` | Local engine command-screening rules, not deployed Cedar policies |
+| `GET /audit` | Optional `limit`; recorded operations |
+| `GET /dashboard` | Agent estimates, p95, active sessions, `runs_total` |
+| `GET /runtimes` | Configured targets and observed fleet information |
 
-### `GET /api/sessions`  ⇆ `list_sessions(filters=...)`
-Query: `?user_id=&assistant_type=&window=<minutes>`. Response `{ "sessions": [ Session, ... ] }`.
+The legacy `runs_total` field is the number of recorded **sessions**, not a count
+of distinct builds. The UI labels it accordingly. An absent latency sample or
+usage source must not be presented as a measured zero. Cost is an estimate using
+configured rates. `source` distinguishes `ledger` from optional legacy
+`bedrock-invocation-log` data; that log is not deployed by the current workshop.
 
-### `GET /api/users/{user_id}/metrics`  ⇆ `get_user_metrics(user_id, time_range)`
-Query: `?time_range=24h`. Response → a **UserMetrics**.
+Session identity records include `recorded_user`, `user_email`, `user_name`,
+`auth_provider`, `environment`, `attribution_source`, `github_actor`, and
+`static_credentials_on_agent`. They record attribution, not OAuth delegation.
+The served GitHub App's authorship is determined by the broker credential.
 
-### `GET /api/cost-breakdown`  ⇆ `get_cost_breakdown(by="agent"|"user")`
-Query: `?by=agent` (or `user`). Response → a **CostBreakdown**.
+## Operations
 
-### `GET /api/latency/p95`  ⇆ `get_latency_p95(scope=...)`
-Query: `?assistant_type=` or `?user_id=` (omit for fleet-wide). Response `{ "p95_latency_ms": 214000, "scope": {...} }`.
+### `POST /api/metrics/sessions/{session_id}/stop`
 
-## Endpoints: Governance
+Returns 404 for an unknown session. A known session returns its identifier,
+`stopped`, and `mechanism`; failures also include an error. HTTP 200 alone does
+not establish success: the client must require **`stopped: true`**.
 
-### `GET /api/sessions/{session_id}/identity`  → an **IdentityStatus**
+The Runtime path uses the exact recorded ARN and Runtime session ID with
+`StopRuntimeSession`. Missing session identity fails instead of resolving a new
+target. The local-process path signals only the recorded live process. A stopped
+Runtime loses session-local processes and files; already saved shared files
+remain.
 
-### `POST /api/sessions/{session_id}/stop`  (the kill switch, StopRuntimeSession)
-Terminate a runaway microVM now. Response `200 {"session_id":"...","stopped":true}`.
-(Persistent storage survives; only the microVM dies.)
+### `POST /api/metrics/runtimes/{role}/probe`
 
-### `GET /api/policies`  (Cedar policy view, read-only)
-Response `{ "policies": [ CedarDecision, ... ] }`. Shows the hard/soft denies the fleet runs under.
+Starts a small real job against a configured Runtime. This is an execution
+operation, unlike Attribution's query. Inspect the returned result and error;
+never infer a successful probe solely from HTTP 200.
 
-### `GET /api/dashboard`  (the thin CloudWatch-style rollup, a VIEW over the metrics above)
-Response: `{ "cost_by_agent": {...}, "p95_latency_ms": ..., "active_sessions": N, "runs_total": N }`.
-Pure convenience for the console; it derives nothing the four metric endpoints don't already give.
-
----
-
-## Rules the real implementation must keep
-1. **API-first:** every UI number must come from one of these endpoints / the matching lib call.
-   The dashboard is a thin view, never a separate data path.
-2. Per-user numbers are **derived** from session metadata (recorded user × DynamoDB rows × OTel/X-Ray
-   cost+latency) until Runtime ships native per-user metrics. Signatures don't change when it does.
-3. `static_credentials_on_agent` must remain `false`. GitHub credentials stay in the
-   orchestrator or Gateway, not in a coding-agent workspace.
-4. Costs are illustrative fixtures, not live pricing. Never present Kiro vendor cost claims as fact.
-   **A BYOK role does not appear in the Bedrock cost path at all.** Kiro (the served validator)
-   authenticates with the attendee's own `ksk_` key against the Kiro service, so its model calls
-   are not Bedrock `InvokeModel` calls under the workshop account and nothing records them in the
-   model-invocation log that `metrics_lib.py` reads; AgentCore meters only its compute. A
-   per-agent breakdown over that source therefore returns TWO roles (claude-code, opencode), not
-   three. That row is absent because no usage source exists for it, and it must never be filled
-   in with an estimate.
-5. Don't change a field/enum without editing THIS file + telling the group.
+The standalone HTTP adapter accepts at most 4096 body bytes, rejects malformed
+JSON and invalid Content-Length, and does not expose wildcard CORS. Update this
+contract whenever a public field or behavior changes.

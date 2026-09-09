@@ -50,6 +50,8 @@ export const PromptInputForm = forwardRef<HTMLFormElement, PromptInputFormProps>
 PromptInputForm.displayName = 'PromptInputForm';
 
 export interface PromptInputTextareaProps {
+  id?: string;
+  'aria-label'?: string;
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -71,6 +73,8 @@ export function getPromptTextareaValue(): string {
 const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 export const PromptInputTextarea = ({
+  id,
+  'aria-label': ariaLabel = 'Message',
   value,
   onChange,
   onSubmit,
@@ -100,6 +104,9 @@ export const PromptInputTextarea = ({
     if (!container) return;
 
     const ta = document.createElement('textarea');
+    if (id) ta.id = id;
+    ta.name = 'message';
+    ta.setAttribute('aria-label', ariaLabel);
     ta.rows = 1;
     ta.placeholder = placeholder;
     ta.value = value;

@@ -1,12 +1,8 @@
-"""Identity baggage: the run-attribution contract, including the Lab 3 seam.
+"""Identity propagation and the intentionally empty Lab 3 exercise seam.
 
-to_env() is the run-ledger/audit propagation (AGENTCORE_USER_*). to_otel_env()
-is the Lab 3 telemetry seam: it SHIPS returning {} (dispatched runs land in
-CloudWatch untagged), and attendees implement the mapping in Lab 3 page 2.
-These tests pin the shipped contract; the attendee's fix flips
-test_to_otel_env_ships_empty red, which is exactly the observable change the
-lab asks them to verify (the content tells them to re-run this file and
-expect that one failure).
+The default suite verifies the shipped empty mapping. WORKSHOP_LAB3_COMPLETE=1
+requires the attendee's saved implementation, including email preference, user-ID
+fallback and anonymous behavior. It must fail if the edit is still empty.
 """
 from __future__ import annotations
 
@@ -44,26 +40,21 @@ def test_to_otel_env_ships_empty():
 
 
 def test_to_otel_env_contract_once_implemented():
-    # Contract for the attendee's implementation (reference version is in the
-    # to_otel_env docstring). An empty dict (the shipped state) passes
-    # vacuously; a non-empty result must be a well-formed OTel resource stamp
-    # that names the submitting user.
-    out = IDENT.to_otel_env()
-    for key, value in out.items():
-        assert key == "OTEL_RESOURCE_ATTRIBUTES"
-        assert "user.id=" in value
-        assert "attendee@workshop.aws" in value or "c0ffee-sub" in value
-        # W3C baggage-style k=v pairs, comma separated, no spaces around '='
-        for pair in value.split(","):
-            k, _, v = pair.partition("=")
-            assert k and v, f"malformed resource attribute pair: {pair!r}"
+    # The shipped gap is intentional; completion mode is checked independently
+    # above. Once implemented, both identity sources must retain their meaning.
+    if not IDENT.to_otel_env():
+        return
+    assert IDENT.to_otel_env() == {
+        "OTEL_RESOURCE_ATTRIBUTES": "user.id=attendee@workshop.aws,team.id=workshop",
+    }
+    assert UserIdentity(user_id="c0ffee-sub").to_otel_env() == {
+        "OTEL_RESOURCE_ATTRIBUTES": "user.id=c0ffee-sub,team.id=workshop",
+    }
 
 
 def test_anonymous_identity_never_stamps_telemetry():
     assert ANONYMOUS.is_anonymous()
-    assert ANONYMOUS.to_otel_env() == {} or (
-        "user.id=" not in ANONYMOUS.to_otel_env().get(
-            "OTEL_RESOURCE_ATTRIBUTES", "user.id="))
+    assert ANONYMOUS.to_otel_env() == {}
 
 
 def test_contextvar_roundtrip():

@@ -46,7 +46,7 @@ export function AppShell({
             fixed-height (min-h-0) box to the child, otherwise main scrolling
             would drag the pinned chrome. `contained` only adds the max-w
             centering wrapper. */}
-        <main className={cn("relative flex-1 min-h-0",
+        <div id="console-main" tabIndex={-1} className={cn("relative flex-1 min-h-0 outline-none",
                             scroll ? "overflow-y-auto" : "overflow-hidden")}>
           {contained ? (
             <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 lg:px-10 lg:py-10">
@@ -55,7 +55,7 @@ export function AppShell({
           ) : (
             children
           )}
-        </main>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );

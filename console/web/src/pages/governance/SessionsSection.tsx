@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { cn, Input } from '@foxl/ui';
+import { cn, Input, AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@foxl/ui';
 import { listSessions, stopSession, getDashboard, type SessionRow, type Dashboard } from '../../api';
 import {
   StatCard, SortableTh, useSortable, LoadingState, ErrorState, EmptyState, fmtNum, fmtSeconds, fmtTime, maskHandle,
@@ -28,8 +28,8 @@ const PAGE = 12; // rows per page; the ledger can hold thousands of sessions
  * and filters by a free-text query over session / agent / user.
  *
  * The kill switch calls the REAL stop endpoint (StopRuntimeSession on AgentCore,
- * a process signal locally) and reflects the result optimistically, then a
- * refresh confirms from the ledger.
+ * a process signal locally) and marks the row stopped only after the service confirms success.
+ * Failures remain visible and never become a successful stop.
  */
 export function SessionsSection() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -37,6 +37,8 @@ export function SessionsSection() {
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState('');
   const [selected, setSelected] = useState<SessionRow | null>(null);
+  const [pendingStop, setPendingStop] = useState<string | null>(null);
+  const [stopError, setStopError] = useState('');
   const [stopped, setStopped] = useState<Record<string, boolean>>({});
   const [stopping, setStopping] = useState<Record<string, boolean>>({});
   const [windowKey, setWindowKey] = useState('all');
@@ -69,16 +71,16 @@ export function SessionsSection() {
     return () => { live = false; clearInterval(t); };
   }, [refresh]);
 
-  async function kill(e: React.MouseEvent, sessionId: string) {
-    e.stopPropagation(); // don't open the drill-down when killing
-    if (!window.confirm('Stop this session? Files saved in shared storage are kept.')) return;
+  async function kill(sessionId: string) {
+    setStopError('');
     setStopping((m) => ({ ...m, [sessionId]: true }));
     try {
-      await stopSession(sessionId);
+      const result = await stopSession(sessionId);
+      if (!result?.stopped) throw new Error(result?.error || 'The service did not confirm that the session stopped.');
       setStopped((m) => ({ ...m, [sessionId]: true }));
       await refresh();
-    } catch {
-      /* leave the row; the next refresh reflects the truth */
+    } catch (error) {
+      setStopError(`Session ${sessionId}: ${error instanceof Error ? error.message : 'Stop failed.'}`);
     } finally {
       setStopping((m) => ({ ...m, [sessionId]: false }));
     }
@@ -124,10 +126,10 @@ export function SessionsSection() {
     <div className="space-y-4">
       {/* Fleet-wide rollup over the sessions table: active count, total spend,
           and p95, all from the dashboard endpoint. */}
-      <div className="grid grid-cols-3 gap-4">
-        <StatCard accent label="Active sessions" value={dash ? fmtNum(dash.active_sessions) : '-'} hint="running now" delay={0} />
-        <StatCard label="Total cost" value={dash ? `$${Object.values(dash.cost_by_agent).reduce((s, n) => s + n, 0).toFixed(2)}` : '-'} hint="attributed" delay={60} />
-        <StatCard label="p95 latency" value={dash ? fmtSeconds(dash.p95_latency_ms) : '-'} hint="all sessions" delay={120} />
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard accent label="Active sessions" value={dash ? fmtNum(dash.active_sessions) : '-'} hint="Observed by this console" delay={0} />
+        <StatCard label="Recorded estimate" value={dash ? `$${Object.values(dash.cost_by_agent).reduce((s, n) => s + n, 0).toFixed(2)}` : '-'} hint="Host ledger; incomplete coverage" delay={60} />
+        <StatCard label="p95 latency" value={dash?.runs_total ? fmtSeconds(dash.p95_latency_ms) : 'No samples'} hint="Recorded session duration" delay={120} />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -136,7 +138,7 @@ export function SessionsSection() {
           {windowKey !== 'all' ? ` in the last ${WINDOWS.find((w) => w.key === windowKey)?.label}` : ' recorded'}
           {pageCount > 1 ? ` · page ${page + 1} of ${pageCount}` : ''} · select a row to see who ran it
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Lookback presets: each re-queries the sessions endpoint with a real
               `window` filter (minutes). */}
           <div className="flex items-center rounded-lg border border-border bg-card p-0.5 text-xs font-medium">
@@ -167,11 +169,13 @@ export function SessionsSection() {
         </div>
       </div>
 
+      {stopError && <ErrorState error={stopError} />}
+
       {rows.length === 0 ? (
-        <EmptyState title="No sessions match" hint="Run a task on the Tasks page or open a shell in Development to populate the inventory." />
+        <EmptyState title="No sessions match" hint="Open a Runtime session in Agents, or inspect a run started from this console." />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
+          <table className="w-full min-w-[760px] text-sm">
             <thead className="bg-muted/40">
               <tr>
                 <Th label="Session" k="session" />
@@ -184,7 +188,7 @@ export function SessionsSection() {
             </thead>
             <tbody>
               {pageRows.map((s) => {
-                const isStopped = stopped[s.session_id] || !s.claude_running;
+                const isStopped = stopped[s.session_id] || s.state === 'stopped';
                 const busy = stopping[s.session_id];
                 return (
                   <tr
@@ -219,7 +223,7 @@ export function SessionsSection() {
                     <td className="px-3 py-2.5 text-right">
                       <button
                         type="button"
-                        onClick={(e) => kill(e, s.session_id)}
+                        onClick={(e) => { e.stopPropagation(); setPendingStop(s.session_id); }}
                         disabled={isStopped || busy}
                         aria-live="polite"
                         className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
@@ -257,6 +261,24 @@ export function SessionsSection() {
         </div>
       )}
 
+      <AlertDialog open={pendingStop != null} onOpenChange={(open) => { if (!open) setPendingStop(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop this session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This ends its running processes and discards files kept only in the session.
+              Files already saved to shared storage remain.
+              <span className="mt-3 block break-all font-mono text-xs">{pendingStop}</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep session</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { if (pendingStop) void kill(pendingStop); }}>
+              Stop session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <SessionDetailPanel session={selected} onClose={() => setSelected(null)} />
     </div>
   );

@@ -35,6 +35,45 @@ export class ApiError extends Error {
   }
 }
 
+export interface AttributionConfiguration {
+  source: 'cloudwatch-logs-insights';
+  region: string | null;
+  log_group: string;
+  query: string;
+}
+
+export interface AttributionEvidence extends AttributionConfiguration {
+  status: 'Complete';
+  query_id: string;
+  start_time: number;
+  end_time: number;
+  total_requests: number;
+  tagged_requests: number;
+  untagged_requests: number;
+  coverage_percent: number | null;
+  rows: Array<{
+    user: string | null;
+    requests: number;
+    input_tokens: number | null;
+    output_tokens: number | null;
+  }>;
+}
+
+export const getAttributionConfiguration = () =>
+  get<AttributionConfiguration>('/api/metrics/attribution');
+
+export async function queryAttribution(windowHours: number, signal?: AbortSignal): Promise<AttributionEvidence> {
+  const response = await fetch('/api/metrics/attribution/query', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ window_hours: windowHours }),
+    signal,
+  });
+  const body = await response.json();
+  if (!response.ok) throw new ApiError(response.status, body.error || 'CloudWatch query failed.');
+  return body as AttributionEvidence;
+}
+
 /* ---------------- Module 1: Agents ---------------- */
 
 export interface Agent {
@@ -608,6 +647,7 @@ export interface CostBreakdown {
   by: string;
   breakdown: Record<string, number>;
   currency: string;
+  source?: 'ledger' | 'bedrock-invocation-log' | string;
 }
 
 export const getCostBreakdown = (by: 'agent' | 'user' = 'agent') =>
@@ -642,7 +682,7 @@ export const listSessions = (filters?: { window?: number; assistant_type?: strin
 // session process; on AgentCore it calls StopRuntimeSession. Returns the stop
 // result, or null if there is no such session.
 export const stopSession = (sessionId: string) =>
-  post<{ session_id: string; stopped: boolean } | null>(
+  post<{ session_id: string; stopped: boolean; error?: string } | null>(
     `/api/metrics/sessions/${encodeURIComponent(sessionId)}/stop`,
   );
 

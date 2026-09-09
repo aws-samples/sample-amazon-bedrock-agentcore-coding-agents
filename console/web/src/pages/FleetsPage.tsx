@@ -24,15 +24,19 @@ import {
   CheckCircle2, AlertCircle, GitPullRequest, ChevronDown, Check, X, FileText,
   ChevronRight, Loader2,
   Route, Server, Play, ListChecks, Wrench, Activity,
-  Brain, GitBranch, MessageSquarePlus,
+   Brain, GitBranch, MessageSquarePlus, ArrowUpRight, Link2,
 } from 'lucide-react';
 import {
   streamChat, getRun, getRunTerminals, getRunResult, getRunDiff, listModels, getGithubStatus,
-  listSuggestions, getRuntimes, wireRuntime,
+  listSuggestions, getRuntimes, wireRuntime, ApiError,
   type ChatEvent, type RunDetail, type RunResult, type RunDiff, type AgentEvent, type ModelOption,
   type RuntimeStatus,
 } from '../api';
 import { RunDetailPanel } from '../components/RunDetailPanel';
+import { LoopIllustration } from '../components/LoopIllustration';
+import { presentRunDecision, recordedPullRequests, gateResultLabel } from '../lib/runPresentation';
+import { AgentIcon } from '../components/AgentIcon';
+import { onAgentRoles, type AgentRole } from './agents/environments';
 import { RunActivityRows } from '../components/RunActivityRows';
 import { WorkingDots, PulseDot } from '../components/Motion';
 import { useAutoScroll } from '../hooks/useAutoScroll';
@@ -46,7 +50,7 @@ const PHASE_LABEL: Record<string, string> = {
   context_hydration: 'preparing the shared context',
   pre_flight: 'running readiness checks',
   agent_execution: 'dispatching the agents',
-  finalization: 'validating and merging the role pull requests',
+  finalization: 'checking and reviewing the role pull requests',
 };
 
 // How many opener chips the empty state shows (the backend caps its own list at
@@ -140,9 +144,13 @@ export function FleetsPage() {
   const [orchWireDraft, setOrchWireDraft] = useState('');
   const [orchWiring, setOrchWiring] = useState(false);
   const [orchWireError, setOrchWireError] = useState('');
+  const [runtimeLoadError, setRuntimeLoadError] = useState('');
 
   const refreshRuntimes = useCallback(() => {
-    getRuntimes().then(setRuntimes).catch(() => {});
+    getRuntimes().then((next) => {
+      setRuntimes(next);
+      setRuntimeLoadError('');
+    }).catch(() => setRuntimeLoadError('Could not read runtime configuration. Reconnecting…'));
   }, []);
 
   useEffect(() => {
@@ -153,6 +161,8 @@ export function FleetsPage() {
 
   const orchRole = runtimes?.roles.find((r) => r.role === 'orchestrator');
   const orchWired = orchRole?.wired ?? false;
+  const [roles, setRoles] = useState<AgentRole[]>([]);
+  useEffect(() => onAgentRoles(setRoles), []);
 
   // GitHub repo chip, fetched once; null = not connected or not yet loaded.
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
@@ -390,8 +400,8 @@ export function FleetsPage() {
 
         {/* Header: title + a clean New chat button. No status dot (the run card
             carries live state); the header stays calm like the Codex empty state. */}
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/80">
+        <div className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border bg-card px-5">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
             {empty ? 'Orchestrator' : title}
           </span>
           <button
@@ -414,35 +424,71 @@ export function FleetsPage() {
               route carries a run id that is not already in the transcript. This
               is what the sidebar's SidebarRunList navigates to. */}
           {deepLinkRunId && !items.some((it) => it.kind === 'run' && it.runId === deepLinkRunId) ? (
-            <div className="mx-auto max-w-3xl px-4 py-8">
+             <div className="mx-auto max-w-6xl px-5 py-7">
               <RunCard runId={deepLinkRunId} runKind="build" />
             </div>
           ) : empty ? (
-            // Codex-style empty state: one large prompt, then a few concise chips.
-            // No eyebrow, no title, no status dot.
-            <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-4 text-center">
-              <h1 className="animate-enter-up text-3xl font-semibold text-foreground">
-                What should we build?
-              </h1>
-              <p className="animate-enter-up mt-3 text-sm text-muted-foreground" style={{ animationDelay: '40ms' }}>
-                Ask a question or describe a task. Agents run only when a build is needed.
-              </p>
-              <div className="mt-7 flex w-full flex-col items-stretch gap-2">
-                {suggestions.slice(0, MAX_SUGGESTIONS).map((p, i) => (
+            <div className="build-welcome animate-enter-up">
+              <div className="build-welcome-grid">
+                <div>
+                  <div className="eyebrow mb-4 text-signal">Coding agent workspace</div>
+                  <h1>
+                    Build with your<br />
+                    <span className="text-signal">coding team</span>
+                  </h1>
+                  <p className="mt-5 max-w-md text-[15px] leading-7 text-muted-foreground">
+                    Describe what you want to build. The coordinator selects the
+                    roles and follows the work. Each builder opens a pull request
+                    with its own check and review evidence.
+                  </p>
+                  {roles.length > 0 && (
+                    <div className="mt-6">
+                      <p className="mb-2 text-xs text-muted-foreground">Available roles · selected per request</p>
+                      <ul className="flex flex-wrap gap-2" aria-label="Available coding agents">
+                        {roles.map((role) => (
+                          <li key={role.id} className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs">
+                            <AgentIcon agentId={role.id} size={16} />
+                            {role.label}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <LoopIllustration />
+              </div>
+              <div className="mt-8 border-t border-border pt-6">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-medium">Start with a goal</h2>
+                  <p className="text-xs text-muted-foreground">
+                    {orchWired ? 'Choose a starting point, then edit and send.' : 'Connect the coordinator to choose a starting point.'}
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                {suggestions.slice(0, MAX_SUGGESTIONS).map((p) => (
                   <button
                     key={p}
                     type="button"
-                    onClick={() => { setDraft(p); void send(p); }}
-                    className="animate-enter-up rounded-lg border border-border bg-card px-4 py-2.5 text-left text-sm text-foreground shadow-sm transition-colors hover:bg-accent"
-                    style={{ animationDelay: `${80 + i * 45}ms` }}
+                    disabled={!orchWired}
+                    onClick={() => {
+                      setDraft(p);
+                      document.getElementById('orchestrator-prompt')?.focus();
+                    }}
+                    className="suggestion-card"
                   >
-                    {p}
+                    <ArrowUpRight aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-signal" />
+                    <span>{p}</span>
                   </button>
                 ))}
+                </div>
               </div>
+              <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
+                Following the CLI lab? Continue watching that run in your terminal.
+                Chats here use the host console and have a separate run history.
+              </p>
             </div>
           ) : (
-            <div className="mx-auto max-w-3xl px-4 py-8">
+            <div className="mx-auto max-w-5xl px-5 py-8">
               {items.map((it, i) => {
                 const isLastItem = i === items.length - 1;
                 // For stepper items, the connector line extends DOWN to the next
@@ -488,14 +534,24 @@ export function FleetsPage() {
             </button>
           )}
         {!orchWired ? (
-          <div className="border-t border-border bg-background px-4 py-4">
-            <div className="mx-auto max-w-2xl">
-              <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/30 px-6 py-8">
-                <p className="text-center text-sm text-muted-foreground">
-                  The orchestrator is not wired. Deploy the coordinator in Lab 2, then wire its runtime ARN or dev URL below.
-                </p>
-                <div className="flex w-full max-w-lg gap-2">
+          <div className="border-t border-border bg-card px-5 py-4">
+            <div className="mx-auto max-w-5xl">
+              <div className="grid items-center gap-4 md:grid-cols-2">
+                <div>
+                  <p className="flex items-center gap-2 text-sm font-medium">
+                    <Link2 aria-hidden="true" className="size-4 text-signal" />
+                    {runtimes ? 'Connect your coordinator' : 'Reading runtime configuration…'}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    Deploy the coordinator in Lab 2, then connect its Runtime ARN.
+                    A development URL also works for a local agentcore dev instance.
+                  </p>
+                </div>
+                <div>
+                <label htmlFor="orchestrator-runtime" className="mb-1.5 block text-xs font-medium">Runtime ARN or development URL</label>
+                <div className="flex w-full gap-2">
                   <Input
+                    id="orchestrator-runtime"
                     name="orchestrator-runtime"
                     aria-label="Orchestrator runtime ARN or development URL"
                     value={orchWireDraft}
@@ -548,6 +604,8 @@ export function FleetsPage() {
                   </Button>
                 </div>
                 {orchWireError && <p className="text-xs text-destructive" role="alert">{orchWireError}</p>}
+                {runtimeLoadError && <p className="mt-2 text-xs text-destructive" role="status">{runtimeLoadError}</p>}
+                </div>
               </div>
             </div>
           </div>
@@ -573,6 +631,8 @@ export function FleetsPage() {
               </div>
             )}
             <PromptInputTextarea
+              id="orchestrator-prompt"
+              aria-label="Message your orchestrator"
               value={draft}
               onChange={setDraft}
               onSubmit={send}
@@ -616,7 +676,8 @@ export function FleetsPage() {
             </PromptInputActions>
           </PromptInputForm>
           <p className="mx-auto mt-2 max-w-3xl px-4 text-center text-xs text-muted-foreground">
-            The orchestrator runs on AgentCore Runtime. It answers, and dispatches agents only when a task needs them.
+             This chat runs on the workshop host and dispatches coding roles to AgentCore Runtime.
+             Inspect the PR evidence before accepting a change.
           </p>
         </PromptInput>
         )}
@@ -634,45 +695,64 @@ export function FleetsPage() {
 const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKind: string }) {
   const [run, setRun] = useState<RunDetail | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
-  // After repeated 404s with no successful load, the run id is unknown (a stale
-  // deep link). Show a clear not-found state instead of a forever-empty card.
   const [notFound, setNotFound] = useState(false);
-  const poll = useRef<ReturnType<typeof setInterval> | null>(null);
-  const misses = useRef(0);
-  const hasLoaded = useRef(false);
+  const [pollError, setPollError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
+    let finished = false;
+    let misses = 0;
+    let hasLoaded = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setRun(null);
+    setResult(null);
+    setNotFound(false);
+    setPollError('');
     const tick = async () => {
       try {
-        const detail = await getRun(runId);
-        let merged: RunDetail = detail;
-        try {
-          const { terminals, events } = await getRunTerminals(runId);
-          merged = { ...merged, terminals, roleEvents: events };
-        } catch { /* terminals optional */ }
+        // Independent reads run together. A missing terminal stream must not
+        // discard the authoritative run record.
+        const [detailResult, terminalResult] = await Promise.allSettled([
+          getRun(runId), getRunTerminals(runId),
+        ]);
         if (cancelled) return;
-        misses.current = 0;
-        hasLoaded.current = true;
+        if (detailResult.status === 'rejected') throw detailResult.reason;
+        const detail = detailResult.value;
+        const merged = terminalResult.status === 'fulfilled'
+          ? { ...detail, terminals: terminalResult.value.terminals, roleEvents: terminalResult.value.events }
+          : detail;
+        misses = 0;
+        hasLoaded = true;
+        setPollError('');
         setRun(merged);
         if (TERMINAL_STATUSES.includes(detail.status)) {
-          if (poll.current) { clearInterval(poll.current); poll.current = null; }
-          try { setResult(await getRunResult(runId)); } catch { /* 409 until terminal */ }
+          finished = true;
+          try {
+            const next = await getRunResult(runId);
+            if (!cancelled) setResult(next);
+          } catch { /* the run record still contains the terminal evidence */ }
         }
-      } catch {
-        // Unknown run id: never loaded after a few tries -> stop and mark not-found.
-        if (!hasLoaded.current) {
-          misses.current += 1;
-          if (misses.current >= 3 && !cancelled) {
+      } catch (error) {
+        if (cancelled) return;
+        if (!hasLoaded && error instanceof ApiError && error.status === 404) {
+          misses += 1;
+          if (misses >= 3) {
+            finished = true;
             setNotFound(true);
-            if (poll.current) { clearInterval(poll.current); poll.current = null; }
           }
+        } else {
+          misses = 0;
+          setPollError(hasLoaded
+            ? 'Could not refresh this run. The last recorded evidence remains below; retrying.'
+            : 'Could not load this run. Check the console connection; retrying.');
         }
+      } finally {
+        // Schedule after completion so a slow response cannot overlap the next poll.
+        if (!cancelled && !finished) timer = setTimeout(tick, 2000);
       }
     };
-    tick();
-    poll.current = setInterval(tick, 1000);
-    return () => { cancelled = true; if (poll.current) clearInterval(poll.current); };
+    void tick();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [runId]);
 
   if (notFound) {
@@ -680,11 +760,19 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
       <div id={`run-${runId}`} className="my-4 rounded-lg border border-border bg-muted/20 p-6 text-center">
         <p className="text-sm font-medium text-foreground">Run not found</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          No run with id <span className="font-mono">{runId}</span>. It may have been cleared on a server restart.
+          This host console has no record of <span className="font-mono">{runId}</span>.
+          A run submitted to the deployed coordinator has a separate history.
         </p>
       </div>
     );
   }
+
+  if (!run) return (
+    <div className="evidence-surface my-4 flex items-center gap-3 text-sm text-muted-foreground" role="status">
+      <Loader2 aria-hidden="true" className="size-4 shrink-0 animate-spin motion-reduce:animate-none" />
+      {pollError || 'Loading the recorded run…'}
+    </div>
+  );
 
   const live = run != null && !TERMINAL_STATUSES.includes(run.status as string);
   const failReason = run?.fail_reason as string | undefined;
@@ -698,7 +786,7 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
       id={`run-${runId}`}
       className={cn(
         'my-4 rounded-lg border bg-muted/20 p-3 transition-[border-color,box-shadow] duration-(--motion-base) ease-soft',
-        // A live run gets a faint success (brand blue) ring + soft glow so the
+        // A live run gets a faint signal ring + soft glow so the
         // eye lands on the active card; it settles to the neutral border when
         // the run ends.
         live ? 'border-success/30 shadow-[0_0_0_1px_hsl(var(--success)/0.06),0_1px_12px_-4px_hsl(var(--success)/0.25)]' : 'border-border',
@@ -710,7 +798,8 @@ const RunCard = memo(function RunCard({ runId, runKind }: { runId: string; runKi
         <span>{runKind} build</span>
         {live && (
           <span className="ml-auto flex items-center gap-2 text-foreground/70">
-            {/* The phase label is the real engine phase (meaningful info); when
+            {pollError && <p role="status" className="mb-3 rounded-lg bg-warning/10 p-3 text-xs text-warning">{pollError}</p>}
+      {/* The phase label is the real engine phase (meaningful info); when
                 it's unknown we show only the dots, never the bare word "working". */}
             {PHASE_LABEL[(run?.phase as string)] && (
               <Shimmer className="text-xs" duration={1.4}>{PHASE_LABEL[(run?.phase as string)]!}</Shimmer>
@@ -948,10 +1037,9 @@ function DiffBody({ patch }: { patch: string }) {
 }
 
 function OrchestratorVerdict({ result }: { result: RunResult }) {
-  const passed = result.status === 'passed';
-  const gatePassed = result.gate?.passed;
+  const decision = presentRunDecision(result);
+  const prs = recordedPullRequests(result);
   const reviewState = result.review?.state;
-  const autoMerged = result.merge_state === 'merged';
   return (
     <div
       className="mt-2 space-y-2 rounded-xl bg-background px-3 py-2.5 text-sm"
@@ -959,47 +1047,35 @@ function OrchestratorVerdict({ result }: { result: RunResult }) {
       aria-live="polite"
     >
       <div className="flex items-center gap-2 font-medium">
-        {passed
-          ? <CheckCircle2 aria-hidden="true" className="size-4 text-muted-foreground" />
-          : <AlertCircle aria-hidden="true" className="size-4 text-destructive" />}
-        {passed
-          ? autoMerged
-            ? 'Done. The final pull request was auto-merged.'
-            : 'Done. The final pull request is ready for review.'
-          : result.status === 'needs_human'
-            ? gatePassed
-              ? 'The gates passed, but the final merge needs a human.'
-              : 'Stopped for a human. The gate did not pass.'
-            : 'The run failed.'}
+        {decision.tone === 'danger'
+          ? <AlertCircle aria-hidden="true" className="size-4 text-destructive" />
+          : <GitPullRequest aria-hidden="true" className="size-4 text-signal" />}
+        {decision.title}
       </div>
       <ul className="space-y-0.5 text-xs text-muted-foreground">
-        <li>latest executable gate: {gatePassed ? 'passed' : 'did not pass'}
+        <li>Latest executable check: {gateResultLabel(result.gate)}
           {result.gate?.checks?.length ? ` (${result.gate.checks.length} checks)` : ''}</li>
-        {result.work_items && (
-          <li>role pull requests: {
-            Object.values(result.work_items).filter((item) => item.kind === 'builder').length
-          }</li>
-        )}
-        {result.gate_history?.length ? <li>gate executions: {result.gate_history.length}</li> : null}
-        {reviewState && <li>review: {reviewState}</li>}
+        <li>Pull requests opened: {prs.filter((row) => row.pr_url).length}</li>
+        {result.gate_history?.length ? <li>Check executions: {result.gate_history.length}</li> : null}
+        {reviewState && <li>Review: {reviewState.replaceAll('_', ' ')}</li>}
         {result.review?.panels?.length ? (
           <li>
-            review evidence: {result.review.panels
+            Review evidence: {result.review.panels
               .map((panel) => `${panel.name} ${panel.state.replaceAll('_', ' ')}`)
               .join(', ')}
           </li>
         ) : null}
-        {result.merge_state && <li>merge: {result.merge_state}</li>}
-        {typeof result.iterations === 'number' && <li>iterations: {result.iterations}</li>}
-        {result.fail_reason && <li>reason: {result.fail_reason}</li>}
+        {result.fail_reason && <li>Reason: {result.fail_reason}</li>}
       </ul>
-      {result.pr_url ? (
-        <a href={result.pr_url} target="_blank" rel="noopener noreferrer"
+      <div className="flex flex-wrap gap-3">
+      {prs.filter((row) => row.pr_url).map((row) => (
+        <a key={row.work_id} href={row.pr_url!} target="_blank" rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 text-sm underline hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <GitPullRequest aria-hidden="true" className="size-3.5" />
-          View Final Pull Request
+          Open {row.role || row.agent || 'recorded'} PR
         </a>
-      ) : null}
+      ))}
+      </div>
       {result.next_action && <p className="text-xs text-muted-foreground">{result.next_action}</p>}
     </div>
   );

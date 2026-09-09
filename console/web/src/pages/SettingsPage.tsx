@@ -38,6 +38,7 @@ import {
   describeRuntime,
 } from '../api';
 import { Plus, X } from 'lucide-react';
+import { SectionHeader } from '../shared';
 import { AgentIcon } from '../components/AgentIcon';
 import { agentInstanceLabel, onAgentRoles } from './agents/environments';
 
@@ -68,6 +69,7 @@ export function SettingsPage() {
   useEffect(() => {
     getGithubStatus()
       .then(applyStatus)
+      .catch(() => setFormError('Could not load the configuration. Reload the console and try again.'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -132,16 +134,13 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="animate-enter-up mx-auto w-full max-w-3xl px-6 py-10 space-y-6">
-      <div className="space-y-1">
-        <div className="eyebrow">Configuration</div>
-        <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Point runs at your repository. The GitHub MCP Gateway opens one pull
-          request per role; no personal access token is ever stored here.
-        </p>
+    <div className="console-page space-y-6">
+      <div>
+        <div className="eyebrow mb-2">Connect your workshop</div>
+        <SectionHeader title="Settings" subtitle="Configure the repository, merge policy, and Runtime connections used by this host console." />
       </div>
 
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,1fr)]">
       <Card>
         <CardHeader>
           <div className="eyebrow">Pull request destination</div>
@@ -161,7 +160,7 @@ export function SettingsPage() {
           <CardDescription>
             The Gateway opens one pull request per builder against your default
             branch. Each one runs its own executable check and its own independent
-            review, then merges on its own: left open for you, or auto-merged.
+            review. Human review leaves approved PRs open for your decision; auto-merge is an optional policy.
           </CardDescription>
         </CardHeader>
 
@@ -301,7 +300,7 @@ export function SettingsPage() {
           >
             <button
               type="button"
-              disabled={policySaving}
+              disabled={policySaving || loading || !status}
               aria-pressed={(status?.merge_policy ?? 'human_review') === 'human_review'}
               onClick={() => void handleMergePolicy('human_review')}
               className={`min-h-10 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
@@ -314,7 +313,7 @@ export function SettingsPage() {
             </button>
             <button
               type="button"
-              disabled={policySaving}
+              disabled={policySaving || loading || !status}
               aria-pressed={status?.merge_policy === 'auto'}
               onClick={() => setConfirmAuto(true)}
               className={`min-h-10 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
@@ -338,6 +337,8 @@ export function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      </div>
 
       <AlertDialog open={confirmAuto} onOpenChange={setConfirmAuto}>
         <AlertDialogContent>

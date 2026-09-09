@@ -9,12 +9,12 @@ import { useOnboarding } from '../hooks/useOnboarding';
 
 const AREAS = [
   { icon: SquareTerminal, name: 'Development', blurb: 'Live shell for writing code and running commands' },
-  { icon: Bot, name: 'Agents', blurb: 'Build and deploy the three coding agents' },
-  { icon: Boxes, name: 'Tasks', blurb: 'Orchestrate a build, review, and open a PR' },
-  { icon: ShieldCheck, name: 'Governance', blurb: 'Per-user cost, identity, guardrails' },
+  { icon: Bot, name: 'Agents', blurb: 'Inspect each role and open its Runtime shell' },
+  { icon: Boxes, name: 'Chat', blurb: 'Submit a goal, follow the work, and inspect PR evidence' },
+  { icon: ShieldCheck, name: 'Governance', blurb: 'Inspect sessions, exported usage, and attribution' },
 ];
 
-const FLOW = ['Build', 'Deploy', 'Orchestrate', 'Govern'];
+const FLOW = ['Host', 'Coordinate', 'Verify', 'Attribute'];
 
 export function OnboardingModal() {
   const { open, dismiss } = useOnboarding();
@@ -23,13 +23,14 @@ export function OnboardingModal() {
     <Dialog open={open} onOpenChange={(o) => { if (!o) dismiss(); }}>
       <DialogContent
         slideFrom="center"
-        overlayClassName="bg-background"
-        className="flex max-w-md flex-col gap-4 overflow-hidden"
+        className="flex max-w-lg flex-col gap-5 overflow-hidden p-7"
       >
         <DialogHeader className="text-left">
-          <DialogTitle>AgentCore Console</DialogTitle>
+          <div className="eyebrow mb-2">Your workshop companion</div>
+          <DialogTitle className="text-2xl">A team you can inspect.</DialogTitle>
           <DialogDescription>
-            Run coding agents on AgentCore Runtime. ~4 hours total.
+            Host the agents, coordinate a build, and read the evidence before accepting
+            a change. The guided workshop is two hours, after Getting Started.
           </DialogDescription>
         </DialogHeader>
 
@@ -47,9 +48,9 @@ export function OnboardingModal() {
 
         <ul role="list" className="space-y-1.5">
           {AREAS.map((area) => (
-            <li key={area.name} className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
-                <area.icon className="size-3.5" />
+            <li key={area.name} className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-success/8 text-success">
+                <area.icon aria-hidden="true" className="size-[18px]" />
               </span>
               <div className="min-w-0 flex-1">
                 <span className="text-sm font-medium text-foreground">{area.name}</span>
@@ -59,6 +60,11 @@ export function OnboardingModal() {
           ))}
         </ul>
 
+        <p className="rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+          Following the CLI lab? Keep watching that run from your terminal.
+          This host console starts separate chats and builds; its history does
+          not include runs submitted to the deployed coordinator.
+        </p>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Settings className="size-3.5 shrink-0" />
           <span>Settings: GitHub Gateway, runtimes, merge policy.</span>
@@ -70,7 +76,7 @@ export function OnboardingModal() {
             <Button variant="ghost" size="sm" onClick={dismiss}>Skip</Button>
             <Button asChild size="sm">
               <Link to="/development" onClick={dismiss}>
-                Start
+                Open Development
                 <ArrowRight className="ml-1 size-3.5" />
               </Link>
             </Button>

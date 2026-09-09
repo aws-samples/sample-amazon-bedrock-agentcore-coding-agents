@@ -2,14 +2,15 @@
 
 [![The sample console: Claude Code, opencode and Kiro on AgentCore Runtime, with a live Claude Code session attached to its Runtime ARN](docs/media/console-walkthrough-poster.png)](docs/media/console-walkthrough.mp4)
 
-*The sample console, recorded on a real deployment: the three served roles, a live
-Runtime session, and the governance views. [Play the walkthrough
-(22s)](docs/media/console-walkthrough.mp4).*
+*A prior real deployment showing the served roles and a Runtime session.
+Navigation and the current Attribution view have changed since this recording.
+[Play the earlier walkthrough (22s)](docs/media/console-walkthrough.mp4).*
 
 Run Claude Code (backend), opencode (frontend), and Kiro (validator) on Amazon
-Bedrock AgentCore Runtime. Give the team one request and receive one checked pull
-request. A second Claude Code is kept as the validator's restore path, so an account
-without a Kiro subscription runs the same workshop with one env var.
+Bedrock AgentCore Runtime. Give the team one request; each selected builder opens
+its own checked and reviewed pull request. The guided game selects Claude Code
+and Kiro, producing one builder PR. A separate Claude Code validator remains a
+restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
 
 Each builder works in a named linked Git worktree and separate pull request. The
 worktree is local to the coordinator or Runtime; only one normalized source archive
@@ -19,8 +20,9 @@ read-only review then applies two required lenses to each pull request on its ow
 adversarial verification and design/integration. The reviewer never sees a
 builder's conversation or edits a builder's code.
 
-This repo is the full workshop payload. Clone it and follow the workshop content; every
-step is reproducible with the CLI, starting from this one clone.
+This repo is the full code payload. Clone it and follow the workshop content.
+Labs 1 and 2 use the prepared host terminal; Lab 3 uses Development, Agents, and
+Governance in the console. The underlying commands and query remain inspectable.
 
 > **Current project-language support:** Python and Node.js 22
 > (JavaScript/TypeScript). Add the required toolchain to
@@ -37,8 +39,9 @@ followed by the CLI steps the workshop teaches.
 This repository is also a GitHub **template**. In Lab 2 of the workshop you click
 **Use this template -> Create a new repository** to get your own isolated copy (no
 fork, no shared credentials). Each builder opens ONE role pull request against the
-repository's default branch, and each pull request is checked, reviewed, and merged
-on its own: there is no combined candidate, no merge queue, and no separate final
+repository's default branch, and each pull request is checked and reviewed
+on its own. Under the default `human_review` policy, an approved PR stays open
+for a person to merge. There is no combined candidate, merge queue, or separate final
 pull request. The validator's executable must pass for each pull request, run
 against the default branch as it stands plus that diff. The GitHub App authors every
 pull request.
@@ -66,7 +69,7 @@ workspace for direct shell work in Lab 1.
 - `orchestrator/` the Strands orchestrator engine (routing, engine, executor, reviewer, github)
   - `orchestrator/roles.py` declares the served roster (`WORKSHOP_ROLES`-configurable); this is the single place role ids, kinds (builder/checker), and capabilities (backend/frontend/validator) live
 - `orchestrator-agent/` the deployable Strands agent bundle
-- `console/` the React + FastAPI console (Agents / Fleets / Governance)
+- `console/` the React + FastAPI console (Development / Agents / Chat / Governance / Settings)
 - `interactive-api/` `metrics-api/` the Stage 1 interactive + Stage 3 metrics engines
 - `harness-skills/` agent skills used to configure the harnesses
 - `e2e/` the end-to-end workshop journey + integration suite
@@ -76,11 +79,18 @@ workspace for direct shell work in Lab 1.
 The full suite is collected from this repo root:
 
 ```bash
-python3 -m pytest -q
+WORKSHOP_SKIP_LIVE=1 WORKSHOP_E2E_LIVE=0 python3 -m pytest -q
+npm --prefix console/web run typecheck
+npm --prefix console/web test
+npm --prefix console/web run build
 ```
 
 `pytest.ini` declares the `testpaths`; the root `conftest.py` isolates GitHub and
 Runtime credentials so no test can read a token or open a pull request.
+The offline suite verifies platform behavior, not a future agent-generated
+application. A fresh event run still needs its real executable and review
+evidence. Lab 3's identity mapping intentionally ships empty; its completion
+tests require `WORKSHOP_LAB3_COMPLETE=1` after the attendee implements it.
 
 ## When something is not working
 
@@ -109,8 +119,8 @@ Each of these cost real time on a live run, and each has a cheap tell.
 - **opencode needs a pseudo-terminal.** Version 1.17.20's default formatter blocks when
   stdout is not a tty, so a non-PTY invocation hangs with no output, no error and almost
   no CPU, its debug log stopping right after `init`. The served paths already run it in a
-  PTY (`agentcore exec --it`, and a Runtime PTY per dispatched turn). If you must drive it
-  from a script, add `--format json`. Do not go hunting the flags or the credentials.
+  PTY (`agentcore exec --it`, and a Runtime PTY per dispatched turn). Preserve
+  that PTY in served paths.
 - **Enabling Claude Code telemetry is not exporting it.** A dispatched run gets seven
   variables from `_CLAUDE_TELEMETRY` in `orchestrator/roles.py`. With only
   `CLAUDE_CODE_ENABLE_TELEMETRY=1` the CLI collects and sends nowhere, and Logs Insights

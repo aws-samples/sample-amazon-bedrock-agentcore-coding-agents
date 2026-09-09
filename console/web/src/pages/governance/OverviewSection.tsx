@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
 } from 'recharts';
 import {
-  getDashboard, getCostBreakdown, getLatencyP95,
-  type Dashboard, type CostBreakdown, type LatencyP95,
+  getDashboard, getCostBreakdown,
+  type Dashboard, type CostBreakdown,
 } from '../../api';
 import {
   StatCard, ChartCard, LoadingState, ErrorState, EmptyState, useChartTheme,
@@ -21,19 +22,17 @@ import {
 export function OverviewSection() {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [cost, setCost] = useState<CostBreakdown | null>(null);
-  const [latency, setLatency] = useState<LatencyP95 | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const theme = useChartTheme();
 
   useEffect(() => {
     let live = true;
-    Promise.all([getDashboard(), getCostBreakdown('agent'), getLatencyP95()])
-      .then(([d, c, l]) => {
+    Promise.all([getDashboard(), getCostBreakdown('agent')])
+      .then(([d, c]) => {
         if (!live) return;
         setDash(d);
         setCost(c);
-        setLatency(l);
       })
       .catch((e) => live && setErr(String(e)))
       .finally(() => live && setLoading(false));
@@ -59,21 +58,21 @@ export function OverviewSection() {
 
   if (loading) return <LoadingState />;
   if (err) return <ErrorState error={err} />;
-  if (!dash) return <EmptyState title="No metrics yet" hint="Run a task on the Tasks page and the numbers move." />;
+  if (!dash) return <EmptyState title="No metrics yet" hint="This console has no recorded session data yet." />;
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard accent label="Active sessions" value={fmtNum(dash.active_sessions)} hint="running right now" delay={0} />
-        <StatCard label="Runs total" value={fmtNum(dash.runs_total)} hint="across the ledger" delay={60} />
-        <StatCard label="p95 latency" value={fmtSeconds(dash.p95_latency_ms)} hint="fleet-wide" delay={120} />
-        <StatCard label="Total spend" value={fmtUsd(totalCost)} hint="attributed, no winner" delay={180} />
+        <StatCard accent label="Active sessions" value={fmtNum(dash.active_sessions)} hint="Observed by this console" delay={0} />
+        <StatCard label="Recorded sessions" value={fmtNum(dash.runs_total)} hint="In the host ledger" delay={60} />
+        <StatCard label="p95 latency" value={dash.runs_total ? fmtSeconds(dash.p95_latency_ms) : 'No samples'} hint="Recorded session duration" delay={120} />
+        <StatCard label="Recorded estimate" value={costBars.length ? fmtUsd(totalCost) : 'No data'} hint="Incomplete billing coverage" delay={180} />
       </div>
 
-      <ChartCard title="Cost by agent" subtitle="Spend grouped from the run ledger: attribution, not a ranking.">
+      <ChartCard title="Recorded estimates by agent" subtitle="Source: this host's run ledger. Missing usage is not a zero-cost build.">
         {costBars.length === 0 ? (
           <div className="px-3">
-            <EmptyState title="No spend recorded yet" hint="A run with a model invocation populates this." />
+            <EmptyState title="No usage estimates recorded" hint="For the Lab 3 request events, open Governance > Attribution. CLI coordinator runs have their own history." />
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={260}>
@@ -97,10 +96,13 @@ export function OverviewSection() {
         )}
       </ChartCard>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatCard label="p95, fleet-wide" value={fmtSeconds(latency?.p95_latency_ms ?? dash.p95_latency_ms)} hint="nearest-rank, deterministic" />
-        <StatCard label="Agents attributed" value={fmtNum(Object.keys(cost?.breakdown ?? {}).length)} hint="distinct roles billed" />
-        <StatCard label="Currency" value={cost?.currency ?? 'USD'} hint="published Bedrock rates" />
+      <div className="evidence-surface text-sm leading-6 text-muted-foreground">
+        <p>These estimates cover usage present in the host ledger. Kiro usage and
+          infrastructure billing require separate accounting. A missing or zero
+          estimate does not establish the complete cost of a run.</p>
+        <Link to="/governance/attribution" className="mt-3 inline-block font-medium text-signal">
+          Open Lab 3 Attribution
+        </Link>
       </div>
     </div>
   );
