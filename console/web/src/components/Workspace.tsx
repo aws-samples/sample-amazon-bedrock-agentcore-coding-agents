@@ -200,9 +200,8 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
         // the scrollback the server just replayed is preserved).
         if (reattached) session.resize(sid, size);
         termRef.current?.focus();
-        // Web font (JetBrains Mono) can finish loading AFTER the first fit, which
-        // shifts the cell width; re-fit once the font is ready and push the true
-        // winsize to the PTY so a late font swap never leaves the shell too narrow.
+        // Surrounding UI fonts can settle after the first fit and shift the
+        // pane's width. Push the settled winsize so the shell fills the pane.
         const settle = (document as Document & { fonts?: FontFaceSet }).fonts?.ready
           ?? Promise.resolve();
         settle.then(() => {
@@ -574,7 +573,7 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
     <>
     <div
       ref={rootRef}
-      className={`flex overflow-hidden border border-border bg-card ${fullHeight ? 'h-full rounded-none border-x-0 border-b-0' : 'rounded-lg'}`}
+      className={`code-workspace flex overflow-hidden border border-border bg-card ${fullHeight ? 'h-full rounded-none border-x-0 border-b-0' : 'rounded-lg'}`}
       style={fullHeight ? undefined : { height: 520 }}
     >
       {/* Explorer sidebar (its own scroll region; width drag-resizable) */}
@@ -626,7 +625,7 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
-                    className="flex min-w-0 flex-1 items-center gap-1 rounded-md py-1 pl-0.5 pr-2 text-left text-[13px] font-medium text-foreground/70 hover:bg-accent"
+                    className="workspace-folder-label flex min-w-0 flex-1 items-center gap-1 rounded-md py-1 pl-0.5 pr-2 text-left text-foreground/80 hover:bg-accent"
                     title={`Workspace root: ${vroot}  (click to switch)`}
                   >
                     <span className="truncate">{vroot}</span>

@@ -315,7 +315,7 @@ export function CodeEditor({
           </div>
         </div>
       )}
-      <div className="flex min-h-0 flex-1 overflow-hidden font-mono text-[13px]">
+      <div className="workspace-code-editor flex min-h-0 flex-1 overflow-hidden">
         <div
           ref={gutterRef}
           aria-hidden

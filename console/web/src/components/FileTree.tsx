@@ -221,7 +221,7 @@ function TreeRow({
             }}
             style={{ paddingLeft: pad }}
             title={node.name}
-            className={`flex w-full items-center gap-1 rounded-md py-1 pr-2 text-left text-[13px] hover:bg-accent ${active ? 'bg-accent' : ''} ${isDropHere ? 'bg-accent/60 ring-1 ring-inset ring-primary/50' : ''}`}
+            className={`workspace-file-row flex w-full items-center gap-1 rounded-sm pr-2 text-left hover:bg-accent ${active ? 'bg-accent' : ''} ${isDropHere ? 'bg-accent/60 ring-1 ring-inset ring-primary/50' : ''}`}
           >
             {node.is_dir ? (
               <ChevronRight className={`size-3 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />

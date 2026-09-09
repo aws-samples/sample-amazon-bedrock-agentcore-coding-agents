@@ -77,9 +77,12 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   useEffect(() => {
     if (!hostRef.current) return;
     const x = new Xterm({
-      fontFamily: '"JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace',
-      fontSize: 12.5,
-      lineHeight: 1.4,
+      // Share the editor's native monospace stack. No downloaded font can
+      // swap terminal cell widths after the PTY has received its initial size.
+      fontFamily: getComputedStyle(hostRef.current).fontFamily,
+      fontSize: 14,
+      lineHeight: 1.2,
+      letterSpacing: 0,
       // Cursor starts hidden (matches background) so an unconnected pane shows
       // no stray block; it turns on once the PTY is live (effect below).
       theme: {
@@ -92,7 +95,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
       cursorBlink: false,
       convertEol: true,
       fontWeight: 400,
-      fontWeightBold: 600,
+      fontWeightBold: 700,
     });
     const f = new FitAddon();
     x.loadAddon(f);
@@ -104,7 +107,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     const resizeSubscription = x.onResize((s) => onResizeRef.current?.(s));
 
     // The synchronous fit above runs before the pane has its final layout width
-    // and before the web font's metrics settle, so it under-counts columns and
+    // and before the surrounding UI fonts settle, so it under-counts columns and
     // the terminal opens narrower than the pane (a resize later corrects it).
     // Re-fit after two animation frames (layout flushed) and again once the font
     // is ready, so the FIRST winsize the caller reads/pushes is the real width.
@@ -138,5 +141,5 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     x.options.theme = { ...x.options.theme, cursor: connected ? '#d4d4d4' : '#1e1e1e' };
   }, [connected]);
 
-  return <div ref={hostRef} className="h-full w-full overflow-hidden bg-[#1e1e1e] px-[10px] py-2" />;
+  return <div ref={hostRef} className="console-terminal-surface" />;
 });
