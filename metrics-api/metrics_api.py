@@ -34,7 +34,8 @@ def _first(qs: dict, key: str):
     return vals[0] if vals else None
 
 
-def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int, dict]:
+def dispatch(method: str, path: str, query: str, body: dict | None,
+             user_identity: dict | None = None) -> tuple[int, dict]:
     """Pure router for the Stage 3 API: (status, json-able dict).
 
     Shared by the standalone server and console/server.py. `query` is the raw
@@ -70,6 +71,12 @@ def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int
             return 200, metrics_lib.get_latency_p95(scope or None)
         if path == "/api/policies":
             return 200, metrics_lib.get_policies()
+        if path == "/api/controls":
+            import governance_controls
+            try:
+                return 200, governance_controls.configuration(user_identity)
+            except governance_controls.ControlsError as exc:
+                return exc.status, {"error": str(exc)}
         if path == "/api/audit":
             try:
                 limit = int(_first(qs, "limit") or 200)
@@ -94,6 +101,12 @@ def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int
         return 404, {"error": "not found", "path": path}
 
     if method == "POST":
+        if path == "/api/policies/evaluate":
+            import governance_controls
+            try:
+                return 200, governance_controls.evaluate(body, user_identity)
+            except governance_controls.ControlsError as exc:
+                return exc.status, {"error": str(exc)}
         if path == "/api/attribution/query":
             import attribution
             try:
@@ -109,7 +122,11 @@ def dispatch(method: str, path: str, query: str, body: dict | None) -> tuple[int
             result = metrics_lib.stop_session(parts[3])
             if result is None:
                 return 404, {"error": "session not found", "session_id": parts[3]}
-            return 200, result
+            audit = metrics_lib.record_governance_event("session_stop", user_identity, {
+                "session_id": parts[3], "stopped": bool(result.get("stopped")),
+                "mechanism": result.get("mechanism"),
+            })
+            return 200, {**result, **audit}
         # POST /api/runtimes/{role}/probe runs a tiny live job in the role's
         # deployed runtime to confirm the fleet is executing.
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "runtimes" and parts[4] == "probe":

@@ -1,63 +1,40 @@
-import { useNavigate, useParams } from 'react-router-dom';
-import { cn } from '@foxl/ui';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import ContentLayout from '@cloudscape-design/components/content-layout';
+import SpaceBetween from '@cloudscape-design/components/space-between';
+import Tabs from '@cloudscape-design/components/tabs';
 import { SectionHeader } from '../shared';
-import { GOV_SECTIONS, govSection } from './governance/sections';
-import { OverviewSection } from './governance/OverviewSection';
-import { RuntimesSection } from './governance/RuntimesSection';
-import { SessionsSection } from './governance/SessionsSection';
-import { CostSection } from './governance/CostSection';
-import { AuditSection } from './governance/AuditSection';
-import { PoliciesSection } from './governance/PoliciesSection';
-import { AnalyzeSection } from './governance/AnalyzeSection';
+import { AgentSessions } from './agents/AgentSessions';
 import { AttributionSection } from './governance/AttributionSection';
+import { AuditSection } from './governance/AuditSection';
+import { ControlsOverview } from './governance/ControlsOverview';
+import { PolicyChecker } from './governance/PolicyChecker';
 
-/**
- * The governance mini-dashboard. The section nav lives in the app's LEFT
- * SIDEBAR (GovernanceSubNav, nested under the Governance item) and drives the
- * URL, /governance/<section>. This page reads that segment and renders the
- * matching section. On narrow screens, where the sidebar collapses to icons, a
- * horizontal chip row stands in for the nav.
- */
-export function GovernancePage() {
-  const { section } = useParams<{ section?: string }>();
-  const navigate = useNavigate();
-  const current = govSection(section);
+type Section = 'usage' | 'controls' | 'activity';
+const SECTIONS = {
+  usage: { title: 'Usage', description: 'Attribute exported request and token usage to the people who started the work.' },
+  controls: { title: 'Controls', description: 'Inspect identity, approvals, and execution limits. Test an action before it runs.' },
+  activity: { title: 'Activity', description: 'Review recorded operations and manage Runtime sessions on this host.' },
+};
 
-  return (
-    <div className="console-page animate-enter-up flex flex-col gap-6">
-      {/* Small-screen fallback nav (the sidebar sub-nav is hidden when collapsed). */}
-      <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 md:hidden">
-        {GOV_SECTIONS.map((s) => {
-          const on = s.id === current.id;
-          return (
-            <button
-              key={s.id}
-              onClick={() => navigate(`/governance/${s.id}`)}
-              className={cn(
-                'shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
-                on ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
-              )}
-            >
-              {s.label}
-            </button>
-          );
-        })}
-      </div>
-
-      <SectionHeader
-        title={current.title}
-        eyebrow="Observe and understand"
-        subtitle={current.subtitle}
-      />
-
-      {current.id === 'overview' && <OverviewSection />}
-      {current.id === 'runtimes' && <RuntimesSection />}
-      {current.id === 'sessions' && <SessionsSection />}
-      {current.id === 'attribution' && <AttributionSection />}
-      {current.id === 'cost' && <CostSection />}
-      {current.id === 'audit' && <AuditSection />}
-      {current.id === 'policies' && <PoliciesSection />}
-      {current.id === 'analyze' && <AnalyzeSection />}
-    </div>
-  );
+export function GovernancePage({ section }: { section: Section }) {
+  const [search, setSearch] = useSearchParams();
+  const activeTab = search.get('tab') === 'sessions' ? 'sessions' : 'audit';
+  // Preserve completed query evidence when moving to Controls or Activity.
+  // Unvisited sections do not fetch until the person opens them.
+  const [visited, setVisited] = useState<Set<Section>>(() => new Set([section]));
+  useEffect(() => { setVisited(current => current.has(section) ? current : new Set([...current, section])); }, [section]);
+  const [activityVersion, setActivityVersion] = useState(0);
+  return <ContentLayout header={<SectionHeader title={SECTIONS[section].title} subtitle={SECTIONS[section].description} />}>
+    {(visited.has('usage') || section === 'usage') && <div hidden={section !== 'usage'}><AttributionSection /></div>}
+    {section === 'controls' && <SpaceBetween size="l">
+      <ControlsOverview /><PolicyChecker onEvaluation={() => setActivityVersion(value => value + 1)} />
+    </SpaceBetween>}
+    {section === 'activity' &&
+      <Tabs activeTabId={activeTab} onChange={({ detail }) => setSearch(detail.activeTabId === 'sessions' ? { tab: 'sessions' } : {})}
+        tabs={[
+          { id: 'audit', label: 'Audit trail', content: <AuditSection refreshKey={activityVersion} /> },
+          { id: 'sessions', label: 'Sessions', content: <AgentSessions onStopped={() => setActivityVersion(value => value + 1)} /> },
+        ]} />}
+  </ContentLayout>;
 }

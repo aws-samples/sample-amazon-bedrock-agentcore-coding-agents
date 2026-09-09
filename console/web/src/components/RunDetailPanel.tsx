@@ -1,331 +1,167 @@
-import { Badge } from '@foxl/ui';
-import {
-  AlertCircle,
-  CheckCircle2,
-  Clock3,
-  FileCheck2,
-  GitMerge,
-  GitPullRequest,
-  Loader2,
-  ScrollText,
-  ShieldCheck,
-} from 'lucide-react';
+import Alert from '@cloudscape-design/components/alert';
+import Box from '@cloudscape-design/components/box';
+import Container from '@cloudscape-design/components/container';
+import ExpandableSection from '@cloudscape-design/components/expandable-section';
+import Header from '@cloudscape-design/components/header';
+import KeyValuePairs from '@cloudscape-design/components/key-value-pairs';
+import Link from '@cloudscape-design/components/link';
+import SpaceBetween from '@cloudscape-design/components/space-between';
+import StatusIndicator, { type StatusIndicatorProps } from '@cloudscape-design/components/status-indicator';
+import Tabs from '@cloudscape-design/components/tabs';
+import TextContent from '@cloudscape-design/components/text-content';
 import { AgentIcon } from './AgentIcon';
-import { presentRunDecision, recordedPullRequests, type DecisionTone } from '../lib/runPresentation';
-import type {
-  GateRecord,
-  RolePrEntry,
-  RunDetail,
-  WorkItem,
-} from '../api';
+import { presentRunDecision, recordedPullRequests } from '../lib/runPresentation';
+import { ResourceTable } from '../shared/ResourceTable';
+import { agentInstanceLabel } from '../pages/agents/environments';
+import type { GateRecord, RunDetail } from '../api';
 
-function StatusIcon({ tone }: { tone: DecisionTone }) {
-  if (tone === 'success') return <CheckCircle2 aria-hidden="true" className="size-5 text-success" />;
-  if (tone === 'waiting') return <Clock3 aria-hidden="true" className="size-5 text-warning" />;
-  if (tone === 'danger') return <AlertCircle aria-hidden="true" className="size-5 text-destructive" />;
-  return <Loader2 aria-hidden="true" className="size-5 animate-spin text-signal motion-reduce:animate-none" />;
+function label(value: string): string {
+  const text = value.replaceAll('_', ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+function statusType(status: string): StatusIndicatorProps.Type {
+  if (['passed', 'done', 'completed', 'merged', 'approved'].includes(status)) return 'success';
+  if (['failed', 'error', 'blocked', 'changes_requested'].includes(status)) return 'error';
+  if (['needs_human', 'awaiting_review', 'abstained'].includes(status)) return 'warning';
+  if (['running', 'working', 'merging', 'executing'].includes(status)) return 'in-progress';
+  return 'pending';
 }
 
-function statusVariant(status: string): 'default' | 'secondary' | 'outline' | 'destructive' {
-  if (['passed', 'done', 'completed', 'merged', 'approved'].includes(status)) return 'secondary';
-  if (['failed', 'error', 'blocked', 'needs_human', 'changes_requested'].includes(status)) {
-    return 'destructive';
+function PullRequests({ run }: { run: RunDetail }) {
+  const recorded = recordedPullRequests(run);
+  const builders = Object.values(run.work_items ?? {}).filter(item => item.kind === 'builder');
+  const rows = builders.map(item => {
+    const pr = recorded.find(pr => pr.work_id === item.work_id);
+    return {
+      id: item.work_id, agent: item.agent, role: item.capability,
+      url: pr?.pr_url || item.pr?.pr_url,
+      state: pr?.state || item.merge_state || item.state,
+      branch: item.worktree_branch || item.branch,
+      turns: item.attempt, refreshes: item.dependency_refreshes,
+      error: pr?.error,
+    };
+  });
+  for (const pr of recorded) {
+    if (!rows.some(row => row.id === pr.work_id)) rows.push({
+      id: pr.work_id, agent: pr.agent, role: pr.role, url: pr.pr_url || undefined,
+      state: pr.state, branch: '', turns: undefined!, refreshes: undefined, error: pr.error,
+    });
   }
-  if (['running', 'working', 'merging'].includes(status)) return 'default';
-  return 'outline';
+  return <ResourceTable title="Pull requests" variant="embedded" items={rows} trackBy="id"
+    description="Each builder's pull request is checked, reviewed, and merged independently."
+    searchText={row => `${row.id} ${row.agent} ${row.role} ${row.state}`}
+    empty={<SpaceBetween size="s"><Box variant="strong">No pull requests recorded</Box>
+      <Box color="text-body-secondary">A builder opens its pull request after producing work.</Box></SpaceBetween>}
+    columns={[
+      { id: 'role', header: 'Role', sortingField: 'role', cell: row => <SpaceBetween direction="horizontal" size="xs">
+        <AgentIcon agentId={row.agent} size={20} /><div><Box variant="strong">{label(row.role || row.agent)}</Box>
+          <Box color="text-body-secondary" fontSize="body-s">{agentInstanceLabel(row.agent)}</Box></div></SpaceBetween> },
+      { id: 'pr', header: 'Pull request', cell: row => row.url ? <Link external href={row.url}>Open pull request</Link> : 'Not opened' },
+      { id: 'state', header: 'Status', sortingField: 'state', cell: row => <SpaceBetween size="xs">
+        <StatusIndicator type={statusType(row.state)}>{row.state === 'awaiting_review' ? 'Awaiting your review' : label(row.state)}</StatusIndicator>
+        {!!row.error && <Box color="text-status-error">{row.error}</Box>}</SpaceBetween> },
+      { id: 'turns', header: 'Build turns', sortingField: 'turns', cell: row => row.turns ?? 'Not recorded' },
+      { id: 'branch', header: 'Worktree branch', cell: row => <code className="console-code">{row.branch || 'Not recorded'}</code> },
+      { id: 'refreshes', header: 'Base refreshes', cell: row => row.refreshes ?? 'Not recorded' },
+    ]} />;
 }
 
-function statusLabel(status: string): string {
-  return status.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+function Checks({ gates }: { gates: GateRecord[] }) {
+  return <ResourceTable title="Executable checks" variant="embedded" items={gates}
+    trackBy={gate => `${gate.sequence}-${gate.stage}`} sortingField="sequence"
+    description="The engine runs the validator's executable and records its exit result. Failed checks remain in the history after a repair."
+    searchText={gate => `${gate.sequence} ${gate.stage} ${gate.summary}`}
+    empty={<Box>No executable checks have been recorded.</Box>}
+    columns={[
+      { id: 'sequence', header: 'Execution', sortingField: 'sequence', cell: gate => gate.sequence },
+      { id: 'stage', header: 'Stage', sortingField: 'stage', cell: gate => gate.stage },
+      { id: 'result', header: 'Result', cell: gate => <StatusIndicator type={gate.passed ? 'success' : 'error'}>{gate.passed ? 'Passed' : 'Failed'}</StatusIndicator> },
+      { id: 'evidence', header: 'Recorded evidence', cell: gate => <SpaceBetween size="xs">
+        <Box>{gate.summary || 'No summary recorded'}</Box>
+        {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded assertions`}>
+          <SpaceBetween size="s">{gate.checks.map((check, i) => <div key={i}>
+            <StatusIndicator type={check.passed === true ? 'success' : check.passed === false ? 'error' : 'pending'}>
+              {check.check || `Assertion ${i + 1}`}
+            </StatusIndicator>
+            {check.detail && <Box color="text-body-secondary">{check.detail}</Box>}
+          </div>)}</SpaceBetween>
+        </ExpandableSection>}
+      </SpaceBetween> },
+    ]} />;
 }
 
-const integerFormat = new Intl.NumberFormat();
-
-/** Record counts, not inferred green stages. Parallel PRs can settle differently. */
-function Workflow({ run }: { run: RunDetail }) {
-  const prs = recordedPullRequests(run).filter((row) => row.pr_url);
-  const checks = run.gate_history?.length ?? 0;
-  const decision = presentRunDecision(run);
-  const records = [
-    { label: 'Shared plan', icon: ScrollText, detail: run.integration_brief ? 'Recorded' : 'Not recorded yet', recorded: !!run.integration_brief },
-    { label: 'Pull requests', icon: GitPullRequest, detail: `${prs.length} opened`, recorded: prs.length > 0 },
-    { label: 'Executable checks', icon: FileCheck2, detail: `${checks} execution${checks === 1 ? '' : 's'}`, recorded: checks > 0 },
-    { label: 'Independent review', icon: ShieldCheck, detail: run.review?.state ? statusLabel(run.review.state) : 'Not recorded yet', recorded: !!run.review?.state },
-    { label: 'PR outcome', icon: GitMerge, detail: decision.title, recorded: run.status === 'passed' },
-  ];
-  return (
-    <section aria-label="Build workflow">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-medium">Evidence trail</h3>
-        <span className="text-xs text-muted-foreground">Each PR is checked independently</span>
-      </div>
-      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        {records.map(({ label, icon: Icon, detail, recorded }) => (
-          <li key={label} className="min-w-0 rounded-lg border border-border bg-background/60 p-3">
-            <Icon aria-hidden="true" className={`mb-3 size-[18px] ${recorded ? 'text-signal' : 'text-muted-foreground'}`} />
-            <div className="text-xs font-medium">{label}</div>
-            <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
-function WorkItemsTable({ builders }: { builders: WorkItem[] }) {
-  if (builders.length === 0) return null;
-  return (
-    <section className="evidence-surface">
-      <h3 className="text-sm font-semibold">Role Pull Requests</h3>
-      <div className="mt-3 overflow-x-auto">
-        <table className="w-full min-w-[700px] text-left text-xs">
-          <thead className="text-muted-foreground">
-            <tr>
-              <th scope="col" className="pb-1.5 font-medium">Role</th>
-              <th scope="col" className="pb-1.5 font-medium">Work ID</th>
-              <th scope="col" className="pb-1.5 font-medium">Pull Request</th>
-              <th scope="col" className="pb-1.5 font-medium">Activity</th>
-              <th scope="col" className="pb-1.5 text-right font-medium">State</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {builders.map((item) => (
-              <tr key={item.work_id}>
-                <td className="py-2 pr-3">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <AgentIcon agentId={item.agent} size={14} />
-                    <span className="truncate font-medium">{item.capability}</span>
-                  </span>
-                </td>
-                <td className="py-2 pr-3 font-mono text-muted-foreground" translate="no">
-                  <span className="block">{item.work_id}</span>
-                  {item.worktree_branch && (
-                    <span className="block text-[10px]">{item.worktree_branch}</span>
-                  )}
-                </td>
-                <td className="py-2 pr-3">
-                  {item.pr?.pr_url ? (
-                    <a
-                      href={item.pr.pr_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Open Role PR
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground">Not opened</span>
-                  )}
-                </td>
-                <td className="py-2 pr-3">
-                  <span className="block font-medium">
-                    {item.attempt ?? 0} {(item.attempt ?? 0) === 1 ? 'turn' : 'turns'}
-                  </span>
-                  {(item.dependency_refreshes ?? 0) > 0 && (
-                    <span className="block text-[10px] text-muted-foreground">
-                      {item.dependency_refreshes}{' '}
-                      {(item.dependency_refreshes ?? 0) === 1 ? 'update' : 'updates'} after an earlier merge
-                    </span>
-                  )}
-                </td>
-                <td className="py-2 text-right">
-                  <Badge variant={statusVariant(item.merge_state ?? item.state)} className="text-[11px]">
-                    {statusLabel(item.merge_state ?? item.state)}
-                  </Badge>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function GateHistory({ gates }: { gates: GateRecord[] }) {
-  return (
-    <section className="evidence-surface min-w-0">
-      <h3 className="text-sm font-semibold">Checks Run</h3>
-      {gates.length === 0 ? (
-        <p className="mt-2 text-xs text-muted-foreground">Waiting for the validator.</p>
-      ) : (
-        <ol className="mt-2 space-y-1.5">
-          {gates.map((gate) => (
-            <li key={`${gate.sequence}-${gate.stage}`} className="flex min-w-0 items-start gap-2 text-xs">
-              {gate.passed
-                ? <CheckCircle2 aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-success" />
-                : <AlertCircle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" />}
-              <span className="min-w-0 flex-1">
-                <span className="font-medium">{gate.stage}</span>
-                {gate.summary && (
-                  <span className="block break-words text-muted-foreground">{gate.summary}</span>
-                )}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
-  );
-}
-
-function IntegratedReview({ review }: { review: RunDetail['review'] }) {
+function Reviews({ review }: { review: RunDetail['review'] }) {
   const panels = review?.panels ?? [];
-  return (
-    <section className="evidence-surface min-w-0">
-      <h3 className="text-sm font-semibold">Independent review</h3>
-      {panels.length === 0 ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {review?.state
-            ? 'No review panels were recorded for this run.'
-            : 'Waiting for the adversarial and design review lenses.'}
-        </p>
-      ) : (
-        <ol className="mt-2 space-y-2">
-          {panels.map((panel) => (
-            <li key={panel.name} className="min-w-0 text-xs">
-              <div className="flex min-w-0 items-center gap-2">
-                <ShieldCheck aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {panel.label ?? statusLabel(panel.name)}
-                </span>
-                <Badge variant={statusVariant(panel.state)} className="text-[11px]">
-                  {statusLabel(panel.state)}
-                </Badge>
-              </div>
-              {(panel.reasons?.length ?? 0) > 0 ? (
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
-                  {panel.reasons!.map((reason, index) => <li key={index} className="break-words leading-5">{reason}</li>)}
-                </ul>
-              ) : panel.note ? (
-                <p className="mt-2 break-words text-muted-foreground">{panel.note}</p>
-              ) : null}
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
-  );
+  return <SpaceBetween size="l">
+    <Header variant="h2" description="A separate reviewer inspects the pull request using adversarial and design/integration lenses.">Independent review</Header>
+    <KeyValuePairs columns={2} items={[
+      { label: 'Review status', value: review?.state ? <StatusIndicator type={statusType(review.state)}>{label(review.state)}</StatusIndicator> : 'Not recorded' },
+      { label: 'Review round', value: review?.round ?? 'Not recorded' },
+    ]} />
+    {!!review?.reasons?.length && <Alert type="warning" header="Review findings"><TextContent><ul>
+      {review.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
+    </ul></TextContent></Alert>}
+    {panels.length ? panels.map(panel => <ExpandableSection key={panel.name} variant="container" defaultExpanded
+      headerText={panel.label || label(panel.name)} headerActions={<StatusIndicator type={statusType(panel.state)}>{label(panel.state)}</StatusIndicator>}>
+      <SpaceBetween size="m">
+        {!!panel.reasons?.length && <TextContent><ul>{panel.reasons.map((reason, i) => <li key={i}>{reason}</li>)}</ul></TextContent>}
+        {panel.assessment && <Box>{panel.assessment}</Box>}
+        {panel.lenses?.adversarial && <KeyValuePairs items={[{ label: 'Adversarial verification', value: panel.lenses.adversarial }]} />}
+        {panel.lenses?.design && <KeyValuePairs items={[{ label: 'Design and integration', value: panel.lenses.design }]} />}
+        {panel.note && <Box color="text-body-secondary">{panel.note}</Box>}
+        {panel.model && <Box fontSize="body-s" color="text-body-secondary">Model: {panel.model}</Box>}
+      </SpaceBetween>
+    </ExpandableSection>) : <Box color="text-body-secondary">No review panels have been recorded.</Box>}
+    {review?.assessment && !panels.length && <Box>{review.assessment}</Box>}
+  </SpaceBetween>;
 }
 
-function RolePullRequests({ rows }: { rows: RolePrEntry[] }) {
-  return (
-    <section className="evidence-surface min-w-0">
-      <h3 className="text-sm font-semibold">Pull Requests</h3>
-      {rows.length === 0 ? (
-        <p className="mt-2 text-xs text-muted-foreground">Waiting for the checks and reviews.</p>
-      ) : (
-        <ul className="mt-2 space-y-1.5">
-          {rows.map((row) => (
-            <li key={row.work_id} className="min-w-0 text-xs">
-              <div className="flex min-w-0 items-center gap-2">
-                {row.pr_url ? (
-                  <a
-                    href={row.pr_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="min-w-0 flex-1 truncate font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {row.role || row.agent}
-                  </a>
-                ) : (
-                  <span className="min-w-0 flex-1 truncate">{row.role || row.agent}</span>
-                )}
-                <Badge variant={statusVariant(row.state)} className="text-[11px]">
-                  {row.state === 'awaiting_review' ? 'Awaiting your review' : statusLabel(row.state)}
-                </Badge>
-              </div>
-              {row.error && (
-                <p className="mt-0.5 break-words text-[10px] text-destructive">{row.error}</p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
+function SharedPlan({ run }: { run: RunDetail }) {
+  const brief = run.integration_brief;
+  if (!brief) return <Box padding="l" color="text-body-secondary">No shared plan has been recorded.</Box>;
+  return <SpaceBetween size="l">
+    <Header variant="h2">Shared plan</Header>
+    {brief.summary && <Box>{brief.summary}</Box>}
+    {!!brief.shared_contract?.length && <TextContent><h3>Shared contract</h3><ul>
+      {brief.shared_contract.map((row, i) => <li key={i}>{row}</li>)}
+    </ul></TextContent>}
+    {Object.entries(brief.role_assignments ?? {}).map(([id, assignment]) => <ExpandableSection key={id} headerText={agentInstanceLabel(id)} defaultExpanded>
+      <KeyValuePairs columns={1} items={[
+        { label: 'Objective', value: assignment.objective || 'Not recorded' },
+        { label: 'Provides', value: assignment.provides?.join(', ') || 'Not recorded' },
+        { label: 'Consumes', value: assignment.consumes?.join(', ') || 'Not recorded' },
+      ]} />
+    </ExpandableSection>)}
+    {!!brief.open_questions?.length && <TextContent><h3>Open questions</h3><ul>
+      {brief.open_questions.map((question, i) => <li key={i}>{question}</li>)}
+    </ul></TextContent>}
+  </SpaceBetween>;
 }
 
 export function RunDetailPanel({ run }: { run: RunDetail }) {
-  const route = run.route;
-  const progress = run.progress ?? [];
-  const items = Object.values(run.work_items ?? {});
-  const builders = items.filter((item) => item.kind === 'builder');
-  const checker = items.find((item) => item.kind === 'checker');
-  const gates = run.gate_history ?? [];
-  const rolePrs = run.role_prs ?? [];
-  const brief = run.integration_brief;
   const decision = presentRunDecision(run);
-
-  return (
-    <div className="space-y-4 py-1">
-      <div className="flex flex-wrap items-start gap-3 rounded-xl border border-border bg-card p-4" role="status" aria-live="polite">
-        <div className="mt-0.5"><StatusIcon tone={decision.tone} /></div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold">{decision.title}</h2>
-          <p className="mt-1 text-sm leading-6 text-muted-foreground">{decision.detail}</p>
-          {run.next_action && <p className="mt-3 text-sm leading-6"><span className="font-medium">Next: </span>{run.next_action}</p>}
-        </div>
-        <code className="max-w-full break-all font-mono text-[11px] text-muted-foreground" translate="no">{run.run_id}</code>
-      </div>
-
-      {route && (
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-          <span className="break-words text-muted-foreground">{route.rule}</span>
-          {route.agents.map((agent) => (
-            <Badge key={agent} variant="secondary" className="flex items-center gap-1">
-              <AgentIcon agentId={agent} size={12} />
-              <span>{agent}</span>
-            </Badge>
-          ))}
-        </div>
-      )}
-
-      <Workflow run={run} />
-
-      {brief && (
-        <section className="evidence-surface">
-          <div className="flex min-w-0 items-center gap-2">
-            <h3 className="text-sm font-semibold">Shared Plan</h3>
-            {brief.merge_order?.length ? (
-              <code className="min-w-0 truncate text-[10px] text-muted-foreground" translate="no">
-                {brief.merge_order.join(' -> ')}
-              </code>
-            ) : null}
-          </div>
-          {brief.summary && <p className="mt-1.5 break-words text-xs">{brief.summary}</p>}
-          {(brief.shared_contract?.length ?? 0) > 0 && (
-            <ul className="mt-1.5 list-disc space-y-0.5 break-words pl-4 text-xs text-muted-foreground">
-              {brief.shared_contract?.map((row) => <li key={row}>{row}</li>)}
-            </ul>
-          )}
-        </section>
-      )}
-
-      <WorkItemsTable builders={builders} />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <GateHistory gates={gates} />
-        <IntegratedReview review={run.review} />
-        <RolePullRequests rows={rolePrs} />
-        {checker && (
-          <section className="evidence-surface min-w-0">
-            <h3 className="text-sm font-semibold">Validator</h3>
-            <p className="mt-2 break-all text-[10px] text-muted-foreground">
-              <code translate="no">{checker.work_id}</code> authored one executable
-              check per pull request. Its real exit code is that pull request's gate.
-            </p>
-          </section>
-        )}
-      </div>
-
-      {progress.some((entry) => entry.tokens > 0) && (
-        <p className="border-t border-border pt-3 text-[10px] text-muted-foreground">
-          {integerFormat.format(progress.reduce((sum, entry) => sum + entry.tokens, 0))} tokens reported
-        </p>
-      )}
-
-
-    </div>
-  );
+  const prs = recordedPullRequests(run);
+  const gates = run.gate_history ?? [];
+  return <SpaceBetween size="l">
+    <Alert type={decision.tone === 'danger' ? 'error' : decision.tone === 'waiting' ? 'warning' : decision.tone === 'success' ? 'success' : 'info'}
+      header={decision.title}>
+      {decision.detail}{run.next_action && <Box padding={{ top: 's' }}><strong>Next action:</strong> {run.next_action}</Box>}
+    </Alert>
+    <Container header={<Header variant="h2">Build details</Header>}>
+      <KeyValuePairs columns={3} items={[
+        { label: 'Build ID', value: <code className="console-code">{run.run_id}</code> },
+        { label: 'Created', value: run.created_at ? new Date(run.created_at).toLocaleString() : 'Not recorded' },
+        { label: 'Phase', value: run.phase ? label(run.phase) : 'Not recorded' },
+        { label: 'Goal', value: run.task },
+        { label: 'Selected roles', value: run.route?.agents.map(agentInstanceLabel).join(', ') || 'Not recorded' },
+        { label: 'Pull requests opened', value: prs.filter(pr => pr.pr_url).length },
+      ]} />
+    </Container>
+    <Container disableContentPaddings><Tabs tabs={[
+      { id: 'pull-requests', label: 'Pull requests', content: <PullRequests run={run} /> },
+      { id: 'checks', label: `Executable checks (${gates.length})`, content: <Checks gates={gates} /> },
+      { id: 'review', label: 'Independent review', content: <Box padding="l"><Reviews review={run.review} /></Box> },
+      { id: 'plan', label: 'Shared plan', content: <Box padding="l"><SharedPlan run={run} /></Box> },
+    ]} /></Container>
+  </SpaceBetween>;
 }

@@ -1,14 +1,21 @@
 # Governance and attribution API
 
-The console exposes two distinct evidence sources through one router:
+The console exposes configuration and evidence through one router:
 
 - `metrics_lib.py` reads host session and run records, calculates configured-rate
   estimates, and exposes session controls and local policy information.
 - `attribution.py` queries actual CloudWatch Logs Insights request events. This
   is Lab 3's source and is independent of the host ledger.
+- `governance_controls.py` reads the host's identity mapping, merge policy,
+  execution limits, and role registry. It also evaluates policy inputs without
+  executing them and records the actual decision.
 
-`metrics_api.py` serves both directly on port 8092. The console mounts the same
+`metrics_api.py` serves these directly on port 8092. The console mounts the same
 router at `/api/metrics`. See [API_CONTRACT.md](API_CONTRACT.md).
+
+In Agent Studio, **Usage** owns CloudWatch queries, **Controls** owns
+configuration and policy previews, and **Activity** owns audit records and
+session management.
 
 ## Query exported attribution
 
@@ -55,3 +62,16 @@ python3 -m pytest -q metrics-api/test_metrics_lib.py metrics-api/test_attributio
 The attribution tests exercise response handling with controlled SDK doubles.
 A real event traversal is still required to prove its region, permissions,
 exported events, and console query end to end.
+
+## Inspect controls and evaluate policy
+
+`GET /controls` reads the host's effective configuration and the identity supplied
+by the hosting server. `POST /policies/evaluate` accepts an action, target, and
+read-only flag. It invokes `policy.screen`, never a shell, model, or file tool.
+The response distinguishes allow, deny, and hold for human handling. The hold
+is not an approval queue or a promise that a later click can resume the command.
+
+Policy preview and session-stop operations append audit events to the local
+ledger. The server supplies the actor; clients cannot submit one. Policy targets
+can contain secrets, so only their SHA-256 digest is recorded. If the audit write
+fails, the operation reports that failure separately from its actual result.

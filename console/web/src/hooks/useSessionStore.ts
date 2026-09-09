@@ -132,7 +132,8 @@ export function subscribeOutput(
         // The backend no longer has this session (e.g. dropped on a server
         // restart). Prune the dead tab so a reload doesn't show a stale one.
         es.close();
-        closeSession(id);
+        _sessions.delete(id);
+        _persist();
         onGone?.();
       }
     } catch { /* ignore */ }
@@ -165,14 +166,17 @@ export function getBuffer(id: string): string {
   return _sessions.get(id)?.buffer ?? '';
 }
 
-/** Close a session tab: drop it locally AND tell the backend to end the PTY and
- *  forget it, so the server-registry sync (syncServerSessions) does not resurrect
- *  the tab the human just closed. The SSE is closed by the caller's unsub. The
- *  DELETE is best-effort/fire-and-forget: local removal is what the UI reacts to. */
-export function closeSession(id: string): void {
+/** Only remove the tab after the server confirms the terminal closed. */
+export async function closeSession(id: string): Promise<void> {
+  const response = await fetch(`${API}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (response.status !== 404) {
+    const result = await response.json();
+    if (!response.ok || result.error || !result.ok) {
+      throw new Error(result.error || 'The host did not confirm that the terminal closed.');
+    }
+  }
   _sessions.delete(id);
   _persist();
-  fetch(`${API}/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
 }
 
 /**

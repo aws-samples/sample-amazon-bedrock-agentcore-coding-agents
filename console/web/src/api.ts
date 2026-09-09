@@ -1,7 +1,7 @@
 /**
  * Console API client: same-origin calls to server.py's stage mounts:
  *   Module 1 (Agents)     -> /api/dev
- *   Module 2 (Fleets)     -> /api/orchestrator
+ *   Module 2 (Chat)       -> /api/orchestrator
  *   Module 3 (Governance) -> /api/metrics
  *
  * server.py dispatches each mount to its engine in-process. Everything here is
@@ -73,6 +73,45 @@ export async function queryAttribution(windowHours: number, signal?: AbortSignal
   if (!response.ok) throw new ApiError(response.status, body.error || 'CloudWatch query failed.');
   return body as AttributionEvidence;
 }
+
+export interface GovernanceControls {
+  source: 'host-configuration';
+  observed_at: string;
+  identity: {
+    known: boolean;
+    user_id: string | null;
+    email: string | null;
+    name: string | null;
+    mapping_state: 'anonymous' | 'empty' | 'present';
+    telemetry_attributes: string | null;
+  };
+  merge_policy: 'human_review' | 'auto';
+  limits: {
+    repairs_per_pr: number;
+    gate_timeout_seconds: number;
+    role_timeout_seconds: number;
+  };
+  roles: Array<{ id: string; label: string; kind: 'builder' | 'checker'; capability: string; role_name: string }>;
+}
+
+export interface PolicyEvaluation {
+  allowed: boolean;
+  outcome: 'allow' | 'hold' | 'deny';
+  action: string;
+  rule_id: string;
+  tier: string;
+  reason: string;
+  read_only: boolean;
+  executed: false;
+  source: 'policy-preview';
+  audit_recorded: boolean;
+  audit_error?: string;
+  event_id?: string;
+}
+
+export const getGovernanceControls = () => get<GovernanceControls>('/api/metrics/controls');
+export const evaluatePolicy = (input: { action: string; target: string; read_only: boolean }) =>
+  post<PolicyEvaluation>('/api/metrics/policies/evaluate', input);
 
 /* ---------------- Module 1: Agents ---------------- */
 
@@ -516,15 +555,15 @@ export const setMergePolicy = (merge_policy: MergePolicy) =>
 /* ---------------- Kiro API key (AgentCore Identity Token Vault) ---------------- */
 
 export interface KiroStatus {
-  connected: boolean;
-  source?: 'settings' | null;
+  connected: boolean | null;
+  source?: 'settings' | 'token-vault' | null;
   provider?: string;
   region?: string;
   key_tail?: string;
   error?: string;
 }
 
-export const getKiroStatus = () => get<KiroStatus>('/api/orchestrator/kiro');
+export const getKiroStatus = (refresh = false) => get<KiroStatus>(`/api/orchestrator/kiro${refresh ? '?refresh=1' : ''}`);
 
 // Paste a Kiro API key (ksk_...); the backend stores it in the Token Vault so the
 // deployed Kiro runtime authenticates with no redeploy.
@@ -640,7 +679,7 @@ export interface UserMetrics {
 
 export const getUserMetrics = (user: string, range = '24h') =>
   get<UserMetrics>(
-    `/api/metrics/users/${encodeURIComponent(user)}/metrics?range=${encodeURIComponent(range)}`,
+    `/api/metrics/users/${encodeURIComponent(user)}/metrics?time_range=${encodeURIComponent(range)}`,
   );
 
 export interface CostBreakdown {
@@ -660,6 +699,8 @@ export interface SessionRow {
   user_id?: string;
   user?: string;
   state?: string;
+  source?: 'runtime-registry' | 'run-ledger';
+  can_stop?: boolean;
   claude_running?: boolean;
   runtime_arn?: string | null;
   started_at?: string;
@@ -682,7 +723,7 @@ export const listSessions = (filters?: { window?: number; assistant_type?: strin
 // session process; on AgentCore it calls StopRuntimeSession. Returns the stop
 // result, or null if there is no such session.
 export const stopSession = (sessionId: string) =>
-  post<{ session_id: string; stopped: boolean; error?: string } | null>(
+  post<{ session_id: string; stopped: boolean; error?: string; audit_recorded?: boolean; audit_error?: string; event_id?: string } | null>(
     `/api/metrics/sessions/${encodeURIComponent(sessionId)}/stop`,
   );
 
@@ -708,17 +749,17 @@ export interface Identity {
   recorded_user: string;
   user_email: string;
   user_name: string;
-  auth_provider: 'cognito' | 'os-user';
+  auth_provider: 'cognito' | 'os-user' | 'not-recorded';
   environment: 'local' | 'agentcore';
-  attribution_source: 'run-ledger';
+  attribution_source: 'run-ledger' | 'runtime-registry';
   github_actor: 'credential-dependent';
-  static_credentials_on_agent: boolean;
+  static_credentials_on_agent: boolean | null;
 }
 
 export const getIdentity = (sessionId: string) =>
   get<Identity>(`/api/metrics/sessions/${encodeURIComponent(sessionId)}/identity`);
 
-// One Cedar-style guardrail the harness enforces before any tool call runs.
+// A rule in the coordinator command checker. See Policies.scope for its boundary.
 export interface Policy {
   tier: 'hard' | 'soft';
   rule_id: string;
@@ -730,6 +771,7 @@ export interface Policies {
   policies: Policy[];
   enforced: boolean;
   note?: string;
+  scope?: string;
 }
 
 export const getPolicies = () => get<Policies>('/api/metrics/policies');
@@ -741,6 +783,9 @@ export interface AuditRow {
   kind: string;
   user_id: string;
   line: string;
+  event_id?: string;
+  actor_source?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface AuditTrail {

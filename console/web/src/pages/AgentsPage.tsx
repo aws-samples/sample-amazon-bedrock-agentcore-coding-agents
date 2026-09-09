@@ -1,438 +1,220 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import {
-  Card, CardHeader, CardTitle, CardContent,
-  Badge, Button, Input,
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-} from '@foxl/ui';
-import { ChevronDown, Link2, Loader2, Maximize2, Minimize2, Plus, X } from 'lucide-react';
+import { Navigate, useNavigate, useHref, useSearchParams } from 'react-router-dom';
+import Alert from '@cloudscape-design/components/alert';
+import Box from '@cloudscape-design/components/box';
+import Button from '@cloudscape-design/components/button';
+import Container from '@cloudscape-design/components/container';
+import ContentLayout from '@cloudscape-design/components/content-layout';
+import FormField from '@cloudscape-design/components/form-field';
+import Header from '@cloudscape-design/components/header';
+import Input from '@cloudscape-design/components/input';
+import KeyValuePairs from '@cloudscape-design/components/key-value-pairs';
+import Modal from '@cloudscape-design/components/modal';
+import Select from '@cloudscape-design/components/select';
+import SpaceBetween from '@cloudscape-design/components/space-between';
+import StatusIndicator from '@cloudscape-design/components/status-indicator';
+import Tabs from '@cloudscape-design/components/tabs';
 import { AgentIcon } from '../components/AgentIcon';
 import { Terminal, type TerminalHandle } from '../components/Terminal';
-import { SectionHeader } from '../shared';
-import { getRuntimes, wireRuntime, clearRuntime, type RuntimeStatus } from '../api';
-import { onAgentRoles, type AgentRole } from './agents/environments';
+import { getRuntimes, wireRuntime, type RuntimeStatus } from '../api';
+import { agentRoles, loadAgentRoles, type AgentRole } from './agents/environments';
 import {
   getSessions, openSession, subscribeOutput, sendInput, resizeTerminal, getBuffer, closeSession,
-  syncServerSessions,
-  type SessionEntry,
+  syncServerSessions, type SessionEntry,
 } from '../hooks/useSessionStore';
 
 export function AgentsPage() {
-  const { env } = useParams();
   const navigate = useNavigate();
-  // The roster is fetched (it is the deployment's own configurable team), so it is
-  // briefly unknown on first paint. Track it in state and render a loading state
-  // below until it lands, rather than inventing a role to show.
-  const [roles, setRoles] = useState<AgentRole[]>([]);
-  useEffect(() => onAgentRoles(setRoles), []);
-  const selectedRole = roles.find((r) => r.id === env) ?? roles[0];
-
-  // A role can host >1 runtime instance under one sidebar entry (Claude Code =
-  // backend builder + validator). Pick WHICH instance this page is showing; the
-  // dropdown below switches it. Single-instance roles just pin their one.
-  const [instanceId, setInstanceId] = useState<string>('');
-  useEffect(() => {
-    if (selectedRole) setInstanceId(selectedRole.instances[0]!.id);
-  }, [selectedRole?.id]);
-  const selectedInstance =
-    selectedRole?.instances.find((i) => i.id === instanceId) ?? selectedRole?.instances[0];
-  const hasMultipleInstances = (selectedRole?.instances.length ?? 0) > 1;
-  // `selected` is the ACTIVE runtime instance: its id is the backend role key the
-  // /api/dev + wiring endpoints use, its label/blurb describe this instance. Empty
-  // id while the roster loads; every effect below keys off it and no-ops until then.
-  const selected = selectedInstance ?? { id: '', label: '', blurb: '' };
-
+  const base = useHref('/').replace(/\/$/, '');
+  const [params, setParams] = useSearchParams();
+  const [roles, setRoles] = useState<AgentRole[]>(agentRoles);
+  const [rosterLoading, setRosterLoading] = useState(!roles.length);
   const [runtimes, setRuntimes] = useState<RuntimeStatus | null>(null);
+  const [runtimeError, setRuntimeError] = useState('');
+  const runtimeRequest = useRef(0);
+  const showSessions = params.get('view') === 'sessions';
+  const requestedAgent = params.get('agent');
+  const selectedRole = roles.find(role => role.id === requestedAgent || role.instances.some(instance => instance.id === requestedAgent)) ?? roles[0];
+  useEffect(() => {
+    let live = true;
+    void loadAgentRoles().then(next => { if (live) { setRoles(next); setRosterLoading(false); } });
+    return () => { live = false; };
+  }, []);
+  const refreshRuntimes = useCallback(async () => {
+    const id = ++runtimeRequest.current;
+    try {
+      const next = await getRuntimes();
+      if (id === runtimeRequest.current) { setRuntimes(next); setRuntimeError(''); }
+    } catch (e) {
+      if (id === runtimeRequest.current) setRuntimeError(e instanceof Error ? e.message : 'Could not read runtime configuration.');
+    }
+  }, []);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!document.hidden) await refreshRuntimes();
+      if (live) timer = setTimeout(poll, 5000);
+    };
+    void poll();
+    return () => { live = false; runtimeRequest.current++; clearTimeout(timer); };
+  }, [refreshRuntimes]);
+  if (showSessions) return <Navigate to="/governance/activity?tab=sessions" replace />;
+  return <ContentLayout header={<Header variant="h1"
+    description="Work with your coding agents and manage their Runtime sessions."
+    actions={<SpaceBetween direction="horizontal" size="xs">
+      <Button onClick={() => navigate('/governance/activity?tab=sessions')}>Manage sessions</Button>
+      <Button href={`${base}/settings?tab=connections`}
+        onFollow={event => { event.preventDefault(); navigate('/settings?tab=connections'); }}>Manage connections</Button>
+    </SpaceBetween>}>Agents</Header>}>
+    <SpaceBetween size="l">
+        {runtimeError && <Alert type="error" header="Runtime configuration unavailable"
+          action={<Button onClick={() => void refreshRuntimes()}>Retry</Button>}>{runtimeError}</Alert>}
+        {rosterLoading ? <StatusIndicator type="loading">Loading agent roles</StatusIndicator>
+          : !selectedRole ? <Container><Box textAlign="center" padding="l"><SpaceBetween size="m">
+            <Box variant="h3">No agents returned</Box><Box color="text-body-secondary">Check the host connection and the served roster.</Box>
+            <Button onClick={() => { setRosterLoading(true); void loadAgentRoles().then(next => { setRoles(next); setRosterLoading(false); }); }}>Retry</Button>
+          </SpaceBetween></Box></Container>
+          : <Tabs activeTabId={selectedRole.id} ariaLabel="Coding agents"
+            onChange={({ detail }) => setParams({ agent: detail.activeTabId })}
+            tabs={roles.map(role => ({
+              id: role.id, href: `${base}/agents?agent=${encodeURIComponent(role.id)}`,
+              label: <span className="agent-tab-label"><span aria-hidden="true"><AgentIcon agentId={role.id} size={20} /></span>{role.label}</span>,
+              content: <AgentWorkspace key={role.id} role={role} requestedInstance={requestedAgent}
+                runtimes={runtimes} onRuntimesChange={setRuntimes} />,
+            }))} />}
+    </SpaceBetween>
+  </ContentLayout>;
+}
+
+function AgentWorkspace({ role, requestedInstance, runtimes, onRuntimesChange }: {
+  role: AgentRole; requestedInstance: string | null;
+  runtimes: RuntimeStatus | null; onRuntimesChange: (value: RuntimeStatus) => void;
+}) {
+  const [instanceId, setInstanceId] = useState(() => role.instances.find(instance => instance.id === requestedInstance)?.id || role.instances[0]!.id);
+  const selected = role.instances.find(instance => instance.id === instanceId) ?? role.instances[0]!;
+  const agentId = selected.id;
+  const activeAgent = useRef(agentId);
+  activeAgent.current = agentId;
+  useEffect(() => { activeAgent.current = agentId; return () => { activeAgent.current = ''; }; }, [agentId]);
   const [draft, setDraft] = useState('');
   const [wiring, setWiring] = useState(false);
-  const [error, setError] = useState('');
+  const [wireError, setWireError] = useState('');
+  const [connectOpen, setConnectOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-
-  // Open session tabs for the selected agent + which one is active. Sessions live
-  // in the global store (persist across navigation); this mirrors the store's
-  // list for the current agent so the tab bar re-renders on open/close.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
   const [tabs, setTabs] = useState<SessionEntry[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState('');
-
-  const refreshRuntimes = useCallback(() => {
-    getRuntimes().then(setRuntimes).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    refreshRuntimes();
-    const t = setInterval(refreshRuntimes, 5000);
-    return () => clearInterval(t);
-  }, [refreshRuntimes]);
-
-  const role = runtimes?.roles.find((r) => r.role === selected.id);
-  const isWired = role?.wired ?? false;
-  const currentArn = role?.arn ?? '';
-  const instanceList = role?.instances ?? [];
-  const isFleet = instanceList.length > 1;
-
-  // Which wired instance a NEW session opens against (only meaningful for a fleet
-  // of N). Defaults to the first; the attendee can switch before clicking +.
-  const [targetArn, setTargetArn] = useState<string>('');
-  useEffect(() => {
-    // Reset the target to the first instance whenever the agent or its fleet changes.
-    setTargetArn(instanceList[0]?.arn ?? '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected.id, instanceList.map((i) => i.arn).join(',')]);
-
-  // Guards that stop the double-open race the two effects used to cause:
-  //  - openingRef: a SYNCHRONOUS lock. `opening` (state) updates async, so two
-  //    effect runs could both read opening=false and each open a session (that
-  //    was the "Session 2 + Session 3" bug). A ref flips synchronously.
-  //  - userClosedAllRef: remembers that the human closed the LAST tab for this
-  //    agent, so auto-open does not immediately reopen one (the "close one and
-  //    another appears" bug). Reset when the agent changes.
   const openingRef = useRef(false);
-  const userClosedAllRef = useRef(false);
+  const connection = runtimes?.roles.find(item => item.role === agentId);
+  const isWired = connection?.wired ?? false;
+  const instances = connection?.instances ?? (connection?.arn ? [{ arn: connection.arn, description: connection.description }] : []);
+  const [targetArn, setTargetArn] = useState('');
+  const terminalAvailable = isWired && (targetArn || connection?.arn || '').startsWith('arn:');
+  const instanceArns = instances.map(instance => instance.arn).join(',');
+  useEffect(() => { setTargetArn(previous => instances.some(instance => instance.arn === previous) ? previous : instances[0]?.arn || ''); }, [agentId, instanceArns]);
 
-  const openTab = useCallback(async (instanceArn?: string) => {
-    if (openingRef.current) return;
-    openingRef.current = true;
-    setOpening(true);
-    setOpenError('');
+  // Opening a page only reads the registry. Starting a Runtime requires Open session.
+  const openTab = useCallback(async () => {
+    if (openingRef.current || !terminalAvailable) return;
+    openingRef.current = true; setOpening(true); setOpenError('');
     try {
-      const entry = await openSession(selected.id, { rows: 24, cols: 80 }, instanceArn);
-      userClosedAllRef.current = false;
-      setTabs(getSessions(selected.id));
-      setActiveTab(entry.id);
-    } catch (e) {
-      setOpenError(e instanceof Error ? e.message : 'Failed to open session.');
-    } finally {
-      openingRef.current = false;
-      setOpening(false);
-    }
-  }, [selected.id]);
-
-  // One effect owns the tab list for the selected agent: seed from the store,
-  // then poll the server registry to restore human terminals AND discover PTYs
-  // opened automatically by Chat dispatch. openingRef keeps the optional manual
-  // auto-open single-flight.
+      const entry = await openSession(agentId, { rows: 24, cols: 80 }, targetArn || undefined);
+      if (activeAgent.current === agentId) { setTabs(getSessions(agentId)); setActiveTab(entry.id); }
+    } catch (e) { if (activeAgent.current === agentId) setOpenError(e instanceof Error ? e.message : 'Could not open the session.'); }
+    finally { openingRef.current = false; if (activeAgent.current === agentId) setOpening(false); }
+  }, [agentId, terminalAvailable, targetArn]);
   useEffect(() => {
-    let stop = false;
-    userClosedAllRef.current = false;
-    const existing = getSessions(selected.id);
-    setTabs(existing);
-    setActiveTab(existing.length ? existing[existing.length - 1]!.id : null);
-
+    setOpenError(''); setFullscreen(false);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const existing = getSessions(agentId);
+    setTabs(existing); setActiveTab(existing.at(-1)?.id || null);
     const tick = async () => {
-      if (stop) return;
-      await syncServerSessions(selected.id);
-      if (stop) return;
-      const next = getSessions(selected.id);
-      setTabs(next);
-      setActiveTab((cur) =>
-        cur && next.some((s) => s.id === cur)
-          ? cur
-          : (next.length ? next[next.length - 1]!.id : null));
-      // Auto-open one session only when wired, none open, the human didn't close
-      // them all, and no open is already in flight.
-      if (isWired && next.length === 0 && !userClosedAllRef.current && !openingRef.current) {
-        void openTab();
-      }
+      await syncServerSessions(agentId);
+      if (cancelled) return;
+      const next = getSessions(agentId);
+      setTabs(next); setActiveTab(current => next.some(session => session.id === current) ? current : next.at(-1)?.id || null);
+      timer = setTimeout(tick, 3000);
     };
     void tick();
-    const t = setInterval(tick, 3000);
-    return () => { stop = true; clearInterval(t); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected.id, isWired, openTab]);
-
-  const closeTab = useCallback((id: string) => {
-    closeSession(id);
-    const remaining = getSessions(selected.id);
-    // If that was the last tab, remember the human wants NONE open so the
-    // auto-open effect does not immediately reopen one.
-    if (remaining.length === 0) userClosedAllRef.current = true;
-    setTabs(remaining);
-    setActiveTab((cur) => (cur === id ? (remaining.length ? remaining[remaining.length - 1]!.id : null) : cur));
-  }, [selected.id]);
-
-  // A restored tab whose backend session is gone (server restart): the store
-  // already pruned it, so just resync the tab bar to what survives.
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [agentId]);
   const pruneTab = useCallback((id: string) => {
-    const remaining = getSessions(selected.id);
-    setTabs(remaining);
-    setActiveTab((cur) => (cur === id ? (remaining.length ? remaining[remaining.length - 1]!.id : null) : cur));
-  }, [selected.id]);
-
-  // Map each wired ARN to a 1-based fleet index, so a tab on a fleet of N can
-  // show "Session 2 · #1" (which deployed instance it is talking to).
-  const arnIndex = (arn: string) => {
-    const i = instanceList.findIndex((inst) => inst.arn === arn);
-    return i >= 0 ? i + 1 : 0;
-  };
-
-  const tabBar = (
-    <div className="flex items-center gap-1 overflow-x-auto">
-      {tabs.map((t) => (
-        <div
-          key={t.id}
-          className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs ${
-            activeTab === t.id ? 'border-border bg-card font-medium text-foreground' : 'border-transparent text-muted-foreground hover:bg-accent'
-          }`}
-        >
-          <button onClick={() => setActiveTab(t.id)} className="flex items-center gap-1.5">
-            <AgentIcon agentId={selected.id} size={12} />
-            Session {t.label}
-            {t.openedBy === 'orchestrator' && (
-              <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">
-                run
-              </span>
-            )}
-            {isFleet && arnIndex(t.runtimeArn) > 0 && (
-              <span className="text-muted-foreground">{`· #${arnIndex(t.runtimeArn)}`}</span>
-            )}
-          </button>
-          <button onClick={() => closeTab(t.id)} className="rounded p-0.5 hover:bg-muted" title="Close session">
-            <X className="size-3" />
-          </button>
-        </div>
-      ))}
-      {/* Fleet of N: pick WHICH instance the next + opens against. */}
-      {isFleet && (
-        <select
-          value={targetArn}
-          onChange={(e) => setTargetArn(e.target.value)}
-          className="h-7 shrink-0 rounded-md border border-border bg-card px-1.5 text-xs text-muted-foreground"
-          title="Which instance a new session connects to"
-        >
-          {instanceList.map((inst, i) => (
-            <option key={inst.arn} value={inst.arn}>
-              {`#${i + 1}${inst.description ? ` ${inst.description}` : ''}`}
-            </option>
-          ))}
-        </select>
-      )}
-      <Button
-        variant="ghost" size="sm" className="h-7 shrink-0 px-2"
-        onClick={() => openTab(isFleet ? targetArn : undefined)}
-        disabled={opening || !isWired} title="New session" aria-label="New session"
-      >
-        {opening ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
-      </Button>
-    </div>
-  );
-
-  async function handleWire() {
-    const url = draft.trim();
-    if (!url || wiring) return;
-    setWiring(true);
-    setError('');
+    const next = getSessions(agentId); setTabs(next);
+    setActiveTab(current => current === id ? next.at(-1)?.id || null : current);
+  }, [agentId]);
+  const closeTab = useCallback(async (id: string) => {
+    setOpenError('');
+    try { await closeSession(id); pruneTab(id); }
+    catch (e) { setOpenError(e instanceof Error ? e.message : 'Could not close the terminal.'); }
+  }, [pruneTab]);
+  async function connect() {
+    if (!draft.trim() || wiring) return;
+    setWiring(true); setWireError('');
     try {
-      const next = await wireRuntime(selected.id, url);
-      if (next.error) setError(next.error);
-      else { setRuntimes(next); setDraft(''); }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to wire runtime.');
-    } finally {
-      setWiring(false);
-    }
+      const next = await wireRuntime(agentId, draft.trim());
+      if (next.error) throw new Error(next.error);
+      onRuntimesChange(next); setDraft(''); setConnectOpen(false);
+    } catch (e) { setWireError(e instanceof Error ? e.message : 'Could not connect the runtime.'); }
+    finally { setWiring(false); }
   }
-
-  async function handleClear() {
-    setWiring(true);
-    try {
-      // Close every open session for this agent before unwiring.
-      getSessions(selected.id).forEach((s) => closeSession(s.id));
-      setTabs([]);
-      setActiveTab(null);
-      setRuntimes(await clearRuntime(selected.id));
-      setDraft('');
-    } catch { /* keep current state */ } finally {
-      setWiring(false);
-    }
-  }
-
-  // The roster has not arrived yet (or the orchestrator is unreachable). Say so
-  // instead of rendering an agent card for a role we cannot name: every id, label,
-  // and wiring key on this page belongs to a real served role.
-  if (!selectedRole || !selectedInstance) {
-    return (
-      <div className="flex h-full items-center justify-center p-8 text-center">
-        <p className="text-sm text-muted-foreground">Loading the agent roster…</p>
-      </div>
-    );
-  }
-
-  if (fullscreen && isWired && activeTab) {
-    return (
-      <div className="absolute inset-0 z-30 flex flex-col bg-background">
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-          <AgentIcon agentId={selectedRole.id} size={16} />
-          <span className="text-sm font-medium">
-            {selectedRole.label}
-            {hasMultipleInstances && <span className="text-muted-foreground"> · {selectedInstance.label}</span>}
-          </span>
-          <div className="ml-4 flex-1">{tabBar}</div>
-          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setFullscreen(false)}>
-            <Minimize2 className="size-4" />
-          </Button>
-        </div>
-        <div className="relative flex-1">
-          {tabs.map((t) => (
-            <div key={t.id} className={`absolute inset-0 ${activeTab === t.id ? '' : 'hidden'}`}>
-              <AgentTerminal sessionId={t.id} fullHeight active={activeTab === t.id}
-                onGone={() => pruneTab(t.id)} />
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-      <div className="console-page animate-enter-up space-y-6">
-      <SectionHeader
-        title="Agents"
-        eyebrow="Your coding team"
-        subtitle="Each role has its own responsibility and Runtime sessions. Select a role to inspect its connection and open a live shell."
-      />
-
-      <nav className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3" aria-label="Coding agent roles">
-        {roles.map((agent) => {
-          const configured = agent.instances.some((instance) => runtimes?.roles.some((row) => row.role === instance.id && row.wired));
-          const selected = agent.id === selectedRole.id;
-          return (
-            <button key={agent.id} type="button" aria-pressed={selected}
-              onClick={() => navigate(`/agents/${agent.id}`)}
-              className={`min-w-0 rounded-xl border bg-card p-4 text-left transition-colors ${selected ? 'border-signal shadow-sm' : 'border-border hover:border-signal/40'}`}>
-              <span className="flex items-center gap-3">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-                  <AgentIcon agentId={agent.id} size={24} />
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold">{agent.label}</span>
-                  <span className={`mt-0.5 block text-xs ${configured ? 'text-signal' : 'text-muted-foreground'}`}>
-                    {configured ? 'Runtime configured' : 'Not configured'}
-                  </span>
-                </span>
-              </span>
-              <span className="mt-3 block text-xs leading-5 text-muted-foreground">{agent.blurb}</span>
-            </button>
-          );
-        })}
-      </nav>
-
-      <Card>
-        <CardHeader className="gap-1.5">
-          <CardTitle className="flex items-center gap-2">
-            <AgentIcon agentId={selectedRole.id} size={18} />
-            {selectedRole.label}
-            {/* One role, >1 runtime instance (Claude Code = backend + validator):
-                switch between them here. The two are DISTINCT runtimes (different
-                role ids + ARNs); the dropdown makes that legible instead of two
-                identical "Claude Code" sidebar rows. */}
-            {hasMultipleInstances && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="ml-1 h-7 gap-1.5 px-2 text-xs font-normal">
-                    {selectedInstance.label}
-                    <ChevronDown className="size-3.5 text-muted-foreground" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-72">
-                  {selectedRole.instances.map((inst) => {
-                    const r = runtimes?.roles.find((x) => x.role === inst.id);
-                    return (
-                      <DropdownMenuItem
-                        key={inst.id}
-                        onSelect={() => setInstanceId(inst.id)}
-                        className="flex flex-col items-start gap-0.5 py-2"
-                      >
-                        <span className="flex items-center gap-1.5 text-sm font-medium">
-                          {inst.label}
-                          {r?.wired
-                            ? <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">connected</span>
-                            : <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">not wired</span>}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground">{inst.blurb}</span>
-                        {r?.wired && r.arn && (
-                          <code className="mt-0.5 max-w-full truncate font-mono text-[10px] text-muted-foreground/70">{r.arn}</code>
-                        )}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-            {isWired ? (
-              <Badge variant="success" className="ml-2">Runtime configured</Badge>
-            ) : (
-              <Badge variant="outline" className="ml-2 text-muted-foreground">not wired</Badge>
-            )}
-            {isWired && activeTab && (
-              <Button variant="ghost" size="sm" className="ml-auto h-7 px-2" onClick={() => setFullscreen(true)} title="Fullscreen">
-                <Maximize2 className="size-4" />
-              </Button>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {isWired ? (
-            <>
-              {tabBar}
-              <div className="relative h-[440px]">
-                {tabs.length === 0 ? (
-                  <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/30">
-                    <p className="text-sm text-muted-foreground">
-                      {openError || 'Opening a session...'}
-                    </p>
-                  </div>
-                ) : (
-                  // Keep every open tab mounted (hidden) so its terminal + buffer
-                  // survive tab switches; only the active one is visible.
-                  tabs.map((t) => (
-                    <div key={t.id} className={`absolute inset-0 ${activeTab === t.id ? '' : 'hidden'}`}>
-                      <AgentTerminal sessionId={t.id} active={activeTab === t.id}
-                        onGone={() => pruneTab(t.id)} />
-                    </div>
-                  ))
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex h-[400px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/30">
-                <p className="text-sm text-muted-foreground">
-                  No runtime connected. Run <code className="font-mono">agentcore dev</code> and paste the URL below.
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="https:// or arn:aws:bedrock-agentcore:..."
-                  className="text-sm"
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleWire(); }}
-                />
-                <Button onClick={handleWire} disabled={!draft.trim() || wiring} size="sm">
-                  {wiring ? <Loader2 className="size-4 animate-spin" /> : 'Connect'}
-                </Button>
-              </div>
-              {error && <p className="text-xs text-destructive">{error}</p>}
-            </>
-          )}
-
-          {isWired && currentArn && (
-            <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
-              <Link2 className="size-3 shrink-0 text-muted-foreground" />
-              <code className="flex-1 break-all font-mono text-[11px] text-muted-foreground">{currentArn}</code>
-              <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={handleClear} disabled={wiring}>
-                Disconnect
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+  return <SpaceBetween size="l">
+    <Container header={<Header variant="h2" description={selected.blurb}
+      actions={!isWired && runtimes ? <Button onClick={() => { setDraft(''); setWireError(''); setConnectOpen(true); }}>Connect runtime</Button> : undefined}>Runtime connection</Header>}>
+      <SpaceBetween size="l">
+        {role.instances.length > 1 && <FormField label="Role"><Select disabled={opening} selectedOption={{ value: selected.id, label: selected.label }}
+          options={role.instances.map(instance => ({ value: instance.id, label: instance.label, description: instance.blurb }))}
+          onChange={({ detail }) => setInstanceId(detail.selectedOption.value!)} /></FormField>}
+        {instances.length > 1 && <FormField label="Runtime for new sessions"><Select disabled={opening} selectedOption={targetArn ? { value: targetArn, label: instances.find(instance => instance.arn === targetArn)?.description || targetArn } : null}
+          options={instances.map(instance => ({ value: instance.arn, label: instance.description || instance.arn }))}
+          onChange={({ detail }) => setTargetArn(detail.selectedOption.value!)} /></FormField>}
+        <KeyValuePairs columns={3} items={[
+          { label: 'Role', value: selected.label },
+          { label: 'Connection', value: <StatusIndicator type={!runtimes ? 'loading' : isWired ? 'success' : 'pending'}>{!runtimes ? 'Loading' : isWired ? 'Configured' : 'Not configured'}</StatusIndicator> },
+          { label: 'Runtime ARN or URL', value: <code className="console-code">{targetArn || connection?.arn || 'Not configured'}</code> },
+        ]} />
+        {isWired && !terminalAvailable && <Alert type="info">This development URL supports dispatch. Interactive terminals require a deployed AgentCore Runtime ARN.</Alert>}
+      </SpaceBetween>
+    </Container>
+    <div className={fullscreen ? 'agent-terminal-expanded' : 'agent-terminal-frame'}>
+      <Container disableContentPaddings header={<Header variant="h2" counter={`(${tabs.length})`}
+        description="Sessions opened here and by Chat share the same live terminal."
+        actions={<SpaceBetween direction="horizontal" size="xs">
+          {!!tabs.length && <Button iconName={fullscreen ? 'shrink' : 'expand'} ariaLabel={fullscreen ? 'Exit expanded terminal' : 'Expand terminal'} onClick={() => setFullscreen(value => !value)} />}
+          <Button variant="primary" iconName="add-plus" loading={opening} disabled={!terminalAvailable || opening} onClick={() => void openTab()}>Open session</Button>
+        </SpaceBetween>}>Live sessions</Header>}>
+        {openError && <Box padding="m"><Alert type="error" header="Session request failed">{openError}</Alert></Box>}
+        {tabs.length ? <Tabs activeTabId={activeTab || tabs[0]!.id} onChange={({ detail }) => setActiveTab(detail.activeTabId)}
+          disableContentPaddings ariaLabel="Agent terminal sessions" tabs={tabs.map(session => ({
+            id: session.id, label: `Session ${session.label}${session.openedBy === 'orchestrator' ? ' · Chat build' : ''}`,
+            dismissible: true, dismissLabel: `Close terminal ${session.label}`, onDismiss: () => void closeTab(session.id),
+            contentRenderStrategy: 'eager', content: <div className="agent-terminal-pane"><AgentTerminal sessionId={session.id} fullHeight
+              active={activeTab === session.id} onGone={() => pruneTab(session.id)} /></div>,
+          }))} /> : <Box padding="xxl" textAlign="center"><SpaceBetween size="m">
+            <Box variant="h3">{opening ? 'Opening session' : isWired ? 'No open sessions' : 'Connect a runtime to start'}</Box>
+            <Box color="text-body-secondary">{opening ? 'Waiting for the Runtime shell.' : terminalAvailable ? 'Open a session when you are ready to work with this agent.' : 'Use the deployed Runtime ARN from Lab 1 to open an interactive terminal.'}</Box>
+            {opening && <StatusIndicator type="loading">Connecting</StatusIndicator>}
+          </SpaceBetween></Box>}
+      </Container>
     </div>
-  );
+    <Modal visible={connectOpen} header={`Connect ${role.label}`} onDismiss={() => { if (!wiring) setConnectOpen(false); }} closeAriaLabel="Close runtime connection"
+      footer={<Box float="right"><SpaceBetween direction="horizontal" size="xs"><Button variant="link" disabled={wiring} onClick={() => setConnectOpen(false)}>Cancel</Button>
+        <Button variant="primary" loading={wiring} disabled={!draft.trim()} onClick={() => void connect()}>Connect</Button></SpaceBetween></Box>}>
+      <FormField label="Runtime ARN or development URL" errorText={wireError} description="Use the runtime deployed for this role in Lab 1.">
+        <Input value={draft} disabled={wiring} autoComplete={false} onChange={({ detail }) => setDraft(detail.value)}
+          onKeyDown={event => { if (event.detail.key === 'Enter') void connect(); }} />
+      </FormField>
+    </Modal>
+  </SpaceBetween>;
 }
-
 // One terminal bound to a specific session (tab) id. The session already exists
 // in the store (the page opens it before mounting this); this component just
 // attaches an xterm, replays the buffer, and subscribes to the live SSE stream.

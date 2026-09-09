@@ -35,10 +35,10 @@ export default defineConfig({
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           // NOTE: deliberately NO 'highlight.js' entry. Listing the package
           // here forces ALL ~190 grammars into the chunk and defeats the
-          // per-language tree-shaking in FleetsPage (HLJS_LANGUAGES). Letting
+          // per-language tree-shaking in ChatPage (HLJS_LANGUAGES). Letting
           // it fold into the markdown chunk keeps only the langs we register.
           markdown: ['react-markdown', 'remark-gfm', 'rehype-highlight'],
-          xterm: ['xterm', '@xterm/addon-fit'],
+          xterm: ['@xterm/xterm', '@xterm/addon-fit'],
         },
       },
     },

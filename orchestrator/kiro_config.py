@@ -17,7 +17,7 @@ Wirable seams (tests set these, never patch internals):
   WORKSHOP_KIRO_SETTINGS      path of the 0600 status sidecar (default .runs/kiro.local.json)
   WORKSHOP_KIRO_PROVIDER       credential provider name (default kiro-api-key)
   WORKSHOP_KIRO_WORKLOAD       workload identity name (default kiro-coding-agent)
-  WORKSHOP_BEDROCK_REGION      region for the control-plane calls (default AWS_REGION/us-west-2)
+  WORKSHOP_BEDROCK_REGION      optional region override; otherwise use the AWS environment/profile
   WORKSHOP_KIRO_DISABLE_VAULT  "1" to skip the boto3 vault call (offline unit tests):
                                the key is validated + the sidecar written, no AWS.
 """
@@ -61,8 +61,14 @@ def _workload_name() -> str:
 
 
 def _region() -> str:
-    return os.environ.get("WORKSHOP_BEDROCK_REGION",
-                          os.environ.get("AWS_REGION", "us-west-2"))
+    import boto3
+    region = (os.environ.get("WORKSHOP_BEDROCK_REGION")
+              or os.environ.get("AWS_REGION")
+              or os.environ.get("AWS_DEFAULT_REGION")
+              or boto3.Session().region_name)
+    if not region:
+        raise ValueError("Configure an AWS region before managing the Kiro credential.")
+    return region
 
 
 def _tail(key: str) -> str:
@@ -80,12 +86,8 @@ def _load_sidecar() -> dict:
 
 
 def _write_sidecar(data: dict) -> None:
-    os.makedirs(_RUNS_DIR, exist_ok=True)
-    try:
-        os.chmod(_RUNS_DIR, 0o700)
-    except OSError:
-        pass
     path = _settings_path()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)
     try:
@@ -96,7 +98,7 @@ def _write_sidecar(data: dict) -> None:
 
 # --- Token Vault provisioning -------------------------------------------------
 def _control_client():
-    # boto3 stays optional: imported only here, only when actually provisioning.
+    # Metadata discovery and provisioning both use the deployment region.
     import boto3  # noqa: PLC0415
     from botocore.config import Config  # noqa: PLC0415
     return boto3.client("bedrock-agentcore-control", region_name=_region(),
@@ -110,10 +112,10 @@ def _ensure_workload(client) -> None:
     name = _workload_name()
     try:
         client.get_workload_identity(name=name)
-    except Exception:  # noqa: BLE001 (ResourceNotFound or first run -> create)
+    except client.exceptions.ResourceNotFoundException:
         try:
             client.create_workload_identity(name=name)
-        except Exception:  # noqa: BLE001 (a race that created it is fine)
+        except client.exceptions.ConflictException:
             pass
 
 
@@ -125,9 +127,10 @@ def _provision_vault(api_key: str) -> None:
     name = _provider_name()
     try:
         client.get_api_key_credential_provider(name=name)
-        client.update_api_key_credential_provider(name=name, apiKey=api_key)
-    except Exception:  # noqa: BLE001 (not found -> create)
+    except client.exceptions.ResourceNotFoundException:
         client.create_api_key_credential_provider(name=name, apiKey=api_key)
+    else:
+        client.update_api_key_credential_provider(name=name, apiKey=api_key)
 
 
 def save_api_key(api_key: str) -> dict[str, Any]:
@@ -162,31 +165,53 @@ def save_api_key(api_key: str) -> dict[str, Any]:
     return status()
 
 
-def status() -> dict[str, Any]:
-    """Connection status for the Settings card: connected + a masked tail, never
-    the key. ``source`` is 'settings' once provisioned from the console."""
+def status(*, refresh: bool = False) -> dict[str, Any]:
+    """Read credential metadata, including keys provisioned by the event/CLI.
+
+    GetApiKeyCredentialProvider returns provider metadata, not the API key.
+    A lookup failure is unknown, never an assertion that no key exists.
+    """
     s = _load_sidecar()
-    if s.get("stored"):
-        return {
-            "connected": True,
-            "source": "settings",
-            "provider": s.get("provider", _provider_name()),
-            "region": s.get("region", _region()),
-            "key_tail": s.get("key_tail", ""),
-        }
-    return {"connected": False, "source": None, "provider": _provider_name(),
-            "region": _region()}
+    offline = os.environ.get("WORKSHOP_KIRO_DISABLE_VAULT") == "1"
+    out: dict[str, Any] = {"connected": None, "source": None,
+                           "provider": _provider_name()}
+    try:
+        out["region"] = _region()
+        cache_matches = (s.get("region") == out["region"]
+                         and s.get("provider", out["provider"]) == out["provider"])
+        if s.get("stored") and cache_matches and (not refresh or offline):
+            return {**out, "connected": True, "source": "settings",
+                    "key_tail": s.get("key_tail", "")}
+        if offline:
+            return {**out, "connected": False}
+        client = _control_client()
+        try:
+            client.get_api_key_credential_provider(name=_provider_name())
+        except client.exceptions.ResourceNotFoundException:
+            # A confirmed deletion must stay absent after leaving Settings and
+            # returning. An older sidecar cannot turn that result green again.
+            if cache_matches and s.get("stored"):
+                _write_sidecar({**s, "stored": False, "key_tail": ""})
+            return {**out, "connected": False}
+        return {**out, "connected": True, "source": "token-vault"}
+    except Exception as exc:  # noqa: BLE001 (metadata unavailable is not unconfigured)
+        return {**out, "error": f"Could not verify the Token Vault credential: {exc}"}
 
 
 def clear_api_key() -> dict[str, Any]:
-    """Disconnect: delete the vault provider (best-effort) and drop the sidecar."""
+    """Remove the provider; preserve local status if AWS refuses the deletion."""
     if os.environ.get("WORKSHOP_KIRO_DISABLE_VAULT") != "1":
         try:
-            _control_client().delete_api_key_credential_provider(name=_provider_name())
-        except Exception:  # noqa: BLE001 (already gone / no creds: still clear local)
-            pass
+            client = _control_client()
+            try:
+                client.delete_api_key_credential_provider(name=_provider_name())
+            except client.exceptions.ResourceNotFoundException:
+                pass
+        except Exception as exc:  # noqa: BLE001 (never report a failed delete as success)
+            return {"error": f"Token Vault deletion failed: {exc}"}
     try:
         os.remove(_settings_path())
     except OSError:
         pass
-    return status()
+    return {"connected": False, "source": None, "provider": _provider_name(),
+            "region": _region()}

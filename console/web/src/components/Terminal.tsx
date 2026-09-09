@@ -1,9 +1,9 @@
 import { useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
 // (refs below keep the data/resize callbacks fresh so xterm's one-time
 //  onData/onResize binding never calls a stale closure.)
-import { Terminal as Xterm } from 'xterm';
+import { Terminal as Xterm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import 'xterm/css/xterm.css';
+import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalHandle {
   write: (s: string) => void;
@@ -100,28 +100,32 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     term.current = x;
     fit.current = f;
     fitConservative.current();   // initial fit at the conservative width
-    x.onData((d) => onDataRef.current?.(d));
-    x.onResize((s) => onResizeRef.current?.(s));
+    const dataSubscription = x.onData((d) => onDataRef.current?.(d));
+    const resizeSubscription = x.onResize((s) => onResizeRef.current?.(s));
 
     // The synchronous fit above runs before the pane has its final layout width
     // and before the web font's metrics settle, so it under-counts columns and
     // the terminal opens narrower than the pane (a resize later corrects it).
     // Re-fit after two animation frames (layout flushed) and again once the font
     // is ready, so the FIRST winsize the caller reads/pushes is the real width.
+    let active = true;
+    const fitThisTerminal = () => {
+      if (active && term.current === x) fitConservative.current();
+    };
     let raf1 = 0, raf2 = 0;
     raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => { try { fitConservative.current(); } catch { /* hidden */ } });
+      raf2 = requestAnimationFrame(fitThisTerminal);
     });
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
-    fonts?.ready?.then(() => { try { fitConservative.current(); } catch { /* hidden */ } });
+    fonts?.ready?.then(fitThisTerminal);
 
-    const ro = new ResizeObserver(() => {
-      try { fitConservative.current(); } catch { /* pane hidden */ }
-    });
+    const ro = new ResizeObserver(fitThisTerminal);
     ro.observe(hostRef.current);
     return () => {
+      active = false;
       cancelAnimationFrame(raf1); cancelAnimationFrame(raf2);
-      ro.disconnect(); x.dispose(); term.current = null; fit.current = null;
+      ro.disconnect(); dataSubscription.dispose(); resizeSubscription.dispose();
+      term.current = null; fit.current = null; x.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

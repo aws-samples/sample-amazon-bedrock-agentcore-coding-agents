@@ -1,4 +1,4 @@
-# Workshop console
+# Agent Studio
 
 The React console is the main working surface for Lab 3 and an optional view of
 host-dispatched builds. FastAPI serves the APIs and production SPA from one
@@ -9,13 +9,20 @@ origin.
 | Development | Opens a host workspace, editor, and terminal |
 | Agents | Opens real interactive PTYs on configured coding-agent Runtimes |
 | Chat | Runs the coordinator in the host process and displays its evidence |
-| Governance | Separates host records from explicit CloudWatch Attribution queries |
+| Governance > Usage | Queries exported CloudWatch request and token usage |
+| Governance > Controls | Inspects identity, approval settings, and limits; previews policy decisions |
+| Governance > Activity | Shows the host audit trail and manages recorded Runtime sessions |
 | Settings | Configures Runtime targets, Kiro credentials, GitHub, and merge policy |
 
 The host console and deployed coordinator use the same engine code but separate
 run registries. A CLI build in the deployed coordinator does not appear here
 just because the console knows its ARN. Do not submit another build to fill a
 screenshot or an empty run list.
+
+The sidebar groups Development, Agents, and Chat under **Workspace** and the
+three governance pages under **Governance**. Settings is in the top navigation.
+Agents has one destination with tabs derived from the served roster. Its
+**Manage sessions** action opens Activity's Sessions tab.
 
 ## Development
 
@@ -56,11 +63,12 @@ without its referenced projects does not check the application.
 
 ## Lab 3: attribution
 
-Governance > Attribution runs one fixed Logs Insights query over the workshop
+Governance > Usage runs one fixed Logs Insights query over the workshop
 telemetry log group. It does not read the host's run ledger or invoke an agent.
-The query starts only when the attendee presses **Query telemetry**; counts are
+The query starts only when the attendee presses **Run query**; counts are
 shown only after CloudWatch reports `Complete`. Errors, pending results, and
-missing usage are never presented as zero usage.
+missing usage are never presented as zero usage. Navigating between governance
+pages preserves the current query evidence.
 
 Development is where the attendee implements and tests
 `UserIdentity.to_otel_env()`. The method intentionally ships empty. Restart the
@@ -69,10 +77,26 @@ from its own Development terminal disconnects that terminal. The change affects
 future host-console dispatches, not an already deployed coordinator.
 
 A separate, manually tagged prompt in a new Agents session proves export. Its
-label is not proof of Cognito authentication. The Attribution table counts
+label is not proof of Cognito authentication. The Usage table counts
 Claude Code request events; it is not Kiro usage reporting or a complete bill.
 
+Controls reads the same identity mapping, merge policy, role registry, and
+execution limits used by this host. **Evaluate action** runs the real policy
+checker on submitted data without executing the command or file operation.
+Its decision links to the corresponding audit record in Activity. Raw targets
+are not logged; audit records retain the decision and a SHA-256 digest.
+
+Activity separates **Audit trail** and **Sessions** into tabs. Event details
+show the result and actor first; **Raw event** exposes the recorded JSON for
+inspection and export. These are host records, not an account-wide audit log.
+
 ## Runtime and evidence behavior
+
+The console discovers the Runtime configs written by the event bootstrap and
+role deploy scripts. It does not require another coordinator ARN for Chat,
+because its coordinator runs in-process. Settings also discovers Kiro credential
+provider metadata provisioned by the CLI or event, without reading the secret.
+An unavailable metadata lookup is **unknown**, not an absent key.
 
 Runtime targets must be wired. Missing targets fail explicitly; no fallback
 agent, fabricated ARN, PR URL, or successful run is substituted. Keep opencode

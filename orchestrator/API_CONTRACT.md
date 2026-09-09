@@ -73,7 +73,7 @@ A run also has a terminal status once finalization completes.
       "work_id": "work_claude-code_a1b2c3",
       "kind": "builder",
       "branch": "workshop/runs/run-0001/claude-code-a1b2c3",
-      "base_branch": "workshop/runs/run-0001/integration",
+      "base_branch": "main",
       "state": "done",
       "attempt": 2,
       "pr": {"number": 40, "pr_url": "https://github.com/your-org/your-repo/pull/40"},
@@ -267,6 +267,20 @@ Append-only audit trail of phase transitions and role activity (embedded event a
   the default `local` keeps the gitignored 0600 settings file (`source` = `settings`),
   and any Secrets Manager failure degrades to that file transparently. The GitHub App
   credential (repo + optional gateway URL) never surfaces beyond a masked summary.
+- **`GET /api/kiro`**: Kiro credential metadata, also exposed by the console at
+  `/api/orchestrator/kiro`. `connected` is `true` when the configured provider is
+  present, `false` when AWS confirms it is absent, and `null` with an `error` when
+  its state cannot be verified. `provider` and the resolved `region` identify the
+  lookup. `source` is `settings` for a matching local record or `token-vault` for
+  a provider discovered from event/CLI setup. A local record may include
+  `key_tail`; this endpoint never retrieves or returns the API key.
+  `?refresh=1` verifies provider metadata again and invalidates a local record
+  when AWS confirms deletion. Records from another region or provider are not
+  accepted as connected.
+- **`POST /api/kiro`**: `{"api_key":"..."}` stores or rotates the credential;
+  `{"clear":true}` removes the provider. A failed AWS operation returns an
+  `error` and does not claim the credential was saved or removed. Clearing a
+  provider does not remove the Runtime connection.
 
 ### Additive fields on Run / Result (the routed engine)
 

@@ -186,6 +186,9 @@ def _live_runtime_rows(query: str) -> list[dict]:
             "started_at": started_at,
             "issue_url": None,
             "claude_running": True,
+            "state": "open",
+            "source": "runtime-registry",
+            "can_stop": True,
         })
     return rows
 
@@ -224,12 +227,32 @@ def _route_api(method: str, full_path: str, query: str, body: dict | None,
         return connection_api.dispatch(method, sub, body, query,
                                        user_identity=user_identity)
     if mount == "metrics":
+        if method == "GET" and sub.startswith("/api/sessions/") and sub.endswith("/identity"):
+            session_id = unquote(sub.removeprefix("/api/sessions/").removesuffix("/identity"))
+            session = next((row for row in runtime_shell.list_sessions().get("sessions", [])
+                            if row.get("session_id") == session_id), None)
+            if session:
+                return 200, {
+                    "session_id": session_id,
+                    "recorded_user": session.get("user_id") or "",
+                    "user_email": "", "user_name": "",
+                    "auth_provider": "not-recorded",
+                    "environment": "agentcore",
+                    "attribution_source": "runtime-registry",
+                    "github_actor": "credential-dependent",
+                    "static_credentials_on_agent": None,
+                }
         if method == "POST" and sub.startswith("/api/sessions/") and sub.endswith("/stop"):
             session_id = unquote(sub.removeprefix("/api/sessions/").removesuffix("/stop"))
             stopped = _stop_live_runtime_session(session_id)
             if stopped is not None:
-                return stopped
-        code, out = metrics_api.dispatch(method, sub, query, body)
+                code, result = stopped
+                audit = metrics_api.metrics_lib.record_governance_event("session_stop", user_identity, {
+                    "session_id": session_id, "stopped": bool(result.get("stopped")),
+                    "mechanism": result.get("mechanism"),
+                })
+                return code, {**result, **audit}
+        code, out = metrics_api.dispatch(method, sub, query, body, user_identity)
         if code == 200 and method == "GET" and sub == "/api/sessions":
             existing = {
                 str(row.get("session_id"))
@@ -259,7 +282,7 @@ def _health() -> dict:
     return {"status": "ok", "mode": "engine", "engines": engines}
 
 
-app = FastAPI(title="Coding Agents Console", docs_url=None, redoc_url=None)
+app = FastAPI(title="Agent Studio", docs_url=None, redoc_url=None)
 
 
 # ---- Cognito OAuth2 routes (active when COGNITO_USER_POOL_ID is set) ------
@@ -335,19 +358,20 @@ if cognito_auth.COGNITO_ENABLED:
         resp.delete_cookie(cognito_auth.SESSION_COOKIE, path="/")
         return resp
 
-    @app.get("/api/auth/me")
-    async def auth_me(request: Request):
-        """Return the current authenticated user's identity (for the frontend)."""
-        user = _current_user(request)
-        if not user:
-            return JSONResponse({"authenticated": False}, status_code=401)
-        return JSONResponse({
-            "authenticated": True,
-            "user_id": user.sub,
-            "email": user.email,
-            "name": user.name,
-            "groups": user.groups,
-        })
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    """Report a Cognito identity only when it came from an authenticated session."""
+    if not _authed(request):
+        return JSONResponse({"authenticated": False}, status_code=401)
+    user = _current_user(request)
+    if not user:
+        return JSONResponse({"authenticated": False,
+                             "mode": "password" if AUTH_ENABLED else "local"})
+    return JSONResponse({
+        "authenticated": True, "mode": "cognito",
+        "user_id": user.sub, "email": user.email,
+        "name": user.name, "groups": user.groups,
+    })
 
 
 # ---- Auth endpoints (only meaningful when AUTH_ENABLED) -------------------
@@ -721,7 +745,7 @@ def _login_page(error: str = "", email: str = "") -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>Sign in · Coding Agents Console</title>
+<title>Sign in · Agent Studio</title>
 <style>
  *{{box-sizing:border-box}}
  body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;

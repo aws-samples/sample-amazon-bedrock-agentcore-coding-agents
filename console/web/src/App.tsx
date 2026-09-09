@@ -1,192 +1,223 @@
-import { Suspense, lazy } from 'react';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { SquareTerminal, Boxes, ShieldCheck, Bot, Settings, PanelLeftClose, PanelLeft, BookOpen, ChevronRight } from 'lucide-react';
-import {
-  AppShell, NavSidebar, type NavSidebarGroup, Toaster, useSidebar, SidebarTrigger,
-  SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuItem, SidebarMenuButton,
-} from '@foxl/ui';
-import { Brand } from './components/Brand';
-import { AgentsSubNav } from './components/AgentsSubNav';
-import { ChatList } from './components/ChatList';
-import { GovernanceSubNav } from './components/GovernanceSubNav';
-import { OnboardingModal } from './components/OnboardingChecklist';
-import { openOnboarding } from './hooks/useOnboarding';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Navigate, Outlet, Route, Routes, useHref, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useTheme } from 'next-themes';
+import AppLayout, { type AppLayoutProps } from '@cloudscape-design/components/app-layout';
+import Autosuggest from '@cloudscape-design/components/autosuggest';
+import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group';
+import Button from '@cloudscape-design/components/button';
+import FormField from '@cloudscape-design/components/form-field';
+import HelpPanel from '@cloudscape-design/components/help-panel';
+import Link from '@cloudscape-design/components/link';
+import Modal from '@cloudscape-design/components/modal';
+import RadioGroup from '@cloudscape-design/components/radio-group';
+import SideNavigation from '@cloudscape-design/components/side-navigation';
+import SpaceBetween from '@cloudscape-design/components/space-between';
+import Spinner from '@cloudscape-design/components/spinner';
+import TextContent from '@cloudscape-design/components/text-content';
+import TopNavigation from '@cloudscape-design/components/top-navigation';
+import { applyDensity, applyMode, Density, Mode } from '@cloudscape-design/global-styles';
+import { getAuthMe, getAttributionConfiguration, type AuthUser } from './api';
+import { ConsoleNotifications } from './components/ConsoleNotifications';
 
-// Routes are code-split: each page is its own chunk loaded on navigation, so
-// the landing route (/agents) no longer ships the chat's markdown + syntax
-// highlighter (FleetsPage) or the metrics page up front. First paint pulls only
-// the shell + the page you actually land on.
-const DevelopmentPage = lazy(() => import('./pages/DevelopmentPage').then((m) => ({ default: m.DevelopmentPage })));
-const AgentsPage = lazy(() => import('./pages/AgentsPage').then((m) => ({ default: m.AgentsPage })));
-const FleetsPage = lazy(() => import('./pages/FleetsPage').then((m) => ({ default: m.FleetsPage })));
-const GovernancePage = lazy(() => import('./pages/GovernancePage').then((m) => ({ default: m.GovernancePage })));
-const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const DevelopmentPage = lazy(() => import('./pages/DevelopmentPage').then(m => ({ default: m.DevelopmentPage })));
+const AgentsPage = lazy(() => import('./pages/AgentsPage').then(m => ({ default: m.AgentsPage })));
+const ChatPage = lazy(() => import('./pages/ChatPage').then(m => ({ default: m.ChatPage })));
+const GovernancePage = lazy(() => import('./pages/GovernancePage').then(m => ({ default: m.GovernancePage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 
-// Lightweight route fallback: a calm centered pulse, not a layout-shifting
-// spinner. Honors reduced-motion via the shared utility.
-function RouteFallback() {
-  return (
-    <div className="flex h-full items-center justify-center gap-3" role="status">
-      <span aria-hidden="true" className="size-2 animate-pulse rounded-full bg-success motion-reduce:animate-none" />
-      <span className="text-sm text-muted-foreground">Loading workspace…</span>
-    </div>
-  );
-}
-
-const NAV = [
-  { id: 'development', label: 'Development', sub: 'Build & deploy in a live shell', icon: SquareTerminal, path: '/development' },
-  { id: 'agents', label: 'Agents', sub: 'Runtime sessions and role responsibilities', icon: Bot, path: '/agents' },
-  { id: 'fleets', label: 'Chat', sub: 'Plan a task and inspect its evidence', icon: Boxes, path: '/fleets' },
-  { id: 'governance', label: 'Governance', sub: 'Usage, identity & audit', icon: ShieldCheck, path: '/governance' },
+const PAGES = [
+  { path: '/development', title: 'Development', description: 'Edit files and run commands on the workshop host. Runtime agent sessions are available under Agents.' },
+  { path: '/agents', title: 'Agents', description: 'Switch between your coding agents, open their live terminals, and manage sessions in one place. Opening a session starts the agent.' },
+  { path: '/chat', title: 'Chat', description: 'Submit a goal to the coordinator and inspect each pull request’s executable check and independent review. Approval and merge are separate decisions.' },
+  { path: '/governance/usage', title: 'Usage', description: 'Query exported CloudWatch request events, inspect user attribution, and save the evidence.' },
+  { path: '/governance/controls', title: 'Controls', description: 'Inspect submitter identity, pull request approvals, and execution limits. Evaluate an action with the coordinator policy checker.' },
+  { path: '/governance/activity', title: 'Activity', description: 'Find recorded operations in the host audit trail, inspect Runtime sessions, and stop work you have finished.' },
+  { path: '/settings', title: 'Settings', description: 'Configure the GitHub destination, merge policy, Kiro credential, and Runtime connections used by this console.' },
 ];
 
-function Shell({ children }: { children: React.ReactNode }) {
-  const nav = useNavigate();
-  const { pathname } = useLocation();
-  // Two independent axes, do NOT conflate them:
-  //   - contained: whether the shell wraps children in its max-w-6xl centering
-  //     container. Every page here centers its OWN content (or is a full-bleed
-  //     workspace), so this stays false for all -- adding the wrapper would
-  //     double-center / narrow them.
-  //   - scroll: whether <main> owns the vertical scroll. Every page scrolls as a
-  //     whole EXCEPT Chat (/fleets) and Development, which pins a top bar + bottom composer and
-  //     manages its own inner scroll region; main scrolling there would drag the
-  //     pinned chrome. Before scroll isolation main was always overflow-y-auto,
-  //     so anything other than Chat losing its scroll is a regression.
-  const scroll = !pathname.startsWith('/fleets') && !pathname.startsWith('/development');
-  const groups: NavSidebarGroup[] = [
-    {
-      label: 'Workspace',
-      items: NAV.map((n) => ({
-        id: n.id,
-        label: n.label,
-        icon: n.icon,
-        tooltip: n.sub,
-        isActive: pathname.startsWith(n.path),
-        onSelect: () => nav(n.path),
-        // Inline sub-lists under a nav item: the Module 1 workspaces under
-        // "Agents" (deep-linkable at /agents/<env>), the run history under
-        // "Chat" (deep-linkable at /fleets/<id>), and the governance sections
-        // under "Governance" (deep-linkable at /governance/<section>).
-        after:
-          n.id === 'agents' ? <AgentsSubNav />
-          : n.id === 'fleets' ? <ChatList />
-          : n.id === 'governance' ? <GovernanceSubNav />
-          : undefined,
-      })),
-    },
+function Shell() {
+  const { pathname, search } = useLocation();
+  const navigate = useNavigate();
+  const base = useHref('/').replace(/\/$/, '');
+  const href = (path: string) => `${base}${path}`;
+  const layout = useRef<AppLayoutProps.Ref>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [region, setRegion] = useState<string | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const { resolvedTheme, setTheme } = useTheme();
+  const [density, setDensity] = useState(() => {
+    try { return localStorage.getItem('agentcore.console.density') === 'compact' ? 'compact' : 'comfortable'; }
+    catch { return 'comfortable'; }
+  });
+  const [draftTheme, setDraftTheme] = useState('light');
+  const [draftDensity, setDraftDensity] = useState(density);
+  const page = PAGES.find(p => pathname === p.path)
+    ?? PAGES.find(p => pathname.startsWith(`${p.path}/`))
+    ?? PAGES[0]!;
+  const workspace = pathname.startsWith('/development') || pathname.startsWith('/chat');
+  const currentHref = href(page.path);
+  const activeSection = page.path;
+
+  useEffect(() => {
+    let live = true;
+    getAttributionConfiguration().then(s => { if (live) setRegion(s.region || null); }).catch(() => {});
+    getAuthMe().then(s => { if (live) setUser(s); });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => { applyMode(resolvedTheme === 'dark' ? Mode.Dark : Mode.Light); }, [resolvedTheme]);
+  useEffect(() => {
+    applyDensity(density === 'compact' ? Density.Compact : Density.Comfortable);
+    try { localStorage.setItem('agentcore.console.density', density); } catch { /* Optional storage. */ }
+  }, [density]);
+  useEffect(() => { document.title = `${page.title} | Agent Studio`; }, [page.title]);
+
+  function follow(target: string) {
+    navigate(base && target.startsWith(base) ? target.slice(base.length) || '/' : target);
+    layout.current?.closeNavigationIfNecessary();
+  }
+  function openPreferences() {
+    setDraftTheme(resolvedTheme === 'dark' ? 'dark' : 'light');
+    setDraftDensity(density);
+    setPreferencesOpen(true);
+  }
+  const breadcrumbs = [
+    { text: 'Agent Studio', href: href('/development') },
+    ...(pathname.startsWith('/governance/') ? [{ text: 'Governance', href: href('/governance/usage') }] : []),
+    { text: page.title, href: currentHref },
   ];
-  return (
-    <AppShell
-      contained={false}
-      scroll={scroll}
-      className="console-surface"
-      topbar={<ConsoleTopbar />}
-      sidebar={
-        <NavSidebar
-          header={<SidebarHeaderContent />}
-          className="console-sidebar"
-          groups={groups}
-          footer={<SidebarFooterContent active={pathname.startsWith('/settings')} onSettings={() => nav('/settings')} />}
-        />
-      }
-    >
-      {/* Suspense lives INSIDE the shell so the sidebar paints instantly and
-          only the page area shows the fallback while its chunk loads. */}
-      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
-    </AppShell>
-  );
-}
-
-function ConsoleTopbar() {
-  const { pathname } = useLocation();
-  const current = NAV.find((n) => pathname.startsWith(n.path))?.label ?? 'Settings';
-  return (
-    <header className="console-topbar">
-      <a href={`${pathname}#console-main`} className="skip-link">Skip to workspace</a>
-      <SidebarTrigger className="mr-1 md:hidden" />
-      <div className="flex min-w-0 items-center gap-2 text-xs">
-        <span className="hidden text-muted-foreground sm:inline">Coding agent workshop</span>
-        <ChevronRight aria-hidden="true" className="hidden size-3 text-muted-foreground sm:inline" />
-        <span className="font-medium">{current}</span>
-      </div>
-      <span className="ml-auto rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground"
-        title="Chats and builds on this console use the host's coordinator. Runs submitted to a deployed coordinator have their own history.">
-        Host console
-      </span>
-    </header>
-  );
-}
-
-function SidebarFooterContent({ active, onSettings }: { active: boolean; onSettings: () => void }) {
-  // Mirror the nav items' EXACT wrapper chain (SidebarGroup p-2 ->
-  // SidebarGroupContent -> SidebarMenu -> SidebarMenuButton) so Settings sits in
-  // the same icon column as Development/Agents/Chat/Governance, collapsed or not.
-  // Wrapping in only a bare SidebarMenu drops the SidebarGroup's p-2 and the icon
-  // shifts left of the nav icons when collapsed.
-  return (
-    <SidebarGroup className="py-1">
-      <SidebarGroupContent>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={openOnboarding} tooltip="Setup guide" className="w-full">
-              <BookOpen aria-hidden="true" className="h-4 w-4" />
-              <span>Setup guide</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton isActive={active} onClick={onSettings} tooltip="Settings" className="w-full">
-              <Settings className="h-4 w-4" />
-              <span>Settings</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarGroupContent>
-    </SidebarGroup>
-  );
-}
-
-function SidebarHeaderContent() {
-  const { state, toggleSidebar } = useSidebar();
-  const collapsed = state === 'collapsed';
-  // Collapsed: the toggle is a size-8 square left-aligned, matching the nav
-  // SidebarMenuButton icon box so it sits in the same column. Expanded: brand on
-  // the left, toggle on the right.
-  return (
-    <div className={collapsed ? 'flex items-center' : 'flex items-center justify-between gap-2'}>
-      {!collapsed && <Brand />}
-      <button
-        onClick={toggleSidebar}
-        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-      >
-        {collapsed ? <PanelLeft className="size-4" /> : <PanelLeftClose className="size-4" />}
-      </button>
-    </div>
-  );
-}
-
-export default function App() {
+  if (pathname.startsWith('/chat/')) {
+    breadcrumbs.push({ text: pathname.startsWith('/chat/c/') ? 'Conversation' : 'Build details', href: href(pathname) });
+  } else if (pathname === '/agents' && new URLSearchParams(search).get('view') === 'sessions') {
+    breadcrumbs.push({ text: 'Sessions', href: `${href(pathname)}${search}` });
+  }
   return (
     <>
-      <Routes>
-        <Route path="/" element={<Navigate to="/development" replace />} />
-        <Route path="/development" element={<Shell><DevelopmentPage /></Shell>} />
-        <Route path="/agents" element={<Shell><AgentsPage /></Shell>} />
-        <Route path="/agents/:env" element={<Shell><AgentsPage /></Shell>} />
-        <Route path="/fleets" element={<Shell><FleetsPage /></Shell>} />
-        {/* /fleets/c/:chatId selects a sub-chat (conversation); /fleets/:runId
-            deep-links a run. The /c/ prefix keeps the two namespaces distinct. */}
-        <Route path="/fleets/c/:chatId" element={<Shell><FleetsPage /></Shell>} />
-        <Route path="/fleets/:runId" element={<Shell><FleetsPage /></Shell>} />
-        <Route path="/governance" element={<Shell><GovernancePage /></Shell>} />
-        <Route path="/governance/:section" element={<Shell><GovernancePage /></Shell>} />
-        <Route path="/settings" element={<Shell><SettingsPage /></Shell>} />
-        <Route path="*" element={<Navigate to="/development" replace />} />
-      </Routes>
-      <Toaster richColors closeButton position="bottom-right" />
-      <OnboardingModal />
+      <a className="skip-link" href={`${href(pathname)}${search}#console-main`}>Skip to main content</a>
+      <div id="console-top-navigation">
+        <TopNavigation
+          visualContext="top-navigation"
+          identity={{ title: 'Agent Studio', href: href('/development'),
+            onFollow: e => { e.preventDefault(); follow(href('/development')); } }}
+          search={<Autosuggest
+            ariaLabel="Search pages in this console" placeholder="Search this console"
+            value={query} onChange={({ detail }) => setQuery(detail.value)}
+            options={PAGES.map(p => ({ value: p.path, label: p.title, description: p.description }))}
+            filteringType="auto" hideEnteredTextOption empty="No matching pages"
+            enteredTextLabel={value => `Page search: ${value}`}
+            onSelect={({ detail }) => {
+              if (detail.selectedOption?.value) {
+                navigate(detail.selectedOption.value); setQuery(''); layout.current?.closeNavigationIfNecessary();
+              }
+            }}
+          />}
+          utilities={[
+            { type: 'menu-dropdown', text: region || 'Region', title: 'Deployment region',
+              description: 'This workshop uses the region configured on its host.',
+              items: [{ id: 'region', text: region || 'No region returned by the host', disabled: true }] },
+            { type: 'button', text: 'Help', iconName: 'status-info', ariaLabel: 'Open contextual help',
+              onClick: () => setToolsOpen(v => !v) },
+            { type: 'button', text: 'Settings', iconName: 'settings', href: href('/settings'),
+              onFollow: e => { e.preventDefault(); follow(href('/settings')); } },
+            { type: 'menu-dropdown', text: user?.authenticated ? user.email || user.name || 'Signed in' : 'Local session',
+              iconName: 'user-profile', description: user?.authenticated ? 'Workshop console identity' : 'No Cognito session on this host',
+              items: [{ id: 'preferences', text: 'Preferences' },
+                ...(user?.authenticated ? [{ id: 'sign-out', text: 'Sign out', href: '/auth/logout' }] : [])],
+              onItemClick: ({ detail }) => { if (detail.id === 'preferences') openPreferences(); } },
+          ]}
+          i18nStrings={{ searchIconAriaLabel: 'Search this console', searchDismissIconAriaLabel: 'Close search',
+            overflowMenuTriggerText: 'More', overflowMenuTitleText: 'Console utilities',
+            overflowMenuBackIconAriaLabel: 'Back', overflowMenuDismissIconAriaLabel: 'Close utilities' }}
+        />
+      </div>
+      <AppLayout
+        ref={layout} headerSelector="#console-top-navigation" footerSelector="#console-footer"
+        navigationWidth={280} maxContentWidth={pathname === '/settings' ? 1280 : pathname.startsWith('/governance') ? 1440 : Number.MAX_VALUE}
+        contentType={pathname === '/settings' ? 'form' : 'default'}
+        navigation={<SideNavigation
+          header={{ text: 'Agent Studio', href: href('/development') }}
+          activeHref={href(activeSection)}
+          onFollow={e => { if (!e.detail.external) { e.preventDefault(); follow(e.detail.href); } }}
+          items={[
+            { type: 'section', text: 'Workspace', items: [
+              { type: 'link', text: 'Development', href: href('/development') },
+              { type: 'link', text: 'Agents', href: href('/agents') },
+              { type: 'link', text: 'Chat', href: href('/chat') },
+            ] },
+            { type: 'divider' },
+            { type: 'section', text: 'Governance', items: [
+              { type: 'link', text: 'Usage', href: href('/governance/usage') },
+              { type: 'link', text: 'Controls', href: href('/governance/controls') },
+              { type: 'link', text: 'Activity', href: href('/governance/activity') },
+            ] },
+          ]}
+        />}
+        breadcrumbs={<BreadcrumbGroup ariaLabel="Breadcrumbs" items={breadcrumbs}
+          onFollow={e => { e.preventDefault(); follow(e.detail.href); }} />}
+        notifications={<ConsoleNotifications />}
+        toolsOpen={toolsOpen} onToolsChange={({ detail }) => setToolsOpen(detail.open)}
+        tools={<HelpPanel header={<h2>{page.title}</h2>}
+          footer={<TextContent><h3>Learn more</h3><ul>
+            <li><Link external href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/">AgentCore documentation</Link></li>
+            <li><Link external href="https://github.com/aws-samples/sample-amazon-bedrock-agentcore-coding-agents">Workshop source</Link></li>
+          </ul></TextContent>}>
+          <TextContent>
+            <p>{page.description}</p><h3>Execution context</h3>
+            <p>Requests submitted in Chat use the coordinator on this host. Follow a build submitted to the deployed coordinator with its CLI watcher.</p>
+            <h3>Before you start</h3>
+            <p>Use Settings to review the GitHub repository and Runtime connections. Each builder creates a pull request with its own check and review evidence.</p>
+          </TextContent>
+        </HelpPanel>}
+        ariaLabels={{ navigation: 'Service navigation', navigationClose: 'Close navigation', navigationToggle: 'Open navigation',
+          tools: 'Contextual help', toolsClose: 'Close help', toolsToggle: 'Open help', notifications: 'Notifications' }}
+        content={<div id="console-main" tabIndex={-1} className={workspace ? 'console-workspace' : 'console-content'}>
+          <Suspense fallback={<div className="console-loading" role="status"><Spinner /> Loading page…</div>}><Outlet /></Suspense>
+        </div>}
+      />
+      <footer id="console-footer"><span>Powered by Amazon Bedrock AgentCore</span><span>Workshop environment</span></footer>
+      <Modal visible={preferencesOpen} header="Preferences" onDismiss={() => setPreferencesOpen(false)} closeAriaLabel="Close preferences"
+        footer={<SpaceBetween direction="horizontal" size="xs">
+          <Button variant="link" onClick={() => setPreferencesOpen(false)}>Cancel</Button>
+          <Button variant="primary" onClick={() => { setTheme(draftTheme); setDensity(draftDensity); setPreferencesOpen(false); }}>Save preferences</Button>
+        </SpaceBetween>}>
+        <SpaceBetween size="l">
+          <FormField label="Color mode"><RadioGroup value={draftTheme} onChange={({ detail }) => setDraftTheme(detail.value)}
+            items={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} /></FormField>
+          <FormField label="Content density"><RadioGroup value={draftDensity} onChange={({ detail }) => setDraftDensity(detail.value)}
+            items={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} /></FormField>
+        </SpaceBetween>
+      </Modal>
     </>
   );
+}
+function LegacyChatRedirect() {
+  const { pathname, search } = useLocation();
+  return <Navigate to={`${pathname.replace(/^\/fleets/, '/chat')}${search}`} replace />;
+}
+function LegacyAgentRedirect() {
+  const { env } = useParams();
+  return <Navigate to={`/agents?agent=${encodeURIComponent(env || '')}`} replace />;
+}
+function GovernanceRoute() {
+  const { section } = useParams();
+  if (section === 'usage' || section === 'controls' || section === 'activity') return <GovernancePage section={section} />;
+  return <Navigate to={section === 'sessions' ? '/governance/activity?tab=sessions'
+    : section === 'runtimes' ? '/agents'
+    : section === 'audit' ? '/governance/activity'
+    : section === 'policies' || section === 'identity' ? '/governance/controls'
+    : '/governance/usage'} replace />;
+}
+export default function App() {
+  return <Routes><Route element={<Shell />}>
+    <Route path="/" element={<Navigate to="/development" replace />} />
+    <Route path="/development" element={<DevelopmentPage />} />
+    <Route path="/agents" element={<AgentsPage />} /><Route path="/agents/:env" element={<LegacyAgentRedirect />} />
+    <Route path="/chat" element={<ChatPage />} /><Route path="/chat/c/:chatId" element={<ChatPage />} />
+    <Route path="/chat/:runId" element={<ChatPage />} />
+    <Route path="/fleets/*" element={<LegacyChatRedirect />} />
+    <Route path="/governance" element={<Navigate to="/governance/usage" replace />} />
+    <Route path="/governance/:section" element={<GovernanceRoute />} /><Route path="/settings" element={<SettingsPage />} />
+    <Route path="*" element={<Navigate to="/development" replace />} />
+  </Route></Routes>;
 }

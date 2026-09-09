@@ -1,23 +1,13 @@
-"""Agent guardrails: the policy the harness enforces.
+"""Small action checks shared by the coordinator and the Governance preview.
 
-This is the single source of truth for the governance rules the console shows.
-The same list ``get_policies()`` renders is the list ``screen()`` checks, so what
-an attendee sees on the Governance page is exactly what blocks an agent's tool
-call.
+``chat.exec_command`` and the engine's host-side ``Run.term`` call ``screen``
+before invoking a shell. These string predicates are not an OS sandbox and do
+not intercept tools used inside a coding agent's native CLI. ``write_file`` and
+``read_file`` are also supported by the evaluator; the current coordinator only
+wires the shell-command boundary. No deployed Cedar policy is implied.
 
-The rules are deliberately small and deterministic (a workshop-simplified stand-in
-for a Cedar policy set, two tiers):
-
-  * ``hard``: an absolute deny. The action never runs; the tool returns an error.
-  * ``soft``: a human-in-the-loop gate. The action is held, not silently run.
-
-``screen(action, target)`` returns a ``Decision``. The engine calls it at its real
-command boundary (``Run.term`` screens every ``/bin/sh`` command a role runs) before
-the command executes, so a role command that tries ``rm -rf /``, a write under
-``.git/``, or a force-push to main is refused by policy with the matched rule id
-recorded in the role's transcript. ``read_only`` workflows additionally forbid any
-write. The list ``get_policies()`` renders is the list ``screen()`` enforces; they
-cannot drift.
+Hard rules refuse an action. Soft rules also refuse automatic execution and
+require human handling; this module does not implement an approval/resume queue.
 """
 
 from __future__ import annotations
@@ -31,7 +21,7 @@ POLICIES: list[dict[str, str]] = [
     {"tier": "hard", "rule_id": "forbid_rm_root", "effect": "forbid",
      "summary": "destructive removes of an absolute/root path (rm -rf /, /*) are denied"},
     {"tier": "hard", "rule_id": "forbid_write_git_internals", "effect": "forbid",
-     "summary": "writes under .git/ are denied (history must stay tamper-proof)"},
+     "summary": "direct .git/ paths in screened commands and writes are denied"},
     {"tier": "hard", "rule_id": "forbid_write_in_readonly_workflow", "effect": "forbid",
      "summary": "a read-only workflow (e.g. review/pr) may never write a file"},
     {"tier": "soft", "rule_id": "gate_write_credentials", "effect": "gate",
@@ -118,4 +108,11 @@ def get_policies() -> dict[str, Any]:
     metrics_lib re-exports this for ``GET /api/policies`` so the Governance page
     renders the enforced rule set, not a separate hand-kept copy.
     """
-    return {"policies": [dict(p) for p in POLICIES], "enforced": True}
+    return {
+        "policies": [dict(p) for p in POLICIES], "enforced": True,
+        "scope": "Coordinator exec_command and engine Run.term shell commands",
+        "note": ("Native coding-agent tools and the Development terminal are outside "
+                 "this checker. File-action rules can be evaluated here but are not "
+                 "wired to a file-write tool. Soft gates require human handling; "
+                 "there is no automatic approval or resume."),
+    }

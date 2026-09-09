@@ -1,9 +1,14 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import { ThemeProvider } from 'next-themes';
+import { fontFamilyBase, fontFamilyMonospace } from '@cloudscape-design/design-tokens';
 import App from './App.tsx';
 import { configureCodeRuntime } from '@foxl/code/runtime';
 import './styles.css';
+
+document.body.style.setProperty('--console-font-family', fontFamilyBase);
+document.body.style.setProperty('--console-monospace', fontFamilyMonospace);
 
 // The console is same-origin with its backend: server.py serves this built app
 // at / and the stage engines under /api/dev|orchestrator|metrics. The vendored code reads the
@@ -41,8 +46,10 @@ function routerBasename(): string {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter basename={routerBasename()}>
-      <App />
-    </BrowserRouter>
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+      <BrowserRouter basename={routerBasename()}>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 );

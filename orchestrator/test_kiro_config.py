@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 
+import boto3
+from botocore.stub import Stubber
 import pytest
 
 import kiro_config
@@ -68,3 +71,99 @@ def test_empty_save_after_set_is_a_noop_keep():
     kiro_config.save_api_key("ksk_secret_value_1234")
     out = kiro_config.save_api_key("")  # status-only re-save keeps the stored key
     assert out["connected"] is True
+
+
+@pytest.fixture
+def vault(monkeypatch):
+    # Stub the AWS boundary; exercise the real region, status, and mutation code.
+    client = boto3.client("bedrock-agentcore-control", region_name="us-east-1",
+                          aws_access_key_id="testing", aws_secret_access_key="testing")
+    monkeypatch.delenv("WORKSHOP_KIRO_DISABLE_VAULT")
+    monkeypatch.setenv("WORKSHOP_BEDROCK_REGION", "us-east-1")
+    monkeypatch.setattr(boto3, "client", lambda service, **kwargs: client)
+    with Stubber(client) as stub:
+        yield stub
+        stub.assert_no_pending_responses()
+
+
+def _provider_metadata():
+    return {
+        "name": "kiro-api-key",
+        "credentialProviderArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:token-vault/default/apikeycredentialprovider/kiro-api-key",
+        "apiKeySecretArn": {"secretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:kiro-testing"},
+        "createdTime": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "lastUpdatedTime": datetime(2026, 1, 1, tzinfo=timezone.utc),
+    }
+
+
+def test_discovers_cli_provisioned_credential_without_a_console_sidecar(vault):
+    vault.add_response("get_api_key_credential_provider", _provider_metadata(), {"name": "kiro-api-key"})
+    result = kiro_config.status()
+    assert result["connected"] is True
+    assert result["source"] == "token-vault"
+    assert result["region"] == "us-east-1"
+    assert "apiKey" not in json.dumps(result)
+    assert "secretArn" not in json.dumps(result)
+    assert not os.path.exists(os.environ["WORKSHOP_KIRO_SETTINGS"])
+
+
+def test_missing_provider_is_not_configured(vault):
+    vault.add_client_error("get_api_key_credential_provider", "ResourceNotFoundException",
+                          expected_params={"name": "kiro-api-key"})
+    assert kiro_config.status()["connected"] is False
+
+
+def test_access_denied_is_unknown_not_missing(vault):
+    vault.add_client_error("get_api_key_credential_provider", "AccessDeniedException",
+                          expected_params={"name": "kiro-api-key"})
+    result = kiro_config.status()
+    assert result["connected"] is None
+    assert "error" in result
+
+
+def test_failed_delete_preserves_status_for_the_key_that_still_exists(vault):
+    path = os.environ["WORKSHOP_KIRO_SETTINGS"]
+    with open(path, "w") as stream:
+        json.dump({"stored": True, "region": "us-east-1"}, stream)
+    vault.add_client_error("delete_api_key_credential_provider", "AccessDeniedException",
+                          expected_params={"name": "kiro-api-key"})
+    assert "error" in kiro_config.clear_api_key()
+    assert json.load(open(path))["stored"] is True
+
+
+def test_refresh_checks_aws_even_with_cached_status(vault):
+    path = os.environ["WORKSHOP_KIRO_SETTINGS"]
+    with open(path, "w") as stream:
+        json.dump({"stored": True, "region": "us-east-1"}, stream)
+    vault.add_client_error("get_api_key_credential_provider", "ResourceNotFoundException",
+                          expected_params={"name": "kiro-api-key"})
+    assert kiro_config.status(refresh=True)["connected"] is False
+    vault.add_client_error("get_api_key_credential_provider", "ResourceNotFoundException",
+                          expected_params={"name": "kiro-api-key"})
+    assert kiro_config.status()["connected"] is False
+    assert json.load(open(path))["stored"] is False
+
+
+@pytest.mark.parametrize("region,provider", [
+    ("us-west-2", "kiro-api-key"),
+    ("us-east-1", "previous-provider"),
+])
+def test_cached_key_for_another_target_does_not_connect_this_target(vault, region, provider):
+    path = os.environ["WORKSHOP_KIRO_SETTINGS"]
+    with open(path, "w") as stream:
+        json.dump({"stored": True, "region": region, "provider": provider}, stream)
+    vault.add_client_error("get_api_key_credential_provider", "ResourceNotFoundException",
+                          expected_params={"name": "kiro-api-key"})
+    result = kiro_config.status()
+    assert result["connected"] is False
+    assert result["region"] == "us-east-1"
+    assert result["provider"] == "kiro-api-key"
+    # Discovery in this target does not rewrite another target's saved metadata.
+    assert json.load(open(path))["stored"] is True
+
+
+def test_region_uses_aws_default_region_without_a_hardcoded_fallback(monkeypatch):
+    monkeypatch.delenv("WORKSHOP_BEDROCK_REGION")
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+    assert kiro_config.status()["region"] == "eu-west-1"

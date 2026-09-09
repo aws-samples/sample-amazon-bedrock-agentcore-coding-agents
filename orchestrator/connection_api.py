@@ -191,7 +191,8 @@ def dispatch(method: str, path: str, body: dict | None,
         if path == "/api/kiro":
             # Kiro API key status (masked tail only). The key itself lives in the
             # AgentCore Identity Token Vault, never in this response.
-            return 200, kiro_config.status()
+            refresh = parse_qs(query or "").get("refresh") == ["1"]
+            return 200, kiro_config.status(refresh=refresh)
         if path == "/api/runtimes":
             # The wirable AgentCore runtime ARNs (one per role). These are SET by
             # the attendee after `agentcore deploy`, never hardcoded.

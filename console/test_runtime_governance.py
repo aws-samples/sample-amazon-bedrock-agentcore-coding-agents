@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
@@ -17,6 +18,12 @@ for path in (
         sys.path.insert(0, path)
 
 import server
+
+
+@pytest.fixture(autouse=True)
+def isolated_audit(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.metrics_api.metrics_lib, "_LEDGER", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(server.metrics_api.metrics_lib, "_LEDGER_CACHE", {"sig": object(), "rows": []})
 
 
 def _live_session():
@@ -63,6 +70,9 @@ def test_governance_lists_the_current_runtime_terminal(monkeypatch):
         "started_at": "2026-07-30T07:45:21Z",
         "issue_url": None,
         "claude_running": True,
+        "state": "open",
+        "source": "runtime-registry",
+        "can_stop": True,
     }]
 
 
@@ -102,3 +112,38 @@ def test_governance_stop_uses_the_registered_runtime_session(monkeypatch):
     assert code == 200
     assert body["stopped"] is True
     assert calls == [(Session.runtime_arn, Session.session_id)]
+    assert body["audit_recorded"] is True
+    event = server.metrics_api.metrics_lib.get_audit_trail()["audit"][0]
+    assert event["event_id"] == body["event_id"]
+    assert event["details"]["stopped"] is True
+
+
+def test_live_identity_does_not_infer_authentication_from_an_email(monkeypatch):
+    monkeypatch.setattr(server.runtime_shell, "list_sessions", lambda: {"sessions": [_live_session()]})
+    code, body = server._route_api("GET", "/api/metrics/sessions/console-live-session/identity", "", None)
+    assert code == 200
+    assert body["recorded_user"] == "attendee@workshop.aws"
+    assert body["auth_provider"] == "not-recorded"
+    assert body["attribution_source"] == "runtime-registry"
+    assert body["static_credentials_on_agent"] is None
+
+
+def test_failed_stop_keeps_the_terminal_registered_and_records_failure(monkeypatch):
+    class Session:
+        session_id = "console-live-session"
+        runtime_arn = _live_session()["runtime_arn"]
+
+    monkeypatch.setattr(server.runtime_shell, "get_session", lambda _: Session())
+    def refused(*_args):
+        raise RuntimeError("AWS refused this stop")
+    monkeypatch.setattr(server.metrics_api.metrics_lib, "_stop_runtime_session", refused)
+    closed = []
+    monkeypatch.setattr(server.runtime_shell, "close_runtime_session", lambda value: closed.append(value))
+    code, body = server._route_api("POST", "/api/metrics/sessions/console-live-session/stop", "", {},
+                                   {"user_id": "signed-in-subject"})
+    assert code == 502
+    assert body["stopped"] is False
+    assert not closed
+    event = server.metrics_api.metrics_lib.get_audit_trail()["audit"][0]
+    assert event["details"]["stopped"] is False
+    assert event["user_id"] == "signed-in-subject"

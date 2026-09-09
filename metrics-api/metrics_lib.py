@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+import uuid
 from typing import Any, Optional
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -199,6 +201,12 @@ def _public_session(row: dict[str, Any]) -> dict[str, Any]:
         "started_at": row["started_at"],
         "issue_url": row["issue_url"],
         "claude_running": claude_running,
+        "state": ("stopped" if row["session_id"] in _STOPPED
+                  else "running" if claude_running else "recorded"),
+        "source": "run-ledger",
+        "can_stop": (row["session_id"] not in _STOPPED and bool(
+            (row.get("runtime_arn") and row.get("_runtime_session_id"))
+            or (row.get("_pid") and claude_running))),
     }
 
 
@@ -510,15 +518,8 @@ def _stop_runtime_session(runtime_arn: str, runtime_session_id: str) -> dict[str
     survives. Returns a small result dict; raises on the boto error so the caller
     can record that the call failed rather than report a stop that did not happen."""
     import boto3  # noqa: PLC0415 (lazy, mirrors executor.py / llm.py)
-    region = os.environ.get("WORKSHOP_BEDROCK_REGION", "us-west-2")
-    # The runtime ARN carries its region (arn:aws:bedrock-agentcore:<region>:...);
-    # prefer it so the client targets the runtime's own region.
-    try:
-        arn_region = runtime_arn.split(":")[3]
-        if arn_region:
-            region = arn_region
-    except IndexError:
-        pass
+    from runtime_exec import region_for
+    region = region_for(runtime_arn)
     client = boto3.client("bedrock-agentcore", region_name=region)
     client.stop_runtime_session(
         runtimeSessionId=runtime_session_id,
@@ -589,18 +590,38 @@ def stop_session(session_id: str) -> Optional[dict[str, Any]]:
 def get_policies() -> dict[str, Any]:
     """Governance policy view (read-only). Mirrors `GET /api/policies`.
 
-    These are the SAME guardrails the harness enforces (orchestrator/policy.py):
-    the engine calls ``policy.screen()`` at its command boundary (``Run.term``
-    screens every shell command a role runs) before it executes, so a blocked
-    action (write under .git/, a credential file, ``rm -rf /``, a force-push to
-    main, a write in a read-only workflow) is refused with the matched rule id.
-    The list shown here is the list enforced; they cannot drift. Two tiers:
-    hard = absolute deny; soft = human-in-the-loop gate.
+    Re-export the coordinator's checker, including its declared scope. It does
+    not intercept tools running inside native coding-agent CLIs.
     """
     if _policy is not None:
         return _policy.get_policies()
     return {"policies": [], "enforced": False,
             "note": "orchestrator policy module not reachable from this deploy"}
+
+_AUDIT_WRITE_LOCK = threading.Lock()
+
+
+def record_governance_event(kind: str, user_identity: dict | None,
+                            details: dict[str, Any]) -> dict[str, Any]:
+    """Append an actual console operation, with its authenticated actor if known."""
+    identity = user_identity or {}
+    event_id = uuid.uuid4().hex
+    event = {
+        "kind": kind, "event_id": event_id,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "user_id": identity.get("user_email") or identity.get("user_id") or "local-session",
+        "actor_source": "console-session" if identity.get("user_id") else "local-session",
+        "details": details,
+    }
+    try:
+        os.makedirs(os.path.dirname(_LEDGER), exist_ok=True)
+        with _AUDIT_WRITE_LOCK:
+            fd = os.open(_LEDGER, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=True) + "\n")
+    except OSError:
+        return {"audit_recorded": False, "audit_error": "The host could not save the audit record."}
+    return {"audit_recorded": True, "event_id": event_id}
 
 
 def get_audit_trail(limit: int = 200) -> dict[str, Any]:
@@ -612,7 +633,7 @@ def get_audit_trail(limit: int = 200) -> dict[str, Any]:
     terminal.
     """
     lines: list[dict[str, Any]] = []
-    for row in _read_ledger()[-limit:]:
+    for row in _read_ledger()[-max(1, min(limit, 1000)):]:
         kind = row.get("kind", "event")
         user = row.get("user_id", "?")
         when = row.get("started_at") or row.get("at") or ""
@@ -628,9 +649,26 @@ def get_audit_trail(limit: int = 200) -> dict[str, Any]:
             msg = (f"{kind} user={user} agent={row.get('agent_id', row.get('agent', '?'))}"
                    + (f" session={row.get('session_id')}" if row.get("session_id") else "")
                    + (f" passed={row.get('passed')}" if "passed" in row else ""))
+        elif kind == "policy_evaluation":
+            details = row.get("details") or {}
+            msg = (f"policy preview: {details.get('outcome', 'unknown')} "
+                   f"{details.get('action', '')}"
+                   + (f" [{details['rule_id']}]" if details.get("rule_id") else "")
+                   + "; action not executed")
+        elif kind == "session_stop":
+            details = row.get("details") or {}
+            msg = (f"session {details.get('session_id', '')}: "
+                   + ("stop confirmed" if details.get("stopped") else "stop failed"))
         else:
             msg = f"{kind} user={user}"
-        lines.append({"at": when, "kind": kind, "user_id": user, "line": msg})
+        entry = {"at": when, "kind": kind, "user_id": user, "line": msg}
+        if kind in {"policy_evaluation", "session_stop"}:
+            entry.update({
+                "event_id": row.get("event_id"),
+                "actor_source": row.get("actor_source"),
+                "details": row.get("details") or {},
+            })
+        lines.append(entry)
     return {"audit": lines, "total": len(lines), "source": ".runs/telemetry.jsonl"}
 
 

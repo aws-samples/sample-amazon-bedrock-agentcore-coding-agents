@@ -55,6 +55,49 @@ to cancel a query still pending when it fails. If cancellation is not confirmed,
 the error says so. The 20-second poll deadline is separate from the bounded SDK
 calls; it is not a promise of an exact 20-second HTTP response.
 
+## Effective controls and policy previews
+
+### `GET /api/metrics/controls`
+
+Reads local configuration; it does not invoke AWS or an agent. The response has
+`source: "host-configuration"`, an `observed_at` UTC timestamp, and:
+
+| Field | Meaning |
+|---|---|
+| `identity` | Server-supplied `known`, `user_id`, `email`, and `name`; unknown values are null |
+| `identity.mapping_state` | `anonymous`, `empty`, or `present`, from the current `UserIdentity.to_otel_env()` |
+| `identity.telemetry_attributes` | The actual `OTEL_RESOURCE_ATTRIBUTES` value, or null |
+| `merge_policy` | The host's effective `human_review` or `auto` setting |
+| `limits` | `repairs_per_pr`, `gate_timeout_seconds`, and `role_timeout_seconds` from the running engine |
+| `roles` | Served registry entries with `id`, `label`, `kind`, `capability`, and `role_name` |
+
+A broken identity mapping returns 503 rather than reporting it as configured.
+These values describe this host, not a separately deployed coordinator.
+
+### `POST /api/metrics/policies/evaluate`
+
+Accepts only `action`, `target`, and `read_only`. `action` is `run_command`
+(default), `write_file`, or `read_file`. `target` must be non-empty, contain no
+NUL, and fit in 2048 UTF-8 bytes. `read_only` is a boolean, default false.
+Invalid input returns 400; an unavailable checker returns 503.
+
+The real `policy.screen` evaluates the input as data. Nothing is executed.
+The response contains `allowed`, `rule_id`, `reason`, `tier`,
+`outcome` (`allow`, `hold`, or `deny`), the action and read-only flag,
+`executed: false`, and `source: "policy-preview"`.
+
+The server attempts to append a `policy_evaluation` audit event and returns
+`audit_recorded`, plus `event_id` on success or `audit_error` on failure.
+Audit failure does not replace the policy decision with a fabricated result.
+Raw targets are never stored in the audit event; `target_sha256` identifies
+the evaluated input without copying it into the ledger.
+
+The catalog documents the current enforcement boundary. Shell screening applies
+to the coordinator's command tool and engine terminal entrypoint; it does not
+intercept native agent CLI commands or Development terminals. File rules can be
+examined here but do not constitute an OS sandbox. `hold` means human handling,
+not a deployed approval-and-resume workflow or Cedar policy.
+
 ## Host session and run records
 
 These endpoints use `metrics_lib`. They describe records available to this host.
@@ -84,6 +127,21 @@ Session identity records include `recorded_user`, `user_email`, `user_name`,
 `auth_provider`, `environment`, `attribution_source`, `github_actor`, and
 `static_credentials_on_agent`. They record attribution, not OAuth delegation.
 The served GitHub App's authorship is determined by the broker credential.
+For an interactive Runtime session, an email label alone does not prove Cognito:
+`auth_provider` can be `not-recorded` and `static_credentials_on_agent` can be null.
+
+Session rows also include `source`, `state`, and `can_stop`. Run-ledger rows are
+historical records unless their recorded process is live. The console adds its
+actual registered Runtime PTYs with `source: "runtime-registry"` and state `open`.
+A configured Runtime ARN alone does not establish a live session.
+
+`GET /audit` returns up to 200 operations by default; `limit` is bounded to
+1..1000. The response is `{audit, total, source}`. Governance events include
+`event_id`, `at`, `kind`, `user_id`, `actor_source`, a readable `line`, and
+operation-specific `details`. Policy records include
+the decision and target hash; session-stop records include the actual stop
+outcome. The actor comes from the hosting server, or `local-session` when no
+authenticated identity is available.
 
 ## Operations
 
@@ -98,6 +156,11 @@ The Runtime path uses the exact recorded ARN and Runtime session ID with
 target. The local-process path signals only the recorded live process. A stopped
 Runtime loses session-local processes and files; already saved shared files
 remain.
+
+The console stops a registered PTY using its exact recorded Runtime identity.
+If AWS refuses the stop, the server returns an error and retains the registry
+entry. Stop responses report audit persistence separately with `audit_recorded`
+and either `event_id` or `audit_error`.
 
 ### `POST /api/metrics/runtimes/{role}/probe`
 

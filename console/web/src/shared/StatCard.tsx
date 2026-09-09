@@ -1,57 +1,17 @@
-import { cn } from '@foxl/ui';
+import Box from '@cloudscape-design/components/box';
+import Container from '@cloudscape-design/components/container';
+import SpaceBetween from '@cloudscape-design/components/space-between';
 
-/**
- * A single headline metric: a small uppercase label, a large tabular value, and
- * an optional trend pill + hint underneath. `accent` lifts the border to the
- * primary tone so the lead KPI on a row reads first. Entry animation is the
- * shared `animate-enter-up`; pass a `delay` to stagger a row of cards.
- */
-export function StatCard({
-  label,
-  value,
-  hint,
-  trend,
-  accent,
-  delay = 0,
-  className,
-}: {
-  label: string;
-  value: React.ReactNode;
-  hint?: string;
-  trend?: { pct: number; label?: string };
-  accent?: boolean;
-  delay?: number;
-  className?: string;
+export function StatCard({ label, value, hint, trend, className }: {
+  label: string; value: React.ReactNode; hint?: string;
+  trend?: { pct: number; label?: string }; accent?: boolean; delay?: number; className?: string;
 }) {
-  const up = trend ? trend.pct >= 0 : null;
-  return (
-    <div
-      className={cn(
-        'animate-enter-up relative min-w-0 overflow-hidden rounded-xl border bg-card px-5 py-5',
-        accent ? 'border-signal/30' : 'border-border',
-        className,
-      )}
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      {/* Mono eyebrow label: the technical-platform voice on a metric. */}
-      <div className="eyebrow">{label}</div>
-      {/* Display value: weight 600, tabular, negative tracking. */}
-      <div className="mt-3 break-words text-[30px] font-semibold leading-tight tracking-[-0.035em] tabular-nums text-foreground">{value}</div>
-      {(trend || hint) && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs leading-5">
-          {trend && (
-            <span
-              className={cn(
-                'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium',
-                up ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive',
-              )}
-            >
-              {up ? '↑' : '↓'} {Math.abs(trend.pct).toFixed(1)}%{trend.label ? ` ${trend.label}` : ''}
-            </span>
-          )}
-          {hint && <span className="text-muted-foreground">{hint}</span>}
-        </div>
-      )}
-    </div>
-  );
+  return <div className={className}><Container><SpaceBetween size="xs">
+    <Box color="text-label" fontWeight="bold">{label}</Box>
+    <div className="console-metric-value">{value}</div>
+    {trend && <Box color={trend.pct >= 0 ? 'text-status-success' : 'text-status-error'}>
+      {trend.pct >= 0 ? '↑' : '↓'} {Math.abs(trend.pct).toFixed(1)}% {trend.label}
+    </Box>}
+    {hint && <Box color="text-body-secondary" fontSize="body-s">{hint}</Box>}
+  </SpaceBetween></Container></div>;
 }

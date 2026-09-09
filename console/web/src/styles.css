@@ -1,561 +1,293 @@
 @import 'tailwindcss';
-/* Geist: the brand's geometric sans (self-hosted woff2 via fontsource), loaded
-   before the token sheet so --font-sans resolves to a real face.
-   NOTE: Geist Mono is intentionally NOT imported. Its variable mono face renders
-   some two-char operator sequences as a single broken glyph (e.g. `>=` collapsed),
-   which is unacceptable in a code editor. --font-mono below uses a STANDARD coding
-   stack (JetBrains Mono / SF Mono / Menlo / Consolas) instead, everywhere mono is
-   used (editor, terminal, file tree, code chips, inputs). */
+@import '@cloudscape-design/global-styles/index.css';
 @import '@fontsource-variable/geist/index.css';
-@import './vendor/ui/styles.css';
-/* highlight.js syntax theme for fenced code blocks (rehype-highlight emits
-   .hljs-* classes; this paints them). github-dark-dimmed reads well on the
-   dark code surface the chat uses for <pre>. */
 @import 'highlight.js/styles/github-dark-dimmed.css';
+@source './vendor/ui/**/*.{ts,tsx}';
+@source './vendor/code/**/*.{ts,tsx}';
+@custom-variant dark (&:where(.dark, .dark *));
+@plugin 'tailwindcss-animate';
+@plugin '@tailwindcss/typography';
 
-/*
- * Tailwind v4 scans the consuming project's source by default. The vendored
- * component packages (ui + code) ship hard-coded utility classes the scanner
- * never sees otherwise, so the sidebar/composer/cards would render without
- * their radii and widths. Tell v4 to also scan the vendored sources.
- */
-@source "./vendor/ui/**/*.{ts,tsx}";
-@source "./vendor/code/**/*.{ts,tsx}";
-
-/*
- * Map the shadcn HSL token variables (declared in the vendored ui styles.css
- * :root / .dark) onto Tailwind v4 utility names so bg-background,
- * text-muted-foreground, border-input, etc. resolve.
- */
+/* The editor and terminal retain their purpose-built controls. These compatibility
+   tokens align those controls with the Cloudscape surfaces around them. */
 @theme inline {
-  /* Derive component radii from the shared UI base token. */
-  --radius-lg: calc(var(--radius) + 2px);
-  --radius-md: var(--radius);
-  --radius-sm: calc(var(--radius) - 2px);
-
-  /* Geist carries everything narrative (the sans). The technical layer (code,
-     terminal, file tree, tabular labels) uses the standard mono stack in
-     --font-mono below, NOT Geist Mono. Inter is the sans fallback. */
-  --font-sans:
-    "Geist Variable", Inter, system-ui, -apple-system, "Segoe UI", Roboto,
-    sans-serif;
-
+  --font-sans: var(--console-font-family);
+  --font-mono: var(--console-monospace);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
   --color-card: hsl(var(--card));
-  --color-card-foreground: hsl(var(--card-foreground));
-  --color-popover: hsl(var(--popover));
-  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-card-foreground: hsl(var(--foreground));
+  --color-popover: hsl(var(--card));
+  --color-popover-foreground: hsl(var(--foreground));
   --color-primary: hsl(var(--primary));
   --color-primary-foreground: hsl(var(--primary-foreground));
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-secondary: hsl(var(--muted));
+  --color-secondary-foreground: hsl(var(--foreground));
   --color-muted: hsl(var(--muted));
   --color-muted-foreground: hsl(var(--muted-foreground));
   --color-accent: hsl(var(--accent));
-  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-accent-foreground: hsl(var(--foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
-  /* Semantic tokens keep status readable in both themes. */
   --color-success: hsl(var(--success));
   --color-warning: hsl(var(--warning));
-  --color-signal: hsl(var(--signal));
+  --color-signal: hsl(var(--primary));
   --color-insight: hsl(var(--insight));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
-  --color-ring: hsl(var(--ring));
-
-  --color-sidebar: hsl(var(--sidebar-background));
-  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
-  --color-sidebar-primary: hsl(var(--sidebar-primary));
-  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
-  --color-sidebar-accent: hsl(var(--sidebar-accent));
-  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
-  --color-sidebar-border: hsl(var(--sidebar-border));
-  --color-sidebar-ring: hsl(var(--sidebar-ring));
-
-  /* Standard coding-font stack (NO Geist Mono, see the import note up top). These
-     are the faces VS Code and common editors use; they render operator pairs (>=, ->,
-     !=) as the literal two characters, never a collapsed ligature glyph. */
-  --font-mono:
-    "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
-    Consolas, "Liberation Mono", "Courier New", monospace;
-
-  /* Small layered shadows distinguish floating surfaces without heavy edges. */
-  --shadow-2xs: 0 1px 1px rgb(0 0 0 / 0.04);
-  --shadow-xs: 0 1px 1px rgb(0 0 0 / 0.04);
-  --shadow-sm: 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
-  --shadow: 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
-  --shadow-md: 0 2px 2px rgb(0 0 0 / 0.04), 0 8px 8px -8px rgb(0 0 0 / 0.06);
-  --shadow-lg: 0 2px 2px rgb(0 0 0 / 0.04), 0 8px 16px -4px rgb(0 0 0 / 0.06);
-  --shadow-xl:
-    0 1px 1px rgb(0 0 0 / 0.02), 0 8px 16px -4px rgb(0 0 0 / 0.06),
-    0 24px 32px -8px rgb(0 0 0 / 0.08);
-
-  --animate-accordion-down: accordion-down var(--motion-base) cubic-bezier(0, 0, 0.2, 1);
-  --animate-accordion-up: accordion-up var(--motion-base) cubic-bezier(0, 0, 0.2, 1);
+  --color-ring: hsl(var(--primary));
+  --color-sidebar: hsl(var(--card));
+  --color-sidebar-foreground: hsl(var(--foreground));
+  --color-sidebar-accent: hsl(var(--accent));
+  --color-sidebar-accent-foreground: hsl(var(--primary));
+  --color-sidebar-border: hsl(var(--border));
+  --color-sidebar-ring: hsl(var(--primary));
 }
-
-/*
- * Easing tokens registered in @theme (NOT @theme inline) so Tailwind v4 BOTH
- * emits them as :root custom properties (for var(--ease-soft) in keyframes/
- * arbitrary values) AND generates the `ease-soft` / `ease-standard` /
- * `ease-sheet` transition-timing-function utilities. Previously these lived in
- * a plain :root block, so the bare `ease-soft` class never generated; every
- * `ease-soft` (here AND in the vendored foxl collapsibles) silently fell back
- * to the default `ease`. Registering them here is what makes the easing real.
- */
 @theme {
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --ease-soft: cubic-bezier(0, 0, 0.2, 1);
-  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --ease-soft: cubic-bezier(.2, 0, 0, 1);
+  --ease-sheet: cubic-bezier(.2, 0, 0, 1);
 }
-
 :root {
-  /* Durations stay in :root (not @theme) so the reduced-motion media query
-     below can collapse them to ~0; they're consumed via duration-(--motion-base)
-     arbitrary utilities and var(--motion-base) in keyframes. */
-  --motion-fast: 150ms;
-  --motion-base: 200ms;
-  --motion-slow: 300ms;
-  --background: 195 18% 98%;
-  --foreground: 200 16% 14%;
+  --background: 210 25% 97%;
+  --foreground: 210 20% 16%;
   --card: 0 0% 100%;
-  --card-foreground: 200 16% 14%;
-  --primary: 200 16% 14%;
+  --card-foreground: 210 20% 16%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 210 20% 16%;
+  --primary: 209 92% 43%;
   --primary-foreground: 0 0% 100%;
-  --muted: 195 16% 95%;
-  --muted-foreground: 206 10% 40%;
-  --border: 200 14% 88%;
-  --input: 200 14% 82%;
-  --signal: 184 61% 30%;
-  --insight: 266 32% 47%;
-  --success: 184 61% 30%;
-  --warning: 32 90% 32%;
-  --ring: 184 61% 30%;
+  --secondary: 210 18% 95%;
+  --secondary-foreground: 210 20% 16%;
+  --muted: 210 18% 95%;
+  --muted-foreground: 210 11% 40%;
+  --accent: 207 100% 96%;
+  --accent-foreground: 210 20% 16%;
+  --border: 210 12% 85%;
+  --input: 210 9% 57%;
+  --success: 151 77% 28%;
+  --warning: 38 89% 32%;
+  --destructive: 358 65% 45%;
+  --destructive-foreground: 0 0% 100%;
+  --signal: 209 92% 43%;
+  --insight: 265 65% 52%;
+  --ring: 209 92% 43%;
+  --radius: 6px;
   --sidebar-background: 0 0% 100%;
-  --sidebar-foreground: 200 16% 20%;
-  --sidebar-accent: 184 25% 95%;
-  --sidebar-accent-foreground: 184 61% 25%;
-  --sidebar-border: 200 14% 90%;
+  --sidebar-foreground: 210 20% 16%;
+  --sidebar-border: 210 12% 85%;
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-slow: 240ms;
 }
-
 .dark {
-  --background: 200 15% 9%;
-  --foreground: 190 12% 94%;
-  --card: 200 12% 12%;
-  --card-foreground: 190 12% 94%;
-  --primary: 190 12% 94%;
-  --primary-foreground: 200 16% 14%;
-  --muted: 200 10% 16%;
-  --muted-foreground: 200 10% 67%;
-  --border: 200 9% 23%;
-  --input: 200 9% 32%;
-  --signal: 178 46% 66%;
-  --insight: 266 60% 78%;
-  --success: 178 46% 66%;
-  --warning: 38 88% 65%;
-  --ring: 178 46% 66%;
-  --sidebar-background: 200 15% 10%;
-  --sidebar-foreground: 190 12% 88%;
-  --sidebar-accent: 184 18% 18%;
-  --sidebar-accent-foreground: 178 46% 76%;
-  --sidebar-border: 200 9% 22%;
+  color-scheme: dark;
+  --background: 216 26% 11%;
+  --foreground: 210 20% 95%;
+  --card: 216 20% 16%;
+  --card-foreground: 210 20% 95%;
+  --popover: 216 20% 16%;
+  --popover-foreground: 210 20% 95%;
+  --primary: 208 100% 72%;
+  --primary-foreground: 216 26% 11%;
+  --secondary: 216 16% 22%;
+  --secondary-foreground: 210 20% 95%;
+  --muted: 216 16% 22%;
+  --muted-foreground: 212 13% 72%;
+  --accent: 210 29% 24%;
+  --accent-foreground: 210 20% 95%;
+  --border: 216 14% 33%;
+  --input: 212 13% 58%;
+  --success: 156 49% 62%;
+  --warning: 39 85% 68%;
+  --destructive: 357 100% 77%;
+  --signal: 208 100% 72%;
+  --insight: 269 85% 78%;
+  --ring: 208 100% 72%;
+  --sidebar-background: 216 20% 16%;
+  --sidebar-foreground: 210 20% 95%;
+  --sidebar-border: 216 14% 33%;
 }
-
-@keyframes accordion-down {
-  from { height: 0; }
-  to { height: var(--radix-accordion-content-height); }
-}
-@keyframes accordion-up {
-  from { height: var(--radix-accordion-content-height); }
-  to { height: 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --motion-fast: 1ms;
-    --motion-base: 1ms;
-    --motion-slow: 1ms;
-  }
-  .animate-in,
-  .animate-out { animation-duration: 1ms !important; }
-  /* Kill the looping/decorative motions outright: a 1ms loop still spins the
-     CPU and reads as a flicker. The shimmer is special: it paints text via a
-     moving gradient clipped to the glyphs, so freezing it would leave the text
-     half-invisible, so restore it to solid muted-foreground instead. */
-  .animate-caret,
-  .animate-working-dot,
-  .animate-pulse-ring,
-  .animate-enter-up { animation: none !important; }
-  .md-stream > :last-child::after { animation: none !important; }
-  .animate-shimmer {
-    animation: none !important;
-    background: none !important;
-    -webkit-text-fill-color: currentColor !important;
-    color: hsl(var(--muted-foreground)) !important;
-  }
-}
-
-@custom-variant dark (&:where(.dark, .dark *));
-@plugin 'tailwindcss-animate';
-/* The standard Tailwind markdown engine. Without this, every `prose*` class is
-   inert, which is why chat h1/h2/h3, lists, and code blocks rendered as
-   unstyled text. This generates the real `prose` typography rules. */
-@plugin '@tailwindcss/typography';
-
 @layer base {
   * { border-color: hsl(var(--border)); }
-  html, body, #root { height: 100%; }
-  body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-family: var(--font-sans);
-    /* "cv11" gives Geist its single-storey a; rlig/calt are standard. */
-    font-feature-settings: "rlig" 1, "calt" 1, "cv11" 1;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-  code, pre, .font-mono {
-    font-family: var(--font-mono);
-  }
-  /* Slightly tighten headings while keeping labels at normal tracking. */
-  h1, h2, h3 { letter-spacing: -0.02em; }
-  :where(button, a, input, textarea, select, summary):focus-visible {
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 3px;
-  }
+  /* Preflight's collapsed tables ignore the table padding Cloudscape uses for
+     its column gutters. Keep native tables separate; markdown opts in below. */
+  table { border-collapse: separate; }
+  html, body, #root { min-height: 100%; }
+  body { font-family: var(--console-font-family); }
+  code, pre, .font-mono { font-family: var(--font-mono); font-variant-ligatures: none; }
 }
-
-/* Shared workshop chrome. Content keeps the width; dense evidence lives in
-   readable white surfaces. Color identifies a relationship or an action. */
-.console-topbar {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  min-height: 48px;
-  gap: 8px;
-  padding: 8px clamp(16px, 2vw, 32px);
-  border-bottom: 1px solid hsl(var(--border));
-  background: hsl(var(--card));
+#console-top-navigation { position: sticky; top: 0; z-index: 1001; }
+#console-footer {
+  position: fixed; inset: auto 0 0; z-index: 1000;
+  display: flex; justify-content: space-between; gap: 16px;
+  height: 30px; padding: 5px 24px;
+  background: hsl(var(--card)); border-top: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground)); font-size: 12px;
 }
 .skip-link {
-  position: fixed;
-  top: 8px;
-  left: 8px;
-  z-index: 100;
-  padding: 10px 16px;
-  border-radius: 8px;
-  background: hsl(var(--primary));
-  color: hsl(var(--primary-foreground));
-  transform: translateY(-150%);
+  position: fixed; top: 8px; left: 8px; z-index: 3000;
+  background: hsl(var(--card)); color: hsl(var(--primary));
+  padding: 8px 16px; border: 2px solid currentColor; transform: translateY(-160%);
 }
 .skip-link:focus { transform: translateY(0); }
-.console-sidebar [data-sidebar='menu-button'] {
-  min-height: 36px;
-  border-radius: 8px;
+.console-page, .console-content { width: 100%; min-width: 0; }
+.console-page { margin: 0; padding: 0; max-width: none; }
+.console-workspace { height: calc(100dvh - 164px); min-height: 460px; min-width: 0; }
+.console-loading { display: flex; gap: 12px; align-items: center; padding: 32px 0; }
+.console-metric-value { font-size: 28px; line-height: 36px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.console-resource-link { color: hsl(var(--primary)); text-decoration: none; }
+.console-resource-link:hover { text-decoration: underline; }
+.console-code { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
+.console-empty { padding: 32px 16px; text-align: center; }
+.console-editor-header { padding: 0 0 16px; }
+.console-terminal { height: 440px; min-height: 320px; position: relative; background: #0f1b2a; }
+.agent-terminal-pane { height: 480px; min-height: 320px; overflow: hidden; background: #0f1b2a; }
+.agent-tab-label { display: inline-flex; align-items: center; gap: 8px; }
+.agent-terminal-expanded { position: fixed; inset: 12px; z-index: 2000; background: hsl(var(--card)); overflow: auto; box-shadow: 0 4px 48px rgb(0 0 0 / .18); }
+.agent-terminal-expanded .agent-terminal-pane { height: calc(100dvh - 160px); }
+.console-chat-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); height: 100%; min-height: 0; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); }
+.console-chat-nav { border-right: 1px solid hsl(var(--border)); padding: 16px; overflow-y: auto; }
+.console-chat-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.console-chat-header { padding: 16px 20px; border-bottom: 1px solid hsl(var(--border)); }
+.console-chat-start { max-width: 1120px; width: 100%; margin-inline: auto; padding: 24px; overflow-y: auto; }
+.evidence-surface { border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 16px; background: hsl(var(--card)); }
+/* Chat keeps the original conversational layout inside the Cloudscape shell. */
+.chat-surface { height: 100%; min-height: 0; display: flex; flex-direction: column; color: hsl(var(--foreground)); font-family: 'Geist Variable', var(--console-font-family); background: hsl(var(--card)); }
+.chat-page-toolbar { min-height: 52px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 0 4px 12px; border-bottom: 1px solid hsl(var(--border) / .65); }
+.chat-page-title { display: flex; min-width: 0; gap: 16px; align-items: baseline; font-weight: 600; font-size: 20px; letter-spacing: -.02em; }
+.chat-conversation-title { font-size: 13px; letter-spacing: 0; font-weight: 400; color: hsl(var(--muted-foreground)); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-page-actions { display: flex; align-items: center; gap: 4px; }
+.chat-toolbar-button, .chat-icon-button { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: transparent; border: 0; border-radius: 8px; color: hsl(var(--muted-foreground)); font: inherit; font-size: 13px; line-height: 20px; padding: 8px 10px; transition: background 120ms, color 120ms; }
+.chat-toolbar-button:hover, .chat-icon-button:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+.chat-icon-button { width: 34px; height: 34px; padding: 7px; flex: none; }
+.chat-surface button:disabled { opacity: .45; cursor: default; }
+.chat-surface button:focus-visible, .chat-model-menu button:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
+.chat-welcome-scroll { min-height: 0; flex: 1; overflow-y: auto; display: flex; }
+.chat-welcome { width: min(840px, 100%); margin: auto; padding: 36px 20px 56px; text-align: center; }
+.chat-team-pill { display: inline-flex; justify-content: center; align-items: center; gap: 10px; border: 1px solid hsl(var(--border) / .8); border-radius: 99px; background: hsl(var(--card)); padding: 5px 13px 5px 7px; font-size: 12px; font-weight: 500; cursor: pointer; color: hsl(var(--muted-foreground)); }
+.chat-team-pill:hover { background: hsl(var(--muted) / .5); }
+.chat-team-avatars { display: flex; align-items: center; padding-right: 1px; }
+.chat-team-avatars > span { width: 31px; height: 31px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: hsl(var(--card)); border: 2px solid hsl(var(--card)); box-shadow: 0 0 0 1px hsl(var(--border) / .6); }
+.chat-team-avatars > span + span { margin-left: -6px; }
+.chat-welcome h1 { font-family: inherit; font-weight: 550; font-size: clamp(29px, 3vw, 42px); line-height: 1.2; letter-spacing: -.045em; margin: 24px 0 12px; color: hsl(var(--foreground)); }
+.chat-welcome-subtitle { color: hsl(var(--muted-foreground)); font-size: 15px; line-height: 24px; margin: 0; }
+.chat-welcome-composer { margin-top: 30px; text-align: left; }
+.chat-composer { padding: 16px 14px 11px; border: 1px solid hsl(var(--border)); border-radius: 22px; background: hsl(var(--card)); box-shadow: 0 2px 5px rgb(16 24 40 / .025), 0 10px 32px -16px rgb(16 24 40 / .12); transition: border-color 160ms, box-shadow 160ms; }
+.chat-composer:focus-within { border-color: hsl(var(--muted-foreground) / .55); box-shadow: 0 2px 6px rgb(16 24 40 / .04), 0 12px 36px -18px rgb(16 24 40 / .14); }
+.chat-composer textarea { display: block; width: 100%; min-height: 72px; max-height: 220px; resize: none; border: 0; outline: 0; padding: 2px 8px 12px; margin: 0; color: hsl(var(--foreground)); background: transparent; font: inherit; font-size: 16px; line-height: 25px; }
+.chat-composer textarea::placeholder { color: hsl(var(--muted-foreground) / .85); }
+.chat-composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chat-composer-tools { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.chat-repository, .chat-model { min-width: 0; display: flex; align-items: center; gap: 7px; color: hsl(var(--muted-foreground)); font: inherit; font-size: 12px; line-height: 20px; border: 0; border-radius: 8px; background: transparent; padding: 7px 8px; cursor: pointer; }
+.chat-repository { max-width: 270px; }
+.chat-repository svg, .chat-model svg { flex: none; }
+.chat-repository span, .chat-model span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-repository:hover, .chat-model:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+.chat-model { color: hsl(var(--foreground)); font-weight: 500; }
+.chat-send { display: flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: hsl(var(--foreground)); color: hsl(var(--card)); cursor: pointer; transition: transform 120ms, opacity 120ms; }
+.chat-send:not(:disabled):hover { transform: translateY(-1px); opacity: .8; }
+.chat-send:disabled { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); opacity: 1 !important; }
+.chat-composer-caption { min-height: 20px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; color: hsl(var(--muted-foreground)); margin-top: 12px; font-size: 12px; line-height: 20px; text-align: center; }
+.chat-composer-caption button { padding: 0; border: 0; background: transparent; color: hsl(var(--primary)); cursor: pointer; font: inherit; font-weight: 500; }
+.chat-composer-caption button:hover { text-decoration: underline; }
+.chat-suggestions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 26px; text-align: left; }
+.chat-suggestion { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 17px; min-width: 0; background: hsl(var(--muted) / .45); border: 1px solid hsl(var(--border) / .55); border-radius: 14px; padding: 18px; font: inherit; font-size: 13px; line-height: 20px; color: hsl(var(--foreground)); cursor: pointer; text-align: left; transition: background 140ms, border-color 140ms, transform 140ms; }
+.chat-suggestion > svg:first-child { color: hsl(var(--muted-foreground)); }
+.chat-suggestion:hover { background: hsl(var(--card)); border-color: hsl(var(--muted-foreground) / .4); transform: translateY(-2px); }
+.chat-suggestion-arrow { position: absolute; top: 19px; right: 16px; color: hsl(var(--muted-foreground) / .6); }
+.chat-model-menu { padding: 7px !important; border-radius: 12px !important; width: 310px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); font-family: 'Geist Variable', var(--console-font-family); box-shadow: 0 8px 32px rgb(0 0 0 / .1); z-index: 2000; }
+.chat-menu-label { margin: 7px 9px 8px; color: hsl(var(--muted-foreground)); font-size: 11px; font-weight: 500; }
+.chat-model-option { display: flex; width: 100%; gap: 12px; align-items: center; justify-content: space-between; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: hsl(var(--foreground)); text-align: left; cursor: pointer; }
+.chat-model-option:hover, .chat-model-option[aria-pressed=true] { background: hsl(var(--muted)); }
+.chat-model-option strong { display: block; font-size: 13px; font-weight: 550; }
+.chat-model-option div > span { display: block; font-size: 12px; line-height: 18px; color: hsl(var(--muted-foreground)); margin-top: 3px; }
+.chat-model-option > svg { flex: none; }
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 7px 10px; }
+.chat-file { display: flex; align-items: center; gap: 6px; border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 5px 7px; font-size: 12px; background: hsl(var(--muted) / .5); }
+.chat-file > span { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-file button { padding: 3px; border: 0; background: transparent; cursor: pointer; }
+.chat-inline-error { color: hsl(var(--destructive)); font-size: 12px; margin: 8px 7px 0; }
+.chat-messages-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.chat-messages { width: min(840px, 100%); margin: 0 auto; padding: 28px 20px 48px; }
+.chat-message-user { display: flex; justify-content: flex-end; }
+.chat-message-user > div { max-width: 85%; background: hsl(var(--muted)); padding: 12px 18px; border-radius: 19px; font-size: 15px; line-height: 25px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-message-assistant { padding: 0 2px; }
+.chat-message-assistant .prose-chat { font-family: inherit; font-size: 15px; line-height: 1.8; }
+.chat-bottom-composer { position: relative; width: min(840px, 100%); margin: 0 auto; padding: 8px 20px 8px; flex: none; }
+.chat-latest { position: absolute; top: -38px; left: calc(50% - 17px); display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid hsl(var(--border)); border-radius: 50%; background: hsl(var(--card)); color: hsl(var(--foreground)); box-shadow: 0 2px 5px rgb(0 0 0 / .06); cursor: pointer; }
+.chat-evidence-page { flex: 1; overflow-y: auto; padding: 20px 0; }
+.chat-evidence-page > :first-child { margin-bottom: 20px; }
+.chat-team-detail { display: flex; align-items: flex-start; gap: 14px; }
+.chat-team-detail > svg { flex: none; margin-top: 4px; }
+.chat-history-list { display: flex; flex-direction: column; }
+.chat-history-row { display: flex; gap: 12px; align-items: center; border-bottom: 1px solid hsl(var(--border)); }
+.chat-history-open { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; text-align: left; color: hsl(var(--foreground)); padding: 16px 8px; background: transparent; border: 0; cursor: pointer; font: inherit; }
+.chat-history-open span { overflow-wrap: anywhere; }
+.chat-history-open time { color: hsl(var(--muted-foreground)); font-size: 12px; }
+.chat-history-open:hover span { color: hsl(var(--primary)); }
+.chat-history-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 16px; text-align: center; color: hsl(var(--muted-foreground)); }
+.chat-history-empty strong { color: hsl(var(--foreground)); }
+@media (max-width: 900px) {
+  .chat-conversation-title { display: none; }
+  .chat-welcome { padding-inline: 8px; }
+  .chat-page-actions { gap: 0; }
 }
-.console-sidebar [data-sidebar='group-label'] {
-  margin: 12px 0 4px;
-  font-size: 11px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: hsl(var(--muted-foreground));
+@media (max-width: 600px) {
+  .chat-suggestions { grid-template-columns: 1fr; gap: 8px; }
+  .chat-suggestion { flex-direction: row; align-items: center; gap: 12px; padding: 12px 36px 12px 14px; }
+  .chat-suggestion svg { flex: none; }
+  .chat-suggestion-arrow { top: 15px; }
+  .chat-page-actions .chat-toolbar-button span { display: none; }
+  .chat-page-title { font-size: 18px; }
+  .chat-welcome { padding-top: 28px; }
+  .chat-repository span { display: none; }
+  .chat-composer { padding: 14px 8px 9px; border-radius: 18px; }
+  .chat-model { max-width: 190px; font-size: 11px; }
+  .chat-messages, .chat-bottom-composer { padding-inline: 2px; }
+  .chat-welcome h1 { font-size: 30px; }
 }
-.console-sidebar [data-sidebar='menu-button'][data-active='true'] {
-  box-shadow: inset 2px 0 hsl(var(--signal));
-  font-weight: 600;
+@media (max-width: 800px) {
+  .console-chat-layout { grid-template-columns: minmax(0, 1fr); }
+  .console-chat-nav { border-right: none; border-bottom: 1px solid hsl(var(--border)); max-height: 180px; }
+  .console-workspace { height: calc(100dvh - 160px); }
 }
-.console-page {
-  width: 100%;
-  max-width: 1280px;
-  margin-inline: auto;
-  padding: 32px clamp(20px, 3vw, 44px) 48px;
-}
-.build-welcome {
-  width: 100%;
-  max-width: 1220px;
-  margin: auto;
-  padding: clamp(28px, 5vh, 64px) clamp(20px, 3vw, 48px) 32px;
-}
-.build-welcome-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr);
-  align-items: center;
-  gap: clamp(28px, 4vw, 64px);
-}
-.build-welcome h1 {
-  font-size: clamp(30px, 3.1vw, 44px);
-  line-height: 1.12;
-  letter-spacing: -.045em;
-  font-weight: 600;
-  text-wrap: balance;
-}
-.loop-illustration {
-  --loop-blue: #0070f0;
-  --loop-purple: #7828c8;
-  --loop-green: #0f766e;
-  padding: 20px 16px 10px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 20px;
-  background:
-    radial-gradient(ellipse at 85% 0%, hsl(var(--insight) / .07), transparent 60%),
-    radial-gradient(ellipse at 10% 90%, hsl(var(--signal) / .07), transparent 65%),
-    hsl(var(--card));
-  box-shadow: 0 2px 3px hsl(var(--foreground) / .02), 0 16px 36px -24px hsl(var(--foreground) / .15);
-}
-.loop-illustration > svg { width: 100%; height: auto; overflow: visible; }
-.loop-node > rect { fill: hsl(var(--card)); stroke: hsl(var(--border)); stroke-width: 1.5; }
-.loop-node-builder > rect { stroke: color-mix(in srgb, var(--loop-blue) 50%, transparent); }
-.loop-node-checker > rect { stroke: color-mix(in srgb, var(--loop-purple) 50%, transparent); }
-.loop-node-decision > rect { stroke: color-mix(in srgb, var(--loop-green) 50%, transparent); }
-.loop-title { fill: hsl(var(--foreground)); font-family: var(--font-sans); font-size: 17px; font-weight: 600; }
-.loop-caption { fill: hsl(var(--muted-foreground)); font-family: var(--font-sans); font-size: 12px; }
-.loop-icon { color: var(--loop-blue); }
-.loop-node-checker .loop-icon { color: var(--loop-purple); }
-.loop-node-decision .loop-icon { color: var(--loop-green); }
-.loop-path { color: var(--loop-blue); }
-.loop-path path { stroke-dasharray: 5 5; animation: loop-flow 8s linear infinite; }
-.loop-path .loop-repair, .loop-path .loop-check { color: var(--loop-purple); }
-.loop-path .loop-decision { color: var(--loop-green); }
-.loop-repair-label { fill: var(--loop-purple); font-family: var(--font-sans); font-size: 13px; font-weight: 600; }
-.dark .loop-illustration {
-  --loop-blue: #69aafa;
-  --loop-purple: #b98de8;
-  --loop-green: #7bd8c8;
-}
-@keyframes loop-flow { to { stroke-dashoffset: -80; } }
-.suggestion-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  min-height: 84px;
-  padding: 17px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 12px;
-  background: hsl(var(--card));
-  color: hsl(var(--foreground));
-  text-align: left;
-  font-size: 13px;
-  line-height: 1.6;
-  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
-}
-.suggestion-card:hover:not(:disabled) {
-  border-color: hsl(var(--signal) / .55);
-  box-shadow: 0 0 0 3px hsl(var(--signal) / .06);
-}
-.suggestion-card:disabled { color: hsl(var(--muted-foreground)); }
-.evidence-surface {
-  border: 1px solid hsl(var(--border));
-  border-radius: 12px;
-  background: hsl(var(--card));
-  padding: 16px;
-}
-@media (max-width: 1050px) {
-  .build-welcome-grid { grid-template-columns: minmax(0, 1fr); gap: 28px; }
-  .loop-illustration { max-width: 560px; width: 100%; }
-  .build-welcome h1 { max-width: 620px; }
-}
+@media (max-width: 600px) { #console-footer { display: none; } .console-chat-start { padding: 16px; } }
+
+/* Markdown and live terminal output are content, independent of the service chrome. */
+.prose-chat { @apply prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed; }
+.prose-chat :where(p, ul, ol, pre, blockquote, table):not(:first-child) { margin-top: .5rem; }
+.prose-chat :where(p, ul, ol, pre, blockquote, table):not(:last-child) { margin-bottom: .5rem; }
+.prose-chat :where(li) { margin-block: .125rem; }
+.prose-chat :where(h1,h2,h3,h4) { font-weight: 700; margin-block: .75rem .4rem; }
+.prose-chat :where(code):not(pre code) { background: hsl(var(--muted)); border-radius: 3px; padding: 1px 4px; font-size: .85em; }
+.prose-chat :where(code)::before, .prose-chat :where(code)::after { content: none; }
+.prose-chat :where(pre) { background: #0f1b2a; color: #e9ebed; border-radius: 6px; padding: 12px 16px; overflow-x: auto; }
+.prose-chat :where(pre code) { background: none; padding: 0; }
+.prose-chat :where(a) { color: hsl(var(--primary)); text-decoration: underline; }
+.prose-chat :where(table) { border-collapse: collapse; font-size: .9em; }
+.prose-chat :where(th,td) { padding: 6px 8px; }
+@keyframes caret-blink { 0%,45% { opacity: 1; } 55%,100% { opacity: .2; } }
+@keyframes working-dot { 0%,80%,100% { transform: translateY(0); opacity: .4; } 40% { transform: translateY(-2px); opacity: 1; } }
+@utility animate-caret { animation: caret-blink 1.1s ease infinite; }
+@utility animate-working-dot { animation: working-dot 1.2s ease-in-out infinite; }
+@keyframes accordion-down { from { height: 0; } to { height: var(--radix-accordion-content-height); } }
+@keyframes accordion-up { from { height: var(--radix-accordion-content-height); } to { height: 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .loop-path path { animation: none; }
-  .suggestion-card { transition: none; }
+  :root { --motion-fast: 1ms; --motion-base: 1ms; --motion-slow: 1ms; }
+  .animate-caret, .animate-working-dot, .animate-pulse { animation: none !important; }
 }
 
-/* Slim scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.2);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.35); }
+@media (prefers-reduced-motion: reduce) { .chat-suggestion:hover, .chat-send:not(:disabled):hover { transform: none; } }
 
-/* Default cursor:pointer on interactive elements that don't opt in themselves. */
-button:not(:disabled),
-[role='button']:not([aria-disabled='true']),
-summary { cursor: pointer; }
-button:disabled,
-[role='button'][aria-disabled='true'] { cursor: not-allowed; }
+.console-record { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; padding: 12px; border-radius: 6px; background: hsl(var(--muted)); }
 
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-@utility animate-shimmer {
-  animation: shimmer var(--tw-animate-duration, 2s) linear infinite;
-}
-
-/* ── Production motion library ─────────────────────────────────────────────
- * Every animation below touches only compositor-friendly props (transform,
- * opacity), never layout props, so they stay at 60fps and never reflow.
- * Reduced-motion neutralizes them above. The cubic-beziers reuse the
- * --ease-* tokens' intent (soft deceleration) for a coherent feel.            */
-
-/* Typing caret: the block that trails streaming assistant text. A smooth
- * opacity breathe (not a hard 0/1 blink), so it reads as "alive and writing". */
-@keyframes caret-blink {
-  0%, 45% { opacity: 1; }
-  55%, 100% { opacity: 0.15; }
-}
-@utility animate-caret {
-  animation: caret-blink 1.1s var(--ease-soft, ease) infinite;
-}
-
-/* The "Working" wave: three dots that rise and fall in sequence, the
- * Claude/Codex-level loading affordance. Each dot delays its start so the
- * crest travels left→right. transform+opacity only. */
-@keyframes working-dot {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
-  40% { transform: translateY(-3px); opacity: 1; }
-}
-@utility animate-working-dot {
-  animation: working-dot 1.2s var(--ease-soft, ease-in-out) infinite;
-}
-
-/* Breathing ring: a soft expanding halo behind a live status node (the
- * "this role is running" pulse). Scales + fades; sits in an ::before-style
- * absolutely-positioned sibling so it never disturbs layout. */
-@keyframes pulse-ring {
-  0% { transform: scale(0.7); opacity: 0.55; }
-  70%, 100% { transform: scale(2.1); opacity: 0; }
-}
-@utility animate-pulse-ring {
-  animation: pulse-ring 1.8s var(--ease-soft, cubic-bezier(0, 0, 0.2, 1)) infinite;
-}
-
-/* Entry: a chat item / card rising a few px while fading in. Used on
- * mount so new transcript items and route content settle in rather than
- * snapping. One-shot (forwards). */
-@keyframes enter-up {
-  from { transform: translateY(6px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-@utility animate-enter-up {
-  animation: enter-up var(--motion-base, 220ms) var(--ease-soft, cubic-bezier(0, 0, 0.2, 1)) both;
-}
-
-/* ── Chat markdown ─────────────────────────────────────────────────────────
- * prose-chat = Tailwind Typography `prose` retuned for a compact chat bubble:
- * full-width, dark-mode aware, tighter vertical rhythm, real heading sizes,
- * and a dark fenced-code surface that pairs with the highlight.js theme. This
- * is the standard markdown stack (typography plugin + react-markdown +
- * rehype-highlight), not hand-rolled element hacks.                          */
-.prose-chat {
-  @apply prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed;
-}
-/* Tighter rhythm than prose's defaults: chat bubbles are dense. */
-.prose-chat :where(p, ul, ol, pre, blockquote, table):not(:first-child) { margin-top: 0.5rem; }
-.prose-chat :where(p, ul, ol, pre, blockquote, table):not(:last-child) { margin-bottom: 0.5rem; }
-.prose-chat :where(li) { margin-top: 0.125rem; margin-bottom: 0.125rem; }
-/* Real, distinguishable heading sizes (the old [&_h1]:text-base hacks made
-   h1/h2/h3 nearly identical). */
-.prose-chat :where(h1) { font-size: 1.05rem; margin: 0.75rem 0 0.4rem; font-weight: 650; }
-.prose-chat :where(h2) { font-size: 0.95rem; margin: 0.7rem 0 0.35rem; font-weight: 650; }
-.prose-chat :where(h3) { font-size: 0.875rem; margin: 0.6rem 0 0.3rem; font-weight: 600; }
-.prose-chat :where(h4, h5, h6) { font-size: 0.8rem; margin: 0.5rem 0 0.25rem; font-weight: 600; }
-.prose-chat :where(h1, h2, h3, h4):first-child { margin-top: 0; }
-/* Inline code: a subtle chip. The typography plugin adds `` quotes around
-   inline code by default, so strip them. */
-.prose-chat :where(code):not(pre code) {
-  background: hsl(var(--background));
-  border: 1px solid hsl(var(--border));
-  border-radius: 0.3rem;
-  padding: 0.05rem 0.3rem;
-  font-size: 0.82em;
-  font-weight: 500;
-}
-.prose-chat :where(code):not(pre code)::before,
-.prose-chat :where(code):not(pre code)::after { content: none; }
-/* Fenced blocks: a dark editor surface; highlight.js paints the tokens. */
-.prose-chat :where(pre) {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  border: 1px solid hsl(var(--border));
-  border-radius: 0.6rem;
-  padding: 0.75rem 0.9rem;
-  font-size: 0.8rem;
-  line-height: 1.55;
-  overflow-x: auto;
-}
-.prose-chat :where(pre code) { background: none; padding: 0; font-weight: 400; }
-.prose-chat :where(a) { text-decoration: underline; text-underline-offset: 2px; }
-.prose-chat :where(table) { font-size: 0.82rem; }
-.prose-chat :where(th, td) { padding: 0.3rem 0.5rem; }
-
-/* Streaming caret: a blinking bar hung off the END of the last rendered
-   block via ::after, so it trails the final character inline rather than
-   dropping to its own line under the prose. inline-block keeps it on the text
-   baseline; the keyframe is the shared caret-blink. */
-.md-stream > :last-child::after {
-  content: '';
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 2px;
-  border-radius: 1px;
-  vertical-align: text-bottom;
-  background: hsl(var(--foreground) / 0.6);
-  animation: caret-blink 1.1s var(--ease-soft, ease) infinite;
-}
-/* A fenced code block as the last child shouldn't get a floating caret inside
-   its scroll box, so suppress it there (the prose text above already streams). */
-.md-stream > pre:last-child::after { content: none; }
-
-/* Legacy decorative utilities retained for downstream compositions.
-   Current console pages use neutral surfaces and the signal/insight tokens. */
-@utility mesh-gradient {
-  background-image:
-    radial-gradient(at 18% 8%, #007cf022 0px, transparent 52%),
-    radial-gradient(at 78% 12%, #ff008018 0px, transparent 50%),
-    radial-gradient(at 52% 0%, #7928ca1f 0px, transparent 48%),
-    radial-gradient(at 92% 32%, #f9cb2820 0px, transparent 46%),
-    radial-gradient(at 5% 40%, #00dfd81c 0px, transparent 44%);
-}
-
-/* Optional gradient text for downstream compositions. */
-@utility text-gradient-brand {
-  background-image: linear-gradient(
-    100deg, #007cf0, #00dfd8 28%, #7928ca 52%, #ff0080 74%, #f9cb28
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-}
-
-/* Small section label above a heading. */
-@utility eyebrow {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 16px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: hsl(var(--muted-foreground));
-}
-
-/* A hairline preserves a floating surface's edge on the light canvas. */
-@utility ring-hairline {
-  box-shadow:
-    inset 0 0 0 1px rgb(0 0 0 / 0.06),
-    0 1px 1px rgb(0 0 0 / 0.02),
-    0 2px 2px rgb(0 0 0 / 0.04);
-}
-.dark .ring-hairline {
-  box-shadow:
-    inset 0 0 0 1px rgb(255 255 255 / 0.07),
-    0 1px 2px rgb(0 0 0 / 0.4);
-}
-
-/* A slow drift for the brand gradient when it backs a live/hero element:
-   compositor-only (background-position), neutralised under reduced-motion. */
-@keyframes brand-drift {
-  0% { background-position: 0% 50%; }
-  100% { background-position: 200% 50%; }
-}
-@utility animate-brand-drift {
-  animation: brand-drift 8s linear infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .animate-brand-drift { animation: none !important; }
-}
+.governance-source { display: flex; flex-wrap: wrap; gap: 8px 32px; color: hsl(var(--muted-foreground)); font-size: 12px; }
+.governance-source strong { margin-right: 8px; color: hsl(var(--foreground)); }
+.governance-metric-empty { font-size: 20px; line-height: 36px; color: hsl(var(--muted-foreground)); }
+.governance-form-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.governance-action-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+@media (max-width: 600px) { .governance-form-row { grid-template-columns: minmax(0, 1fr); } }
