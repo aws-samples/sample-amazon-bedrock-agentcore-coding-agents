@@ -83,6 +83,9 @@ Other important settings:
 - `GITHUB_GATEWAY_URL` and `GITHUB_REPO` wire the PR path; there is no token.
 - `WORKSHOP_RUNTIME_BUCKET` overrides the S3 staging bucket, and is where the
   deployed coordinator mirrors run state (its own filesystem dies with the microVM).
+  Without an override, the host and coordinator deployment read
+  `coding-agents/infra.config` and verify its account and region. Older installations
+  without that file retain the `coding-agents-<account>-<region>` convention.
 - `WORKSHOP_BEDROCK_REGION` selects coordinator inference region.
 - `WORKSHOP_REVIEW_MODEL` selects the model for the integrated read-only review.
 - `WORKSHOP_FINAL_MERGE_POLICY` is `human_review` (default) or `auto`.

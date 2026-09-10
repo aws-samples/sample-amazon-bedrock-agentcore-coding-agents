@@ -65,8 +65,8 @@ def reader_mirror_bucket() -> str:
     ``python3 orchestrator/watch_run.py`` answered "no runs found", because the
     coordinator's state was in S3 and the watcher only knew about local disk.
 
-    So a reader derives the same name the writer was given, from the same
-    convention (``runtime_stage``), rather than a second literal here. Returns ""
+    So a reader resolves the same bucket the writer was given, from the shared
+    infrastructure config (``runtime_stage``), rather than a second literal here. Returns ""
     when it cannot be resolved (no SDK, no credentials, no region), because a
     watcher that cannot reach the mirror must still show local runs instead of
     failing.

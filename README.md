@@ -58,7 +58,9 @@ failed check or review finding.
 Lab 2 deliberately keeps Git metadata off S3 Files. The deployed coordinator uses
 `/tmp/workshop-runs`, each coding-agent Runtime creates its turn's worktree under
 `/tmp`, and `.git` never enters the exchange archive. S3 Files remains the shared
-workspace for direct shell work in Lab 1.
+workspace for direct shell work in Lab 1. The host, deployed coordinator, and
+run-state reader use the bucket recorded in `coding-agents/infra.config`, including
+stack-specific bucket names; `WORKSHOP_RUNTIME_BUCKET` remains an explicit override.
 
 ## Layout
 

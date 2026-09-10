@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 # path rather than assuming the orchestrator dir is already importable.
 sys.path.insert(0, str(HERE.parent / "orchestrator"))
 import roles as _roles  # noqa: E402
+import runtime_stage  # noqa: E402
 
 
 def ROLES() -> tuple[str, ...]:
@@ -118,7 +119,8 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
         "WORKSHOP_GITHUB_SECRET": "agentcore/workshop/github-connection",
         "WORKSHOP_GITHUB_STORE": "secretsmanager",
         "WORKSHOP_RUNS_DIR": "/tmp/workshop-runs",
-        "WORKSHOP_RUNTIME_BUCKET": f"coding-agents-{account_id}-{region}",
+        "WORKSHOP_RUNTIME_BUCKET": runtime_stage.runtime_bucket(
+            region, source_root=source_root, account_id=account_id),
     }
     # The engine resolves each role's dispatch model from ITS OWN process env
     # (WORKSHOP_MODEL_<ROLE> then WORKSHOP_MODEL, engine._role_model), so an

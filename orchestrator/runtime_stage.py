@@ -16,15 +16,18 @@ its behalf, and staging an answer would be the predetermined-shape problem this 
 exists to remove.
 
 Per-run object names isolate concurrent runs and make cleanup a single prefix
-delete. The bucket name follows the infra convention
-``coding-agents-<account>-<region>`` (infra/setup.sh), resolvable from the
-ambient AWS identity; nothing hardcoded.
+delete. The bucket comes from ``WORKSHOP_RUNTIME_BUCKET`` or the same
+``coding-agents/infra.config`` the role deployments read. Older installations
+without that file can still use the account/region naming convention.
 """
 
 from __future__ import annotations
 
 import io
 import os
+from pathlib import Path
+import re
+import shlex
 import shutil
 import stat
 import tarfile
@@ -32,6 +35,7 @@ import time
 from typing import Any, Iterable
 
 _EXCHANGE_PREFIX = "agents/runtime-exchange"
+_SOURCE_ROOT = Path(__file__).resolve().parent.parent
 _ARCHIVE_EXCLUDES = {
     "node_modules", "__pycache__", ".git", ".venv", "venv",
     ".pytest_cache", ".ruff_cache", ".mypy_cache", ".next", ".cache",
@@ -157,25 +161,68 @@ def archive_key(subdir: str) -> str:
     return f"{_EXCHANGE_PREFIX}/{_safe_subdir(subdir)}.tar.gz"
 
 
-def _bucket_name(region: str) -> str:
-    region = region or _s3_region()
+def _infra_bucket(source_root: Path, region: str, account_id: str) -> str:
+    """Read deployment facts, never execute the shell-format config.
+
+    Native CloudFormation storage uses a stack-specific bucket. Guessing its old
+    name would send archives and the run-state reader to a different bucket while
+    the Runtime's IAM role grants access only to the configured one.
+    """
+    path = source_root / "coding-agents" / "infra.config"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    config = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if not separator:
+            raise RuntimeError(f"Invalid infrastructure configuration: {path}")
+        values = shlex.split(value, comments=True)
+        if len(values) > 1:
+            raise RuntimeError(f"Invalid infrastructure value: {key.strip()}")
+        config[key.strip()] = values[0] if values else ""
+    if config.get("INFRA_REGION") != region:
+        raise RuntimeError(
+            f"REGION_MISMATCH: infrastructure uses {config.get('INFRA_REGION')}, "
+            f"but this operation uses {region}.")
+    if config.get("INFRA_ACCOUNT_ID") != account_id:
+        raise RuntimeError(
+            "ACCOUNT_MISMATCH: infrastructure belongs to a different AWS account.")
+    bucket = config.get("INFRA_BUCKET", "")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
+        raise RuntimeError(f"INFRA_BUCKET is missing or invalid in {path}")
+    return bucket
+
+
+def _bucket_name(region: str, *, source_root: Path | None = None,
+                 account_id: str = "") -> str:
     override = os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
     if override:
         return override
-    return _bucket(region, _account_id(region))
+    region = region or _s3_region() or _resolved_region()
+    account_id = account_id or _account_id(region)
+    configured = _infra_bucket(
+        Path(source_root) if source_root is not None else _SOURCE_ROOT,
+        region, account_id,
+    )
+    return configured or _bucket(region, account_id)
 
 
-def runtime_bucket(region: str = "") -> str:
-    """This account's runtime bucket, by the one naming convention.
+def runtime_bucket(region: str = "", *, source_root: Path | None = None,
+                   account_id: str = "") -> str:
+    """The configured bucket shared by the host and deployed coordinator.
 
     Public because a READER needs the same answer a writer was handed: the deployed
     coordinator is TOLD its bucket (``WORKSHOP_RUNTIME_BUCKET``, set by
-    ``configure_deploy``), while a read-only tool on the workshop host has to derive
-    it. Exposing the resolver keeps that name in one place instead of a second
-    literal in ``run_store``. Raises when the region cannot be resolved, for the
-    reason ``_bucket`` documents: a blank region builds a WRONG name, not a default.
+    ``configure_deploy``), while a read-only tool on the workshop host reads the
+    infrastructure config. Both use this resolver, including its account/region
+    checks. A source root and account can be supplied by deployment tooling that
+    already resolved them.
     """
-    return _bucket_name(region)
+    return _bucket_name(region, source_root=source_root, account_id=account_id)
 
 
 def archive_uri(subdir: str, region: str | None = None) -> str:

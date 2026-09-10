@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location(
@@ -113,3 +115,73 @@ def test_unset_roster_override_is_not_forwarded(monkeypatch, tmp_path):
     env = _configure(monkeypatch, tmp_path)
     assert "WORKSHOP_ROLES" not in env
     assert "WORKSHOP_KIRO_MODEL" not in env
+
+
+def _write_infra(root, *, region="us-west-2", account="123456789012",
+                 bucket="coding-agents-123456789012-us-west-2-stack1234"):
+    folder = root / "coding-agents"
+    folder.mkdir(exist_ok=True)
+    (folder / "infra.config").write_text(
+        f"INFRA_REGION={region}\nINFRA_ACCOUNT_ID={account}\n"
+        f"INFRA_BUCKET='{bucket}'\nINFRA_S3FILES_AP_ARN=\n",
+        encoding="utf-8",
+    )
+    return bucket
+
+
+def test_stack_bucket_reaches_coordinator_archives_and_state_reader(
+        monkeypatch, tmp_path):
+    """One stack-specific bucket must be used at every Runtime boundary."""
+    import run_store
+    import runtime_stage
+
+    monkeypatch.delenv("WORKSHOP_RUNTIME_BUCKET", raising=False)
+    monkeypatch.setenv("WORKSHOP_BEDROCK_REGION", "us-west-2")
+    monkeypatch.setattr(runtime_stage, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_stage, "_account_id", lambda region: "123456789012")
+    bucket = _write_infra(tmp_path)
+
+    env = _configure(monkeypatch, tmp_path)
+    assert env["WORKSHOP_RUNTIME_BUCKET"] == bucket
+    assert runtime_stage.archive_uri("run-1/backend").startswith(f"s3://{bucket}/")
+    assert run_store.reader_mirror_bucket() == bucket
+
+    # The coordinator has no host infra.config; its forwarded environment must
+    # resolve the same destination without consulting STS or a local file.
+    (tmp_path / "coding-agents" / "infra.config").unlink()
+    monkeypatch.setenv("WORKSHOP_RUNTIME_BUCKET", env["WORKSHOP_RUNTIME_BUCKET"])
+    monkeypatch.setattr(
+        runtime_stage, "_account_id",
+        lambda region: pytest.fail("Explicit Runtime wiring must not call STS"),
+    )
+    assert runtime_stage.archive_uri("run-1/backend").startswith(f"s3://{bucket}/")
+    assert run_store.reader_mirror_bucket() == bucket
+
+
+@pytest.mark.parametrize(
+    "region,account,error",
+    [
+        ("us-east-1", "123456789012", "REGION_MISMATCH"),
+        ("us-west-2", "999999999999", "ACCOUNT_MISMATCH"),
+    ],
+)
+def test_stale_infrastructure_cannot_wire_another_account_or_region(
+        monkeypatch, tmp_path, region, account, error):
+    monkeypatch.delenv("WORKSHOP_RUNTIME_BUCKET", raising=False)
+    _write_infra(tmp_path, region=region, account=account)
+    with pytest.raises(RuntimeError, match=error):
+        _configure(monkeypatch, tmp_path)
+
+
+def test_explicit_bucket_override_is_forwarded(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_BUCKET", "explicit-workshop-bucket")
+    env = _configure(monkeypatch, tmp_path)
+    assert env["WORKSHOP_RUNTIME_BUCKET"] == "explicit-workshop-bucket"
+
+
+def test_incomplete_infrastructure_cannot_silently_select_a_different_bucket(
+        monkeypatch, tmp_path):
+    monkeypatch.delenv("WORKSHOP_RUNTIME_BUCKET", raising=False)
+    _write_infra(tmp_path, bucket="")
+    with pytest.raises(RuntimeError, match="INFRA_BUCKET"):
+        _configure(monkeypatch, tmp_path)
