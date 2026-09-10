@@ -29,6 +29,57 @@ def _item(run_id: str, agent: str, token: str,
     )
 
 
+def test_gate_git_stays_inside_the_candidate_and_keeps_its_current_base(tmp_path):
+    """Reproduce the live failure: a gate nested in the platform repository must
+    not read the platform's index or its unfinished Lab 3 source edit."""
+    parent = tmp_path / "platform"
+    parent.mkdir()
+
+    def git(root, *args):
+        return subprocess.run(
+            ["git", "-C", str(root), *args], check=True,
+            capture_output=True, text=True).stdout.strip()
+
+    git(parent, "init", "-q")
+    (parent / "identity_baggage.py").write_text("original\n")
+    git(parent, "add", "identity_baggage.py")
+    git(parent, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "platform")
+    (parent / "identity_baggage.py").write_text("attendee edit\n")
+
+    base, candidate = tmp_path / "base", tmp_path / "candidate"
+    base.mkdir()
+    candidate.mkdir()
+    for root in (base, candidate):
+        (root / "README.md").write_text("existing project\n")
+        (root / ".gitignore").write_text("tracked.txt\n")
+        (root / "tracked.txt").write_text("tracked despite ignore rule\n")
+    (base / "removed.txt").write_text("deleted by this PR\n")
+    (candidate / "CONTRIBUTING.md").write_text("the builder's guide\n")
+    destination = parent / ".runs" / "gate"
+    work_items.prepare_gate_checkout(str(base), str(candidate), str(destination))
+
+    assert os.path.realpath(git(destination, "rev-parse", "--show-toplevel")) == (
+        os.path.realpath(destination))
+    assert git(destination, "ls-files").splitlines() == [
+        ".gitignore", "CONTRIBUTING.md", "README.md", "tracked.txt"]
+    assert git(destination, "status", "--porcelain") == ""
+    assert git(destination, "diff", "--name-status", "workshop-base", "HEAD").splitlines() == [
+        "A\tCONTRIBUTING.md", "D\tremoved.txt"]
+    assert (parent / "identity_baggage.py").read_text() == "attendee edit\n"
+
+    # A subsequent check gets the latest base, with no previous check/runtime data.
+    (destination / "acceptance_check").write_text("untracked checker executable\n")
+    (destination / "runtime.db").write_text("leftover test state\n")
+    (base / "sibling.txt").write_text("a sibling PR merged\n")
+    (candidate / "sibling.txt").write_text("a sibling PR merged\n")
+    work_items.prepare_gate_checkout(str(base), str(candidate), str(destination))
+    assert not (destination / "runtime.db").exists()
+    assert not (destination / "acceptance_check").exists()
+    assert git(destination, "show", "workshop-base:sibling.txt") == "a sibling PR merged"
+    assert git(destination, "status", "--porcelain") == ""
+
+
 def test_dependency_order_is_stable_and_rejects_cycles():
     backend = _item("run_1", "backend", "a")
     frontend = _item("run_1", "frontend", "b")

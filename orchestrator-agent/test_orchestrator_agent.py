@@ -143,14 +143,15 @@ def test_run_status_unknown_run_fails_loud():
 
 # ----------------------------------------------------------- agent wiring
 def test_agent_has_all_tools_when_all_roles_wired():
-    # With all three coding roles wired (the autouse fixture), the agent exposes
-    # the full tool set: the advisory router, the three dispatch tools, the
-    # composed build, and run_status.
+    # The same builder-only dispatch surface must reach the deployed wrapper.
+    # A separate checker tool would let the model create a redundant invalid run.
     agent = main._get_or_create_agent()
     have = set(agent.tool_names) if hasattr(agent, "tool_names") else set()
     expected = {"list_presets", "dispatch_backend", "dispatch_frontend",
-                "dispatch_validator", "run_build", "run_status"}
+                "run_build", "run_status"}
     assert expected.issubset(have), f"agent tools: {have}"
+    assert not {r.dispatch_tool for r in roles.roster()
+                if r.kind == roles.CHECKER} & have
 
 
 def test_main_reexports_the_system_prompt():

@@ -35,6 +35,21 @@ one repair turn for the responsible existing pull request. Separately, when a si
 merges and moves a path a still-open pull request also changed, that owner gets one
 bounded refresh. Merging supports either human review or guarded auto-merge.
 
+A focused Chat dispatch starts its builder and schedules the independent checker
+automatically. Checkers have no separate dispatch tool; `run_build` also retains
+the read-only review preset.
+
+A repair preserves its authored executable. The kept record includes the base
+source digest and the executable's SHA-256; repair prompt text cannot invalidate
+it. A changed base snapshot permits a new check, while altered kept evidence
+fails loudly. A suspected checker defect goes to a person. Gate history and PR
+comments include the executable hash used for that execution.
+
+The host executes the check in a separate Git checkout with two local snapshots:
+`workshop-base` for the current base and `HEAD` for this PR's source. The check
+itself is untracked. This prevents Git from walking into the platform checkout
+and treating an attendee's Lab 3 edit as a deliverable change.
+
 ## Main seams
 
 | File | Responsibility |

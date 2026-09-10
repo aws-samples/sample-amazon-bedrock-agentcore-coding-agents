@@ -284,16 +284,22 @@ def test_chat_agent_prompt_includes_wired_descriptions():
     assert "dispatch_backend" in section
 
 
-def test_chat_roster_section_lists_every_served_role():
-    """The roster block is generated from the registry, so EVERY served role appears
-    with its dispatch tool. A role missing here is a role the model cannot be asked
-    to use, which is how a roster change silently loses an agent."""
+@pytest.mark.parametrize("wired", [False, True])
+def test_chat_roster_section_lists_every_served_role_and_available_dispatch(wired):
+    """Keep every role visible without advertising an unavailable tool or asking
+    the model to dispatch the checker a second time."""
     import chat
     import roles
+    if wired:
+        for role in roles.roster():
+            runtime_config.save_runtime(role.id, f"{role.id.replace('-', '_')}-TESTID0001")
     section = chat._roster_section()
     for r in roles.roster():
         assert r.id in section, (r.id, section)
-        assert r.dispatch_tool in section, (r.dispatch_tool, section)
+        if wired and r.kind == roles.BUILDER:
+            assert r.dispatch_tool in section, (r.dispatch_tool, section)
+        else:
+            assert r.dispatch_tool not in section, (r.dispatch_tool, section)
 
 
 # ---- deployed-ARN auto-discovery (the event pre-provisions Codex/Kiro) --------

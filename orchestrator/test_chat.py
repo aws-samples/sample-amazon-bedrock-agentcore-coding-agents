@@ -82,7 +82,9 @@ def test_build_tools_exposes_all_tools_when_all_roles_wired(tmp_path, monkeypatc
     names = set(_tools_map())
     # The always-present orchestration tools when every role is wired.
     assert {"list_presets", "dispatch_backend", "dispatch_frontend",
-            "dispatch_validator", "run_build", "run_status"} <= names
+            "run_build", "run_status"} <= names
+    assert not {role.dispatch_tool for role in roles.roster()
+                if role.kind == roles.CHECKER} & names
     # The interactive-terminal tools (agent_send/read/status) are added ONLY when
     # runtime_shell is importable (the console hosts the orchestrator). They are an
     # optional, environment-dependent group: present-together or absent-together,
@@ -155,7 +157,40 @@ def test_dispatch_tools_are_non_blocking_and_return_a_run_id(tmp_path, monkeypat
     assert out["kind"] == "backend"
     assert out["run_id"].startswith("run_")
     # the run is real + pollable on the shared engine
-    assert chat.ENGINE.get(out["run_id"]) is not None
+    run = chat.ENGINE.get(out["run_id"])
+    assert run is not None
+    assert out["agents"] == run.agents == ["claude-code", *roles.checker_ids()]
+    assert out["schedule"] == [
+        {"agent": "claude-code", "kind": roles.BUILDER, "timing": "starts immediately"},
+        *[{"agent": role, "kind": roles.CHECKER,
+           "timing": "after every selected builder finishes"} for role in roles.checker_ids()],
+    ]
+
+
+def test_checker_is_scheduled_once_and_has_no_tool_for_a_second_run(tmp_path, monkeypatch):
+    """Regression: one live Chat turn dispatched the builder and then its checker
+    separately, leaving an extra NO_BUILDER_ROUTED failure beside a valid build."""
+    _wire_all(tmp_path, monkeypatch)
+    tools = _tools_map()
+    before = len(chat.ENGINE.list())
+    result = json.loads(_call_with(tools, "dispatch_backend", task="Write a contributor guide"))
+    assert len(chat.ENGINE.list()) == before + 1
+    for checker in roles.checker_ids():
+        assert result["agents"].count(checker) == 1
+        assert roles.BY_ID[checker].dispatch_tool not in tools
+        assert roles.BY_ID[checker].dispatch_tool not in chat._roster_section()
+
+
+def test_restore_checker_remains_automatic_with_an_alternate_roster(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,claude-code-validator")
+    _wire_all(tmp_path, monkeypatch)
+    runtime_config.save_runtime("claude-code-validator", "claude_code_validator-TESTID0001")
+    tools = _tools_map()
+    checker = roles.BY_ID["claude-code-validator"]
+    assert checker.dispatch_tool not in tools
+    assert checker.id in chat._roster_section()
+    result = json.loads(_call_with(tools, "dispatch_backend", task="Write a contributor guide"))
+    assert result["agents"] == ["claude-code", checker.id]
 
 
 def test_list_presets_is_advisory_and_starts_nothing(tmp_path, monkeypatch):

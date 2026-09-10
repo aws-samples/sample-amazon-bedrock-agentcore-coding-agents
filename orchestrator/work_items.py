@@ -173,7 +173,8 @@ def _git(*args: str, cwd: str | None = None,
     return result
 
 
-def _copy_worktree_source(source: str, destination: str) -> int:
+def _copy_worktree_source(source: str, destination: str,
+                          exclude: Callable[[str], bool] | None = None) -> int:
     """Copy a tracked tree while never importing another repository's metadata."""
     if not os.path.isdir(source):
         raise RuntimeError(f"worktree source does not exist: {source}")
@@ -191,6 +192,9 @@ def _copy_worktree_source(source: str, destination: str) -> int:
             if filename == ".git":
                 continue
             src = os.path.join(dirpath, filename)
+            rel = os.path.relpath(src, source).replace(os.sep, "/")
+            if exclude and exclude(rel):
+                continue
             if os.path.islink(src):
                 raise RuntimeError(
                     f"symbolic links are not portable worktree input: {src}")
@@ -271,6 +275,48 @@ def reset_worktree(repo_dir: str, destination: str, source_root: str,
         if changed:
             _git("-C", destination, "commit", "-qm", message)
         return count
+
+
+def prepare_gate_checkout(
+    base_root: str, candidate_root: str, destination: str,
+    *, exclude: Callable[[str], bool] | None = None,
+) -> int:
+    """Give the executable the same source tree and Git boundary as its author.
+
+    These are local snapshot commits, not copies of GitHub's history. The base
+    ref records the default branch's current bytes; HEAD records this PR's tree.
+    Without a local repository, Git walks into the coordinator's parent checkout
+    and reports platform files and edits as if they belonged to the deliverable.
+    """
+    shutil.rmtree(destination, ignore_errors=True)
+    _copy_worktree_source(base_root, destination, exclude)
+    _git("init", "-q", "-b", "workshop-base", destination)
+    for key, value in (
+        ("user.name", "Workshop Coordinator"),
+        ("user.email", "workshop-coordinator@example.invalid"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ):
+        _git("-C", destination, "config", key, value)
+    # The input is already a tracked source snapshot. A tracked file that also
+    # matches .gitignore must remain tracked in the checker's local index.
+    _git("-C", destination, "add", "-f", "-A")
+    _git("-C", destination, "commit", "-qm", "Current default-branch snapshot",
+         "--allow-empty")
+    _git("-C", destination, "checkout", "-qb", "gate-candidate")
+    for name in os.listdir(destination):
+        if name == ".git":
+            continue
+        path = os.path.join(destination, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    count = _copy_worktree_source(candidate_root, destination, exclude)
+    _git("-C", destination, "add", "-f", "-A")
+    _git("-C", destination, "commit", "-qm", "Pull request source snapshot",
+         "--allow-empty")
+    return count
 
 
 class DependencyCycle(ValueError):

@@ -303,6 +303,8 @@ def gate_evidence_comment(
             f"(`{str(getattr(item, 'patch_digest', '') or '')[:12]}`).")
     if gate.get("summary"):
         lines += ["", f"`{_cell(str(gate['summary']), 240)}`"]
+    if gate.get("check_sha256"):
+        lines += ["", f"Executable SHA-256: `{gate['check_sha256']}`"]
     lines += [
         "",
         "The validator wrote this check for this pull request. The orchestrator ran "

@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import collections
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -2198,7 +2199,11 @@ class Engine:
             "EXECUTABLE file, starting with a shebang line, in whatever language you "
             "judge fits. The environment where the engine runs it matches this "
             "container's supported runtimes: Python and Node.js 22 "
-            "(JavaScript/TypeScript).\n\n"
+            "(JavaScript/TypeScript). Git metadata is local: the execution "
+            "checkout's workshop-base ref contains the current default-branch "
+            "snapshot and HEAD contains this pull request's tree. These local "
+            "snapshot commit IDs are not GitHub commit IDs. Your check is staged "
+            "as an untracked file beside the committed source.\n\n"
             "YOU decide what 'acceptable' means for this request. Nobody has given "
             "you a checklist, a contract, or a list of required checks, because only "
             "you have seen this particular task. Read the request, inspect the "
@@ -2272,6 +2277,14 @@ class Engine:
         kept = self._kept_check_path(run, subject)
         os.makedirs(os.path.dirname(kept), exist_ok=True)
         shutil.copyfile(authored, kept)
+        with open(kept, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        with open(kept + ".json", "w", encoding="utf-8") as handle:
+            json.dump({
+                "base_digest": _work_items.tree_digest(
+                    run.integration_base_dir, exclude=_work_patch_excluded),
+                "check_sha256": digest,
+            }, handle)
 
     def _prior_check(self, run: Run, subject: _work_items.WorkItem) -> str:
         """The check a previous round authored for this pull request, if there is one.
@@ -2282,6 +2295,16 @@ class Engine:
         kept = self._kept_check_path(run, subject)
         try:
             if os.path.isfile(kept) and os.path.getsize(kept) > 0:
+                with open(kept + ".json", encoding="utf-8") as handle:
+                    evidence = json.load(handle)
+                with open(kept, "rb") as handle:
+                    digest = hashlib.sha256(handle.read()).hexdigest()
+                if digest != evidence["check_sha256"]:
+                    raise RuntimeError(
+                        f"CHECK_EVIDENCE_CHANGED:{subject.work_id}: kept executable changed")
+                if evidence["base_digest"] != _work_items.tree_digest(
+                        run.integration_base_dir, exclude=_work_patch_excluded):
+                    return ""
                 return kept
         except OSError:
             pass
@@ -2311,19 +2334,20 @@ class Engine:
         # would make round 2 pass on round 1's evidence. A live run left round 1's
         # `issues.db` (created when the check STARTED the service) sitting here for
         # round 2.
-        shutil.rmtree(gate_dir, ignore_errors=True)
         tree = run.item_tree_dir(subject.work_id)
         if not os.path.isdir(tree):
             raise RuntimeError(
                 f"WORK_TREE_MISSING:{subject.work_id}: validator authored a check "
                 "but that pull request's tree is unavailable")
-        shutil.copytree(tree, gate_dir)
+        count = _work_items.prepare_gate_checkout(
+            run.integration_base_dir, tree, gate_dir,
+            exclude=_work_patch_excluded)
         staged = os.path.join(gate_dir, name)
         with open(staged, "wb") as handle:
             handle.write(check_bytes)
         os.chmod(staged, os.stat(staged).st_mode | 0o755)
         run.log(f"gate workspace assembled at {gate_dir} "
-                f"({sum(len(f) for _, _, f in os.walk(gate_dir))} files, the check beside the work)")
+                f"({count} source files, the check beside the work)")
         return staged
 
     def _write_validator_report(self, run: Run, role: RoleResult,
@@ -2473,6 +2497,7 @@ class Engine:
             self._publish_active_work_items(run)
             install_harness(role.agent)
             run._item_checks = {}
+            reused_count = 0
             for item in self._builder_items(run, pending_only=True):
                 self._build_item_tree(run, item)
                 # A REPAIR ROUND RE-RUNS THE CHECK IT ALREADY HAS. It does not ask the
@@ -2496,11 +2521,14 @@ class Engine:
                 # One case genuinely invalidates the prior check: the base branch moved
                 # because a sibling pull request merged, so the checkout it was written
                 # against no longer exists. Then, and only then, author again.
-                reused = None if run._refresh_context else self._prior_check(run, item)
+                # Repair guidance and base-refresh guidance share a prompt field;
+                # only the actual base bytes decide whether a check is invalidated.
+                reused = self._prior_check(run, item)
                 if reused:
                     run._item_checks[item.work_id] = self._gate_dir_check_path(
                         run, reused, item)
                     run._acceptance_test_file = run._item_checks[item.work_id]
+                    reused_count += 1
                     run.log(f"validator: re-running the check already authored for "
                             f"{item.work_id} against the repaired tree (not "
                             "re-authoring: the request did not change)")
@@ -2529,8 +2557,8 @@ class Engine:
                 run.log(f"validator: authored the acceptance check for "
                         f"{item.work_id}; its real exit code is that pull "
                         "request's gate")
-            role.note = (f"authored one acceptance check per pull request "
-                         f"({len(run._item_checks)})")
+            role.note = (f"prepared {len(run._item_checks)} acceptance check(s); "
+                         f"{reused_count} reused from the prior round")
 
         def frontend(role: RoleResult) -> None:
             # The backend role dispatches its CLI into a deployed Runtime, which can
@@ -2800,6 +2828,7 @@ class Engine:
             "work_id": item.work_id if item is not None else "",
             "agent": item.agent if item is not None else "",
             "patch_digest": str(getattr(item, "patch_digest", "") or ""),
+            "check_sha256": str(gate.get("check_sha256") or ""),
             "passed": bool(gate.get("passed")),
             "summary": gate.get("summary") or "",
             "checks": list(gate.get("checks") or []),
@@ -2932,12 +2961,12 @@ class Engine:
         # being judged -- that is where the evidence is read -- but it must not read as
         # a change request to a builder who has nothing to fix.
         checker_only = not run._active_builders
-        heading = ("check re-authored by the validator" if checker_only
+        heading = ("check requires human review" if checker_only
                    else "repair requested")
-        note = ("The failure is in the validator's own check, not in this pull "
-                "request. Its code is unchanged and its builder has nothing to do: "
-                "the validator repairs the check and the orchestrator re-runs it "
-                "against this same tree." if checker_only else "")
+        note = ("Repair triage found no builder change to request. A person must "
+                "inspect the failed check and its evidence. The executable is "
+                "preserved; the engine does not rewrite it to obtain a pass."
+                if checker_only else "")
         for target in targets:
             self._comment_work_item(
                 run,
@@ -2950,7 +2979,7 @@ class Engine:
             )
         run.log(
             f"{stage}: bounded repair routed to "
-            f"{', '.join(sorted(run._active_builders)) or 'validator only'} "
+            f"{', '.join(sorted(run._active_builders)) or 'human review of the check'} "
             f"({rationale})", "warn")
 
     def _write_integration_brief(self, run: Run, root: str) -> None:
@@ -3188,12 +3217,15 @@ class Engine:
                                       + ", ".join(c["path"] for c in
                                                   exc.conflicts[:8])}],
                 "summary": f"{item.work_id} is behind {run.final_base_branch}"}
+        with open(check_path, "rb") as handle:
+            check_sha256 = hashlib.sha256(handle.read()).hexdigest()
         gate = reviewer.run_gate(
             check_path,
             os.path.dirname(check_path),
             run.task,
             run.artifact_endpoint or "",
         )
+        gate["check_sha256"] = check_sha256
         self._record_gate(run, gate, stage, item)
         return gate
 
@@ -3275,7 +3307,9 @@ class Engine:
                     continue
                 if not self._repair_pull_request(run, item, gate, stage):
                     row["state"] = "blocked"
-                    row["error"] = "ROLE_EXECUTION_ERROR"
+                    row["error"] = ("CHECK_REQUIRES_HUMAN"
+                                    if not run._active_builders
+                                    else "ROLE_EXECUTION_ERROR")
                     item.merge_state = "blocked"
                     continue
                 stage = f"{item.work_id} round {item.attempt}"
@@ -3318,6 +3352,10 @@ class Engine:
         author pushes to the same pull request.
         """
         self._route_repair(run, gate, eligible=[item], stage=stage)
+        if not run._active_builders:
+            run.log(f"{item.work_id}: checker failure requires a person; "
+                    "the authored executable is preserved", "warn")
+            return False
         run.iterations += 1
         run.log(f"{item.work_id}: one bounded repair updates this same pull request",
                 "warn")

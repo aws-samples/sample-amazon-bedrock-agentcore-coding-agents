@@ -55,6 +55,17 @@ gets one bounded refresh. This catches cases where separate branches each worked
 did not agree with each other. It is separate from the one repair allowed after a
 failed check or review finding.
 
+A repair re-runs the original executable. Its SHA-256 is recorded with each gate
+result and on the pull request, so reviewers can compare the evidence across
+rounds. Only a change to the default branch's source snapshot invalidates that
+check. If triage finds a fault in the check itself, the run stops for a person.
+
+The executable runs in its own local Git checkout. `workshop-base` records the
+current default-branch snapshot and `HEAD` records the candidate source. These
+are local snapshot commits, not GitHub commit IDs. Git commands issued by the
+check therefore inspect the deliverable rather than the surrounding platform
+checkout.
+
 Lab 2 deliberately keeps Git metadata off S3 Files. The deployed coordinator uses
 `/tmp/workshop-runs`, each coding-agent Runtime creates its turn's worktree under
 `/tmp`, and `.git` never enters the exchange archive. S3 Files remains the shared

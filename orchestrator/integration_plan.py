@@ -60,10 +60,11 @@ _REPAIR_SYSTEM = """You triage evidence from an executable integration gate or
 code review back to the builder who owns the affected work. Return strict JSON:
 {"agents": ["<builder agent id>", "..."], "reason": "one sentence"}.
 Choose only from the supplied builder ids. Select every builder whose work may
-need to change; do not select the validator, which re-authors its check
-independently. An empty agents list is allowed only when the evidence clearly
-shows the check itself is wrong and no builder code should change. This routes
-repair work; it never changes or interprets the gate verdict."""
+need to change; do not select the validator. A repair re-runs the existing check.
+An empty agents list is allowed only when the evidence clearly shows the check
+itself is wrong and no builder code should change. That result asks a person to
+inspect the check; it never commissions a replacement check or changes the gate
+verdict."""
 
 
 _ROUTE_SYSTEM = """You choose which CAPABILITIES a build request needs. Return strict

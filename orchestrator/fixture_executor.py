@@ -68,6 +68,10 @@ if [ "$n" -lt 1 ]; then
   exit 1
 fi
 echo "check: deliverable tree present ($n files)"
+if grep -l '^fixture repair pending$' "$WORKSHOP_WORK_DIR"/*-work.txt >/dev/null 2>&1; then
+  echo "check: first round rejected; fixture builder repair pending"
+  exit 1
+fi
 exit ${FIXTURE_CHECK_EXIT:-0}
 """
 
@@ -107,12 +111,6 @@ class FixtureExecutor(executor.Executor):
         if _is_checker(agent_id, role):
             path = os.path.join(workdir, "acceptance_check")
             body = _CHECK_BODY
-            # `fail_first_check` exercises the bounded re-implement loop with a
-            # GENUINELY red gate: the check exits nonzero for real on round 1. The old
-            # mechanism pointed the gate at a dead port, which faked the failure.
-            if run.options.get("fail_first_check") and run.iterations == 1:
-                body = body.replace("exit ${FIXTURE_CHECK_EXIT:-0}",
-                                    'echo "check: first round rejected"\nexit 1')
             with open(path, "w", encoding="utf-8") as f:
                 f.write(body)
             os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP
@@ -128,4 +126,8 @@ class FixtureExecutor(executor.Executor):
                     f"This file exists so the orchestrator's plumbing (tree read-back, "
                     f"compose, commit, pull request) can be exercised with no agent and "
                     f"no model. It intentionally implements nothing.\n")
+            if run.options.get("fail_first_check") and run.iterations == 1:
+                # Repair changes the fixture work, never the executable. The old
+                # fixture rewrote exit 1 to exit 0 and concealed check re-authoring.
+                f.write("fixture repair pending\n")
         return path

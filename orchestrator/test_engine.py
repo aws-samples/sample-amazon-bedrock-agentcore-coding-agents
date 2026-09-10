@@ -605,6 +605,52 @@ def test_bounded_iteration_retries_then_passes():
     engine.shutdown()
 
 
+def test_a_repair_reuses_one_authored_executable_on_the_same_base(monkeypatch):
+    """Exercise the whole repair path, including its populated refresh prompt.
+    A helper-only test missed that this prompt previously forced re-authoring."""
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "human_review")
+    fixture = FixtureExecutor()
+    produce = fixture.produce
+    authored = []
+
+    def count_authorship(run, agent_id, role):
+        if roles.get(agent_id).kind == roles.CHECKER:
+            authored.append(agent_id)
+        return produce(run, agent_id, role)
+
+    fixture.produce = count_authorship
+    engine = Engine(executor_obj=fixture)
+    try:
+        run = _wait_terminal(engine.submit(
+            CONVERT_TASK, ["claude-code", "kiro"],
+            options={"fail_first_check": True}), timeout_s=90)
+        assert run.status == "passed", public_result(run)
+        assert run._refresh_context.startswith("REPAIR ROUND")
+        assert authored == ["kiro"]
+        assert [row["passed"] for row in run.gate_history] == [False, True]
+        hashes = [row["check_sha256"] for row in run.gate_history]
+        assert len(hashes[0]) == 64 and hashes[0] == hashes[1]
+    finally:
+        engine.shutdown()
+
+
+def test_suspected_checker_failure_stops_without_rewriting_the_check(monkeypatch):
+    monkeypatch.setattr(
+        "engine.integration_plan.select_repair_agents",
+        lambda *args, **kwargs: ([], "the check failed before probing the work"))
+    engine = _engine()
+    try:
+        run = _wait_terminal(engine.submit(
+            CONVERT_TASK, ["claude-code", "kiro"],
+            options={"fail_first_check": True}), timeout_s=90)
+        assert run.status == "needs_human"
+        assert run.role_prs[0]["error"] == "CHECK_REQUIRES_HUMAN"
+        assert len(run.gate_history) == 1 and not run.gate_history[0]["passed"]
+        assert run.work_items["claude-code"].attempt == 1
+    finally:
+        engine.shutdown()
+
+
 def test_run_view_matches_frozen_contract():
     engine = _engine()
     run = _wait_terminal(engine.submit(CONVERT_TASK, ALL_AGENTS))

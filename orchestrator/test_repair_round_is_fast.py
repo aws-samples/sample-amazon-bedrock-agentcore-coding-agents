@@ -25,6 +25,7 @@ what the checker OBSERVED, exactly as a CI log does; the check still decides.
 import os
 import sys
 import tempfile
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -40,6 +41,8 @@ class _Item:
 class _Run:
     def __init__(self, workdir):
         self.workdir = workdir
+        self.integration_base_dir = os.path.join(workdir, "base")
+        os.makedirs(self.integration_base_dir, exist_ok=True)
 
 
 # ------------------------------------------------------- the check survives a round
@@ -91,6 +94,31 @@ def test_an_empty_or_missing_copy_never_becomes_a_skipped_gate():
         open(kept, "w").close()                     # zero bytes
         assert eng._prior_check(run, item) == "", \
             "an empty kept copy must send the validator back to author a real check"
+
+
+def test_only_a_changed_base_invalidates_a_kept_check(tmp_path):
+    eng = engine.Engine.__new__(engine.Engine)
+    run, item = _Run(str(tmp_path)), _Item("work_backend_base")
+    authored = tmp_path / "acceptance_check"
+    authored.write_text("#!/bin/sh\nexit 1\n")
+    eng._keep_check_for_later_rounds(run, item, str(authored))
+    run._refresh_context = "REPAIR ROUND: fix the builder's code"
+    assert eng._prior_check(run, item)
+    with open(os.path.join(run.integration_base_dir, "sibling.txt"), "w") as handle:
+        handle.write("a sibling PR merged\n")
+    assert eng._prior_check(run, item) == ""
+
+
+def test_modified_kept_evidence_fails_loud_instead_of_reauthoring(tmp_path):
+    eng = engine.Engine.__new__(engine.Engine)
+    run, item = _Run(str(tmp_path)), _Item("work_backend_changed")
+    authored = tmp_path / "acceptance_check"
+    authored.write_text("#!/bin/sh\nexit 1\n")
+    eng._keep_check_for_later_rounds(run, item, str(authored))
+    with open(eng._kept_check_path(run, item), "w") as handle:
+        handle.write("#!/bin/sh\nexit 0\n")
+    with pytest.raises(RuntimeError, match="CHECK_EVIDENCE_CHANGED"):
+        eng._prior_check(run, item)
 
 
 # ------------------------------------------- the builder learns WHICH assertion broke

@@ -51,7 +51,8 @@ and only build when the user actually asks you to.
 ## Your agents
 They are listed below under "Your roster", generated from the roles this \
 deployment actually serves and wires. Each is a coding agent deployed on its own \
-AgentCore Runtime and called AS A TOOL. Each type is a FLEET, not one agent; you \
+AgentCore Runtime. Builder tools start work; the engine schedules the independent \
+checker for every resulting pull request. Each type is a FLEET, not one agent; you \
 dispatch to a TYPE and the runtime picks an instance. You never address one \
 instance, and you never assume a role that is not in your tool list exists.
 
@@ -92,9 +93,11 @@ interview, and never a reason to stall a clear request. If the user already name
 their stack and features, or says "just build it", dispatch immediately.
 
 ## How to act once the ask is clear
-- Focused single-role job (rebuild the UI, patch the backend): call the matching \
-dispatch_* tool. It returns a run id immediately and the build runs in the \
-background. State that it started and which agent owns it.
+- Focused single-builder job (rebuild the UI, patch the backend): call the matching \
+dispatch_* tool ONCE. It starts a complete checked and reviewed build for that \
+builder, including the independent checker automatically. Never dispatch the \
+checker separately. It returns a run id and the same authoritative agents and \
+schedule fields as run_build. State which builder started and which checker waits.
 - Full build that must be checked and reviewed: call run_build(task). Every builder \
 gets an isolated work id and its OWN pull request against the default branch. The \
 checker then authors one executable per pull request, and each pull request is gated, \
@@ -143,10 +146,10 @@ false, do not offer repeating the request now or a "clean retry." Preserve any
 external prerequisite in `next_action` exactly (for example, wait for quota to
 reset first).
 
-Do NOT try to "finish it yourself" by dispatching individual roles, hand-composing
-files, or dispatching the validator alone: those paths do not open pull requests, run
-their checks, or merge them the way run_build does, and a review with no PR to review
-just fails `NO_RUN_TO_REVIEW`.
+Do NOT try to "finish it yourself" by dispatching individual roles or hand-composing
+files. A focused dispatch starts another build with its own budget; it is not a
+repair of the existing pull request. The engine already schedules that pull
+request's checker. Follow the recorded next_action instead of starting another loop.
 
 The three cases, because they have different recoveries:
 
@@ -191,11 +194,12 @@ reported it, and never fabricate a result or a PR URL.
 
 def _dispatch_tool_names() -> set[str]:
     """The tools whose firing means "a run started" and should reveal the run panel
-    in the UI: one per served role, plus run_build. Derived from the roster, so a
+    in the UI: one per served builder, plus run_build. Derived from the roster, so a
     roster change cannot leave a dispatch tool unrecognized here (which would have
     silently stopped the UI from ever showing that role's run).
     list_presets/run_status start nothing and are deliberately absent."""
-    return {r.dispatch_tool for r in _roles.roster()} | {"run_build"}
+    return {r.dispatch_tool for r in _roles.roster()
+            if r.kind == _roles.BUILDER} | {"run_build"}
 
 
 def _wired_roles() -> set[str]:
@@ -210,6 +214,21 @@ def _wired_roles() -> set[str]:
                 if r.get("wired") and r["role"] != "orchestrator"}
     except Exception:
         return set()
+
+
+def _schedule(agents: list[str]) -> list[dict[str, str]]:
+    return [
+        {
+            "agent": agent_id,
+            "kind": _roles.BY_ID[agent_id].kind,
+            "timing": (
+                "after every selected builder finishes"
+                if _roles.BY_ID[agent_id].kind == _roles.CHECKER
+                else "starts immediately"
+            ),
+        }
+        for agent_id in agents
+    ]
 
 
 def _kick(agent_id: str | None, task: str, preset: str | None = None) -> str:
@@ -258,25 +277,28 @@ def build_tools() -> list:
         return json.dumps({"presets": _presets.public_presets()})
 
     def _make_dispatch(role: _roles.Role):
-        """Build ONE role's dispatch tool from its registry entry.
+        """Build one builder's focused-build tool from its registry entry.
 
-        Generated rather than hand-written so the tool list is exactly the roster:
+        Generated rather than hand-written so the tool list follows the roster:
         adding, hiding, or swapping a role changes which tools exist with no edit
-        here, and a role can never be missing its tool (or have a stale one).
+        here. Checkers are scheduled by the engine, not dispatched independently.
         """
         def dispatch(task: str) -> str:
-            return json.dumps({"run_id": _kick(role.id, task), "agent": role.id,
-                               "kind": role.capability, "status": "started"})
+            run_id = _kick(role.id, task)
+            agents = list(ENGINE.get(run_id).agents)
+            return json.dumps({"run_id": run_id, "agent": role.id,
+                               "kind": role.capability, "status": "started",
+                               "agents": agents, "schedule": _schedule(agents)})
         dispatch.__name__ = role.dispatch_tool
         dispatch.__qualname__ = role.dispatch_tool
         # The docstring IS the tool description the model reads, so it carries this
         # role's real job from the registry.
-        focus = ("the acceptance check only, and it never edits the work"
-                 if role.kind == _roles.CHECKER else f"the {role.capability} only")
         dispatch.__doc__ = (
-            f"Start the {role.capability.upper()} role ({role.label}) on its deployed "
-            f"Runtime: {focus}. {role.description} Returns immediately with a run id; "
-            f"the work runs in the background.")
+            f"Start a focused build with the {role.capability.upper()} builder "
+            f"({role.label}) on its deployed Runtime. {role.description} "
+            "The independent checker is included automatically and waits for this "
+            "builder's pull request; do not dispatch it separately. Returns the run "
+            "id, selected agents, and schedule immediately.")
         return tool(dispatch)
 
     @tool
@@ -305,25 +327,13 @@ def build_tools() -> list:
         route = (_presets.resolve(preset=preset) if preset
                  else _presets.resolve(task=task))
         agents = route.agents
-        schedule = []
-        for agent_id in agents:
-            role = _roles.BY_ID[agent_id]
-            schedule.append({
-                "agent": agent_id,
-                "kind": role.kind,
-                "timing": (
-                    "after every selected builder finishes"
-                    if role.kind == _roles.CHECKER
-                    else "starts immediately"
-                ),
-            })
         return json.dumps({
             "run_id": _kick(None, task, preset=preset or None),
             "kind": "build",
             "status": "started",
             "agents": agents,
             "routing": route.rule,
-            "schedule": schedule,
+            "schedule": _schedule(agents),
         })
 
     @tool
@@ -530,7 +540,7 @@ def build_tools() -> list:
         err = (proc.stderr or "")[-4_000:]
         return json.dumps({"exit": proc.returncode, "stdout": out, "stderr": err})
 
-    # The dispatch tools are generated from the ROSTER and added ONLY for roles that
+    # The dispatch tools are generated from the ROSTER and added ONLY for builders that
     # are actually WIRED, so the orchestrator's real tool list is (registry x
     # Settings), never a fixed count. An unwired role gets no dispatch tool (the
     # model cannot pick an agent that does not exist); wiring it in Settings adds its
@@ -539,10 +549,13 @@ def build_tools() -> list:
     # Workspace inspection is always available (it reads the orchestrator's own
     # repo, no wired role needed), so the orchestrator can look before it leaps.
     tools = [list_presets, read_file, list_files, grep_workspace, exec_command]
-    dispatchable = [r for r in _roles.roster() if r.id in wired]
+    # A checker-only build is structurally invalid. Exposing a checker dispatch
+    # made a live model start a valid focused build AND a redundant rejected run.
+    dispatchable = [r for r in _roles.roster()
+                    if r.kind == _roles.BUILDER and r.id in wired]
     tools += [_make_dispatch(r) for r in dispatchable]
-    # run_build is useful only when at least one role can be dispatched.
-    if dispatchable:
+    # A checker-only installation can still use the read-only review preset.
+    if wired:
         tools.append(run_build)
     tools.append(run_status)
     # Always available, even with nothing wired: it reads persisted history, so it
@@ -604,7 +617,7 @@ def suggestions() -> dict[str, list[str]]:
 
 
 def _roster_section() -> str:
-    """The "Your roster" block: one line per SERVED role, naming its dispatch tool,
+    """The "Your roster" block: one line per served role and its scheduling,
     its role id, and what it does. Generated from the registry, and from the
     operator's per-role description (set in Settings) when there is one, so the
     prompt describes the team this deployment actually runs instead of a hardcoded
@@ -614,13 +627,24 @@ def _roster_section() -> str:
         descs = runtime_config.describe_map()
     except Exception:
         descs = {}
-    lines = [f"- {r.dispatch_tool} ({r.id}, {r.label}): {descs.get(r.id) or r.description}"
-             for r in _roles.roster()]
+    wired = _wired_roles()
+    lines = []
+    for role in _roles.roster():
+        if role.kind == _roles.CHECKER:
+            scheduling = "checker; scheduled automatically for each build"
+        elif role.id in wired:
+            scheduling = role.dispatch_tool
+        else:
+            scheduling = "builder; Runtime not connected"
+        lines.append(
+            f"- {role.id} ({role.label}; {scheduling}): "
+            f"{descs.get(role.id) or role.description}")
     if not lines:
         return ""
     return ("\n\n## Your roster (the roles this deployment serves)\n"
-            "Each line is a dispatch tool, the role id behind it, and what that role "
-            "does. An operator-provided description is authoritative. Only these "
+            "Builder dispatch tools already include the independent checker. "
+            "Checkers have no standalone dispatch tool. Each line describes a role "
+            "and its scheduling. An operator-provided description is authoritative. Only these "
             "roles exist:\n" + "\n".join(lines))
 
 

@@ -135,26 +135,22 @@ def test_a_red_gate_comment_says_WHY_on_the_pull_request():
     assert len(body) < 8000, len(body)
 
 
-def test_a_check_that_broke_itself_says_the_builder_has_nothing_to_fix():
-    """A live run posted "round 1 FAILED" then "round 1 PASSED" on the SAME pull
-    request with the SAME patch digest, because the failure was the validator's own
-    format-string bug and the builder was never asked to change anything. Both
-    comments were true and the pair was unreadable, so the red one has to say who it
-    is addressed to."""
+def test_a_suspected_checker_failure_says_a_person_must_inspect_it():
+    """Keep the failed check and identify the human handoff on the pull request."""
     item = types.SimpleNamespace(work_id="work_backend_1", patch_digest="41dd868aaa96")
     body = replay.gate_evidence_comment(
         _run(final_base_branch="main"),
         {"passed": False,
          "summary": "TypeError: %o format: an integer is required, not str"},
-        stage=f"{item.work_id} round 1: check re-authored by the validator",
+        stage=f"{item.work_id} round 1: check requires human review",
         item=item,
-        note=("The failure is in the validator's own check, not in this pull "
-              "request. Its code is unchanged and its builder has nothing to do."),
+        note=("Repair triage found no builder change to request. A person must "
+              "inspect the failed check; the builder has nothing to do."),
         assessment="**Assessment**: Request changes",
     )
     assert "FAILED" in body
-    assert "check re-authored by the validator" in body
-    assert "not in this pull request" in body, body
+    assert "check requires human review" in body
+    assert "A person must inspect" in body, body
     assert "builder has nothing to do" in body, body
     # The note has to come BEFORE the wall of evidence, or nobody reads it.
     assert body.index("nothing to do") < body.index("Assessment"), body
