@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/terminalInput';
 
 /**
  * Module 1 session + PTY client (the dev workspace mount).
@@ -24,7 +25,11 @@ async function pty(sessionId: string, body: unknown) {
   const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/pty`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
-  return r.json();
+  const result = await r.json();
+  if (!r.ok || result.error) {
+    throw new Error(result.error || `Terminal request failed (${r.status}).`);
+  }
+  return result;
 }
 
 // The active session id is remembered per agent in sessionStorage (survives a
@@ -55,6 +60,12 @@ export function useSession() {
   const [workspace, setWorkspace] = useState<string>('~/sample-amazon-bedrock-agentcore-coding-agents');
   const [hasFolder, setHasFolder] = useState<boolean>(true);
   const stream = useRef<EventSource | null>(null);
+  const inputQueue = useRef<{ sid: string; queue: TerminalInputQueue } | null>(null);
+
+  const stopInput = useCallback(() => {
+    inputQueue.current?.queue.stop();
+    inputQueue.current = null;
+  }, []);
 
   // Bind an SSE stream to a session's PTY. offset=0 replays the server's retained
   // scrollback buffer (up to 200 KB), which is what makes a RE-ATTACH show the
@@ -62,15 +73,26 @@ export function useSession() {
   // holds the live stream so a rebind always closes the previous one.
   const bindStream = useCallback((sid: string, onOutput: (s: string) => void) => {
     if (stream.current) stream.current.close();
+    stopInput();
+    inputQueue.current = {
+      sid,
+      queue: createTerminalInputQueue(
+        input => pty(sid, { input }),
+        error => {
+          onOutput(`\r\n\x1b[31mTerminal input stopped: ${error.message}\r\nReload to reconnect before typing again.\x1b[0m\r\n`);
+          setAlive(false);
+        },
+      ),
+    };
     const es = new EventSource(`${S1}/sessions/${encodeURIComponent(sid)}/pty/stream`);
     es.onmessage = (e) => {
       try { const j = JSON.parse(e.data); if (j.output) onOutput(j.output); }
       catch { /* ignore malformed frame */ }
     };
-    es.addEventListener('end', () => { es.close(); setAlive(false); });
+    es.addEventListener('end', () => { es.close(); stopInput(); setAlive(false); });
     es.onerror = () => { /* browser auto-reconnects with Last-Event-ID semantics */ };
     stream.current = es;
-  }, []);
+  }, [stopInput]);
 
   const open = useCallback(async (agentId: string, size: { rows: number; cols: number }, onOutput: (s: string) => void) => {
     const r = await fetch(`${S1}/sessions`, {
@@ -117,7 +139,7 @@ export function useSession() {
   }, [bindStream]);
 
   const send = useCallback((sid: string, input: string) => {
-    pty(sid, { input }).catch(() => {});
+    if (inputQueue.current?.sid === sid) inputQueue.current.queue.send(input);
   }, []);
 
   const resize = useCallback((sid: string, size: { rows: number; cols: number }) => {
@@ -125,9 +147,10 @@ export function useSession() {
   }, []);
 
   const close = useCallback(() => {
+    stopInput();
     if (stream.current) { stream.current.close(); stream.current = null; }
     setAlive(false);
-  }, []);
+  }, [stopInput]);
 
   // Kill a hung shell and respawn a fresh one in the SAME session (same cwd,
   // same staged agent config), without reloading the page. `pty {open}` on the
@@ -138,11 +161,12 @@ export function useSession() {
   const restart = useCallback(async (
     sid: string, size: { rows: number; cols: number }, onOutput: (s: string) => void,
   ) => {
+    stopInput();
     if (stream.current) { stream.current.close(); stream.current = null; }
     await pty(sid, { open: true, resize: size });
     setAlive(true);
     bindStream(sid, onOutput);
-  }, [bindStream]);
+  }, [bindStream, stopInput]);
 
   // VS Code "Open Folder": re-root the session at `path` (~ expands server-side),
   // or close to a no-folder state when `path` is null. The backend closes the PTY,
@@ -152,6 +176,7 @@ export function useSession() {
     sid: string, path: string | null,
     size: { rows: number; cols: number }, onOutput: (s: string) => void,
   ) => {
+    stopInput();
     const r = await fetch(`${S1}/sessions/${encodeURIComponent(sid)}/open-folder`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -173,15 +198,16 @@ export function useSession() {
       setAlive(false);
     }
     return j as { workspace: string; has_folder: boolean };
-  }, [bindStream]);
+  }, [bindStream, stopInput]);
 
   // Close the PTY EventSource when the hook unmounts. The Workspace re-mounts on
   // every environment-tab switch (key={selected}); without this, each old SSE
   // stream stayed open and they piled up to the browser's ~6-per-host limit,
   // freezing the page. One ref, closed once on unmount.
   useEffect(() => () => {
+    stopInput();
     if (stream.current) { stream.current.close(); stream.current = null; }
-  }, []);
+  }, [stopInput]);
 
   return { sessionId, alive, workspace, hasFolder, open, reattach, send, resize, close, restart, openFolder };
 }

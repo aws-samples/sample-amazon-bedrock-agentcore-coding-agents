@@ -21,6 +21,7 @@ import os
 import sys
 import threading
 import uuid
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import Any
@@ -54,6 +55,8 @@ _AGENT_LAUNCH = {
 
 _SHELL_OPEN_ATTEMPTS = 6
 _SHELL_OPEN_RETRY_DELAY_S = 5.0
+_INPUT_TIMEOUT_S = 15.0
+_PASTE_SETTLE_S = 0.8
 
 
 async def _open_shell_when_ready(client: Any, runtime_arn: str, session_id: str,
@@ -235,8 +238,33 @@ class RuntimeShellSession:
         """Paste a multiline orchestrator turn into the same TUI a human sees."""
         import time as _t
         body = text.rstrip("\r\n")
+        before = len(self.buffer)
         self.send_input("\x1b[200~" + body + "\x1b[201~")
-        _t.sleep(0.5)
+        # Completion of WebSocket.send is not completion of the TUI's paste.
+        # Wait for the actual input to paint and settle before sending Enter.
+        # A fixed sleep starting when an un-awaited send was scheduled let a
+        # real Chat build leave its whole prompt unsubmitted, then snapshot an
+        # unchanged worktree as if the builder had finished.
+        deadline = _t.monotonic() + _INPUT_TIMEOUT_S
+        painted = False
+        last_size = before
+        quiet_since = _t.monotonic()
+        while _t.monotonic() < deadline:
+            if not self.alive:
+                raise RuntimeError("Runtime terminal closed before the turn was submitted.")
+            size = len(self.buffer)
+            now = _t.monotonic()
+            if size != last_size:
+                painted = True
+                last_size = size
+                quiet_since = now
+            elif painted and now - quiet_since >= _PASTE_SETTLE_S:
+                break
+            _t.sleep(0.05)
+        else:
+            raise RuntimeError(
+                "Runtime TUI did not confirm a settled paste; the turn was not "
+                "submitted. This is an input transport failure, not an agent result.")
         self.send_input("\r")
 
     def wait_turn_idle(self, quiet_s: float = 20.0,
@@ -276,9 +304,19 @@ class RuntimeShellSession:
                     pass
 
     def send_input(self, text: str):
-        if self._shell and self._loop and self.alive:
-            asyncio.run_coroutine_threadsafe(
-                self._shell.send(text), self._loop)
+        if not (self._shell and self._loop and self.alive):
+            raise RuntimeError("Runtime terminal is not connected.")
+        future = asyncio.run_coroutine_threadsafe(
+            self._shell.send(text), self._loop)
+        try:
+            # The browser's next input request may proceed only after this send.
+            # Never acknowledge input merely queued on the Runtime event loop.
+            future.result(timeout=_INPUT_TIMEOUT_S)
+        except FutureTimeoutError as error:
+            future.cancel()
+            raise RuntimeError(
+                "Runtime input delivery could not be confirmed; input was not retried."
+            ) from error
 
     def send_bytes(self, data: bytes):
         if self._shell and self._loop and self.alive:
@@ -455,15 +493,15 @@ def agent_send(agent_id: str, text: str) -> dict:
     keystrokes (type, brief pause, submit), so we send the body, wait a beat, then
     send a carriage return; otherwise the line sits unsubmitted in the input box.
     Fails loud if no live session is open for the agent."""
-    import time as _t
     s = find_session_for_agent(agent_id)
     if not s:
         return {"error": f"No live session for {agent_id}. Open the agent's terminal first."}
     body = text.rstrip("\r\n")
     s.emit_banner(body)
-    s.send_input(body)      # type the message
-    _t.sleep(0.4)           # let the TUI register the input line
-    s.send_input("\r")      # submit (Enter as its own keystroke)
+    try:
+        s.send_turn(body)
+    except Exception as error:
+        return {"error": str(error), "session_id": s.session_id, "agent_id": agent_id}
     return {"ok": True, "session_id": s.session_id, "agent_id": agent_id}
 
 
@@ -490,7 +528,10 @@ def send_input(session_id: str, text: str) -> dict:
     s = get_session(session_id)
     if not s:
         return {"error": "session not found"}
-    s.send_input(text)
+    try:
+        s.send_input(text)
+    except Exception as error:
+        return {"error": str(error)}
     return {"ok": True}
 
 

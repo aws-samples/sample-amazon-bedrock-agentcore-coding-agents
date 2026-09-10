@@ -494,7 +494,9 @@ async def runtime_session_input(session_id: str, request: Request):
     raw = await request.body()
     body = _json.loads(raw) if raw else {}
     text = body.get("input", "")
-    return JSONResponse(runtime_shell.send_input(session_id, text))
+    # The Runtime acknowledges the send before the browser advances its input
+    # queue. Keep that network wait off the server's SSE/HTTP event loop.
+    return JSONResponse(await run_in_threadpool(runtime_shell.send_input, session_id, text))
 
 
 @app.post("/api/dev/runtime-sessions/{session_id}/resize")

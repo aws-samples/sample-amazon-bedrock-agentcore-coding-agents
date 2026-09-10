@@ -15,7 +15,7 @@ The credential LADDER is now a Gateway config, not a token:
 
   1. env: ``GITHUB_GATEWAY_URL`` (+ ``GITHUB_REPO`` target, optional
      ``GITHUB_GATEWAY_TARGET``)                      (CI / CFN-provisioned event)
-  2. the console Settings pane: the attendee pastes their template-derived repo
+  2. the console Settings pane: the attendee pastes their own app repository's
      ``owner/name`` (NO token); the gateway URL is wired by the workshop.
      Persisted to a gitignored ``.runs/github_gateway.local.json``.
   3. Neither: the PR step fails LOUD with ``PR_NO_GATEWAY`` and ``pr_url`` stays
@@ -63,10 +63,10 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 # The Gateway target name the deploy script creates (deploy-gateway.sh:
 # TARGET_NAME="GitHubMCP"). Gateway namespaces every tool as ``<target>___<tool>``.
 _DEFAULT_TARGET = "GitHubMCP"
-# The canonical workshop TEMPLATE repository: the public code repo itself is a
-# GitHub template. Attendees click "Use this template" on it to get an ISOLATED
-# per-attendee working repo (no fork, no shared credential). Override with
-# WORKSHOP_REPO.
+# The canonical platform source repository, exposed as a reference in Settings.
+# Attendees create a separate private app repository initialized with a README;
+# platform code is not copied into the tree the agents build. Override this source
+# reference with WORKSHOP_REPO.
 WORKSHOP_REPO = os.environ.get(
     "WORKSHOP_REPO",
     "aws-samples/sample-amazon-bedrock-agentcore-coding-agents")
@@ -385,7 +385,7 @@ def save_settings(repo: str, gateway_url: str | None = None,
                   merge_policy_value: str | None = None) -> dict[str, Any]:
     """Persist the Settings-pane gateway connection (ladder rung 2). NO token.
 
-    ``repo`` is the attendee's template-derived repository ``owner/name`` (where
+    ``repo`` is the attendee's app repository ``owner/name`` (where
     the PR lands). ``gateway_url`` is normally wired by the workshop (env), so the
     console may omit it; when present it is saved too.
     """
@@ -428,8 +428,9 @@ def status() -> dict[str, Any]:
         return {"connected": False, "mode": "local", "workshop_repo": WORKSHOP_REPO,
                 "connection_method": "gateway",
                 "merge_policy": merge_policy(),
-                "hint": f"Use the '{WORKSHOP_REPO}' template to create your own repo, "
-                        "then set GITHUB_GATEWAY_URL + GITHUB_REPO (or paste your "
+                "hint": "Create a private GitHub repository with No template and "
+                        "Add README enabled, then set GITHUB_GATEWAY_URL + GITHUB_REPO "
+                        "(or paste your "
                         "owner/repo in Settings once the workshop wires the gateway). "
                         "Until then pre-flight fails before any builder runs."}
     try:
@@ -491,7 +492,7 @@ def doctor() -> dict[str, Any]:
                "gateway URL + owner/repo resolved"
                if cfg else "no gateway URL and/or repo is wired"):
         return done("Export GITHUB_GATEWAY_URL and GITHUB_REPO (the Broker GitHub "
-                    "Tools page, step 6), or paste owner/repo in console Settings. "
+                    "Tools page, step 4), or paste owner/repo in console Settings. "
                     "Until then pre-flight stops before any builder runs.")
     add("repo_shape", bool(_REPO_RE.match(cfg["repo"])),
         f"repo is {cfg['repo']!r}")

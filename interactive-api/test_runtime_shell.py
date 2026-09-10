@@ -166,6 +166,9 @@ class _FakeShellSession:
             return self.buffer[-max_chars:]
     def send_input(self, text):
         self.sent.append(text)
+    def send_turn(self, text):
+        self.sent.append("\x1b[200~" + text + "\x1b[201~")
+        self.sent.append("\r")
 
 
 def _register(session):
@@ -188,7 +191,7 @@ def test_agent_send_banners_then_submits_into_the_same_session(monkeypatch):
         # the human sees a labeled banner in the SAME buffer
         assert "[orchestrator] what is 2+2?" in s.buffer
         # the message body is typed, and Enter is submitted as its OWN keystroke
-        assert s.sent[0] == "what is 2+2?"
+        assert s.sent[0] == "\x1b[200~what is 2+2?\x1b[201~"
         assert s.sent[-1] == "\r"
     finally:
         runtime_shell._sessions.pop(s.session_id, None)
@@ -284,3 +287,73 @@ def test_orchestrator_session_remains_writable_before_and_after_the_turn():
         assert row["run_subdir"] == "run_1/work/frontend"
     finally:
         runtime_shell._sessions.pop(s.session_id, None)
+
+
+def test_turn_waits_for_transport_and_paste_paint_before_enter(monkeypatch):
+    """A delayed send cannot let Enter arrive before the TUI has accepted a paste."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(runtime_shell, "_PASTE_SETTLE_S", 0.02)
+    session = runtime_shell.RuntimeShellSession(
+        "console-input000000000000000000000000000000", "claude-code", _A1)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    accepted = threading.Event()
+    painted = threading.Event()
+    sent = []
+
+    class Shell:
+        async def send(self, text):
+            if text != "\r":
+                while not accepted.is_set():
+                    await asyncio.sleep(0.005)
+                # The transport is done, but the TUI has not painted yet.
+                async def paint():
+                    while not painted.is_set():
+                        await asyncio.sleep(0.005)
+                    session._emit("pasted input")
+                asyncio.create_task(paint())
+            sent.append(text)
+
+    session._loop, session._shell = loop, Shell()
+    try:
+        with ThreadPoolExecutor() as pool:
+            turn = pool.submit(session.send_turn, "first line\nsecond line")
+            time.sleep(0.03)
+            assert sent == []
+            accepted.set()
+            time.sleep(0.03)
+            assert sent == ["\x1b[200~first line\nsecond line\x1b[201~"]
+            assert not turn.done(), "Enter must also wait for the TUI's paint"
+            painted.set()
+            turn.result(timeout=2)
+            assert sent[-1] == "\r"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_unpainted_paste_is_transport_failure_not_completed_work(monkeypatch):
+    monkeypatch.setattr(runtime_shell, "_INPUT_TIMEOUT_S", 0.06)
+    session = runtime_shell.RuntimeShellSession(
+        "console-noecho00000000000000000000000000000", "claude-code", _A1)
+    sent = []
+    monkeypatch.setattr(session, "send_input", sent.append)
+    with pytest.raises(RuntimeError, match="input transport failure"):
+        session.send_turn("a request")
+    assert sent == ["\x1b[200~a request\x1b[201~"], "an unconfirmed paste must not be submitted"
+
+
+def test_disconnected_terminal_does_not_acknowledge_input():
+    session = runtime_shell.RuntimeShellSession(
+        "console-disconnected000000000000000000000000", "claude-code", _A1)
+    _register(session)
+    try:
+        assert runtime_shell.send_input(session.session_id, "command\r") == {
+            "error": "Runtime terminal is not connected."}
+    finally:
+        runtime_shell._sessions.pop(session.session_id, None)

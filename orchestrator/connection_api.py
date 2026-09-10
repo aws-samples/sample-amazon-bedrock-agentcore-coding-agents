@@ -85,13 +85,9 @@ def chat_stream(conversation_id: str, prompt: str, model_id: str | None = None,
     console shows a normal chatbot answer with no run panel. A run is born only
     when the agent calls a dispatch_*/run_build tool; the engine then fails loud
     at pre-flight if the role's runtime is not wired (never a local fake)."""
-    # Guard: refuse to chat when the orchestrator runtime is not wired.
-    if not runtime_config.resolve("orchestrator"):
-        yield {"type": "error",
-               "error": "The orchestrator is not wired. Deploy the coordinator (Lab 2) "
-                        "and wire its runtime ARN before starting a chat."}
-        yield {"type": "done"}
-        return
+    # Chat hosts the coordinator in this process. A separately deployed coordinator
+    # belongs to the CLI path and is not a dependency of this embedded chat.
+    # Dispatch tools and engine pre-flight still require the selected worker ARNs.
     # Propagate user identity into the engine context for audit attribution.
     if user_identity:
         from identity_baggage import UserIdentity, set_current_identity
@@ -288,7 +284,7 @@ def dispatch(method: str, path: str, body: dict | None,
                       else body.get("final_merge_policy"))
             if policy is not None and not body.get("repo"):
                 return 200, github.set_merge_policy(policy)
-            # Gateway model: the attendee supplies their template-derived repo
+            # Gateway model: the attendee supplies their own app repository
             # (owner/name); NO token. The gateway URL is normally wired by the
             # workshop (env), but the console may also pass it.
             out = github.save_settings(body.get("repo", ""),

@@ -10,7 +10,16 @@
  * persist across navigation; their buffers are replayed on return.
  */
 
+import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/terminalInput';
+import { toast } from '../components/ConsoleNotifications';
+
 const API = '/api/dev/runtime-sessions';
+const _inputQueues = new Map<string, TerminalInputQueue>();
+
+function stopInput(id: string) {
+  _inputQueues.get(id)?.stop();
+  _inputQueues.delete(id);
+}
 
 export interface SessionEntry {
   /** Unique per session/tab (the backend runtime session id). */
@@ -132,6 +141,7 @@ export function subscribeOutput(
         // The backend no longer has this session (e.g. dropped on a server
         // restart). Prune the dead tab so a reload doesn't show a stale one.
         es.close();
+        stopInput(id);
         _sessions.delete(id);
         _persist();
         onGone?.();
@@ -140,6 +150,7 @@ export function subscribeOutput(
   };
   es.addEventListener('end', () => {
     es.close();
+    stopInput(id);
     const entry = _sessions.get(id);
     if (entry) entry.alive = false;
   });
@@ -147,11 +158,24 @@ export function subscribeOutput(
 }
 
 export function sendInput(id: string, input: string) {
-  fetch(`${API}/${encodeURIComponent(id)}/input`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ input }),
-  }).catch(() => {});
+  let queue = _inputQueues.get(id);
+  if (!queue) {
+    queue = createTerminalInputQueue(async text => {
+      const response = await fetch(`${API}/${encodeURIComponent(id)}/input`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input: text }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.error || !result.ok) {
+        throw new Error(result.error || `Terminal input failed (${response.status}).`);
+      }
+    }, error => {
+      toast.error(`Terminal input stopped: ${error.message} Reload to reconnect before typing again.`);
+    });
+    _inputQueues.set(id, queue);
+  }
+  queue.send(input);
 }
 
 export function resizeTerminal(id: string, size: { rows: number; cols: number }) {
@@ -175,6 +199,7 @@ export async function closeSession(id: string): Promise<void> {
       throw new Error(result.error || 'The host did not confirm that the terminal closed.');
     }
   }
+  stopInput(id);
   _sessions.delete(id);
   _persist();
 }
@@ -217,6 +242,7 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
   // Prune local tabs the server no longer knows (restart) or that died.
   for (const s of [..._sessions.values()]) {
     if (s.agentId === agentId && !seen.has(s.id)) {
+      stopInput(s.id);
       _sessions.delete(s.id);
       changed = true;
     }

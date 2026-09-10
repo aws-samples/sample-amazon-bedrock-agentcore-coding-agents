@@ -36,9 +36,10 @@ repository directly into the box home, so the customer-reproducible path is exac
 `git clone` of this URL (which yields `~/sample-amazon-bedrock-agentcore-coding-agents`)
 followed by the CLI steps the workshop teaches.
 
-This repository is also a GitHub **template**. In Lab 2 of the workshop you click
-**Use this template -> Create a new repository** to get your own isolated copy (no
-fork, no shared credentials). Each builder opens ONE role pull request against the
+In Lab 2, create a separate **private GitHub repository** for the app your agents
+will build. Choose **No template** and turn **Add README** on so it has an initial
+commit and default branch. This platform repository stays in the workshop's VS Code
+checkout. Each builder opens ONE role pull request against the app
 repository's default branch, and each pull request is checked and reviewed
 on its own. Under the default `human_review` policy, an approved PR stays open
 for a person to merge. There is no combined candidate, merge queue, or separate final
