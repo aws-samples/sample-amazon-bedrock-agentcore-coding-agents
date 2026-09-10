@@ -14,19 +14,17 @@ decides which wired roles run instead of using a fixed fan-out.
   * ``list_presets``      : the example starting points (any request works)
                             (advisory: it suggests which capabilities a task needs).
   * ``dispatch_*``        : generated tools for the roles in the active roster.
-  * ``run_build``         : the composed pipeline; dispatch the routed roles,
-                            compose their work, execute the validator-authored
-                            check, require the integrated read-only review, and report
-                            the PR result.
+  * ``run_build``         : dispatch the routed roles and check, review, and report
+                            each builder's pull request independently.
   * ``run_status``        : read back a run's verdict, gate checks, and PR URL.
 
 The model decides the sequence: clarify if the ask is ambiguous, then either
 dispatch individual agents as tools (subagents-as-tool) or call ``run_build`` for
-the full composed pipeline. The tools do the real work by calling the same
+the full team workflow. The tools do the real work by calling the same
 in-process engine the console drives: each ``dispatch_*`` submits a single-role
-run to that role's DEPLOYED Runtime. ``run_build`` assembles the routed builder
-work and passes the immutable candidate through the validator-authored executable
-and one integrated review that must cover adversarial and design/integration lenses.
+run to that role's DEPLOYED Runtime. Each builder's pull request is checked against
+the current default branch by a validator-authored executable and an independent
+read-only review covering adversarial and design/integration lenses.
 
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs
@@ -59,10 +57,16 @@ for _cand in (os.path.join(_HERE, "orchestrator"),
 
 
 import chat as _chat              # noqa: E402  the orchestrator brain (prompt+tools+agent)
-import session_keepalive as _keepalive  # noqa: E402  keeps this microVM alive mid-build
+from session_activity import ActivityTracker  # noqa: E402
 
 app = BedrockAgentCoreApp()
 log = app.logger
+_activity = ActivityTracker(
+    app,
+    lambda: _chat.ENGINE.active_count(),
+    max_s=_chat._engine.STRANDED_AFTER_S,
+    log=lambda message: log.info("%s", message),
+)
 
 # This file is the thin AgentCore Runtime wrapper: it builds the chat.py agent
 # and streams its turns. The tools are real-only: each dispatch_*/run_build
@@ -103,14 +107,6 @@ async def invoke(payload: dict[str, Any], context: Any = None):
         yield "No prompt found. Send {\"prompt\": \"<your task>\"}."
         return
 
-    # The keepalive ping. Answered HERE, before the agent exists, so it costs no model
-    # turn and touches no run: its only job is to be inbound traffic on this session so
-    # the platform does not reclaim the microVM a fire-and-forget build is running in.
-    # See session_keepalive.py for the measurement that made this necessary.
-    if prompt.strip() == _keepalive.KEEPALIVE_PROMPT:
-        yield "warm"
-        return
-
     # Propagate user identity (Cognito baggage) into the engine context
     user_identity = (payload or {}).get("user_identity")
     if user_identity:
@@ -121,25 +117,17 @@ async def invoke(payload: dict[str, Any], context: Any = None):
             pass
 
     log.info("orchestrator invoked: %s", prompt[:200])
-    # Arm the keepalive for THIS session before the turn runs: a dispatch tool inside the
-    # turn starts a background build that outlives this request, and the session it needs
-    # is the one this request arrived on.
-    session_id = getattr(context, "session_id", None) or ""
-    _keepalive.ensure_started(
-        session_id,
-        lambda: _chat.ENGINE.active_count(),
-        log=lambda msg: log.info("%s", msg),
-        # Keep the session warm for exactly as long as the engine still considers a run
-        # legitimately alive, and not one second longer. STRANDED_AFTER_S is the engine's
-        # own answer to that question (MAX_ITERATIONS rounds of execution plus gate, plus
-        # slack), so the keepalive can neither abandon a healthy build nor hold a microVM
-        # for a run that is stranded by the engine's own reckoning.
-        max_s=getattr(_chat._engine, "STRANDED_AFTER_S", None),
-    )
-    agent = _get_or_create_agent()
-    async for event in agent.stream_async(prompt):
-        if "data" in event and isinstance(event["data"], str):
-            yield event["data"]
+    _activity.ensure_started()
+    try:
+        agent = _get_or_create_agent()
+        async for event in agent.stream_async(prompt):
+            if "data" in event and isinstance(event["data"], str):
+                yield event["data"]
+    finally:
+        # A dispatch may outlive a completed, failed, or disconnected chat turn.
+        # Register it before this response closes; the observer releases it when
+        # all workers finish, without another invocation or model call.
+        _activity.observe()
 
 
 if __name__ == "__main__":

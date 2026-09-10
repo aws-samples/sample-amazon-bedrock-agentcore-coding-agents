@@ -13,6 +13,7 @@ routing projects in that language.
 | File | Purpose |
 |---|---|
 | `main.py` | Runtime HTTP entrypoint and Strands streaming adapter |
+| `session_activity.py` | Register background builds with the Runtime async-task lifecycle |
 | `model/load.py` | Bedrock model construction |
 | `stage_engine.py` | Stage the root coordinator and use cases into the build context |
 | `configure_deploy.py` | Wire role ARNs, IAM roles, and account settings into generated CLI config |
@@ -22,6 +23,14 @@ The model can clarify a request or call `list_presets`, `dispatch_backend`,
 `dispatch_frontend`, `dispatch_validator`, `run_build`, and `run_status`.
 `list_presets` is advisory and starts nothing. Dispatch tools submit work through
 the same `orchestrator/engine.py` used by the console.
+
+A dispatch returns while its build continues in a worker thread.
+`session_activity.py` registers that work with `app.add_async_task()` before the
+chat response closes. The SDK then reports `HealthyBusy` through `/ping`, so the
+idle timer does not reclaim an active build when the caller disconnects.
+The registration is completed once every worker stops, or when the engine's
+execution bound expires. It makes no model calls or self-invocations. An
+actually idle session can still expire; terminal results remain in the run store.
 
 ## Build the generated CLI project
 
@@ -56,4 +65,4 @@ agentcore dev --stream \
 ```
 
 After this succeeds, deploy with `agentcore deploy --yes --json`. The workshop uses the
-attendee's private repository created from this GitHub template for the real PR.
+attendee's private repository for the real PR.
