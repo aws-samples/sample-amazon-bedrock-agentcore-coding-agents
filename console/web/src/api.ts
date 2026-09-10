@@ -537,7 +537,7 @@ export interface GithubStatus {
 export const getGithubStatus = () =>
   get<GithubStatus>('/api/orchestrator/github');
 
-// Connect the PR destination: the attendee's template-derived repo (owner/name).
+// Connect the PR destination: the attendee's app repository (owner/name).
 // NO token. The gateway URL is normally wired by the workshop (env); the console
 // may also pass it explicitly.
 export const saveGithubCredential = (params: {

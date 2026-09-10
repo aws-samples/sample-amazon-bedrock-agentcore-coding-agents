@@ -333,6 +333,9 @@ _REVIEW_RESPONSE_CONTRACT = (
     '"adversarial_assessment": "<concise markdown findings>", '
     '"design_assessment": "<concise markdown findings>"}\n'
     "Both assessment fields are required, even when they report no finding. "
+    "reasons lists concrete unresolved defects, never approval rationale. "
+    "Use an empty reasons array only when neither lens found a defect. Every "
+    "confirmed defect described in either assessment must also appear in reasons. "
     "Set approve=false when EITHER lens finds a material defect. "
     "An approval must identify concrete usage evidence for the work id under "
     "review. Evidence must say how that contribution participates in the running "
@@ -358,7 +361,11 @@ _INTEGRATED_REVIEW_SYSTEM = (
     "produces and what its counterpart consumes is a material defect even when the "
     "executable passed, because a check can exercise one side alone. Look for edge "
     "cases, persistence failures, security defects, dead paths, and checks that "
-    "prove only existence or build success.\n"
+    "prove only existence or build success. Follow the primary user interactions "
+    "through their state transitions as well as the API: duplicate writes, "
+    "unreachable controls, and misleading application state affect correctness. "
+    "Do not excuse a confirmed behavioral defect because the executable or the "
+    "HTTP contract did not cover it.\n"
     "2. Design and integration: verify that this pull request stays inside its own "
     "ownership, that what it contributes is actually reachable and used, that it "
     "matches the shared contract, and that it composes with the base branch as it "
@@ -367,7 +374,9 @@ _INTEGRATED_REVIEW_SYSTEM = (
     "accessibility where relevant, and maintainability at the requested scope.\n"
     "Judge THIS pull request, not whether the whole project is finished: a sibling "
     "role's pull request may still be open, and its absence is not a defect in this "
-    "one. Do not demand a particular framework, filename, or layout.\n\n"
+    "one. Assess deployment against the requested environment; do not invent an "
+    "additional deployment topology or require external network exposure that was "
+    "never requested. Do not demand a particular framework, filename, or layout.\n\n"
     + _REVIEW_RESPONSE_CONTRACT
 )
 
@@ -391,6 +400,15 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
     parsed = json.loads(text[start:end + 1])
     if not isinstance(parsed, dict) or "approve" not in parsed:
         raise ValueError("reviewer response has no approve verdict")
+    if not isinstance(parsed["approve"], bool):
+        raise ValueError("reviewer approve verdict must be a JSON boolean")
+    raw_reasons = parsed.get("reasons")
+    if not isinstance(raw_reasons, list) or any(
+        not isinstance(reason, str) or not reason.strip()
+        for reason in raw_reasons
+    ):
+        raise ValueError("reviewer reasons must be an array of nonempty defect strings")
+    reasons = [reason.strip() for reason in raw_reasons][:5]
 
     raw_evidence = parsed.get("work_item_evidence")
     evidence = {
@@ -400,7 +418,9 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
         )
         if str(detail).strip()
     }
-    approve = bool(parsed.get("approve"))
+    # The model decides which defects exist. Its approval flag cannot erase a
+    # finding it recorded, just as it cannot turn a red executable green.
+    approve = parsed["approve"] and not reasons
     missing = [
         work_id for work_id in required_work_ids
         if not evidence.get(work_id)
@@ -452,7 +472,7 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
 
     return {
         "approve": approve,
-        "reasons": [str(r) for r in (parsed.get("reasons") or [])][:5],
+        "reasons": reasons,
         "work_item_evidence": evidence,
         "adversarial_assessment": adversarial,
         "design_assessment": design,
@@ -673,13 +693,27 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
             + json.dumps(context, indent=2))
     except Exception:
         pass
-    # Hand the judge the run's actual changed artifacts before any unchanged base
-    # files. The complete changed-path inventory above remains visible even when a
-    # large generated project exceeds the content excerpt budget.
+    # Hand over complete source files. Silent 3,000-character prefixes made a
+    # live reviewer claim a getter and CSS rules were missing when they were
+    # present later in the same files. Exceeding the bounded context is our
+    # review limitation, never a defect for the builder to repair.
+    remaining = _MAX_JUDGE_CONTENT_CHARS
     for label, path in _artifact_files(run, subject):
+        if not path:
+            record = _review_record(
+                INTEGRATED_REVIEW_MODEL,
+                note=f"source inventory exceeds the review context limit: {label}")
+            return _combine_review(gate, record, None)
         if path and os.path.isfile(path):
             with open(path, encoding="utf-8", errors="replace") as f:
-                parts.append(f"--- {label} ---\n{f.read()[:3000]}")
+                content = f.read(remaining + 1)
+            if len(content) > remaining:
+                record = _review_record(
+                    INTEGRATED_REVIEW_MODEL,
+                    note=f"complete source exceeds the review context limit at {label}")
+                return _combine_review(gate, record, None)
+            parts.append(f"--- {label} ---\n{content}")
+            remaining -= len(content)
     base_prompt = (
         "Review this pull request through both required lenses. Do not trust a "
         "builder's self-assessment or infer success from the green gate alone.\n\n"
@@ -701,6 +735,7 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
 
 
 _MAX_JUDGE_FILES = 48
+_MAX_JUDGE_CONTENT_CHARS = 192_000
 
 
 def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
@@ -736,44 +771,40 @@ def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
     # base it sits on.
     changed = sorted(getattr(subject, "changed_files", None) or []) if subject else []
     for rel in changed:
-        if len(files) >= _MAX_JUDGE_FILES:
-            break
         full = os.path.join(root, *rel.replace("\\", "/").split("/"))
         if not os.path.isfile(full) or os.path.abspath(full) in seen:
             continue
+        if len(files) >= _MAX_JUDGE_FILES:
+            files.append((
+                f"NOTE: changed-path contents exceed {_MAX_JUDGE_FILES} files; "
+                "the complete inventory is in the provenance above", ""))
+            return files
         seen.add(os.path.abspath(full))
         label = (f"{subject.work_id} ({subject.capability}) changed {rel}"
                  if subject is not None else rel)
         files.append((label, full))
-
-    if len(files) >= _MAX_JUDGE_FILES:
-        files.append((
-            f"NOTE: changed-path contents were capped at {_MAX_JUDGE_FILES}; "
-            "the complete inventory is in the provenance above",
-            "",
-        ))
-        return files
 
     # Fill the remaining budget from the tree, so a read-only review of an older run
     # (which carries no per-item provenance) still sees real code.
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
             d for d in dirnames
-            if not d.startswith(".") and d != "__pycache__")
+            if not d.startswith(".")
+            and d not in {"__pycache__", "node_modules", "venv"})
         for fn in sorted(filenames):
             full = os.path.join(dirpath, fn)
             if os.path.abspath(full) in seen:
                 continue
-            seen.add(os.path.abspath(full))
-            rel = os.path.relpath(full, root)
-            files.append((f"on the base branch: {rel}", full))
             if len(files) >= _MAX_JUDGE_FILES:
                 files.append((
-                    f"NOTE: artifact contents were capped at {_MAX_JUDGE_FILES}; "
+                    f"NOTE: artifact contents exceed {_MAX_JUDGE_FILES} files; "
                     "the complete changed-path inventory is in the provenance above",
                     "",
                 ))
                 return files
+            seen.add(os.path.abspath(full))
+            rel = os.path.relpath(full, root)
+            files.append((f"on the base branch: {rel}", full))
     return files
 
 

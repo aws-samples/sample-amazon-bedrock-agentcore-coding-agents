@@ -155,7 +155,7 @@ export function SettingsPage() {
               <Button variant="primary" formAction="submit" loading={busy === 'repository'} disabled={loading || !!busy}>Save repository</Button>
             </SpaceBetween> : undefined}>
             <SpaceBetween size="l">
-              <FormField label="Repository" description="Use the repository created from the workshop template." constraintText="Format: owner/repository">
+              <FormField label="Repository" description="Use your private app repository, initialized with a README." constraintText="Format: owner/repository">
                 <Input value={repo} onChange={({ detail }) => setRepo(detail.value)} placeholder="owner/repository"
                   disabled={loading || !!busy || github?.source === 'environment'} autoComplete={false} />
               </FormField>

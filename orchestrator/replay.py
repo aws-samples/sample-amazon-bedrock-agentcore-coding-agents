@@ -318,9 +318,12 @@ def gate_evidence_comment(
     excerpt = _check_excerpt(run, item)
     if excerpt:
         body, total = excerpt
+        shown = len(body.splitlines())
+        head = (f"Check source excerpt (first {shown} of {total} lines)"
+                if shown < total else f"Check source excerpt ({total} lines)")
         lines += [
             "",
-            f"<details><summary>The check that ran ({total} lines)</summary>",
+            f"<details><summary>{head}</summary>",
             "", "```", body, "```", "</details>",
         ]
     if assessment:
@@ -415,10 +418,10 @@ def narrative(run: Any) -> str:
     hit = _check_excerpt(run)
     if hit:
         excerpt, total = hit
-        more = (f"\n\n_(first {_CHECK_HEAD_LINES} of {total} lines; the full check "
-                "ships in this pull request so you can re-run the exact gate.)_"
+        more = (f"\n\n_(first {_CHECK_HEAD_LINES} of {total} lines from the executed "
+                "check; this comment contains an excerpt.)_"
                 if total > _CHECK_HEAD_LINES else
-                "\n\n_(the full check ships in this pull request.)_")
+                "\n\n_(source excerpt from the executed check.)_")
         parts.append(f"\n<details><summary>The check that ran</summary>\n\n"
                      f"```\n{excerpt}\n```{more}\n\n</details>")
 

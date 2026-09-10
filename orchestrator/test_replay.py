@@ -179,6 +179,11 @@ def test_a_long_check_is_excerpted_not_pasted():
     body = replay.narrative(_run(_acceptance_test_file=path))
     assert "line 5" in body and "line 190" not in body, "the whole file was pasted"
     assert "200 lines" in body, "the excerpt does not say how much was withheld"
+    assert "full check ships in this pull request" not in body
+    comment = replay.gate_evidence_comment(
+        _run(_acceptance_test_file=path),
+        {"passed": True, "summary": "ACCEPT"}, stage="round 1")
+    assert "Check source excerpt (first 22 of 200 lines)" in comment
 
 
 def test_a_single_round_run_does_not_narrate_a_loop_that_did_not_happen():

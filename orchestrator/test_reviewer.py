@@ -532,6 +532,118 @@ def test_integrated_review_requires_both_lens_sections():
         reviewer._parse_judge_response(response, [])
 
 
+def test_approval_cannot_erase_a_recorded_behavioral_defect(monkeypatch, tmp_path):
+    """The approval flag cannot override the model's own structured finding."""
+    import llm
+
+    run, backend, _frontend = _seam_mismatch_run(tmp_path)
+    finding = "Pressing Enter after a successful save submits the same score again."
+    payload = {
+        "approve": True,
+        "reasons": [finding],
+        "work_item_evidence": {backend.work_id: "The browser submits to the score API."},
+        "adversarial_assessment": finding,
+        "design_assessment": "Persistence and the API are integrated.",
+    }
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(
+        llm, "invoke",
+        lambda *a, **k: {"model_id": "m", "text": json.dumps(payload)})
+
+    verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=backend)
+    assert verdict.state == "changes_requested"
+    assert verdict.lgtm is False
+    assert verdict.review_unavailable is False
+    assert finding in " ".join(verdict.reasons)
+    assert LGTM_TOKEN not in verdict.assessment
+    assert verdict.panels[0]["state"] == "changes_requested"
+
+
+def test_review_reads_definitions_beyond_the_old_prefix_limit(monkeypatch, tmp_path):
+    """A live getter was at character 4,390; the 3,000-char prefix hid it."""
+    import llm
+
+    run, backend, _frontend = _seam_mismatch_run(tmp_path)
+    tree = tmp_path / backend.work_id
+    code = "/*" + (" context " * 500) + "*/\n"
+    code += "export const isSubmitted = state => state.scoreSubmitted;\n"
+    (tree / "web" / "ui.js").write_text(code)
+    for directory in ("node_modules", "venv"):
+        dependency = tree / directory / "dependency.js"
+        dependency.parent.mkdir()
+        dependency.write_text("dependency cache should not consume review context")
+    prompts = []
+
+    def invoke(_model, prompt, **_kwargs):
+        prompts.append(prompt)
+        return {"model_id": "m", "text": json.dumps({
+            "approve": True, "reasons": [],
+            "work_item_evidence": {backend.work_id: "The UI reads the saved state."},
+            "adversarial_assessment": "The complete getter is present.",
+            "design_assessment": "The UI consumes the stored state.",
+        })}
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "invoke", invoke)
+    review = reviewer._default_judge(run, _GREEN_GATE, backend)
+    assert review["approve"] is True
+    assert len(prompts) == 1
+    assert code in prompts[0]
+    assert "dependency cache should not consume review context" not in prompts[0]
+
+
+@pytest.mark.parametrize("limit", ["characters", "files"])
+def test_incomplete_review_context_is_unavailable_not_a_builder_finding(
+        monkeypatch, tmp_path, limit):
+    import llm
+
+    run, backend, _frontend = _seam_mismatch_run(tmp_path)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(
+        llm, "invoke",
+        lambda *a, **k: pytest.fail("an incomplete source tree must not be judged"))
+    if limit == "characters":
+        monkeypatch.setattr(reviewer, "_MAX_JUDGE_CONTENT_CHARS", 12)
+    else:
+        monkeypatch.setattr(reviewer, "_MAX_JUDGE_FILES", 1)
+
+    verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=backend)
+    assert verdict.lgtm is False
+    assert verdict.review_unavailable is True
+    assert "review context limit" in " ".join(verdict.reasons)
+    assert "no builder is sent back" in verdict.assessment
+
+
+def test_exact_file_limit_does_not_claim_source_was_omitted(monkeypatch, tmp_path):
+    run, backend, _frontend = _seam_mismatch_run(tmp_path)
+    monkeypatch.setattr(reviewer, "_MAX_JUDGE_FILES", 2)
+    files = reviewer._artifact_files(run, backend)
+    assert len(files) == 2
+    assert all(path for _label, path in files)
+
+
+@pytest.mark.parametrize("approve", ["false", "true", 0, 1, None, [], {}])
+def test_review_verdict_requires_a_real_json_boolean(approve):
+    response = json.dumps({
+        "approve": approve, "reasons": [], "work_item_evidence": {},
+        "adversarial_assessment": "No defect found.",
+        "design_assessment": "No defect found.",
+    })
+    with pytest.raises(ValueError, match="JSON boolean"):
+        reviewer._parse_judge_response(response, [])
+
+
+@pytest.mark.parametrize("reasons", [None, "", "defect", {}, [""], [False]])
+def test_review_findings_cannot_be_lost_through_a_malformed_array(reasons):
+    response = json.dumps({
+        "approve": True, "reasons": reasons, "work_item_evidence": {},
+        "adversarial_assessment": "No defect found.",
+        "design_assessment": "No defect found.",
+    })
+    with pytest.raises(ValueError, match="reasons must be an array"):
+        reviewer._parse_judge_response(response, [])
+
+
 def test_reasons_feed_the_reimplement_loop():
     """The engine forwards verdict.reasons into the next round's role prompts:
     the loop's feedback channel is the structured reasons, not a committed file."""
