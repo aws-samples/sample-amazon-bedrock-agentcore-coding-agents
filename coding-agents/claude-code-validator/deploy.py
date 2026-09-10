@@ -73,6 +73,9 @@ SECURITY_GROUP = infra["INFRA_SECURITY_GROUP"]
 # and records it in infra.config. Empty -> deploy MOUNTLESS; re-running deploy.py
 # after it is set attaches the mount via update_agent_runtime.
 S3FILES_AP_ARN = infra.get("INFRA_S3FILES_AP_ARN", "")
+# Bootstrap may prepare the Runtime's VPC networking before S3 Files mount
+# targets are available. Keep IAM scoped to the real AP; defer only attachment.
+MOUNT_AP_ARN = "" if os.environ.get("WORKSHOP_DEFER_MOUNT") == "1" else S3FILES_AP_ARN
 
 # ONE region per workshop, enforced rather than documented. The access point ARN
 # carries the region it was created in, so if the mount and this Runtime disagree the
@@ -130,7 +133,7 @@ print("=" * 60)
 print(f"Deploying {AGENT_NAME} to AgentCore Runtime")
 print(f"  Region:      {REGION}")
 print(f"  Image:       {ECR_URI}")
-print(f"  S3 Files:    {S3FILES_AP_ARN}")
+print(f"  S3 Files:    {MOUNT_AP_ARN or '(not attached)'}")
 print("=" * 60)
 
 
@@ -392,11 +395,11 @@ def deploy_runtime(role_arn: str) -> dict:
     # filesystemConfigurations only when there is an AP, so a mountless deploy omits
     # the key entirely rather than sending an empty list.
     fs_kwargs = {}
-    if S3FILES_AP_ARN:
+    if MOUNT_AP_ARN:
         fs_kwargs["filesystemConfigurations"] = [
             {
                 "s3FilesAccessPoint": {
-                    "accessPointArn": S3FILES_AP_ARN,
+                    "accessPointArn": MOUNT_AP_ARN,
                     "mountPath": S3FILES_MOUNT_PATH,
                 }
             }
@@ -502,7 +505,7 @@ def main():
         "runtime_arn": runtime["runtime_arn"],
         "region": REGION,
         "ecr_uri": ECR_URI,
-        "s3files_access_point_arn": S3FILES_AP_ARN,
+        "s3files_access_point_arn": MOUNT_AP_ARN,
         "s3files_mount_path": S3FILES_MOUNT_PATH,
     }
 
@@ -513,7 +516,7 @@ def main():
     print("\n" + "=" * 60)
     print("Deployment complete!")
     print(f"  Runtime ARN: {runtime['runtime_arn']}")
-    print(f"  S3 Files:    {S3FILES_MOUNT_PATH}")
+    print(f"  S3 Files:    {S3FILES_MOUNT_PATH if MOUNT_AP_ARN else '(not attached)'}")
     print("  Config:      claude-code-validator/runtime_config.json")
     print("\n  Connect: python claude-code-validator/connect.py")
     print("=" * 60)

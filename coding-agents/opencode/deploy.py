@@ -70,6 +70,9 @@ SUBNET_1 = infra.get("INFRA_SUBNET_1", "")
 SUBNET_2 = infra.get("INFRA_SUBNET_2", "")
 SECURITY_GROUP = infra.get("INFRA_SECURITY_GROUP", "")
 S3FILES_AP_ARN = infra.get("INFRA_S3FILES_AP_ARN", "")
+# Bootstrap may prepare the Runtime's VPC networking before S3 Files mount
+# targets are available. Keep IAM scoped to the real AP; defer only attachment.
+MOUNT_AP_ARN = "" if os.environ.get("WORKSHOP_DEFER_MOUNT") == "1" else S3FILES_AP_ARN
 
 # ONE region per workshop, enforced rather than documented. The access point ARN
 # carries the region it was created in, so if the mount and this Runtime disagree the
@@ -417,11 +420,11 @@ def deploy_runtime(role_arn: str) -> dict:
     # Attach the S3 Files mount only when the access point is known (mountless until
     # the attendee creates it in Stage 1; re-running deploy.py then attaches it).
     fs_kwargs = {}
-    if S3FILES_AP_ARN:
+    if MOUNT_AP_ARN:
         fs_kwargs["filesystemConfigurations"] = [
             {
                 "s3FilesAccessPoint": {
-                    "accessPointArn": S3FILES_AP_ARN,
+                    "accessPointArn": MOUNT_AP_ARN,
                     "mountPath": S3FILES_MOUNT_PATH,
                 }
             }
@@ -532,7 +535,7 @@ def main():
     print(f"Deploying {AGENT_NAME} to AgentCore Runtime")
     print(f"  Region:      {REGION}")
     print(f"  Image:       {ECR_URI}")
-    print(f"  S3 Files:    {S3FILES_AP_ARN}")
+    print(f"  S3 Files:    {MOUNT_AP_ARN or '(not attached)'}")
     if GATEWAY_URL:
         print(f"  Gateway URL: {GATEWAY_URL}")
     print("=" * 60)
@@ -546,7 +549,7 @@ def main():
         "runtime_arn": runtime["runtime_arn"],
         "region": REGION,
         "ecr_uri": ECR_URI,
-        "s3files_access_point_arn": S3FILES_AP_ARN,
+        "s3files_access_point_arn": MOUNT_AP_ARN,
         "s3files_mount_path": S3FILES_MOUNT_PATH,
     }
 
@@ -557,7 +560,7 @@ def main():
     print("\n" + "=" * 60)
     print("Deployment complete!")
     print(f"  Runtime ARN: {runtime['runtime_arn']}")
-    print(f"  S3 Files:    {S3FILES_MOUNT_PATH}")
+    print(f"  S3 Files:    {S3FILES_MOUNT_PATH if MOUNT_AP_ARN else '(not attached)'}")
     print("  Config:      opencode/runtime_config.json")
     print("\n  Connect: python opencode/connect.py")
     print("=" * 60)
