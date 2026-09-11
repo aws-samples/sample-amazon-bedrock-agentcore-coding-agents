@@ -32,37 +32,28 @@ The registration is completed once every worker stops, or when the engine's
 execution bound expires. It makes no model calls or self-invocations. An
 actually idle session can still expire; terminal results remain in the run store.
 
-## Build the generated CLI project
+## Deploy the coordinator
 
-Follow the Workshop Studio page **Deploy the Multi-Agent Coordinator**. The
-essential sequence is:
+Complete Lab 1 and the GitHub Gateway setup first. In the terminal where
+`GITHUB_GATEWAY_URL`, `GITHUB_REPO`, and `AWS_REGION` are set, run:
 
 ```bash
 cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent
-python3 stage_engine.py
-
-cd ~/sample-amazon-bedrock-agentcore-coding-agents
-agentcore create --name CodingAgents --no-agent --skip-git
-cd CodingAgents
-agentcore add agent --name orchestrator --type byo --build Container \
-  --language Python --framework Strands --model-provider Bedrock \
-  --code-location ../orchestrator-agent --entrypoint main.py --protocol HTTP
+./deploy-coordinator.sh
 ```
 
-`configure_deploy.py` then writes the three deployed role ARNs and the
-CloudFormation execution roles to `CodingAgents/agentcore/agentcore.json`.
-Generated AgentCore project files remain untracked.
+The script prints the wiring, stages the engine, creates the CLI project, and
+runs `configure_deploy.py` before validation and deployment. Configuration
+includes the worker ARNs, execution roles, account, region, repository, and merge
+policy. Generated files under `CodingAgents/` stay untracked.
 
-Before dispatching a build, verify the container with a read-only request:
+The closing read-only probe asks the deployed coordinator which roles
+`add-a-feature` uses. It should answer without creating a run.
 
-```bash
-cd ~/sample-amazon-bedrock-agentcore-coding-agents/CodingAgents
-agentcore dev --logs
-# In another terminal:
-cd ~/sample-amazon-bedrock-agentcore-coding-agents/CodingAgents
-agentcore dev --stream \
-  "Call list_presets and tell me which roles add-a-feature uses. Do not dispatch."
-```
-
-After this succeeds, deploy with `agentcore deploy --yes --json`. The workshop uses the
-attendee's private repository for the real PR.
+Export model settings before running the script. It forwards the stack's
+`WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_OPENCODE_MODEL`, and `WORKSHOP_SMALL_MODEL`
+values into the coordinator process. `ORCHESTRATOR_MODEL_ID` independently
+selects the coordinator's chat model. Existing `WORKSHOP_MODEL` and
+`WORKSHOP_MODEL_<ROLE>` overrides still take precedence for role dispatch;
+per-request model choices take precedence over those. Blank named defaults
+are omitted. Credentials are not copied from the host environment.

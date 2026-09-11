@@ -1,6 +1,9 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -115,6 +118,56 @@ def test_unset_roster_override_is_not_forwarded(monkeypatch, tmp_path):
     env = _configure(monkeypatch, tmp_path)
     assert "WORKSHOP_ROLES" not in env
     assert "WORKSHOP_KIRO_MODEL" not in env
+
+
+def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp_path):
+    """The host's stack model parameters must survive the deployment boundary."""
+    settings = {
+        "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-sonnet-4-6",
+        "WORKSHOP_OPENCODE_MODEL": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "WORKSHOP_SMALL_MODEL": "us.anthropic.claude-sonnet-4-6",
+        "ORCHESTRATOR_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("KIRO_API_KEY", "must-not-enter-the-coordinator")
+    env = _configure(monkeypatch, tmp_path)
+    assert {name: env.get(name) for name in settings} == settings
+    assert "KIRO_API_KEY" not in env
+
+    # Inheriting the host's model variables would conceal the deployment bug.
+    child_env = {
+        name: value for name, value in os.environ.items()
+        if name not in settings and name != "KIRO_API_KEY"
+    }
+    child_env.update(env)
+    child_env["PYTHONPATH"] = str(HERE.parent / "orchestrator")
+    result = subprocess.check_output(
+        [sys.executable, "-c",
+         "import json, roles; print(json.dumps({"
+         "role: roles.get(role).default_model "
+         "for role in ('claude-code', 'opencode')}))"],
+        env=child_env, text=True,
+    )
+    assert json.loads(result) == {
+        "claude-code": settings["WORKSHOP_CLAUDE_MODEL"],
+        "opencode": settings["WORKSHOP_OPENCODE_MODEL"],
+    }
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_absent_model_settings_keep_coordinator_defaults(monkeypatch, tmp_path, value):
+    names = (
+        "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_OPENCODE_MODEL",
+        "WORKSHOP_SMALL_MODEL", "ORCHESTRATOR_MODEL_ID",
+    )
+    for name in names:
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    env = _configure(monkeypatch, tmp_path)
+    assert not set(names).intersection(env)
 
 
 def _write_infra(root, *, region="us-west-2", account="123456789012",

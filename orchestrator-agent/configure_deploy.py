@@ -130,6 +130,17 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     for var, value in os.environ.items():
         if var == "WORKSHOP_MODEL" or var.startswith("WORKSHOP_MODEL_"):
             env[var] = value
+    # CFN exports role defaults under different names from per-request overrides.
+    # The deployed process imports roles.py afresh; without these values it
+    # silently returns to the package defaults instead of the stack's models.
+    # Forward only named model settings, never the host's whole environment.
+    for var in (
+        "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_OPENCODE_MODEL",
+        "WORKSHOP_SMALL_MODEL", "ORCHESTRATOR_MODEL_ID",
+    ):
+        value = os.environ.get(var, "").strip()
+        if value:
+            env[var] = value
     # WORKSHOP_ROLES rides in for the same reason, and its absence was a REAL defect:
     # the roster is read from the coordinator's OWN process env (roles.roster()), so a
     # facilitator who exported the documented Kiro fallback
