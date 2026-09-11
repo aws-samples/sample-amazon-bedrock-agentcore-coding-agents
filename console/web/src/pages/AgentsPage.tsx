@@ -19,7 +19,7 @@ import { Terminal, type TerminalHandle } from '../components/Terminal';
 import { getRuntimes, wireRuntime, type RuntimeStatus } from '../api';
 import { agentRoles, loadAgentRoles, type AgentRole } from './agents/environments';
 import {
-  getSessions, openSession, subscribeOutput, sendInput, resizeTerminal, getBuffer, closeSession,
+  getSessions, openSession, subscribeOutput, sendInput, resizeTerminal, closeSession,
   syncServerSessions, type SessionEntry,
 } from '../hooks/useSessionStore';
 
@@ -254,9 +254,8 @@ function AgentTerminal({ sessionId, fullHeight = false, active = true,
       const size = termRef.current?.fit() ?? { rows: 24, cols: 80 };
       resizeTerminal(sessionId, size);
     }
-    const buf = getBuffer(sessionId);
-    if (buf) termRef.current?.write(buf);
-    unsubRef.current = subscribeOutput(sessionId, (s) => termRef.current?.write(s), () => onGone?.());
+    unsubRef.current = subscribeOutput(
+      sessionId, (s, replay) => termRef.current?.write(s, replay), () => onGone?.());
     if (active) termRef.current?.focus();
     return () => { unsubRef.current?.(); unsubRef.current = null; mounted.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

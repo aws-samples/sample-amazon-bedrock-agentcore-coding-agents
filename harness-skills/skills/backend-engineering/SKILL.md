@@ -138,6 +138,12 @@ guaranteed route to the public internet.
   DOM elements moved by timers; respond to the keyboard without lag; show the controls
   on screen; give it a start state, a running score, a game-over state with the final
   score, a way to enter a name and submit it, and a restart.
+- **Controls must respect the current interaction.** Gameplay shortcuts must leave
+  focused inputs, editable content, and ordinary button activation usable. Follow a
+  person from play to name entry, submission, failure, and the next round. Repeated
+  clicks or Enter presses while saving must not create duplicate records; a failed
+  save must allow a deliberate retry. Verify the event handlers and state transitions,
+  not only the HTTP endpoint they eventually call.
 - **The high-score table is real, and it has a conventional address.** It is shown on
   the page, persisted so it survives a restart of the service, and read and written
   through your API at a `scores` route relative to the page. `GET` returns a JSON array

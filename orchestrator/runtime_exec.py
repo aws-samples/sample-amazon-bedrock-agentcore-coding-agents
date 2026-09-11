@@ -569,7 +569,7 @@ def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
 async def _drive_shell(runtime_arn: str, command: str, region: str,
                        on_line: Callable[[str], None] | None,
                        timeout_s: float, session_id: str) -> dict[str, Any]:
-    """Open the shell, send the command, capture STDOUT until CLOSE/STATUS."""
+    """Run in a PTY and capture the command's actual exit code."""
     from bedrock_agentcore.runtime.shell import ShellChannel  # noqa: PLC0415
     client = _client(region)
     shell_id = str(uuid.uuid4())
@@ -645,15 +645,23 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
         # dropping the last thing the role said.
         if on_line and pending:
             on_line(_clean(pending))
-    return {"raw": "".join(out), "exit": exit_code if exit_code is not None else 0,
+        # SDK versions can consume the termination frame and expose its result
+        # on the shell. CLOSE alone means eviction/disconnection, never success.
+        if exit_code is None and type(getattr(shell, "exit_code", None)) is int:
+            exit_code = shell.exit_code
+    if exit_code is None:
+        raise RoleExecutionError(
+            "ROLE_EXECUTION_ERROR: runtime shell closed without a command exit code; "
+            "execution success is unknown")
+    return {"raw": "".join(out), "exit": exit_code,
             "session_id": session_id}
 
 
-def _exit_from_status(frame: Any) -> int:
-    """Best-effort exit code from a STATUS frame (shape varies by SDK build)."""
+def _exit_from_status(frame: Any) -> int | None:
+    """Read the Runtime shell's metav1.Status, never inventing a zero exit."""
     for attr in ("exit_code", "exitCode"):
         v = getattr(frame, attr, None)
-        if isinstance(v, int):
+        if type(v) is int:
             return v
     try:
         payload = frame.payload
@@ -661,12 +669,22 @@ def _exit_from_status(frame: Any) -> int:
             payload = payload.decode("utf-8", "replace")
         if isinstance(payload, str) and payload.strip():
             data = json.loads(payload)
+            # The wire protocol uses Kubernetes Status: non-zero exits live in
+            # details.causes, not a top-level integer. A live Python import
+            # failure was reported as success because that shape fell through.
+            if data.get("metadata", {}).get("shellId"):
+                return None  # connection confirmation, not process completion
+            if data.get("status") == "Success":
+                return 0
+            for cause in data.get("details", {}).get("causes", []):
+                if cause.get("reason") == "ExitCode":
+                    return int(cause["message"])
             for k in ("exitCode", "exit_code", "status"):
-                if isinstance(data.get(k), int):
+                if type(data.get(k)) is int:
                     return data[k]
     except Exception:  # noqa: BLE001 (status parsing is best-effort)
         pass
-    return 0
+    return None
 
 
 def _slice(raw: str, begin: str, end: str) -> str:

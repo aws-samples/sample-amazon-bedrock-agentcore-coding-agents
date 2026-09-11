@@ -78,6 +78,19 @@ State persists across inputs (env, cwd, files in `/mnt/s3files`); that's the Run
 ### `GET /api/sessions/{session_id}`  (session state + recent output buffer)
 Returns a **Session** (with `history`).
 
+### Terminal streams in Agent Studio
+
+`GET /api/dev/sessions/{session_id}/pty/stream` streams the Development PTY.
+`GET /api/dev/runtime-sessions/{session_id}/stream` streams a Runtime PTY.
+
+The first output snapshot is marked `replay: true`, including an empty snapshot.
+Clients reset their terminal and disable outgoing input while parsing that
+history. Otherwise old terminal capability queries can inject replies into the
+live shell. Subsequent output is live and retains normal query responses.
+The Runtime subscribes to new output and snapshots history under one lock.
+Development sessions use absolute byte offsets so a full rolling buffer does
+not stop their stream.
+
 ### `GET /api/sessions/{session_id}/tools`  (tools/list of the agent's MCP server)
 Response `200 {"tools":[ ... ]}` (empty until a conversion has run).
 

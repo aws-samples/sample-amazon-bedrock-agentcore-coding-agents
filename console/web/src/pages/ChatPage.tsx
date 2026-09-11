@@ -35,7 +35,7 @@ import { onAgentRoles, agentInstanceLabel, type AgentRole } from './agents/envir
 import { RunActivityRows } from '../components/RunActivityRows';
 import { useAutoScroll } from '../hooks/useAutoScroll';
 import { Terminal, type TerminalHandle } from '../components/Terminal';
-import { subscribeOutput, getBuffer } from '../hooks/useSessionStore';
+import { subscribeOutput } from '../hooks/useSessionStore';
 
 // Human-readable label for a run's CURRENT phase: a straight rename of the real
 // engine phase id (run.phase), not invented narration.
@@ -643,11 +643,9 @@ function LiveSessionPane({ sessionId }: { sessionId: string }) {
   const termRef = useRef<TerminalHandle>(null);
   const [gone, setGone] = useState(false);
   useEffect(() => {
-    const replay = getBuffer(sessionId);
-    if (replay) termRef.current?.write(replay);
     const unsub = subscribeOutput(
       sessionId,
-      (s) => termRef.current?.write(s),
+      (s, replay) => termRef.current?.write(s, replay),
       () => setGone(true),
     );
     // Size the hidden-tab-safe fit once the pane is visible.

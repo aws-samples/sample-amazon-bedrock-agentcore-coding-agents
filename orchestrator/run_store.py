@@ -28,8 +28,10 @@ bucket was unreachable.
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -150,6 +152,49 @@ def save(runs_dir: str, run_id: str, payload: dict[str, Any],
     except Exception as exc:  # noqa: BLE001 (durability is best effort)
         if log:
             log(f"run state not mirrored to s3://{bucket}: {exc}", "warn")
+
+
+def save_check(runs_dir: str, run_id: str, work_id: str, body: bytes,
+               log=None) -> dict[str, Any]:
+    """Keep the exact executable outside the disposable checkout and microVM.
+
+    A digest and a source excerpt identify a check but cannot re-run it. Store
+    its full bytes under that digest. This records evidence only: storage failure
+    never changes the executable's verdict, and a URI is returned only after the
+    corresponding write succeeds.
+    """
+    digest = hashlib.sha256(body).hexdigest()
+    evidence: dict[str, Any] = {"sha256": digest, "bytes": len(body)}
+    if not all(re.fullmatch(r"[A-Za-z0-9_-]+", value) for value in (run_id, work_id)):
+        if log:
+            log("check evidence not stored: invalid run or work identifier", "warn")
+        return evidence
+    relative = os.path.join("evidence", run_id, work_id, digest, "acceptance_check")
+    path = os.path.join(runs_dir, relative)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temporary = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+        with open(temporary, "wb") as handle:
+            handle.write(body)
+        os.replace(temporary, path)
+        evidence["local_path"] = relative
+    except OSError as exc:
+        if log:
+            log(f"check evidence not written locally: {exc}", "warn")
+    hit = _s3()
+    if hit is not None:
+        s3, bucket = hit
+        key = f"orchestrator/run-evidence/{run_id}/{work_id}/{digest}/acceptance_check"
+        try:
+            s3.put_object(
+                Bucket=bucket, Key=key, Body=body,
+                ContentType="application/octet-stream", ServerSideEncryption="AES256",
+                Metadata={"sha256": digest, "run-id": run_id, "work-id": work_id})
+            evidence["s3_uri"] = f"s3://{bucket}/{key}"
+        except Exception as exc:  # noqa: BLE001 (evidence storage cannot grade work)
+            if log:
+                log(f"check evidence not mirrored to s3://{bucket}: {exc}", "warn")
+    return evidence
 
 
 def load(runs_dir: str, run_id: str) -> dict[str, Any] | None:

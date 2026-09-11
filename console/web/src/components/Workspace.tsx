@@ -192,7 +192,7 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
         requestAnimationFrame(() => requestAnimationFrame(() => r())));
       const size = termRef.current?.fit() ?? { rows: 24, cols: 80 };
       try {
-        const write = (s: string) => termRef.current?.write(s);
+        const write = (s: string, replay?: boolean) => termRef.current?.write(s, replay);
         const reattached = await session.reattach(agentId, write);
         const sid = reattached ?? (await session.open(agentId, size, write));
         // A reattached shell keeps its old winsize; nudge it to THIS pane's size
@@ -483,7 +483,7 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
     if (!session.sessionId) return;
     const size = termRef.current?.fit() ?? { rows: 24, cols: 80 };
     try {
-      await session.openFolder(session.sessionId, path, size, (s) => termRef.current?.write(s));
+      await session.openFolder(session.sessionId, path, size, (s, replay) => termRef.current?.write(s, replay));
       setTabs([]); setActive(null); setFolds({});
       if (session.sessionId) await refreshTree(session.sessionId);
       if (path) { setRecent(pushRecent(path)); setView('terminal'); termRef.current?.focus(); }
@@ -509,7 +509,7 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
     try {
       termRef.current?.reset();                     // wipe any alt-screen/raw-mode a dead TUI left
       const size = termRef.current?.fit() ?? { rows: 24, cols: 80 };
-      await session.restart(session.sessionId, size, (s) => termRef.current?.write(s));
+      await session.restart(session.sessionId, size, (s, replay) => termRef.current?.write(s, replay));
       termRef.current?.focus();
       await refreshTree(session.sessionId);
     } catch (e) {

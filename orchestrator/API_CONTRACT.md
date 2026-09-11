@@ -142,6 +142,13 @@ stands. Each row names the `work_id` it judged. A green `gate` never erases an
 earlier checkpoint. Builder `work_items` have pull requests; checker work items have
 an isolated checkout but no code PR.
 
+Gate records can also contain `check_sha256` and `check_evidence`. The latter
+contains the full executable's `sha256` and byte count, plus `local_path` and/or
+`s3_uri` only when those writes succeeded. `local_path` is relative to
+`WORKSHOP_RUNS_DIR`; `s3_uri` requires workshop-account access. A digest alone
+does not mean the full check was archived. Missing storage never changes
+`passed`, and a different executable gets a different evidence location.
+
 `next_action` is DERIVED from `(status, fail_reason, pr)` on every read, never stored:
 the reason is the fact, this is how to read it. It exists because `needs_human` covers
 both a gate that stayed red on real work and a role that produced nothing (opposite

@@ -66,6 +66,53 @@ def test_unwired_role_returns_none():
     assert runtime_shell.get_runtime_arn("opencode", _A1) is None
 
 
+def test_runtime_stream_marks_history_and_does_not_lose_output_during_attach(monkeypatch):
+    """Bytes arriving while the browser paints history must reach the live stream."""
+    import json
+
+    session = runtime_shell.RuntimeShellSession("stream-replay-test", "opencode", _A1)
+    session._emit("retained history")
+    monkeypatch.setitem(runtime_shell._sessions, session.session_id, session)
+
+    async def exercise():
+        stream = runtime_shell.stream_output(session.session_id)
+        try:
+            first = await anext(stream)
+            history = json.loads(first.removeprefix("data: ").strip())
+            # Emit before the generator resumes from its history yield: the old
+            # subscribe-after-yield implementation silently dropped these bytes.
+            session._emit("arrived during attach")
+            live = await asyncio.wait_for(anext(stream), timeout=0.5)
+            assert json.loads(live.removeprefix("data: ").strip()) == {
+                "output": "arrived during attach"}
+            assert history == {"output": "retained history", "replay": True}
+        finally:
+            await stream.aclose()
+        assert not session._output_callbacks
+
+    asyncio.run(exercise())
+
+
+def test_runtime_stream_sends_an_empty_history_boundary(monkeypatch):
+    """An empty reconnect still resets a previous terminal's display."""
+    import json
+
+    session = runtime_shell.RuntimeShellSession("empty-stream-test", "opencode", _A1)
+    monkeypatch.setitem(runtime_shell._sessions, session.session_id, session)
+
+    async def exercise():
+        stream = runtime_shell.stream_output(session.session_id)
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=0.5)
+            assert json.loads(first.removeprefix("data: ").strip()) == {
+                "output": "", "replay": True}
+        finally:
+            await stream.aclose()
+        assert not session._output_callbacks
+
+    asyncio.run(exercise())
+
+
 class _WarmingShellClient:
     """An AgentCore client whose shell becomes available after transient timeouts."""
 

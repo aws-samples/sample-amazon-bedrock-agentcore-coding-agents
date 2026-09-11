@@ -305,6 +305,13 @@ def gate_evidence_comment(
         lines += ["", f"`{_cell(str(gate['summary']), 240)}`"]
     if gate.get("check_sha256"):
         lines += ["", f"Executable SHA-256: `{gate['check_sha256']}`"]
+    evidence = gate.get("check_evidence") or {}
+    if evidence.get("s3_uri"):
+        lines += ["", f"Full executable (workshop account access): `{evidence['s3_uri']}`"]
+    elif evidence.get("local_path"):
+        lines += [
+            "", f"Full executable on the coordinator: `{evidence['local_path']}` "
+            "(relative to `WORKSHOP_RUNS_DIR`; available while that host or session remains)."]
     lines += [
         "",
         "The validator wrote this check for this pull request. The orchestrator ran "

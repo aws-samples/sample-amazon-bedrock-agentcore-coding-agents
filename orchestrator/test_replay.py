@@ -167,6 +167,17 @@ def test_a_gate_with_no_captured_output_still_renders():
     assert "PASSED" in body and "all 7 probes passed" in body
 
 
+def test_a_check_link_is_its_recorded_storage_location_not_a_public_attachment():
+    evidence = {
+        "sha256": "a" * 64, "bytes": 100,
+        "s3_uri": "s3://workshop-evidence/orchestrator/run-evidence/run/work/check"}
+    body = replay.gate_evidence_comment(
+        _run(), {"passed": False, "check_evidence": evidence}, stage="round 1")
+    assert "FAILED" in body
+    assert f"Full executable (workshop account access): `{evidence['s3_uri']}`" in body
+    assert "presigned" not in body
+
+
 def test_a_long_check_is_excerpted_not_pasted():
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, "acceptance_check")

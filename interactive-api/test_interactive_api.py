@@ -333,7 +333,47 @@ def test_pty_stream_replays_the_retained_scrollback_from_offset_zero():
             break
     blob = b"".join(frames).decode("utf-8", "replace")
     assert "REATTACH_HISTORY_MARKER" in blob, "offset-0 replay lost the scrollback"
+    import json
+    history = next(json.loads(f.decode().removeprefix("data: ").strip())
+                   for f in frames if f.startswith(b"data: "))
+    assert history["replay"] is True, "History must not answer old terminal queries."
     ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
+
+
+def test_pty_keeps_streaming_after_scrollback_rolls_over():
+    """A real shell must keep producing output after the retained 200 KB fills."""
+    import time
+
+    sid = _open_session()
+    try:
+        ia.dispatch("POST", f"/api/sessions/{sid}/pty", {"open": True})
+        ia.dispatch("POST", f"/api/sessions/{sid}/pty", {
+            "input": "python3 -c \"print('x' * 210000); print('BUFFER_BOUNDARY')\"\n"})
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            _, first = ia.dispatch("POST", f"/api/sessions/{sid}/pty", {"offset": 0})
+            if "\r\nBUFFER_BOUNDARY\r\n" in first["output"]:
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("The real shell did not finish its scrollback output.")
+        offset = first["offset"]
+        ia.dispatch("POST", f"/api/sessions/{sid}/pty", {
+            "input": "printf 'AFTER_%s\\n' SCROLLBACK\n", "offset": offset})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            _, following = ia.dispatch("POST", f"/api/sessions/{sid}/pty", {"offset": offset})
+            if "\r\nAFTER_SCROLLBACK\r\n" in following["output"]:
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("The PTY stopped delivering bytes after its scrollback filled.")
+        assert following["offset"] > offset > 200_000
+        frames, new_offset, done = ia._pty_tick(sid, offset)
+        assert b"AFTER_SCROLLBACK" in b"".join(frames)
+        assert new_offset == following["offset"] and not done
+    finally:
+        ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
 
 
 def test_pty_resize_changes_winsize():

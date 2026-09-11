@@ -2836,6 +2836,8 @@ class Engine:
             "summary": gate.get("summary") or "",
             "checks": list(gate.get("checks") or []),
         }
+        if gate.get("check_evidence"):
+            row["check_evidence"] = dict(gate["check_evidence"])
         run.gate_history.append(row)
         run.log(
             f"executable gate {stage}: "
@@ -3221,7 +3223,10 @@ class Engine:
                                                   exc.conflicts[:8])}],
                 "summary": f"{item.work_id} is behind {run.final_base_branch}"}
         with open(check_path, "rb") as handle:
-            check_sha256 = hashlib.sha256(handle.read()).hexdigest()
+            check_bytes = handle.read()
+        check_sha256 = hashlib.sha256(check_bytes).hexdigest()
+        check_evidence = run_store.save_check(
+            _RUNS_DIR, run.run_id, item.work_id, check_bytes, run.log)
         gate = reviewer.run_gate(
             check_path,
             os.path.join(run.workdir, "gate", item.work_id),
@@ -3229,6 +3234,7 @@ class Engine:
             run.artifact_endpoint or "",
         )
         gate["check_sha256"] = check_sha256
+        gate["check_evidence"] = check_evidence
         self._record_gate(run, gate, stage, item)
         return gate
 

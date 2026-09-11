@@ -44,6 +44,12 @@ source digest and the executable's SHA-256; repair prompt text cannot invalidate
 it. A changed base snapshot permits a new check, while altered kept evidence
 fails loudly. A suspected checker defect goes to a person. Gate history and PR
 comments include the executable hash used for that execution.
+`run_store.save_check` also retains the exact bytes beneath
+`evidence/<run_id>/<work_id>/<sha256>/acceptance_check`. When the workshop bucket
+is available, it mirrors them beneath `orchestrator/run-evidence/` and records
+the private S3 URI in gate history and the PR comment. Storage failures are
+reported without changing the gate result; a local-only copy still depends on
+that host or Runtime session surviving.
 
 The host executes the check in a separate Git checkout with two local snapshots:
 `workshop-base` for the current base and `HEAD` for this PR's source. The check
@@ -68,7 +74,7 @@ and treating an attendee's Lab 3 edit as a deliverable change.
 | `reviewer.py` | Runs the validator check plus one integrated read-only review |
 | `replay.py` | The run's narrative, for the PR body (reports, never judges) |
 | `github.py` | Gateway config resolution, PR creation, and the `doctor` preflight |
-| `run_store.py` | Durable run state, so a verdict outlives its session |
+| `run_store.py` | Persist run state and the full validator-authored executable |
 | `diagnose.py` | The shareable diagnostic bundle (read-only, collects no credentials) |
 | `identity_baggage.py` | Carry submitter metadata for audit and cost grouping |
 | `policy.py` | Guardrails every engine-run command is screened against |
@@ -97,7 +103,8 @@ Other important settings:
 - `WORKSHOP_GITHUB_SETTINGS` isolates the GitHub settings file.
 - `GITHUB_GATEWAY_URL` and `GITHUB_REPO` wire the PR path; there is no token.
 - `WORKSHOP_RUNTIME_BUCKET` overrides the S3 staging bucket, and is where the
-  deployed coordinator mirrors run state (its own filesystem dies with the microVM).
+  deployed coordinator mirrors run state and check evidence (its own filesystem
+  dies with the microVM).
   Without an override, the host and coordinator deployment read
   `coding-agents/infra.config` and verify its account and region. Older installations
   without that file retain the `coding-agents-<account>-<region>` convention.

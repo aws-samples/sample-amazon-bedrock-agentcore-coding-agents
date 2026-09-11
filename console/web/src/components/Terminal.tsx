@@ -3,10 +3,11 @@ import { useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
 //  onData/onResize binding never calls a stale closure.)
 import { Terminal as Xterm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { createTerminalOutputQueue, type TerminalOutput, type TerminalOutputQueue } from '../lib/terminalOutput';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalHandle {
-  write: (s: string) => void;
+  write: TerminalOutput;
   fit: () => { rows: number; cols: number };
   focus: () => void;
   size: () => { rows: number; cols: number };
@@ -34,6 +35,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   const hostRef = useRef<HTMLDivElement>(null);
   const term = useRef<Xterm | null>(null);
   const fit = useRef<FitAddon | null>(null);
+  const output = useRef<TerminalOutputQueue | null>(null);
   // Keep the latest callbacks in refs: xterm binds onData/onResize once, so a
   // direct closure would capture the first render's (null-session) handlers and
   // keystrokes would never be sent.
@@ -64,14 +66,14 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   });
 
   useImperativeHandle(ref, () => ({
-    write: (s) => term.current?.write(s),
+    write: (s, replay) => output.current?.write(s, replay),
     fit: () => fitToContainer.current(),
     focus: () => term.current?.focus(),
     size: () => ({ rows: term.current?.rows ?? 24, cols: term.current?.cols ?? 80 }),
     // Soft-reset (RIS, \x1bc): drops the alt-screen buffer, restores wrap/origin
     // modes, and clears scrollback, so a TUI that died mid-draw (raw mode, alt
     // screen) can't leave the fresh shell painting into garbage.
-    reset: () => { term.current?.write('\x1bc'); },
+    reset: () => { output.current?.write('\x1bc'); },
   }), []);
 
   useEffect(() => {
@@ -102,6 +104,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     x.open(hostRef.current);
     term.current = x;
     fit.current = f;
+    const writer = createTerminalOutputQueue(x);
+    output.current = writer;
     fitToContainer.current();
     const dataSubscription = x.onData((d) => onDataRef.current?.(d));
     const resizeSubscription = x.onResize((s) => onResizeRef.current?.(s));
@@ -133,7 +137,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
       active = false;
       cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); cancelAnimationFrame(resizeFrame);
       ro.disconnect(); dataSubscription.dispose(); resizeSubscription.dispose();
-      term.current = null; fit.current = null; x.dispose();
+      writer.stop();
+      output.current = null; term.current = null; fit.current = null; x.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

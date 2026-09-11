@@ -344,6 +344,12 @@ class RuntimeShellSession:
         with self._lock:
             self._output_callbacks.append(cb)
 
+    def subscribe_with_history(self, cb) -> str:
+        """Attach and snapshot under one lock, so no output falls between them."""
+        with self._lock:
+            self._output_callbacks.append(cb)
+            return self.buffer
+
     def unsubscribe(self, cb) -> None:
         with self._lock:
             try:
@@ -564,16 +570,19 @@ async def stream_output(session_id: str):
     def on_output(text: str):
         loop.call_soon_threadsafe(q.put_nowait, text)
 
-    if s.buffer:
-        yield f"data: {json.dumps({'output': s.buffer})}\n\n"
-
-    s.subscribe(on_output)
+    history = s.subscribe_with_history(on_output)
     try:
-        while s.alive:
+        # History may contain terminal queries from a TUI that already exited.
+        # A replay repaints the browser, but must never answer those queries into
+        # the current shell. Send the boundary even when history is empty.
+        yield f"data: {json.dumps({'output': history, 'replay': True})}\n\n"
+        while True:
             try:
                 text = await asyncio.wait_for(q.get(), timeout=2.0)
                 yield f"data: {json.dumps({'output': text})}\n\n"
             except asyncio.TimeoutError:
+                if not s.alive:
+                    break
                 yield ": keepalive\n\n"
     finally:
         s.unsubscribe(on_output)

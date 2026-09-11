@@ -556,7 +556,8 @@ def _pty_open(session: dict, rows: int = 0, cols: int = 0) -> dict:
         cwd=session["_root"], env=env,
         start_new_session=True, close_fds=True)
     os.close(slave)
-    state = {"master": master, "proc": proc, "buf": b"", "lock": threading.Lock()}
+    state = {"master": master, "proc": proc, "buf": b"", "offset": 0,
+             "lock": threading.Lock()}
     session["_pty"] = state
 
     def reader():
@@ -569,6 +570,7 @@ def _pty_open(session: dict, rows: int = 0, cols: int = 0) -> dict:
                 break
             with state["lock"]:
                 state["buf"] = (state["buf"] + chunk)[-200_000:]
+                state["offset"] += len(chunk)
     threading.Thread(target=reader, daemon=True).start()
     return {"pty": True, "agent_id": agent_id}
 
@@ -626,15 +628,16 @@ def _pty_io(session: dict, body: dict) -> dict:
     offset = int(body.get("offset", 0) or 0)
     with st["lock"]:
         buf = st["buf"]
-    base = max(0, len(buf) - 200_000)
+        total = st["offset"]
+    base = total - len(buf)
     start = max(0, offset - base)
     out = buf[start:]
     return {"output": out.decode("utf-8", "replace"),
-            "offset": base + len(buf),
+            "offset": total,
             "alive": st["proc"].poll() is None}
 
 
-def _pty_tick(session_id: str, sent: int):
+def _pty_tick(session_id: str, sent: int, *, replay: bool = False):
     """One non-blocking step of the PTY follow loop. Reads the in-memory buffer
     (filled by the reader thread in ``_pty_open``) and returns
     ``(frames, new_sent, done)``: SSE byte frames to emit now, the updated byte
@@ -648,14 +651,19 @@ def _pty_tick(session_id: str, sent: int):
         return ([b"event: end\ndata: {\"alive\": false}\n\n"], sent, True)
     with st["lock"]:
         buf = st["buf"]
+        total = st["offset"]
     frames = []
-    base = max(0, len(buf) - 200_000)
-    total = base + len(buf)
-    if total > sent:
+    # The retained buffer stops growing at 200 KB; its absolute byte offset
+    # must keep growing or every subsequent update looks like "no new output".
+    base = total - len(buf)
+    if total > sent or replay:
         start = max(0, sent - base)
         chunk = buf[start:].decode("utf-8", "replace")
         sent = total
-        frames.append(f"data: {json.dumps({'output': chunk, 'offset': sent})}\n\n".encode("utf-8"))
+        payload = {"output": chunk, "offset": sent}
+        if replay:
+            payload["replay"] = True
+        frames.append(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
     if st["proc"].poll() is not None:
         frames.append(b"event: end\ndata: {\"alive\": false}\n\n")
         return (frames, sent, True)
@@ -683,7 +691,7 @@ async def pty_stream_async(session_id: str, offset: int = 0):
     yield b": open\n\n"  # comment frame flushes headers immediately
     ticks = 0
     while True:
-        frames, sent, done = _pty_tick(session_id, sent)
+        frames, sent, done = _pty_tick(session_id, sent, replay=ticks == 0 and offset == 0)
         for f in frames:
             yield f
         if done:
@@ -707,7 +715,7 @@ def pty_stream(session_id: str, offset: int = 0, should_stop=None):
     while True:
         if should_stop is not None and should_stop():
             return
-        frames, sent, done = _pty_tick(session_id, sent)
+        frames, sent, done = _pty_tick(session_id, sent, replay=ticks == 0 and offset == 0)
         for f in frames:
             yield f
         if done:

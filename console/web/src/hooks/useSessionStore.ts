@@ -12,6 +12,7 @@
 
 import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/terminalInput';
 import { createTerminalResizeQueue, type TerminalResizeQueue } from '../lib/terminalResize';
+import type { TerminalOutput } from '../lib/terminalOutput';
 import { toast } from '../components/ConsoleNotifications';
 
 const API = '/api/dev/runtime-sessions';
@@ -31,7 +32,6 @@ export interface SessionEntry {
   agentId: string;
   runtimeArn: string;
   alive: boolean;
-  buffer: string;
   /** Same PTY either way; this only marks run-created tabs in the UI. */
   openedBy?: 'user' | 'orchestrator';
   /** Stable display number, assigned once at open. Never renumbered when an
@@ -72,9 +72,8 @@ function _hydrate(): void {
       seq: [string, number][];
     };
     for (const r of rows ?? []) {
-      // buffer is empty on restore; the SSE replay (backend keeps the buffer)
-      // repaints the terminal when a tab re-subscribes.
-      _sessions.set(r.id, { ...r, alive: true, buffer: '' });
+      // The server owns history and sends it once when this tab re-subscribes.
+      _sessions.set(r.id, { ...r, alive: true });
     }
     for (const [k, v] of seq ?? []) _seq.set(k, v);
   } catch { /* corrupt payload: start fresh */ }
@@ -119,7 +118,6 @@ export async function openSession(
     agentId,
     runtimeArn: data.runtime_arn,
     alive: true,
-    buffer: '',
     label: nextLabel,
     openedBy: data.opened_by === 'orchestrator' ? 'orchestrator' : 'user',
   };
@@ -130,17 +128,15 @@ export async function openSession(
 
 export function subscribeOutput(
   id: string,
-  onOutput: (s: string) => void,
+  onOutput: TerminalOutput,
   onGone?: () => void,
 ): () => void {
   const es = new EventSource(`${API}/${encodeURIComponent(id)}/stream`);
   es.onmessage = (e) => {
     try {
       const j = JSON.parse(e.data);
-      if (j.output) {
-        const entry = _sessions.get(id);
-        if (entry) entry.buffer += j.output;
-        onOutput(j.output);
+      if (typeof j.output === 'string') {
+        onOutput(j.output, j.replay === true);
       } else if (j.error) {
         // The backend no longer has this session (e.g. dropped on a server
         // restart). Prune the dead tab so a reload doesn't show a stale one.
@@ -201,10 +197,6 @@ export function resizeTerminal(id: string, size: { rows: number; cols: number })
   queue.resize(size);
 }
 
-export function getBuffer(id: string): string {
-  return _sessions.get(id)?.buffer ?? '';
-}
-
 /** Only remove the tab after the server confirms the terminal closed. */
 export async function closeSession(id: string): Promise<void> {
   const response = await fetch(`${API}/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -248,7 +240,7 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
       _seq.set(agentId, nextLabel);
       _sessions.set(s.session_id, {
         id: s.session_id, agentId, runtimeArn: s.runtime_arn,
-        alive: true, buffer: '', label: nextLabel,
+        alive: true, label: nextLabel,
         openedBy: s.opened_by === 'orchestrator' ? 'orchestrator' : 'user',
       });
       changed = true;

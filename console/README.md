@@ -103,6 +103,12 @@ agent, fabricated ARN, PR URL, or successful run is substituted. Keep opencode
 inside a PTY. Console dispatch and the Agents view share the actual Runtime
 terminal, so a person can observe the same work.
 
+Terminal streams mark the first history snapshot with `replay: true`. The client
+resets its screen and parses that snapshot with input disabled, so historical
+terminal queries cannot send replies into the live shell. New output retains
+normal terminal input and query handling. Snapshot subscription is atomic, and
+Development tracks an absolute output offset even after its bounded buffer rolls.
+
 Each builder PR has its own check and review. An approved PR remains open under
 the default `human_review` policy. The console distinguishes approved, merged,
 partially merged, blocked, and missing evidence. Polling errors do not erase a

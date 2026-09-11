@@ -121,6 +121,10 @@ can allow it, and surface the browser's own error instead of showing an empty re
 - Represent every async surface's full lifecycle: loading, empty, error, and
   success. An empty list and a failed fetch must look different, and neither
   should look like success.
+- Protect a pending mutation against repeated keyboard or pointer activation.
+  Keep the submitted values stable while it runs, allow a deliberate retry after
+  failure, and reset the state when the user starts the next operation. Hiding a
+  button does not itself prevent another event from submitting the same work.
 
 ## Accessibility (non-negotiable, cheap to get right)
 
@@ -128,6 +132,9 @@ can allow it, and surface the browser's own error instead of showing an empty re
   tied to inputs, one `h1` then a sensible heading order.
 - Keyboard reachable and operable: logical tab order, visible focus, Enter/Space
   activate, Escape closes.
+- Scope shortcuts to the active interaction. Document-level handlers must not
+  consume normal typing in inputs or editable content, or turn button activation
+  into an unrelated action.
 - Color is never the only signal (pair it with text or an icon). Meet WCAG AA
   contrast for text.
 - Respect `prefers-reduced-motion`; keep motion functional, not flashy.

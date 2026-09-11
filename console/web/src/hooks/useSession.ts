@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/terminalInput';
+import type { TerminalOutput } from '../lib/terminalOutput';
 
 /**
  * Module 1 session + PTY client (the dev workspace mount).
@@ -71,7 +72,7 @@ export function useSession() {
   // scrollback buffer (up to 200 KB), which is what makes a RE-ATTACH show the
   // prior history; a fresh open streams from the top too (empty buffer). One ref
   // holds the live stream so a rebind always closes the previous one.
-  const bindStream = useCallback((sid: string, onOutput: (s: string) => void) => {
+  const bindStream = useCallback((sid: string, onOutput: TerminalOutput) => {
     if (stream.current) stream.current.close();
     stopInput();
     inputQueue.current = {
@@ -86,15 +87,18 @@ export function useSession() {
     };
     const es = new EventSource(`${S1}/sessions/${encodeURIComponent(sid)}/pty/stream`);
     es.onmessage = (e) => {
-      try { const j = JSON.parse(e.data); if (j.output) onOutput(j.output); }
+      try {
+        const j = JSON.parse(e.data);
+        if (typeof j.output === 'string') onOutput(j.output, j.replay === true);
+      }
       catch { /* ignore malformed frame */ }
     };
     es.addEventListener('end', () => { es.close(); stopInput(); setAlive(false); });
-    es.onerror = () => { /* browser auto-reconnects with Last-Event-ID semantics */ };
+    es.onerror = () => { /* reconnect receives a marked snapshot that replaces the screen */ };
     stream.current = es;
   }, [stopInput]);
 
-  const open = useCallback(async (agentId: string, size: { rows: number; cols: number }, onOutput: (s: string) => void) => {
+  const open = useCallback(async (agentId: string, size: { rows: number; cols: number }, onOutput: TerminalOutput) => {
     const r = await fetch(`${S1}/sessions`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ agent_id: agentId }),
@@ -119,7 +123,7 @@ export function useSession() {
   // (which would kill the shell and respawn, wiping the history). Returns the
   // session id on success, or null when there is nothing live to reattach to
   // (the caller then opens a fresh session).
-  const reattach = useCallback(async (agentId: string, onOutput: (s: string) => void) => {
+  const reattach = useCallback(async (agentId: string, onOutput: TerminalOutput) => {
     const sid = loadSessionId(agentId);
     if (!sid) return null;
     try {
@@ -159,7 +163,7 @@ export function useSession() {
   // keystrokes is force-killed here, not just detached. Then re-bind the SSE
   // stream to the new PTY (its buffer starts empty, so no stale scrollback).
   const restart = useCallback(async (
-    sid: string, size: { rows: number; cols: number }, onOutput: (s: string) => void,
+    sid: string, size: { rows: number; cols: number }, onOutput: TerminalOutput,
   ) => {
     stopInput();
     if (stream.current) { stream.current.close(); stream.current = null; }
@@ -174,7 +178,7 @@ export function useSession() {
   // new {workspace, has_folder} or throws on a bad path.
   const openFolder = useCallback(async (
     sid: string, path: string | null,
-    size: { rows: number; cols: number }, onOutput: (s: string) => void,
+    size: { rows: number; cols: number }, onOutput: TerminalOutput,
   ) => {
     stopInput();
     const r = await fetch(`${S1}/sessions/${encodeURIComponent(sid)}/open-folder`, {

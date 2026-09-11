@@ -59,6 +59,9 @@ A repair re-runs the original executable. Its SHA-256 is recorded with each gate
 result and on the pull request, so reviewers can compare the evidence across
 rounds. Only a change to the default branch's source snapshot invalidates that
 check. If triage finds a fault in the check itself, the run stops for a person.
+The full executable is saved under its digest, locally and in the workshop bucket
+when available. The PR comment records the private S3 URI after that write succeeds,
+so the original check can be retrieved after its Runtime session ends.
 
 The executable runs in its own local Git checkout. `workshop-base` records the
 current default-branch snapshot and `HEAD` records the candidate source. These
@@ -135,6 +138,13 @@ Each of these cost real time on a live run, and each has a cheap tell.
   no CPU, its debug log stopping right after `init`. The served paths already run it in a
   PTY (`agentcore exec --it`, and a Runtime PTY per dispatched turn). Preserve
   that PTY in served paths.
+- **A closed shell is not a successful command.** Read the Runtime's termination
+  status, including a non-zero `ExitCode` cause. A connection that closes without
+  a command result reports an execution error.
+- **Browser input needs browser evidence.** A passing service check does not prove
+  that global keyboard shortcuts leave form fields usable, or that repeated
+  Enter sends only one request. Exercise the actual interaction and inspect
+  the complete event-handler path before approving a UI change.
 - **Enabling Claude Code telemetry is not exporting it.** A dispatched run gets seven
   variables from `_CLAUDE_TELEMETRY` in `orchestrator/roles.py`. With only
   `CLAUDE_CODE_ENABLE_TELEMETRY=1` the CLI collects and sends nowhere, and Logs Insights
