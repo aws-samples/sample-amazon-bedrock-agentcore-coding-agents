@@ -45,6 +45,7 @@ function Shell() {
   const [query, setQuery] = useState('');
   const [region, setRegion] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [authError, setAuthError] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const { resolvedTheme, setTheme } = useTheme();
   const [density, setDensity] = useState(() => {
@@ -63,7 +64,14 @@ function Shell() {
   useEffect(() => {
     let live = true;
     getAttributionConfiguration().then(s => { if (live) setRegion(s.region || null); }).catch(() => {});
-    getAuthMe().then(s => { if (live) setUser(s); });
+    getAuthMe().then(s => {
+      if (!live) return;
+      if (s.login_url) {
+        window.location.replace(s.login_url);
+        return;
+      }
+      setUser(s);
+    }).catch(() => { if (live) setAuthError(true); });
     return () => { live = false; };
   }, []);
   useEffect(() => { applyMode(resolvedTheme === 'dark' ? Mode.Dark : Mode.Light); }, [resolvedTheme]);
@@ -120,8 +128,10 @@ function Shell() {
               onClick: () => setToolsOpen(v => !v) },
             { type: 'button', text: 'Settings', iconName: 'settings', href: href('/settings'),
               onFollow: e => { e.preventDefault(); follow(href('/settings')); } },
-            { type: 'menu-dropdown', text: user?.authenticated ? user.email || user.name || 'Signed in' : 'Local session',
-              iconName: 'user-profile', description: user?.authenticated ? 'Workshop console identity' : 'No Cognito session on this host',
+            { type: 'menu-dropdown', text: authError ? 'Session unavailable' : !user ? 'Checking session…'
+                : user.authenticated ? user.email || user.name || 'Signed in' : 'Local session',
+              iconName: 'user-profile', description: authError ? 'Reload to check your sign-in.'
+                : user?.authenticated ? 'Workshop console identity' : !user ? 'Checking the current sign-in.' : 'No Cognito session on this host',
               items: [{ id: 'preferences', text: 'Preferences' },
                 ...(user?.authenticated ? [{ id: 'sign-out', text: 'Sign out', href: '/auth/logout' }] : [])],
               onItemClick: ({ detail }) => { if (detail.id === 'preferences') openPreferences(); } },

@@ -842,16 +842,20 @@ export const probeRuntime = (role: string) =>
 // Auth: Cognito user identity
 export interface AuthUser {
   authenticated: boolean;
+  login_url?: string;
   user_id?: string;
   email?: string;
   name?: string;
   groups?: string[];
 }
 
-export const getAuthMe = async (): Promise<AuthUser | null> => {
-  try {
-    return await get<AuthUser>('/api/auth/me');
-  } catch {
-    return null;
+export const getAuthMe = async (): Promise<AuthUser> => {
+  const response = await fetch('/api/auth/me', { cache: 'no-store', headers: { accept: 'application/json' } });
+  // An expired/cleared session is different from an intentionally open local
+  // console. Preserve the server's login destination so the shell can return
+  // to the Cognito form or the password gate, whichever this host uses.
+  if (!response.ok && response.status !== 401) {
+    throw new ApiError(response.status, `GET /api/auth/me ${response.status}`);
   }
+  return await response.json() as AuthUser;
 };

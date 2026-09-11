@@ -89,6 +89,7 @@ AUTH_ENABLED = bool(CONSOLE_PASSWORD)
 # gate and the Cognito callback must return here, NOT /. Overridable for any other
 # mount; defaults to the same /console/ the password gate already uses.
 CONSOLE_BASE_PATH = os.environ.get("CONSOLE_BASE_PATH", "/console/")
+_NO_STORE = {"Cache-Control": "no-store"}
 COOKIE_NAME = "console_session"
 COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days, no mid-workshop re-prompt
 _SESSION_SECRET = secrets.token_bytes(32)  # restart invalidates cookies (fine for a workshop box)
@@ -294,7 +295,7 @@ if cognito_auth.COGNITO_ENABLED:
         authenticate directly against Cognito (USER_PASSWORD_AUTH) on POST, so the
         attendee never sees the unstyled Hosted UI. The Hosted-UI authorization-code
         flow stays wired (callback below) as a fallback / for any IdP federation."""
-        return HTMLResponse(_login_page())
+        return HTMLResponse(_login_page(), headers=_NO_STORE)
 
     @app.post("/auth/login")
     @app.post("/console/auth/login")
@@ -305,12 +306,12 @@ if cognito_auth.COGNITO_ENABLED:
         password = str(form.get("password", ""))
         tokens = await run_in_threadpool(cognito_auth.initiate_password_auth, email, password)
         if not tokens:
-            return HTMLResponse(_login_page("Incorrect email or password.", email), status_code=401)
+            return HTMLResponse(_login_page("Incorrect email or password.", email), status_code=401, headers=_NO_STORE)
         result = cognito_auth.create_session(tokens)
         if not result:
-            return HTMLResponse(_login_page("Sign-in failed. Please try again.", email), status_code=401)
+            return HTMLResponse(_login_page("Sign-in failed. Please try again.", email), status_code=401, headers=_NO_STORE)
         session_id, _user = result
-        resp = RedirectResponse(CONSOLE_BASE_PATH, status_code=302)
+        resp = RedirectResponse(CONSOLE_BASE_PATH, status_code=302, headers=_NO_STORE)
         resp.set_cookie(
             cognito_auth.SESSION_COOKIE, session_id,
             max_age=cognito_auth.SESSION_MAX_AGE,
@@ -335,7 +336,7 @@ if cognito_auth.COGNITO_ENABLED:
         session_id, user = result
         # Land on the console (served under /console/ behind nginx), not / which is
         # code-server in the deployed stack. Matches the password-gate redirect.
-        resp = RedirectResponse(CONSOLE_BASE_PATH, status_code=302)
+        resp = RedirectResponse(CONSOLE_BASE_PATH, status_code=302, headers=_NO_STORE)
         resp.set_cookie(
             cognito_auth.SESSION_COOKIE, session_id,
             max_age=cognito_auth.SESSION_MAX_AGE,
@@ -354,7 +355,7 @@ if cognito_auth.COGNITO_ENABLED:
         # Post-logout landing must match a registered Cognito LogoutURL (the stack
         # registers the console base path), so send the user back to /console/.
         logout_redirect = f"{scheme}://{host}{CONSOLE_BASE_PATH}"
-        resp = RedirectResponse(cognito_auth.get_logout_url(logout_redirect), status_code=302)
+        resp = RedirectResponse(cognito_auth.get_logout_url(logout_redirect), status_code=302, headers=_NO_STORE)
         resp.delete_cookie(cognito_auth.SESSION_COOKIE, path="/")
         return resp
 
@@ -362,16 +363,19 @@ if cognito_auth.COGNITO_ENABLED:
 async def auth_me(request: Request):
     """Report a Cognito identity only when it came from an authenticated session."""
     if not _authed(request):
-        return JSONResponse({"authenticated": False}, status_code=401)
+        return JSONResponse({
+            "authenticated": False,
+            "login_url": "/auth/login" if cognito_auth.COGNITO_ENABLED else CONSOLE_BASE_PATH,
+        }, status_code=401, headers=_NO_STORE)
     user = _current_user(request)
     if not user:
         return JSONResponse({"authenticated": False,
-                             "mode": "password" if AUTH_ENABLED else "local"})
+                             "mode": "password" if AUTH_ENABLED else "local"}, headers=_NO_STORE)
     return JSONResponse({
         "authenticated": True, "mode": "cognito",
         "user_id": user.sub, "email": user.email,
         "name": user.name, "groups": user.groups,
-    })
+    }, headers=_NO_STORE)
 
 
 # ---- Auth endpoints (only meaningful when AUTH_ENABLED) -------------------
@@ -383,8 +387,8 @@ async def login(request: Request):
     pw = str(form.get("password", ""))
     ok = AUTH_ENABLED and hmac.compare_digest(user, CONSOLE_USER) and hmac.compare_digest(pw, CONSOLE_PASSWORD)
     if not ok:
-        return HTMLResponse(_login_page("Incorrect username or password."), status_code=401)
-    resp = RedirectResponse("/console/", status_code=302)
+        return HTMLResponse(_login_page("Incorrect username or password."), status_code=401, headers=_NO_STORE)
+    resp = RedirectResponse("/console/", status_code=302, headers=_NO_STORE)
     resp.set_cookie(
         COOKIE_NAME, _mint_token(), max_age=COOKIE_MAX_AGE, httponly=True,
         samesite="lax", secure=AUTH_ENABLED, path="/",
@@ -395,7 +399,7 @@ async def login(request: Request):
 @app.get("/logout")
 @app.get("/console/logout")
 async def logout():
-    resp = RedirectResponse("/console/", status_code=302)
+    resp = RedirectResponse("/console/", status_code=302, headers=_NO_STORE)
     # Emit the exact clearing cookie the console contract expects:
     # `console_session=; ...; Max-Age=0` (empty value, no quotes). FastAPI's
     # delete_cookie uses an Expires date and can quote the empty value, so set
@@ -701,10 +705,10 @@ async def spa(full_path: str, request: Request):
     path = "/" + full_path
     if not _authed(request):
         if cognito_auth.COGNITO_ENABLED:
-            return RedirectResponse("/auth/login", status_code=302)
+            return RedirectResponse("/auth/login", status_code=302, headers=_NO_STORE)
         if AUTH_ENABLED:
             if path in ("/", "/index.html", "/console", "/console/"):
-                return HTMLResponse(_login_page())
+                return HTMLResponse(_login_page(), headers=_NO_STORE)
             return JSONResponse({"error": "unauthorized"}, status_code=401)
     # Dev: the frontend lives on Vite; proxy everything non-/api so :8080 is the
     # only URL and HMR still works.
@@ -718,7 +722,10 @@ async def spa(full_path: str, request: Request):
         return JSONResponse({"error": "not found", "path": full_path}, status_code=404)
     # SPA routes + "/" -> index.html.
     if os.path.isfile(_INDEX):
-        return FileResponse(_INDEX)
+        # The HTML depends on the current login. Browser caching can otherwise
+        # restore an authenticated shell after logout even with CloudFront
+        # caching disabled. Hashed /assets/* keep their immutable cache policy.
+        return FileResponse(_INDEX, headers=_NO_STORE)
     return HTMLResponse(
         "<h1>Console not built</h1><p>Run "
         "<code>npm --prefix console/web install &amp;&amp; "
