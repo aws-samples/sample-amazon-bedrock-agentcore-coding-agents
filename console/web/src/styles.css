@@ -190,7 +190,7 @@
 .console-terminal { height: 440px; min-height: 320px; position: relative; background: #0f1b2a; }
 .agent-terminal-pane { height: 480px; min-height: 320px; overflow: hidden; background: #0f1b2a; }
 .agent-tab-label { display: inline-flex; align-items: center; gap: 8px; }
-.agent-terminal-expanded { position: fixed; inset: 12px; z-index: 2000; background: hsl(var(--card)); overflow: hidden; box-shadow: 0 4px 48px rgb(0 0 0 / .18); }
+.agent-terminal-expanded { position: fixed; inset: 0; z-index: 2000; background: hsl(var(--card)); overflow: hidden; }
 .agent-terminal-expanded .agent-terminal-pane {
   height: 100%;
   min-height: 0;
