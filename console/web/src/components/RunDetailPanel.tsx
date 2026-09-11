@@ -148,14 +148,18 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
       {decision.detail}{run.next_action && <Box padding={{ top: 's' }}><strong>Next action:</strong> {run.next_action}</Box>}
     </Alert>
     <Container header={<Header variant="h2">Build details</Header>}>
-      <KeyValuePairs columns={3} items={[
-        { label: 'Build ID', value: <code className="console-code">{run.run_id}</code> },
-        { label: 'Created', value: run.created_at ? new Date(run.created_at).toLocaleString() : 'Not recorded' },
-        { label: 'Phase', value: run.phase ? label(run.phase) : 'Not recorded' },
-        { label: 'Goal', value: run.task },
-        { label: 'Selected roles', value: run.route?.agents.map(agentInstanceLabel).join(', ') || 'Not recorded' },
-        { label: 'Pull requests opened', value: prs.filter(pr => pr.pr_url).length },
-      ]} />
+      <SpaceBetween size="m">
+        <KeyValuePairs columns={3} items={[
+          { label: 'Build ID', value: <code className="console-code">{run.run_id}</code> },
+          { label: 'Created', value: run.created_at ? new Date(run.created_at).toLocaleString() : 'Not recorded' },
+          { label: 'Phase', value: run.phase ? label(run.phase) : 'Not recorded' },
+          { label: 'Selected roles', value: run.route?.agents.map(agentInstanceLabel).join(', ') || 'Not recorded' },
+          { label: 'Pull requests opened', value: prs.filter(pr => pr.pr_url).length },
+        ]} />
+        <ExpandableSection headerText="Original request">
+          <TextContent><p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.task}</p></TextContent>
+        </ExpandableSection>
+      </SpaceBetween>
     </Container>
     <Tabs variant="container" ariaLabel="Build evidence" tabs={[
       { id: 'pull-requests', label: 'Pull requests', content: <PullRequests run={run} /> },
