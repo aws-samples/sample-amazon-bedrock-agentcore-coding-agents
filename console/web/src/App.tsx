@@ -163,7 +163,10 @@ function Shell() {
             <li><Link external href="https://github.com/aws-samples/sample-amazon-bedrock-agentcore-coding-agents">Workshop source</Link></li>
           </ul></TextContent>}>
           <TextContent>
-            <p>{page.description}</p><h3>Execution context</h3>
+            <p>{page.description}</p>
+            <h3>About Agent Studio</h3>
+            <p>Agent Studio is an example demo UI built for this workshop, not an official AWS service.</p>
+            <h3>Execution context</h3>
             <p>Requests submitted in Chat use the coordinator on this host. Follow a build submitted to the deployed coordinator with its CLI watcher.</p>
             <h3>Before you start</h3>
             <p>Use Settings to review the GitHub repository and Runtime connections. Each builder creates a pull request with its own check and review evidence.</p>
@@ -175,7 +178,10 @@ function Shell() {
           <Suspense fallback={<div className="console-loading" role="status"><Spinner /> Loading page…</div>}><Outlet /></Suspense>
         </div>}
       />
-      <footer id="console-footer"><span>Powered by Amazon Bedrock AgentCore</span><span>Workshop environment</span></footer>
+      <footer id="console-footer">
+        <span className="console-footer-powered">Powered by Amazon Bedrock AgentCore</span>
+        <span>Example demo UI · Not an official AWS service</span>
+      </footer>
       <Modal visible={preferencesOpen} header="Preferences" onDismiss={() => setPreferencesOpen(false)} closeAriaLabel="Close preferences"
         footer={<SpaceBetween direction="horizontal" size="xs">
           <Button variant="link" onClick={() => setPreferencesOpen(false)}>Cancel</Button>

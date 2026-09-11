@@ -251,6 +251,57 @@ def test_launch_gate_starts_closed_and_opens_on_resize():
     assert s._size_event.is_set()
 
 
+@pytest.mark.parametrize("sizes", [[(212, 51)], [(110, 20), (174, 27)]])
+def test_browser_resize_while_runtime_connects_is_used_for_first_launch(monkeypatch, sizes):
+    """A cold Runtime must not overwrite measurements received during its handshake."""
+    import bedrock_agentcore.runtime
+
+    session = runtime_shell.RuntimeShellSession(
+        "console-winsize000000000000000000000000000000", "kiro", _A1)
+    events = []
+
+    async def exercise():
+        opening, ready = asyncio.Event(), asyncio.Event()
+
+        class Shell:
+            async def resize(self, cols, rows):
+                events.append(("resize", cols, rows))
+
+            async def send(self, text):
+                events.append(("send", text))
+
+            async def __aiter__(self):
+                if False:
+                    yield None
+
+        class Context:
+            async def __aenter__(self):
+                opening.set()
+                await ready.wait()
+                return Shell()
+
+            async def __aexit__(self, *args):
+                pass
+
+        class Client:
+            def open_shell(self, **kwargs):
+                return Context()
+
+        monkeypatch.setattr(
+            bedrock_agentcore.runtime, "AgentCoreRuntimeClient",
+            lambda **kwargs: Client())
+        connecting = asyncio.create_task(session._connect(80, 24))
+        await asyncio.wait_for(opening.wait(), timeout=1)
+        for cols, rows in sizes:
+            session.resize(cols, rows)
+        ready.set()
+        await asyncio.wait_for(connecting, timeout=1)
+
+    asyncio.run(exercise())
+    assert events[0] == ("resize", *sizes[-1])
+    assert events[1] == ("send", "/app/run.sh\n")
+
+
 def test_list_sessions_reports_identity_and_liveness():
     """The Agents-page registry carries the signed-in user and liveness."""
     s = _FakeShellSession("claude-code")

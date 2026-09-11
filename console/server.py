@@ -743,7 +743,7 @@ def _login_page(error: str = "", email: str = "") -> str:
     id_type = 'type="email" ' if cognito else ""
     id_auto = "username"
     id_ph = ' placeholder="name@host.com"' if cognito else ""
-    err = f'<p class="err">{_html.escape(error)}</p>' if error else ""
+    err = f'<p class="err" role="alert">{_html.escape(error)}</p>' if error else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light">
@@ -782,10 +782,10 @@ def _login_page(error: str = "", email: str = "") -> str:
  button:hover{{background:#000}}button:active{{transform:scale(.99)}}
  .foot{{margin:18px 0 0;font-size:12px;color:#8a8a8a;text-align:center}}
 </style></head><body><form class="card" method="post" action="{action}">
-<div class="brand"><div class="mark">◆</div><div><b>AgentCore</b><span>CODING AGENTS</span></div></div>
-<h1>Sign in</h1><p class="sub">Sign in with your email and password to open the console.</p>{err}
-<label>{id_label}</label><input name="username" {id_type}value="{id_value}" autocomplete="{id_auto}"{id_ph}{' autofocus' if not id_value else ''}>
-<label>Password</label><input name="password" type="password" autocomplete="current-password"{' autofocus' if id_value else ''}>
+<div class="brand"><div class="mark" aria-hidden="true">◆</div><div><b>Agent Studio</b><span>Workshop console</span></div></div>
+<h1>Sign in</h1><p class="sub">Sign in with your {id_label.lower()} and password to open the console.</p>{err}
+<label for="username">{id_label}</label><input id="username" name="username" {id_type}value="{id_value}" autocomplete="{id_auto}" spellcheck="false" required{id_ph}{' autofocus' if not id_value else ''}>
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required{' autofocus' if id_value else ''}>
 <button type="submit">Sign in</button>
 <p class="foot">Credentials are in your event's Outputs panel.</p></form></body></html>"""
 

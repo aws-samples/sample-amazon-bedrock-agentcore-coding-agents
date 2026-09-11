@@ -185,14 +185,14 @@ function AgentWorkspace({ role, requestedInstance, runtimes, onRuntimesChange }:
       </SpaceBetween>
     </Container>
     <div className={fullscreen ? 'agent-terminal-expanded' : 'agent-terminal-frame'}>
-      <Container disableContentPaddings header={<Header variant="h2" counter={`(${tabs.length})`}
+      <Container fitHeight={fullscreen} disableContentPaddings header={<Header variant="h2" counter={`(${tabs.length})`}
         description="Sessions opened here and by Chat share the same live terminal."
         actions={<SpaceBetween direction="horizontal" size="xs">
           {!!tabs.length && <Button iconName={fullscreen ? 'shrink' : 'expand'} ariaLabel={fullscreen ? 'Exit expanded terminal' : 'Expand terminal'} onClick={() => setFullscreen(value => !value)} />}
           <Button variant="primary" iconName="add-plus" loading={opening} disabled={!terminalAvailable || opening} onClick={() => void openTab()}>Open session</Button>
         </SpaceBetween>}>Live sessions</Header>}>
         {openError && <Box padding="m"><Alert type="error" header="Session request failed">{openError}</Alert></Box>}
-        {tabs.length ? <Tabs activeTabId={activeTab || tabs[0]!.id} onChange={({ detail }) => setActiveTab(detail.activeTabId)}
+        {tabs.length ? <Tabs fitHeight={fullscreen} activeTabId={activeTab || tabs[0]!.id} onChange={({ detail }) => setActiveTab(detail.activeTabId)}
           disableContentPaddings ariaLabel="Agent terminal sessions" tabs={tabs.map(session => ({
             id: session.id, label: `Session ${session.label}${session.openedBy === 'orchestrator' ? ' · Chat build' : ''}`,
             dismissible: true, dismissLabel: `Close terminal ${session.label}`, onDismiss: () => void closeTab(session.id),

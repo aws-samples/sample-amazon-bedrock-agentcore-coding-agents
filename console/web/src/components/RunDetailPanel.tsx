@@ -53,16 +53,16 @@ function PullRequests({ run }: { run: RunDetail }) {
     empty={<SpaceBetween size="s"><Box variant="strong">No pull requests recorded</Box>
       <Box color="text-body-secondary">A builder opens its pull request after producing work.</Box></SpaceBetween>}
     columns={[
-      { id: 'role', header: 'Role', sortingField: 'role', cell: row => <SpaceBetween direction="horizontal" size="xs">
+      { id: 'role', header: 'Role', sortingField: 'role', minWidth: 160, cell: row => <SpaceBetween direction="horizontal" size="xs">
         <AgentIcon agentId={row.agent} size={20} /><div><Box variant="strong">{label(row.role || row.agent)}</Box>
           <Box color="text-body-secondary" fontSize="body-s">{agentInstanceLabel(row.agent)}</Box></div></SpaceBetween> },
-      { id: 'pr', header: 'Pull request', cell: row => row.url ? <Link external href={row.url}>Open pull request</Link> : 'Not opened' },
-      { id: 'state', header: 'Status', sortingField: 'state', cell: row => <SpaceBetween size="xs">
+      { id: 'pr', header: 'Pull request', minWidth: 180, cell: row => row.url ? <Link external href={row.url}>Open pull request</Link> : 'Not opened' },
+      { id: 'state', header: 'Status', sortingField: 'state', minWidth: 200, cell: row => <SpaceBetween size="xs">
         <StatusIndicator type={statusType(row.state)}>{row.state === 'awaiting_review' ? 'Awaiting your review' : label(row.state)}</StatusIndicator>
         {!!row.error && <Box color="text-status-error">{row.error}</Box>}</SpaceBetween> },
-      { id: 'turns', header: 'Build turns', sortingField: 'turns', cell: row => row.turns ?? 'Not recorded' },
-      { id: 'branch', header: 'Worktree branch', cell: row => <code className="console-code">{row.branch || 'Not recorded'}</code> },
-      { id: 'refreshes', header: 'Base refreshes', cell: row => row.refreshes ?? 'Not recorded' },
+      { id: 'turns', header: 'Build turns', sortingField: 'turns', minWidth: 120, cell: row => row.turns ?? 'Not recorded' },
+      { id: 'branch', header: 'Worktree branch', minWidth: 260, cell: row => <code className="console-code">{row.branch || 'Not recorded'}</code> },
+      { id: 'refreshes', header: 'Base refreshes', minWidth: 140, cell: row => row.refreshes ?? 'Not recorded' },
     ]} />;
 }
 
@@ -73,10 +73,10 @@ function Checks({ gates }: { gates: GateRecord[] }) {
     searchText={gate => `${gate.sequence} ${gate.stage} ${gate.summary}`}
     empty={<Box>No executable checks have been recorded.</Box>}
     columns={[
-      { id: 'sequence', header: 'Execution', sortingField: 'sequence', cell: gate => gate.sequence },
-      { id: 'stage', header: 'Stage', sortingField: 'stage', cell: gate => gate.stage },
-      { id: 'result', header: 'Result', cell: gate => <StatusIndicator type={gate.passed ? 'success' : 'error'}>{gate.passed ? 'Passed' : 'Failed'}</StatusIndicator> },
-      { id: 'evidence', header: 'Recorded evidence', cell: gate => <SpaceBetween size="xs">
+      { id: 'sequence', header: 'Execution', sortingField: 'sequence', minWidth: 120, cell: gate => gate.sequence },
+      { id: 'stage', header: 'Stage', sortingField: 'stage', minWidth: 160, cell: gate => gate.stage },
+      { id: 'result', header: 'Result', minWidth: 130, cell: gate => <StatusIndicator type={gate.passed ? 'success' : 'error'}>{gate.passed ? 'Passed' : 'Failed'}</StatusIndicator> },
+      { id: 'evidence', header: 'Recorded evidence', minWidth: 360, cell: gate => <SpaceBetween size="xs">
         <Box>{gate.summary || 'No summary recorded'}</Box>
         {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded assertions`}>
           <SpaceBetween size="s">{gate.checks.map((check, i) => <div key={i}>
@@ -118,7 +118,7 @@ function Reviews({ review }: { review: RunDetail['review'] }) {
 
 function SharedPlan({ run }: { run: RunDetail }) {
   const brief = run.integration_brief;
-  if (!brief) return <Box padding="l" color="text-body-secondary">No shared plan has been recorded.</Box>;
+  if (!brief) return <Box color="text-body-secondary">No shared plan has been recorded.</Box>;
   return <SpaceBetween size="l">
     <Header variant="h2">Shared plan</Header>
     {brief.summary && <Box>{brief.summary}</Box>}
@@ -157,11 +157,11 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
         { label: 'Pull requests opened', value: prs.filter(pr => pr.pr_url).length },
       ]} />
     </Container>
-    <Container disableContentPaddings><Tabs tabs={[
+    <Tabs variant="container" ariaLabel="Build evidence" tabs={[
       { id: 'pull-requests', label: 'Pull requests', content: <PullRequests run={run} /> },
       { id: 'checks', label: `Executable checks (${gates.length})`, content: <Checks gates={gates} /> },
-      { id: 'review', label: 'Independent review', content: <Box padding="l"><Reviews review={run.review} /></Box> },
-      { id: 'plan', label: 'Shared plan', content: <Box padding="l"><SharedPlan run={run} /></Box> },
-    ]} /></Container>
+      { id: 'review', label: 'Independent review', content: <Reviews review={run.review} /> },
+      { id: 'plan', label: 'Shared plan', content: <SharedPlan run={run} /> },
+    ]} />
   </SpaceBetween>;
 }

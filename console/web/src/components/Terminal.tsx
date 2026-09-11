@@ -42,11 +42,9 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   onDataRef.current = onData;
   onResizeRef.current = onResize;
 
-  // Fit to the pane, then shave ONE column so the rightmost cell never spills
-  // past the pane edge (xterm's fit rounds up and can over-claim by a column,
-  // which shows as a sliver of horizontal overflow). Resize the terminal to the
-  // conservative width so the rendered grid and the PTY winsize always agree.
-  const fitConservative = useRef(() => {
+  // Measure the unpadded host and resize once. Calling fit(), then removing a
+  // column, emitted two competing PTY sizes on every layout notification.
+  const fitToContainer = useRef(() => {
     const t = term.current;
     // A tab mounted hidden (display:none) has a 0x0 host: FitAddon would compute a
     // garbage 0-col grid and we'd push that wrong winsize to the PTY before the
@@ -56,16 +54,18 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     if (!t || !host || host.offsetWidth === 0 || host.offsetHeight === 0) {
       return { rows: t?.rows ?? 24, cols: t?.cols ?? 80 };
     }
-    fit.current?.fit();
-    const rows = t.rows;
-    const cols = Math.max(20, t.cols - 1);
-    if (cols !== t.cols) t.resize(cols, rows);
+    const dimensions = fit.current?.proposeDimensions();
+    if (!dimensions || !Number.isFinite(dimensions.rows) || !Number.isFinite(dimensions.cols)) {
+      return { rows: t.rows, cols: t.cols };
+    }
+    const { rows, cols } = dimensions;
+    if (cols !== t.cols || rows !== t.rows) t.resize(cols, rows);
     return { rows, cols };
   });
 
   useImperativeHandle(ref, () => ({
     write: (s) => term.current?.write(s),
-    fit: () => fitConservative.current(),
+    fit: () => fitToContainer.current(),
     focus: () => term.current?.focus(),
     size: () => ({ rows: term.current?.rows ?? 24, cols: term.current?.cols ?? 80 }),
     // Soft-reset (RIS, \x1bc): drops the alt-screen buffer, restores wrap/origin
@@ -102,7 +102,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     x.open(hostRef.current);
     term.current = x;
     fit.current = f;
-    fitConservative.current();   // initial fit at the conservative width
+    fitToContainer.current();
     const dataSubscription = x.onData((d) => onDataRef.current?.(d));
     const resizeSubscription = x.onResize((s) => onResizeRef.current?.(s));
 
@@ -113,20 +113,25 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     // is ready, so the FIRST winsize the caller reads/pushes is the real width.
     let active = true;
     const fitThisTerminal = () => {
-      if (active && term.current === x) fitConservative.current();
+      if (active && term.current === x) fitToContainer.current();
     };
-    let raf1 = 0, raf2 = 0;
+    let raf1 = 0, raf2 = 0, resizeFrame = 0;
+    const scheduleFit = () => {
+      if (!active) return;
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(fitThisTerminal);
+    };
     raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(fitThisTerminal);
     });
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
-    fonts?.ready?.then(fitThisTerminal);
+    fonts?.ready?.then(scheduleFit);
 
-    const ro = new ResizeObserver(fitThisTerminal);
+    const ro = new ResizeObserver(scheduleFit);
     ro.observe(hostRef.current);
     return () => {
       active = false;
-      cancelAnimationFrame(raf1); cancelAnimationFrame(raf2);
+      cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); cancelAnimationFrame(resizeFrame);
       ro.disconnect(); dataSubscription.dispose(); resizeSubscription.dispose();
       term.current = null; fit.current = null; x.dispose();
     };
@@ -141,5 +146,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
     x.options.theme = { ...x.options.theme, cursor: connected ? '#d4d4d4' : '#1e1e1e' };
   }, [connected]);
 
-  return <div ref={hostRef} className="console-terminal-surface" />;
+  return <div className="console-terminal-frame">
+    <div ref={hostRef} className="console-terminal-surface" />
+  </div>;
 });

@@ -48,12 +48,11 @@ class UserIdentity:
         """OpenTelemetry identity for the dispatched agent process.
 
         Lab 3 seam: the dispatch already knows WHO submitted the run (this
-        object) and every agent image already runs a collector sidecar on
-        127.0.0.1:4318, but the two are not connected: nothing tells the agent
-        CLI to emit telemetry, and nothing stamps the run's telemetry with the
-        submitting user. This method is where the identity becomes an OTel
-        resource attribute. Attendees complete it in Lab 3; until then it
-        returns {} and dispatched runs land in CloudWatch UNTAGGED.
+        object). Claude Code's role configuration already enables telemetry
+        export through its collector at 127.0.0.1:4318. This method adds the
+        submitting user as an OTel resource attribute. Attendees complete it
+        in Lab 3; until then it returns {} and those request events reach
+        CloudWatch UNTAGGED.
 
         The finished mapping (the Lab 3 reference implementation). The
         anonymous guard matters: a run with no signed-in user must stay

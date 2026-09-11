@@ -11,14 +11,18 @@
  */
 
 import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/terminalInput';
+import { createTerminalResizeQueue, type TerminalResizeQueue } from '../lib/terminalResize';
 import { toast } from '../components/ConsoleNotifications';
 
 const API = '/api/dev/runtime-sessions';
 const _inputQueues = new Map<string, TerminalInputQueue>();
+const _resizeQueues = new Map<string, TerminalResizeQueue>();
 
-function stopInput(id: string) {
+function stopTerminalIO(id: string) {
   _inputQueues.get(id)?.stop();
   _inputQueues.delete(id);
+  _resizeQueues.get(id)?.stop();
+  _resizeQueues.delete(id);
 }
 
 export interface SessionEntry {
@@ -141,7 +145,7 @@ export function subscribeOutput(
         // The backend no longer has this session (e.g. dropped on a server
         // restart). Prune the dead tab so a reload doesn't show a stale one.
         es.close();
-        stopInput(id);
+        stopTerminalIO(id);
         _sessions.delete(id);
         _persist();
         onGone?.();
@@ -150,7 +154,7 @@ export function subscribeOutput(
   };
   es.addEventListener('end', () => {
     es.close();
-    stopInput(id);
+    stopTerminalIO(id);
     const entry = _sessions.get(id);
     if (entry) entry.alive = false;
   });
@@ -179,11 +183,22 @@ export function sendInput(id: string, input: string) {
 }
 
 export function resizeTerminal(id: string, size: { rows: number; cols: number }) {
-  fetch(`${API}/${encodeURIComponent(id)}/resize`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(size),
-  }).catch(() => {});
+  let queue = _resizeQueues.get(id);
+  if (!queue) {
+    queue = createTerminalResizeQueue(async measured => {
+      const response = await fetch(`${API}/${encodeURIComponent(id)}/resize`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(measured),
+      });
+      const result = await response.json();
+      if (!response.ok || result.error || !result.ok) {
+        throw new Error(result.error || `Terminal resize failed (${response.status}).`);
+      }
+    }, error => console.warn('Could not resize Runtime terminal:', error.message));
+    _resizeQueues.set(id, queue);
+  }
+  queue.resize(size);
 }
 
 export function getBuffer(id: string): string {
@@ -199,7 +214,7 @@ export async function closeSession(id: string): Promise<void> {
       throw new Error(result.error || 'The host did not confirm that the terminal closed.');
     }
   }
-  stopInput(id);
+  stopTerminalIO(id);
   _sessions.delete(id);
   _persist();
 }
@@ -242,7 +257,7 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
   // Prune local tabs the server no longer knows (restart) or that died.
   for (const s of [..._sessions.values()]) {
     if (s.agentId === agentId && !seen.has(s.id)) {
-      stopInput(s.id);
+      stopTerminalIO(s.id);
       _sessions.delete(s.id);
       changed = true;
     }

@@ -164,8 +164,13 @@ class RuntimeShellSession:
             ),
         )
         async with stack:
-            self._shell = shell
-            self._size = (cols, rows)
+            with self._lock:
+                self._shell = shell
+                # A cold handshake can take longer than the browser's first fit.
+                # Keep that measured size; resetting it here to the open request's
+                # 80x24 fallback leaves the native TUI narrow until another resize.
+                if not self._size_event.is_set():
+                    self._size = (cols, rows)
 
             # Wait for the browser's MEASURED winsize before launching the CLI, so
             # the banner paints at the real terminal width (never the 80-col default
@@ -175,7 +180,8 @@ class RuntimeShellSession:
             # resize, so the fallback keeps them from hanging un-launched).
             await asyncio.get_event_loop().run_in_executor(
                 None, self._size_event.wait, 1.5)
-            cols, rows = self._size
+            with self._lock:
+                cols, rows = self._size
             await shell.resize(cols, rows)
 
             # Auto-launch at the measured width. A dispatched command hydrates its
@@ -327,8 +333,9 @@ class RuntimeShellSession:
         # Record the measured size and release the launch gate, so a resize that
         # arrives BEFORE the CLI launches sets the width the banner paints at. A
         # resize AFTER launch still reflows the live shell (the send below).
-        self._size = (cols, rows)
-        self._size_event.set()
+        with self._lock:
+            self._size = (cols, rows)
+            self._size_event.set()
         if self._shell and self._loop and self.alive:
             asyncio.run_coroutine_threadsafe(
                 self._shell.resize(cols, rows), self._loop)

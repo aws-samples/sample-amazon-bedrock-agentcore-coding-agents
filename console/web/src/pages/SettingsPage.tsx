@@ -191,12 +191,12 @@ export function SettingsPage() {
           empty={<SpaceBetween size="s"><Box variant="strong">{errors.connections ? 'Runtime connections unavailable' : 'No runtimes connected'}</Box>
             <Box color="text-body-secondary">{errors.connections ? 'Reload the page to try again.' : 'Connect a deployed Runtime ARN or a local development URL.'}</Box></SpaceBetween>}
           columns={[
-            { id: 'role', header: 'Role', sortingField: 'role', cell: row => <SpaceBetween direction="horizontal" size="xs"><AgentIcon agentId={row.role} size={20} />{roleName(row.role)}</SpaceBetween> },
-            { id: 'arn', header: 'Runtime ARN or URL', cell: row => <code className="console-code">{row.arn}</code> },
-            { id: 'source', header: 'Source', sortingField: 'source', cell: row => sourceName(row.source) },
-            { id: 'description', header: 'Description', cell: row => <SpaceBetween size="xs"><Box>{row.description || 'No description'}</Box>
+            { id: 'role', header: 'Role', sortingField: 'role', minWidth: 160, cell: row => <SpaceBetween direction="horizontal" size="xs" alignItems="center"><AgentIcon agentId={row.role} size={20} />{roleName(row.role)}</SpaceBetween> },
+            { id: 'arn', header: 'Runtime ARN or URL', minWidth: 260, cell: row => <code className="console-code">{row.arn}</code> },
+            { id: 'source', header: 'Source', sortingField: 'source', minWidth: 130, cell: row => sourceName(row.source) },
+            { id: 'description', header: 'Description', minWidth: 340, cell: row => <SpaceBetween size="xs"><Box>{row.description || 'No description'}</Box>
               <Link variant="secondary" onFollow={() => { setEdit(row); setDescription(row.description || ''); report('description'); }}>Edit description</Link></SpaceBetween> },
-            { id: 'actions', header: 'Actions', cell: row => row.source === 'settings' ? <Button onClick={() => { setRemove(row); report('remove'); }}>Remove</Button>
+            { id: 'actions', header: 'Actions', minWidth: 150, cell: row => row.source === 'settings' ? <Button onClick={() => { setRemove(row); report('remove'); }}>Remove</Button>
               : <Box color="text-body-secondary">Managed by {row.source === 'environment' ? 'environment' : 'deployment'}</Box> },
           ]} />
       </SpaceBetween> },
