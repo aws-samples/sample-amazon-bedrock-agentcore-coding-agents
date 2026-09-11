@@ -165,7 +165,7 @@ def test_prepare_run_base_reads_the_default_branch_and_creates_nothing(
             assert args["branch"] == "trunk"
             return "abc123"
         if tool == "get_repository_archive":
-            assert args["ref"] == "trunk"
+            assert args["ref"] == "abc123"
             return {"archive_base64": _archive({
                 "README.md": b"base\n",
                 "src/app.py": b"print('base')\n",
@@ -203,7 +203,7 @@ def test_checkout_brings_the_merged_default_branch_to_a_box_that_holds_no_token(
         if tool == "get_branch_head":
             return "abc123"
         if tool == "get_repository_archive":
-            assert args["ref"] == "trunk"
+            assert args["ref"] == "abc123"
             return {"archive_base64": _archive({
                 "README.md": b"# game\n",
                 "src/server.js": b"serve()\n",

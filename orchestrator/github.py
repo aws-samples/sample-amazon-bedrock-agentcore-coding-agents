@@ -648,6 +648,11 @@ def _repo_parts(cfg: dict) -> tuple[str, str]:
     return owner, repo_name
 
 
+def configured_repository() -> str:
+    """The selected target, without probing its Gateway or substituting this repo."""
+    return (os.environ.get("GITHUB_REPO") or _load_config_file().get("repo") or "").strip()
+
+
 def _extract_repository_archive(encoded: str, destination: str) -> int:
     """Safely materialize the Gateway-brokered repository snapshot."""
     try:
@@ -715,7 +720,7 @@ def snapshot_branch(branch: str, destination: str) -> dict[str, Any]:
         )
         payload = _tool(
             cfg, "get_repository_archive",
-            {"owner": owner, "repo": repo_name, "ref": branch},
+            {"owner": owner, "repo": repo_name, "ref": str(head)},
             timeout=120.0,
         )
         encoded = payload.get("archive_base64", "") if isinstance(

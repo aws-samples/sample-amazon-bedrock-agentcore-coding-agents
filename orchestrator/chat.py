@@ -61,14 +61,20 @@ If the user greets you, asks what you do, or asks a question, reply in words. Do
 not call any tool. A dispatch tool spins up a real microVM; never call one to be \
 eager.
 
-## Inspect the workspace before you dispatch (read-only tools)
-You can look at your own workspace to answer a question or ground a decision \
+## Inspect the selected project before you dispatch
+The project is the GitHub repository selected in Settings. The workshop host's \
+console and orchestrator source are the platform running this team, not the \
+application the user wants changed. Never infer the project's framework, routes, \
+or filenames from those platform files.
+You can inspect the selected repository's default branch to ground a decision \
 WITHOUT dispatching: read_file(path) reads a file, list_files(path) lists a \
 directory, grep_workspace(pattern) searches, and exec_command(command) runs one \
 bounded shell command (screened by the governance policy). Use them to answer \
 "what does this module expose?", to confirm a file exists, or to check a detail \
-before deciding which agent to dispatch. They are cheap and local; a dispatch \
-spins up a real microVM, so look first when looking answers the question.
+before deciding which agent to dispatch. Results identify the repository and \
+source commit. If inspection fails, report the failure or ask for missing setup; \
+never fill the gap from the workshop checkout. Preserve the existing application's \
+framework and entry point when the user asks for a change to it.
 
 ## Clarify before you dispatch
 When the request is for work but is ambiguous or under-specified (unclear which \
@@ -97,7 +103,9 @@ their stack and features, or says "just build it", dispatch immediately.
 dispatch_* tool ONCE. It starts a complete checked and reviewed build for that \
 builder, including the independent checker automatically. Never dispatch the \
 checker separately. It returns a run id and the same authoritative agents and \
-schedule fields as run_build. State which builder started and which checker waits.
+schedule fields as run_build. Pass the user's request text VERBATIM as task, just \
+as with run_build; do not replace it with a file manifest or a new architecture. \
+State which builder started and which checker waits.
 - Full build that must be checked and reviewed: call run_build(task). Every builder \
 gets an isolated work id and its OWN pull request against the default branch. The \
 checker then authors one executable per pull request, and each pull request is gated, \
@@ -298,7 +306,8 @@ def build_tools() -> list:
             f"({role.label}) on its deployed Runtime. {role.description} "
             "The independent checker is included automatically and waits for this "
             "builder's pull request; do not dispatch it separately. Returns the run "
-            "id, selected agents, and schedule immediately.")
+            "id, selected agents, and schedule immediately. Pass the user's request "
+            "text VERBATIM as task; do not replace it with a file manifest.")
         return tool(dispatch)
 
     @tool
@@ -441,83 +450,64 @@ def build_tools() -> list:
             return json.dumps({"error": "interactive terminals are not available here"})
         return json.dumps(m.agent_status(agent_id))
 
-    # --- Workspace inspection: the Claude-Code-style toolset -----------------
-    # The orchestrator can READ its own workspace and run a bounded command,
-    # so it can answer "what is already in this workspace?" or check a file BEFORE
-    # deciding whether (and how) to dispatch, instead of spinning up a microVM
-    # just to look. All four resolve paths under the workspace root
-    # (WORKSHOP_REPO_ROOT, the clone on the box) and refuse to escape it; exec_command
-    # additionally passes through the SAME policy.screen() guardrail the engine
-    # enforces on a role's shell, so the console's Governance rules apply here too.
-    import os as _os
+    # Every inspection uses the selected project's source through the same
+    # Gateway as the engine. The host checkout is the workshop implementation:
+    # treating it as the project produced a parallel Python service in a Node app.
     import subprocess as _subprocess
-
-    def _ws_root() -> str:
-        return _os.environ.get("WORKSHOP_REPO_ROOT") or _os.path.expanduser(
-            "~/sample-amazon-bedrock-agentcore-coding-agents")
-
-    def _resolve_in_ws(rel: str) -> str | None:
-        """Absolute path for a workspace-relative path, or None if it escapes the
-        workspace root (no reading /etc/passwd via ../../)."""
-        root = _os.path.realpath(_ws_root())
-        full = _os.path.realpath(_os.path.join(root, rel))
-        if full == root or full.startswith(root + _os.sep):
-            return full
-        return None
+    from project_workspace import inspect_project, ProjectUnavailable
 
     @tool
     def read_file(path: str) -> str:
-        """Read a text file from the workspace (path relative to the repo root,
-        e.g. 'orchestrator/engine.py'). Returns the file's text,
-        capped at 60 KB. Use it to inspect the module or a harness file before
-        dispatching. Refuses paths outside the workspace."""
-        full = _resolve_in_ws(path)
-        if not full:
-            return json.dumps({"error": f"path escapes the workspace: {path}"})
+        """Read a text file from the selected project's default branch.
+        Paths are relative to the project root; output is capped at 60 KB.
+        Inspect the existing application before dispatching a change."""
         try:
-            with open(full, encoding="utf-8", errors="replace") as f:
-                return f.read(60_000)
-        except OSError as exc:
+            with inspect_project() as workspace:
+                with workspace.resolve(path).open(encoding="utf-8", errors="replace") as f:
+                    content = f.read(60_000)
+                return json.dumps({**workspace.source, "path": path, "content": content})
+        except (OSError, ProjectUnavailable) as exc:
             return json.dumps({"error": f"cannot read {path}: {exc}"})
 
     @tool
     def list_files(path: str = ".") -> str:
-        """List the entries of a workspace directory (relative to the repo root).
+        """List entries in the selected project's default branch.
         Returns each name with a trailing '/' for directories. Use it to explore
         the tree before reading a file. Refuses paths outside the workspace."""
-        full = _resolve_in_ws(path)
-        if not full or not _os.path.isdir(full):
-            return json.dumps({"error": f"not a workspace directory: {path}"})
         try:
-            names = sorted(
-                n + ("/" if _os.path.isdir(_os.path.join(full, n)) else "")
-                for n in _os.listdir(full) if not n.startswith("."))
-            return json.dumps({"path": path, "entries": names[:400]})
-        except OSError as exc:
+            with inspect_project() as workspace:
+                names = sorted(
+                    entry.name + ("/" if entry.is_dir() else "")
+                    for entry in workspace.resolve(path).iterdir()
+                    if not entry.name.startswith("."))
+                return json.dumps({**workspace.source, "path": path, "entries": names[:400]})
+        except (OSError, ProjectUnavailable) as exc:
             return json.dumps({"error": f"cannot list {path}: {exc}"})
 
     @tool
     def grep_workspace(pattern: str, path: str = ".") -> str:
-        """Search the workspace for a regex/string (like ripgrep), under an
+        """Search the selected project for a regex/string, under an
         optional relative subpath. Returns up to 100 'file:line: text' matches.
         Use it to locate a symbol or usage before dispatching. Read-only."""
-        full = _resolve_in_ws(path)
-        if not full:
-            return json.dumps({"error": f"path escapes the workspace: {path}"})
         try:
-            proc = _subprocess.run(
-                ["grep", "-rIn", "--exclude-dir=.git", "--exclude-dir=node_modules",
-                 "-e", pattern, full],
-                capture_output=True, text=True, timeout=20)
-        except (OSError, _subprocess.SubprocessError) as exc:
+            with inspect_project() as workspace:
+                proc = _subprocess.run(
+                    ["grep", "-rIn", "--exclude-dir=.git", "--exclude-dir=node_modules",
+                     "-e", pattern, str(workspace.resolve(path))],
+                    capture_output=True, text=True, timeout=20)
+                if proc.returncode not in (0, 1):
+                    return json.dumps({**workspace.source, "error": proc.stderr[-4000:]})
+                lines = [line.replace(str(workspace.root) + os.sep, "")
+                         for line in proc.stdout.splitlines()[:100]]
+                return json.dumps({**workspace.source, "pattern": pattern,
+                                   "matches": lines, "count": len(lines)})
+        except (OSError, _subprocess.SubprocessError, ProjectUnavailable) as exc:
             return json.dumps({"error": f"grep failed: {exc}"})
-        root = _os.path.realpath(_ws_root())
-        lines = [ln.replace(root + _os.sep, "") for ln in proc.stdout.splitlines()[:100]]
-        return json.dumps({"pattern": pattern, "matches": lines, "count": len(lines)})
 
     @tool
     def exec_command(command: str) -> str:
-        """Run ONE shell command in the workspace and return its output (stdout,
+        """Run ONE bounded inspection command in the selected project's snapshot.
+        Return its output (stdout,
         stderr, exit code), capped and with a 30s timeout. For quick inspection
         (python -c, ls, cat, jq, sed -n, running a check) - NOT for a build; use
         dispatch_*/run_build for real work. Screened by the same policy the
@@ -529,16 +519,18 @@ def build_tools() -> list:
             return json.dumps({"blocked": True, "rule_id": verdict.rule_id,
                                "tier": verdict.tier, "reason": verdict.reason})
         try:
-            proc = _subprocess.run(
-                ["/bin/bash", "-lc", command], cwd=_ws_root(),
-                capture_output=True, text=True, timeout=30)
+            with inspect_project() as workspace:
+                proc = _subprocess.run(
+                    ["/bin/bash", "-c", command], cwd=workspace.root,
+                    capture_output=True, text=True, timeout=30)
+                out = (proc.stdout or "")[-12_000:]
+                err = (proc.stderr or "")[-4_000:]
+                return json.dumps({**workspace.source, "exit": proc.returncode,
+                                   "stdout": out, "stderr": err})
         except _subprocess.TimeoutExpired:
             return json.dumps({"error": "command timed out after 30s"})
-        except (OSError, _subprocess.SubprocessError) as exc:
+        except (OSError, _subprocess.SubprocessError, ProjectUnavailable) as exc:
             return json.dumps({"error": f"command failed to start: {exc}"})
-        out = (proc.stdout or "")[-12_000:]
-        err = (proc.stderr or "")[-4_000:]
-        return json.dumps({"exit": proc.returncode, "stdout": out, "stderr": err})
 
     # The dispatch tools are generated from the ROSTER and added ONLY for builders that
     # are actually WIRED, so the orchestrator's real tool list is (registry x
@@ -546,8 +538,8 @@ def build_tools() -> list:
     # model cannot pick an agent that does not exist); wiring it in Settings adds its
     # tool on the next agent build.
     wired = _wired_roles()
-    # Workspace inspection is always available (it reads the orchestrator's own
-    # repo, no wired role needed), so the orchestrator can look before it leaps.
+    # Inspection needs no wired coding role. A missing project is reported as
+    # missing configuration; it never falls back to inspecting the platform.
     tools = [list_presets, read_file, list_files, grep_workspace, exec_command]
     # A checker-only build is structurally invalid. Exposing a checker dispatch
     # made a live model start a valid focused build AND a redundant rejected run.

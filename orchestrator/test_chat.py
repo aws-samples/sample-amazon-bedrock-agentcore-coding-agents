@@ -111,7 +111,7 @@ def test_read_file_refuses_to_escape_the_workspace(tmp_path, monkeypatch):
     (tmp_path / "hello.txt").write_text("hi from the workspace", encoding="utf-8")
     out = json.loads(_call("read_file", path="../../../../etc/passwd"))
     assert "error" in out and "escape" in out["error"]
-    assert _call("read_file", path="hello.txt") == "hi from the workspace"
+    assert json.loads(_call("read_file", path="hello.txt"))["content"] == "hi from the workspace"
 
 
 def test_exec_command_is_screened_by_the_governance_policy(tmp_path, monkeypatch):
