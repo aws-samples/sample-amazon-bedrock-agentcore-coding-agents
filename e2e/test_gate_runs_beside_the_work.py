@@ -1,19 +1,14 @@
-"""The authored check must run BESIDE the work it was authored beside.
+"""The authored check must execute in the exact application tree it inspects.
 
-The validator receives the combined candidate in its isolated local checkout, so it
-writes its check next to the builders' files and addresses them as siblings:
-`os.path.dirname(__file__) + "/server.py"`, or plain `./server.py`. That is correct
-where it was written, and it is what validators actually emit.
-
-The engine reads each role's archive into a named linked worktree, which compose
-needs so every file is attributable to its author. That split must not leave the
-check alone in the validator's worktree with the deliverable one level away. The
-gate runs from an assembled review directory where the candidate and authored check
-are siblings.
+The validator receives one pull request's source in its isolated checkout. At
+execution, WORKSHOP_WORK_DIR and cwd identify that same source. The executable
+itself is stored separately so source scans do not count it as application code.
 
 Verified on a live event box (2026-07-26): the same validator-authored check scored
 `0 passed, 4 failed` in the validator's directory and `45 passed, 0 failed` beside
-the work.
+the work. A September 11 check exposed the second boundary: placing the executable
+inside the source tree made it count itself as a disconnected server. These tests
+retain the original source-availability guarantee without mixing the two artifacts.
 """
 
 from __future__ import annotations
@@ -30,13 +25,13 @@ import tarfile
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
 
-_SIBLING_CHECK = """#!/usr/bin/env python3
-# A REALISTIC authored check: it resolves the deliverable relative to ITSELF, the
-# way a validator that wrote it beside the work naturally would.
+_SOURCE_CHECK = """#!/usr/bin/env python3
+# The documented environment fact and cwd must identify the same application.
 import os, sys
-DIR = os.path.dirname(os.path.abspath(__file__))
+DIR = os.environ["WORKSHOP_WORK_DIR"]
+assert os.path.realpath(DIR) == os.path.realpath(os.getcwd())
 ok = os.path.isfile(os.path.join(DIR, "server.py"))
-print(("PASS" if ok else "FAIL") + ": server.py exists next to the check")
+print(("PASS" if ok else "FAIL") + ": server.py exists in the application tree")
 sys.exit(0 if ok else 1)
 """
 
@@ -166,7 +161,7 @@ def _run(agents):
 def _build_item_tree(engine, run, builder):
     """Follow the production boundary: base branch + THIS role's patch -> its tree.
 
-    One pull request, one tree. The gate then runs beside that tree, which is the
+    One pull request, one tree. The gate then runs in that tree, which is the
     invariant every test below is about.
     """
     import work_items
@@ -191,7 +186,7 @@ def _build_item_tree(engine, run, builder):
     return item
 
 
-def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
+def test_gate_dir_contains_role_source_without_harness_or_check_files(tmp_path):
     engine, run = _run(["claude-code", "kiro"])
     eng = engine.Engine.__new__(engine.Engine)     # no threads needed
 
@@ -211,17 +206,17 @@ def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
         # The validator's authored check, alone in its own role directory.
         authored = os.path.join(validator, "acceptance_check")
         with open(authored, "w") as f:
-            f.write(_SIBLING_CHECK)
+            f.write(_SOURCE_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
         item = _build_item_tree(engine, run, builder)
         staged = eng._gate_dir_check_path(run, authored, item)
 
-        gate_dir = os.path.dirname(staged)
+        gate_dir = os.path.join(run.workdir, "gate", item.work_id)
         assert os.path.isfile(os.path.join(gate_dir, "server.py")), (
-            "the builder's file is not beside the check, so a check that resolves "
-            "its siblings will fail on a correct deliverable")
+            "the selected application tree must contain the builder's source")
         assert os.path.basename(staged) == "acceptance_check"
+        assert not os.path.exists(os.path.join(gate_dir, "acceptance_check"))
         # The harness is ours, not the deliverable: it must not be presented as work.
         assert not os.path.exists(os.path.join(gate_dir, "CLAUDE.md"))
         assert not os.path.exists(os.path.join(gate_dir, "skills"))
@@ -233,7 +228,7 @@ def test_gate_dir_puts_the_check_beside_every_role_file(tmp_path):
         shutil.rmtree(run.workdir, ignore_errors=True)
 
 
-def test_a_sibling_resolving_check_passes_through_the_real_gate():
+def test_a_source_resolving_check_passes_through_the_real_gate():
     """End to end: the gate must score a correct deliverable GREEN.
 
     This is the regression that matters. Before the fix this exact shape returned
@@ -253,19 +248,19 @@ def test_a_sibling_resolving_check_passes_through_the_real_gate():
             f.write("# the deliverable\n")
         authored = os.path.join(validator, "acceptance_check")
         with open(authored, "w") as f:
-            f.write(_SIBLING_CHECK)
+            f.write(_SOURCE_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
         item = _build_item_tree(engine, run, builder)
         run._acceptance_test_file = eng._gate_dir_check_path(run, authored, item)
         gate = reviewer.run_gate(
             run._acceptance_test_file,
-            os.path.dirname(run._acceptance_test_file),
+            os.path.join(run.workdir, "gate", item.work_id),
             run.task)
 
         assert gate["passed"] is True, (
             "a correct deliverable was graded RED because the check could not see "
-            f"the work it was authored beside: {gate}")
+            f"the selected application tree: {gate}")
         assert "server.py exists" in (gate.get("output") or "")
     finally:
         import shutil
@@ -288,14 +283,14 @@ def test_a_genuinely_broken_deliverable_still_fails():
             f.write("no server here\n")
         authored = os.path.join(validator, "acceptance_check")
         with open(authored, "w") as f:
-            f.write(_SIBLING_CHECK)
+            f.write(_SOURCE_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
         item = _build_item_tree(engine, run, builder)
         run._acceptance_test_file = eng._gate_dir_check_path(run, authored, item)
         gate = reviewer.run_gate(
             run._acceptance_test_file,
-            os.path.dirname(run._acceptance_test_file),
+            os.path.join(run.workdir, "gate", item.work_id),
             run.task)
         assert gate["passed"] is False, gate
     finally:
@@ -326,12 +321,12 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
             f.write("# round 1\n")
         authored = os.path.join(validator, "acceptance_check")
         with open(authored, "w") as f:
-            f.write(_SIBLING_CHECK)
+            f.write(_SOURCE_CHECK)
         os.chmod(authored, os.stat(authored).st_mode | stat.S_IEXEC)
 
         item = _build_item_tree(engine, run, builder)
         staged = eng._gate_dir_check_path(run, authored, item)
-        gate_dir = os.path.dirname(staged)
+        gate_dir = os.path.join(run.workdir, "gate", item.work_id)
         # Round 1's check started the service, which dropped state in the gate dir.
         with open(os.path.join(gate_dir, "issues.db"), "w") as f:
             f.write("round 1 state\n")
@@ -342,7 +337,7 @@ def test_the_gate_workspace_is_rebuilt_each_round_not_added_to():
             f.write("# round 2\n")
         item = _build_item_tree(engine, run, builder)
         staged2 = eng._gate_dir_check_path(run, authored, item)
-        gate_dir2 = os.path.dirname(staged2)
+        gate_dir2 = os.path.join(run.workdir, "gate", item.work_id)
         assert not os.path.exists(os.path.join(gate_dir2, "issues.db")), (
             "round 1's run-time state survived into round 2's gate workspace")
         assert not os.path.exists(os.path.join(gate_dir2, "server.py")), (

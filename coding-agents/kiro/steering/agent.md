@@ -25,6 +25,10 @@ REALLY EXERCISING the work rather than reading it.
 - Read `WORKSHOP_TASK` for the request, `WORKSHOP_WORK_DIR` for the tree the builders
   wrote, and `DELIVERABLE_URL` if a service address is known. You are given the request
   and the work; you are given no answers.
+- Resolve application files from `WORKSHOP_WORK_DIR` or the process working
+  directory. The engine keeps your executable outside that tree. Its own path
+  identifies verification infrastructure, not application source; never infer
+  the application's root from the executable's location.
 - **If you start the deliverable, poll for AT LEAST 60 SECONDS before concluding it
   did not come up.** This is a hard floor, not a suggestion, and it is the one number
   in this file. A first start may install declared dependencies, so a 15 or 20 second

@@ -212,7 +212,8 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
     correct answer looks like, so there is no pinned contract to consult and no
     stand-in grade to fall back to.
 
-    The executable is run from its own directory with a few facts in its environment,
+    The executable runs with the selected source tree as its working directory,
+    and with a few facts in its environment,
     and nothing else the engine knows: ``WORKSHOP_WORK_DIR`` (the tree the builders
     wrote, so a check can inspect files), ``WORKSHOP_TASK`` (the request, so a check
     can re-read what was asked), ``WORKSHOP_GATE_TIMEOUT_S`` (how long it has before
@@ -235,12 +236,12 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
                                   "agentic only, and there is no fallback grade"}],
             "summary": "no validator-authored acceptance check to run"}
 
-    # The check runs from its OWN directory (cwd below), which the engine assembles
-    # to hold that pull request's files plus the check, i.e. the exact workspace it
-    # was authored in. WORKSHOP_WORK_DIR points at that same directory, so a check
-    # that reads the env var and a check that walks its own directory see the SAME
-    # tree. They disagreed before, and the env var pointed one level above the files.
-    work_dir = work_dir or os.path.dirname(authored)
+    # cwd and WORKSHOP_WORK_DIR must name the SAME source tree. Keep the executable
+    # outside it so a source scan does not classify the check as product code.
+    # Resolve both paths before changing cwd; a relative executable path must not
+    # accidentally resolve against the application directory.
+    authored = os.path.abspath(authored)
+    work_dir = os.path.abspath(work_dir or os.path.dirname(authored))
     # GATE_TIMEOUT_S is a FACT about the environment, not a hint about the verdict, so
     # handing it over changes nothing about what the check decides. Withholding it made
     # checks guess: four live runs in a row failed on a readiness poll the author had
@@ -277,7 +278,7 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
         pgid = None
         try:
             proc = subprocess.Popen([authored], stdout=sink, stderr=subprocess.STDOUT,
-                                    env=env, cwd=os.path.dirname(authored),
+                                    env=env, cwd=work_dir,
                                     start_new_session=True)
             # Capture the group NOW: after proc.wait() the pid is reaped and the group
             # can no longer be resolved from it, which would leave a started service

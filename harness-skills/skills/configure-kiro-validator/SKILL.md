@@ -120,6 +120,11 @@ like.
 | `DELIVERABLE_URL` | a live URL, when one exists (may be empty) |
 | `WORKSHOP_GATE_TIMEOUT_S` | the wall clock the check gets before it is killed |
 
+The check executes with `WORKSHOP_WORK_DIR` as its working directory. Its
+executable is stored separately, so source inspection sees only the application's
+files. Resolve the application from the environment or cwd, not the check's
+own file location.
+
 Size any readiness poll against that budget, and **never below 60 seconds**. A
 deliverable's first start may install declared dependencies and take much longer
 than a warm restart. Checks that allowed 15-20s produced red gates on services

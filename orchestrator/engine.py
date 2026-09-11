@@ -2313,19 +2313,17 @@ class Engine:
 
     def _gate_dir_check_path(self, run: Run, authored: str,
                              subject: _work_items.WorkItem) -> str:
-        """Run the authored check beside the exact pull request tree it inspected.
+        """Stage the check separately from the exact pull request tree it inspects.
 
         Builders never share a writable tree. The validator received a clone of ONE
-        pull request's tree and wrote its check there, so the host gate reconstructs
-        that same shape: that tree's files plus the authored executable. It never
-        merges role directories on the verdict path.
+        pull request's tree. Reconstruct that source without adding verification
+        infrastructure to it: a source scan must not mistake the check itself for
+        another application implementation. The check's cwd and WORKSHOP_WORK_DIR
+        both point at the source tree; its executable lives outside that tree.
         """
         gate_dir = os.path.join(run.workdir, "gate", subject.work_id)
-        # Read the authored check BEFORE the rebuild below, because this same gate
-        # directory is where the previous staging left it: the validator's own
-        # worktree is reset for the next pull request, so the staged copy is the
-        # surviving one, and finalization re-stages from it. Deleting the directory
-        # first would delete the check it is about to run.
+        # Read before rebuilding, including when restaging a legacy check that was
+        # placed inside this gate directory. Never delete the only surviving copy.
         name = os.path.basename(authored)
         with open(authored, "rb") as handle:
             check_bytes = handle.read()
@@ -2343,12 +2341,16 @@ class Engine:
         count = _work_items.prepare_gate_checkout(
             run.integration_base_dir, tree, gate_dir,
             exclude=_work_patch_excluded)
-        staged = os.path.join(gate_dir, name)
+        check_dir = os.path.join(run.workdir, "gate-checks", subject.work_id)
+        if os.path.isdir(check_dir):
+            shutil.rmtree(check_dir)
+        os.makedirs(check_dir)
+        staged = os.path.join(check_dir, name)
         with open(staged, "wb") as handle:
             handle.write(check_bytes)
         os.chmod(staged, os.stat(staged).st_mode | 0o755)
         run.log(f"gate workspace assembled at {gate_dir} "
-                f"({count} source files, the check beside the work)")
+                f"({count} source files; the check is outside the application tree)")
         return staged
 
     def _write_validator_report(self, run: Run, role: RoleResult,
@@ -3222,7 +3224,7 @@ class Engine:
             check_sha256 = hashlib.sha256(handle.read()).hexdigest()
         gate = reviewer.run_gate(
             check_path,
-            os.path.dirname(check_path),
+            os.path.join(run.workdir, "gate", item.work_id),
             run.task,
             run.artifact_endpoint or "",
         )
