@@ -79,6 +79,25 @@ def test_invalid_model_plan_repairs_once_then_fails_loud(monkeypatch):
     assert "Required builder ids" in calls[1]
 
 
+def test_one_builder_owns_the_original_request_without_a_generated_spec(monkeypatch):
+    monkeypatch.setattr(
+        integration_plan.llm, "invoke",
+        lambda *_args, **_kwargs: pytest.fail("one builder needs no integration model"))
+    requests = [
+        "Invent a paper garden. Share GET/POST /api/scores and earned scores 0–1000.",
+        "Make a turn-based navigation game. I will decide its setting later.",
+    ]
+    for task in requests:
+        item = WorkItem.create(
+            "run_solo", "custom-maker", "project-builder", "application", token="solo")
+        plan = integration_plan.create(task, [item])
+        assert plan["shared_contract"] == []
+        assert list(plan["role_assignments"]) == ["custom-maker"]
+        assert plan["merge_order"] == ["custom-maker"]
+        assert item.depends_on == []
+        assert task in integration_plan.markdown(task, plan, [item])
+
+
 def test_repair_router_selects_an_owner_and_falls_back_to_all_builders(
         monkeypatch):
     items = _items()

@@ -1,9 +1,10 @@
-"""Model-authored shared contract for independent builder work.
+"""Shared interfaces for independent builders, without prescribing their design.
 
 The plan coordinates people-like work without deciding the implementation. It
 records the task verbatim, assigns responsibilities to the routed builders, and
 states only the API/UX/data boundaries they must share. Each builder receives the
-same brief but a different writable checkout.
+same brief but a different writable checkout. A single builder needs no generated
+integration contract: it receives the original request and owns its design.
 
 This module never grades code. The independent validator still authors the only
 acceptance executable, and its real exit code remains the verdict.
@@ -33,9 +34,10 @@ need to agree on. That interface may include endpoint paths, payload schemas, an
 runtime configuration when those facts are necessary for separately built parts
 to connect. Keep creative decisions with the builder: do not turn a genre, theme,
 screen sequence, controls, rendering technique, or visual style into a shared
-contract unless the user required it. With a single builder, agree only on the
-external interfaces and runtime constraints; its internal design needs no
-cross-role specification. Assign exclusive outcomes: no role may duplicate another role's
+contract unless the user required it. Gameplay rules and scoring formulas belong
+to their owning builder unless the user supplied them; agree only on the score
+range and payload where other parts need those facts. Assign exclusive outcomes:
+no role may duplicate another role's
 capability merely to make its isolated checkout standalone. Builders start
 independently and do not see one another's implementation.
 
@@ -195,9 +197,10 @@ def create(task: str, items: Iterable[WorkItem],
            *, offline_fixture: bool = False) -> dict[str, Any]:
     """Create and validate one shared brief.
 
-    Offline tests use a labelled neutral plan so they can exercise plumbing
-    without a model. The shipped path fails loud when planning cannot run; it
-    never invents a contract with deterministic endpoint or file conventions.
+    A single builder receives ownership of the original request without a model
+    inventing a second specification. Multiple builders require a model-authored
+    interface agreement; unavailable planning fails loud. Offline tests use a
+    labelled neutral plan to exercise plumbing without a model.
     """
     builders = list(items)
     if offline_fixture:
@@ -216,6 +219,22 @@ def create(task: str, items: Iterable[WorkItem],
                 for item in builders
             },
             "merge_order": [item.agent for item in builders],
+            "open_questions": [],
+        }
+    elif len(builders) == 1:
+        item = builders[0]
+        plan = {
+            "summary": "One builder owns this request and its design decisions.",
+            "shared_contract": [],
+            "role_assignments": {
+                item.agent: {
+                    "objective": "Implement the original request. Choose the design "
+                                 "and internal structure within its requirements.",
+                    "provides": [item.capability],
+                    "consumes": [],
+                },
+            },
+            "merge_order": [item.agent],
             "open_questions": [],
         }
     else:
@@ -264,7 +283,7 @@ def create(task: str, items: Iterable[WorkItem],
         else:  # pragma: no cover - the bounded loop always breaks or raises
             raise IntegrationPlanError("INTEGRATION_BRIEF_INVALID")
 
-    normalized = plan if not offline_fixture else _validate(plan, builders)
+    normalized = _validate(plan, builders)
     by_agent = {item.agent: item for item in builders}
     previous: WorkItem | None = None
     for agent_id in normalized["merge_order"]:
@@ -285,10 +304,13 @@ def markdown(task: str, plan: dict[str, Any], items: Iterable[WorkItem]) -> str:
         "",
         task.strip(),
         "",
-        "## Shared Contract",
-        "",
     ]
-    lines.extend(f"- {row}" for row in plan.get("shared_contract") or [])
+    contract = plan.get("shared_contract") or []
+    if contract:
+        lines += ["## Shared Contract", ""]
+        lines.extend(f"- {row}" for row in contract)
+    elif len(by_agent) == 1:
+        lines.append("One builder owns the request; no cross-builder contract is needed.")
     lines += ["", "## Role Ownership", ""]
     for agent_id in plan.get("merge_order") or []:
         row = (plan.get("role_assignments") or {}).get(agent_id, {})

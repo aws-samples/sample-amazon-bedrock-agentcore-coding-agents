@@ -56,7 +56,8 @@ pull request. The validator's executable must pass for each pull request, run
 against the default branch as it stands plus that diff. The GitHub App authors every
 pull request.
 
-Builders begin independently from the same shared plan. Because each pull request is
+A single builder receives the original request and chooses its design. Several
+builders begin independently from a shared interface plan. Because each pull request is
 checked and reviewed against the default branch AS IT STANDS, once an earlier role's
 pull request merges the next role's check runs against a tree that already contains
 it. When that merge moves a path a still-open pull request also changed, its owner

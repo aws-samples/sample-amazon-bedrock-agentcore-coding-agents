@@ -132,21 +132,16 @@ def resolve_gateway_url() -> str:
     """Resolve GATEWAY_URL at deploy time, not import time.
 
     Order: env GATEWAY_URL first, then an optional sibling gateway state file
-    if one happens to be present. The state file is optional; its absence is
-    fine and only GATEWAY_URL itself is required when actually deploying.
+    if one happens to be present. Direct gateway access is optional: the
+    workshop coordinator handles GitHub operations throughout the labs.
     """
     gateway_url = os.environ.get("GATEWAY_URL", "")
     gateway_state = os.path.join(SCRIPT_DIR, "..", "gateway", ".deployed-state.json")
     if not gateway_url and os.path.exists(gateway_state):
         with open(gateway_state) as f:
             gateway_url = json.load(f).get("gateway_url", "")
-    # The GitHub MCP Gateway is a Stage-3 (governance) concern: it lets the agent
-    # reach GitHub with its own credentials. In Stage 1-2 the orchestrator opens
-    # the PR, so deploying without a gateway is valid: run.sh already guards on
-    # an empty GATEWAY_URL and simply skips its MCP config. Warn, never exit.
-    if not gateway_url:
-        print("Warning: GATEWAY_URL not set. Deploying without the GitHub MCP gateway")
-        print("  (Stage 3 wires it; the orchestrator opens the PR in Stage 1-2).")
+    # run.sh skips direct MCP configuration when this is empty. GitHub
+    # credentials remain on the coordinator's Gateway in the served workshop.
     return gateway_url
 
 
@@ -549,7 +544,7 @@ def main():
     print(f"  Region:      {REGION}")
     print(f"  Image:       {ECR_URI}")
     print(f"  S3 Files:    {MOUNT_AP_ARN or '(not attached)'}")
-    print(f"  Gateway URL: {resolve_gateway_url()}")
+    print(f"  Direct gateway: {resolve_gateway_url() or 'not configured (the coordinator handles GitHub)'}")
     print("=" * 60)
 
     role_arn = create_execution_role()

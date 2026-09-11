@@ -45,6 +45,9 @@ must be empty in this form, so an unrelated custom request cannot silently be
 replaced. A plain custom `task` remains unchanged. The game preset shares only
 its external score protocol with other teams; `integration_plan.py` must leave
 mechanics, visual style, controls, and internal design to the builder.
+With one builder, there is no integration-planning model turn: the original
+request goes directly to its owner without a generated second specification.
+With multiple builders, the planner agrees on their shared interfaces.
 `score_protocol.py` declares the 0–1000 scale and `api/scores` path used by the
 preset and reporter. It contains no game, scoring formula, or acceptance check.
 
