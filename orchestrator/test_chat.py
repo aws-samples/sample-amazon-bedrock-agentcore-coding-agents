@@ -278,6 +278,37 @@ def test_run_build_refuses_an_empty_task_without_minting_a_run(tmp_path, monkeyp
     assert len(chat.ENGINE.list()) == before  # no dead run created
 
 
+def test_two_creative_directions_keep_the_shared_preset_interface(tmp_path, monkeypatch):
+    _wire_all(tmp_path, monkeypatch)
+    requests = []
+
+    def capture(agent, task, preset=None):
+        requests.append((task, preset))
+        return "run_test_direction"
+
+    monkeypatch.setattr(chat, "_kick", capture)
+    directions = ("quiet underwater exploration", "hand-drawn kinetic rhythms")
+    for direction in directions:
+        result = json.loads(_call(
+            "run_build", task="", preset="game-from-scratch", creative_direction=direction))
+        assert result["status"] == "started"
+    shared = chat._presets.default_task("game-from-scratch")
+    assert requests[0][0] != requests[1][0]
+    for (task, preset), direction in zip(requests, directions):
+        assert task.startswith(shared + "\n\n")
+        assert task.endswith(direction)
+        assert preset == "game-from-scratch"
+
+
+def test_a_direction_cannot_silently_replace_an_unrelated_custom_task(tmp_path, monkeypatch):
+    _wire_all(tmp_path, monkeypatch)
+    monkeypatch.setattr(chat, "_kick", lambda *_a, **_k: pytest.fail("ambiguous input must not start"))
+    result = json.loads(_call(
+        "run_build", task="an existing custom request", preset="game-from-scratch",
+        creative_direction="a different direction"))
+    assert result["error"] == "AMBIGUOUS_PRESET_DIRECTION"
+
+
 def test_run_build_accepts_any_request_at_all(tmp_path, monkeypatch):
     """The headline property: a request that matches no sample, no keyword, and no
     preset still starts a real run. Nothing here classifies the attendee's wording."""

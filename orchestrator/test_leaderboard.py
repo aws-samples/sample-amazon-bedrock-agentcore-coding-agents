@@ -60,6 +60,31 @@ def test_a_boolean_is_not_a_score():
     assert leaderboard.best_entry([{"player": "t", "score": True}]) is None
 
 
+def test_score_scale_is_shared_without_changing_the_earned_value():
+    assert leaderboard.best_entry([{"player": "start", "score": 0}])["score"] == 0
+    assert leaderboard.best_entry([{"player": "complete", "score": 1000}])["score"] == 1000
+    with pytest.raises(leaderboard.ScoreScaleError, match="does not rescale"):
+        leaderboard.best_entry([{"player": "raw counter", "score": 1001}])
+
+
+def test_an_out_of_scale_table_is_not_reported_as_a_successful_once(monkeypatch):
+    monkeypatch.setattr(
+        leaderboard, "find_scores_url",
+        lambda *_args: ("http://game/api/scores", [{"player": "a", "score": 1001}]))
+    monkeypatch.setattr(
+        leaderboard, "signed_post", lambda *_args: pytest.fail("must not post an invalid score"))
+    out = io.StringIO()
+    assert leaderboard.run("http://game", "https://board", "custom",
+                           once=True, interval_s=0, out=out) == 1
+    assert "0 to 1000" in out.getvalue()
+
+
+@pytest.mark.parametrize("score", [True, 1.5, "50", -1, 1001])
+def test_invalid_score_is_rejected_before_credentials_or_network(score):
+    with pytest.raises(leaderboard.ScoreScaleError):
+        leaderboard.signed_post("https://board", {"score": score})
+
+
 # -------------------------------------------------------------- posting behaviour
 
 class _Recorder:
@@ -171,8 +196,7 @@ def test_a_non_api_gateway_url_is_refused_before_signing():
 # ------------------------------------------------------------------- discovery
 
 def test_it_finds_whatever_the_agent_named_the_score_endpoint(monkeypatch):
-    """Nothing in the repository tells the builder what to call its routes, so the
-    bridge must find the table rather than assume `/scores`."""
+    """Games from earlier requests can keep their existing score route."""
     served = {"http://g/api/highscores": [{"player": "ann", "score": 11}]}
 
     def fake(url, timeout_s=5.0):

@@ -123,6 +123,11 @@ user's message has exactly that form, it is already unambiguous: call \
 describe the preset, or ask a clarifying question first. This applies to any id \
 the user supplies; the tool and routing layer validate it and fail loud if it does \
 not exist.
+When a message names a preset AND supplies a creative direction, call \
+`run_build(task="", preset="<id>", creative_direction="<their exact direction>")`. \
+The tool retains the preset's shared interface and appends that direction. \
+Do not rewrite it into a file list, choose a game for the builder, or discard the \
+preset's shared interface. A plain custom request still goes in task VERBATIM.
 
 After `run_build`, treat the tool result's `schedule` as authoritative. Report only \
 the roles in its `agents` list. Say that each selected builder started, then say the \
@@ -311,7 +316,7 @@ def build_tools() -> list:
         return tool(dispatch)
 
     @tool
-    def run_build(task: str, preset: str = "") -> str:
+    def run_build(task: str, preset: str = "", creative_direction: str = "") -> str:
         """Start a FULL build of ANY request. Every selected builder gets an
         isolated pull request against the default branch. The checker then authors
         and executes one gate per pull request, and each pull request is reviewed and
@@ -321,7 +326,21 @@ def build_tools() -> list:
         Pass the user's request text VERBATIM as task. It can be anything at all:
         nothing here classifies it or maps it to a sample, so there is no wording to
         get right. Optionally pass a `preset` id (see list_presets) to start from one
-        of the example requests instead."""
+        of the example requests instead. To personalize a preset, leave task empty
+        and pass the user's exact creative_direction; the preset's interface stays
+        intact while the builder chooses the implementation."""
+        if creative_direction.strip():
+            if not preset or task.strip():
+                return json.dumps({
+                    "error": "AMBIGUOUS_PRESET_DIRECTION",
+                    "hint": "Use a preset with empty task and creative_direction, "
+                            "or put the complete custom request in task alone. No run was started.",
+                })
+            task = (
+                _presets.default_task(preset)
+                + "\n\nCreative direction from the participant:\n"
+                + creative_direction.strip()
+            )
         if not task.strip() and not preset:
             return json.dumps({
                 "error": "EMPTY_TASK",

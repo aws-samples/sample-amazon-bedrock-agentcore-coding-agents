@@ -39,6 +39,15 @@ A focused Chat dispatch starts its builder and schedules the independent checker
 automatically. Checkers have no separate dispatch tool; `run_build` also retains
 the read-only review preset.
 
+For a preset with a participant's creative direction, `run_build` combines the
+preset's request with the exact `creative_direction` text. Its `task` argument
+must be empty in this form, so an unrelated custom request cannot silently be
+replaced. A plain custom `task` remains unchanged. The game preset shares only
+its external score protocol with other teams; `integration_plan.py` must leave
+mechanics, visual style, controls, and internal design to the builder.
+`score_protocol.py` declares the 0–1000 scale and `api/scores` path used by the
+preset and reporter. It contains no game, scoring formula, or acceptance check.
+
 A repair preserves its authored executable. The kept record includes the base
 source digest and the executable's SHA-256; repair prompt text cannot invalidate
 it. A changed base snapshot permits a new check, while altered kept evidence
@@ -62,6 +71,7 @@ and treating an attendee's Lab 3 edit as a deliverable change.
 |---|---|
 | `roles.py` | The role roster, declared ONCE: kind, capability, steering, CLI, env |
 | `presets.py` | Routing: which capabilities a request needs |
+| `score_protocol.py` | Shared room score range and endpoint, independent of game design |
 | `chat.py` | Strands conversation and tool selection |
 | `role_graph.py` | The agent-execution schedule as a Strands graph |
 | `integration_plan.py` | Flexible shared contract and bounded repair routing |

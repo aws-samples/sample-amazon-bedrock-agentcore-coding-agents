@@ -31,7 +31,11 @@ database products, component names, or repository layout unless the user already
 required them. Define the smallest concrete interface the independent builders
 need to agree on. That interface may include endpoint paths, payload schemas, and
 runtime configuration when those facts are necessary for separately built parts
-to connect. Assign exclusive outcomes: no role may duplicate another role's
+to connect. Keep creative decisions with the builder: do not turn a genre, theme,
+screen sequence, controls, rendering technique, or visual style into a shared
+contract unless the user required it. With a single builder, agree only on the
+external interfaces and runtime constraints; its internal design needs no
+cross-role specification. Assign exclusive outcomes: no role may duplicate another role's
 capability merely to make its isolated checkout standalone. Builders start
 independently and do not see one another's implementation.
 

@@ -134,24 +134,35 @@ guaranteed route to the public internet.
   prefix, a page with one absolute URL loads and then silently does nothing.
 - **Serve everything yourself.** No CDN, web font, or third-party script. The host may
   not reach them, and a page that depends on one fails as a blank canvas.
-- **It has to feel like a game.** Render on a canvas with `requestAnimationFrame`, not
-  DOM elements moved by timers; respond to the keyboard without lag; show the controls
-  on screen; give it a start state, a running score, a game-over state with the final
-  score, a way to enter a name and submit it, and a restart.
+- **Design the game for this request.** Choose its world, mechanics, visual language,
+  input method, pacing, and progression. Choose a rendering technique that suits
+  those decisions. A game need not resemble the workshop screenshots or another
+  team's output. Make its goal and controls discoverable, give useful feedback
+  during play, and let a person understand a completed round and play again.
+  Explain the creative decisions briefly in the handoff.
 - **Controls must respect the current interaction.** Gameplay shortcuts must leave
   focused inputs, editable content, and ordinary button activation usable. Follow a
   person from play to name entry, submission, failure, and the next round. Repeated
   clicks or Enter presses while saving must not create duplicate records; a failed
   save must allow a deliberate retry. Verify the event handlers and state transitions,
   not only the HTTP endpoint they eventually call.
-- **The high-score table is real, and it has a conventional address.** It is shown on
-  the page, persisted so it survives a restart of the service, and read and written
-  through your API at a `scores` route relative to the page. `GET` returns a JSON array
-  of rows, best first, each with an integer `score` and a player-name field (name it as
-  the game wants: `player`, `name`, and `initials` are all read by tools downstream);
-  `POST` accepts a JSON body with a name and a score. It is defended: an empty or
-  missing name, a name longer than any person would type, and a missing, non-integer,
-  negative, or absurd score are refused with a clear error and a correct status code.
+- **The score interface is the shared boundary.** When the request uses the
+  workshop's room score protocol,
+  `GET /api/scores` returns saved rows, best first, with `player` and integer `score`.
+  `POST /api/scores` accepts those fields for a completed round. The browser resolves
+  `api/scores` relative to its page; the host reporter signs the central-account
+  request, so the game needs no AWS credential or central endpoint.
+  Persist scores across service restarts. Use the room's 0 to 1000 scale, with
+  higher meaning better play. Choose and document a meaningful mapping from your
+  game's progress to that scale and the achievement represented by 1000; simply
+  clipping an unbounded raw counter does not explain it. Show, save, and report the
+  same workshop score. Raw game-specific counters may also be shown with distinct
+  labels. This interface does not prescribe the game's genre or layout.
+  Other games follow their requested interfaces; do not add this protocol to an
+  unrelated task or silently replace an existing score system.
+  Defend the API: an empty or missing name, a name longer than any person would
+  type, and a missing, non-integer,
+  negative, or out-of-range score are refused with a clear error and a correct status code.
 - **Start it the documented way, on the port you are given.** `PORT` (or your
   documented default) chooses the port, and the start command and how to play are in
   the documentation, not only in your head. Write that documentation as a file in the

@@ -20,6 +20,11 @@ principles to whatever the task asks for. Decide the files, the framework, and
 the structure yourself from the request. Nothing here names a file you must
 create.
 
+Choose a visual identity that fits the product. A workshop game can have its own
+world, palette, typography, composition, and motion; console conventions below
+are useful for service interfaces, not a required skin for every experience.
+Screenshots are examples of another run, not reference designs to reproduce.
+
 Distilled from the practices Vercel and design-system teams publish for
 agent-built frontends. When the task points at a specific stack (React, plain
 HTML, a component library), follow that stack's own conventions first and use
@@ -53,17 +58,22 @@ The frontend renders and interacts. It does not own business logic or data.
   integration. Do not ship a local substitute, copied service, or second full-stack
   implementation merely because your isolated checkout does not contain that
   role's files yet.
-- Every value the user sees that comes from a computation, a price, a record, or
-  a model MUST come from a backend call (an API, an MCP tool call, a fetch). The
+- Authoritative records, prices, service results, and model output
+  MUST come from a backend call (an API, an MCP tool call, a fetch). The
   UI sends inputs and renders the structured response.
-- Do not embed the numbers, the pricing, the rules, or a copy of the data in the
-  page. The moment the UI computes a result itself it can disagree with the
-  system of record, and it will.
+- Do not copy authoritative records, pricing, or service calculations into the
+  page. Duplicating a backend calculation lets the UI disagree with the service
+  it represents.
 - Parse the response and render it. Show the backend's own error when a call
   fails; never invent a value to fill a gap.
 
 If you are asked for a UI over a service, the correctness of every answer lives
 on the wire, not in the markup.
+
+A game's immediate input, animation, and gameplay state can live in the browser.
+Keep its saved results consistent with the score API. This ownership boundary
+does not require a server call for every frame or force every game into the
+same interaction model.
 
 ### Resolve the backend address; never hardcode it
 
@@ -111,8 +121,9 @@ can allow it, and surface the browser's own error instead of showing an empty re
 
 ## Color and states
 
-- Neutral surfaces carry the UI; reserve accent color for meaning (status,
-  priority, the primary action), not for decoration.
+- For a service interface, neutral surfaces can carry the UI while accents convey
+  status and priority. For a game or other expressive product, choose colors that
+  support its identity while keeping text, controls, and state easy to distinguish.
 - Define semantic roles, not raw hexes scattered inline: background/foreground,
   muted, border, primary, destructive, and a success/warning/error set. Use the
   role name everywhere so a theme change is one place.

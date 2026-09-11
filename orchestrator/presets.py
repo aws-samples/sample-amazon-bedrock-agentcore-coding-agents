@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import roles as _roles
+from score_protocol import MAX_SCORE, SCORES_PATH
 
 # The roles this harness can dispatch come from the registry (``roles.py``), which
 # is the ONE place the roster is declared and is configurable at runtime
@@ -85,8 +86,9 @@ class RouteError(ValueError):
 #   * one starts from an existing tree (so "do not regress it" becomes the bar)
 #   * one starts from a failure (so the reproduction itself is the bar)
 #
-# `task` is the text the attendee submits. The repository ships THAT SENTENCE and
-# nothing else: no module, no scaffold, no contract, no reference solution.
+# `task` is the attendee's starting request, never an implementation or answer key.
+# The room's game has a small external score protocol so unlike games can report
+# to the same board. Its mechanics, look, controls, and files remain agent choices.
 #
 # `needs` lists CAPABILITIES, not agent ids. "backend" means "whichever role this
 # deployment serves for the service side", so a roster swap (opencode -> Codex, or
@@ -99,7 +101,8 @@ PRESETS: dict[str, dict[str, Any]] = {
     # the end of Lab 2, each team its own game on its own box through code-server's
     # /proxy/<port>/ path.
     #
-    # The prompt is deliberately three sentences. Everything that makes the result
+    # The request leaves the game open while stating the shared score protocol.
+    # Everything that makes the result
     # runnable where the room runs it (one service serving page and API, relative URLs
     # behind a path prefix, no CDN, PORT, persistence, validation, documentation) is the
     # HARNESS's job -- `harness-skills/skills/backend-engineering/SKILL.md` and the
@@ -111,9 +114,16 @@ PRESETS: dict[str, dict[str, Any]] = {
         "title": "Build a browser game (the room's build)",
         "needs": ["backend"],
         "task": (
-            "Build a small browser arcade game with a persistent high-score table. "
-            "Pick a classic (Snake, Breakout, 2048, or something equally simple and "
-            "real-time) and make it genuinely fun to play in a browser tab."),
+            "Invent a compact browser game with a persistent high-score table. "
+            "Choose its concept, visual identity, controls, pacing, and progression; "
+            "give this team's game its own character. "
+            f"The shared room interface is GET /{SCORES_PATH}, returning a JSON "
+            "array of saved entries with player and score, and POST to the same path "
+            "to save an earned round result. "
+            f"Use integer workshop scores from 0 to {MAX_SCORE}, higher is better. "
+            "Explain how actual play earns that score and what the top of the scale "
+            "means; keep the displayed, stored, and reported values consistent. "
+            "Everything about the game beyond this interface is yours to design."),
     },
     "service-from-scratch": {
         "title": "Build an HTTP API (backend only)",

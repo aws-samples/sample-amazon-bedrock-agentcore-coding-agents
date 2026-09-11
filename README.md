@@ -12,6 +12,15 @@ its own checked and reviewed pull request. The guided game selects Claude Code
 and Kiro, producing one builder PR. A separate Claude Code validator remains a
 restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
 
+The game preset leaves its concept, appearance, controls, and progression to the
+builder. Teams share a small score interface: `GET /api/scores` returns saved
+`player`/`score` entries, `POST /api/scores` saves an earned result, and workshop
+scores run from 0 to 1000. Each game explains its own mapping to that scale.
+To add a creative direction in Chat, send
+`Use preset=game-from-scratch. Creative direction: <your own idea>`.
+The reporter sends the saved score unchanged; the shared board does not make
+different games equally difficult.
+
 Each builder works in a named linked Git worktree and separate pull request. The
 worktree is local to the coordinator or Runtime; only one normalized source archive
 crosses the Runtime boundary. The validator writes an executable for that request,

@@ -7,7 +7,7 @@
 Why this exists. The room's Lab 2 build is a browser game each team runs on its own
 box, and the wow moment is a single leaderboard on the projector that every team's
 scores land on. The game itself knows nothing about that board: the request asks it
-only for a local `GET /scores`. This bridge reads that table every few seconds and,
+only for a local `GET /api/scores`. This bridge reads that table every few seconds and,
 whenever the team's best improves, posts it to the central account's leaderboard.
 
 Identity comes for free. The post is SigV4-signed with the box's own instance role,
@@ -30,31 +30,27 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-POLL_INTERVAL_S = 5.0
-# A score has to be a real integer within a sane range; the leaderboard enforces the
-# same rule, so a game that prints "Infinity" fails here with a readable line instead
-# of a 400 from the other end.
-MAX_SCORE = 10**9
+from score_protocol import MAX_SCORE, SCORES_PATH
 
-# The agent chooses its own routes, and nothing in this repository tells it what to name
-# them: the skill asks for a real high-score table read and written through its API, and
-# stops there. So DISCOVER the endpoint instead of pinning one. First readable candidate
-# wins, and `--scores-path` overrides when a team named it something else entirely.
-SCORE_PATHS = ("scores", "api/scores", "highscores", "api/highscores",
+POLL_INTERVAL_S = 5.0
+# New room games share one score route. Retain discovery for earlier games and
+# --scores-path for other requests; route compatibility does not prescribe gameplay.
+SCORE_PATHS = (SCORES_PATH, "scores", "highscores", "api/highscores",
                "high-scores", "api/high-scores", "leaderboard", "api/leaderboard")
 
 
-def best_entry(table: Any) -> dict[str, Any] | None:
-    """The top entry of a game's `GET /scores` table, or None when there is none.
+class ScoreScaleError(ValueError):
+    """The table cannot be reported on the room's shared score scale."""
 
-    Tolerant on shape, because the prompt names no field: the game exposes a score
-    table, and this bridge reads whatever it finds. A wrapper (`{"scores": [...]}`) is
-    unwrapped, and the player name is taken from whichever of the common keys is
-    present. `initials` earns its place in that list from live runs: an arcade game
-    built from the three-sentence prompt reliably calls the name field `initials` (the
-    classic three-letter high-score name), and without it every team would post as
-    "anonymous" and the board would be a column of the same word. Anything without an
-    integer score is skipped rather than crashing the bridge.
+
+def best_entry(table: Any) -> dict[str, Any] | None:
+    """The top entry of a game's score table, or None when there is none.
+
+    New room games return an array with player and score. Earlier games used
+    wrappers and different names, so retain those compatible representations:
+    unwrap {"scores": [...]} and recognize player-name aliases such as initials.
+    Read integer strings without changing their value; never round, clip, or
+    normalize scores. Unreadable rows are skipped rather than crashing the bridge.
     """
     if isinstance(table, dict):
         for key in ("scores", "items", "results", "data"):
@@ -64,6 +60,7 @@ def best_entry(table: Any) -> dict[str, Any] | None:
     if not isinstance(table, list):
         return None
     best: dict[str, Any] | None = None
+    outside_scale = False
     for row in table:
         if not isinstance(row, dict):
             continue
@@ -74,12 +71,17 @@ def best_entry(table: Any) -> dict[str, Any] | None:
             except (TypeError, ValueError):
                 continue
         if score < 0 or score > MAX_SCORE:
+            outside_scale = True
             continue
         if best is None or score > best["score"]:
             name = next((str(row[k]) for k in ("player", "name", "initials",
                                                  "user", "handle", "alias")
                          if row.get(k)), "anonymous")
             best = {"score": score, "player": name[:40]}
+    if best is None and outside_scale:
+        raise ScoreScaleError(
+            f"no score fits the room's 0 to {MAX_SCORE} scale; inspect the game's "
+            "documented scoring and score API. The reporter does not rescale scores.")
     return best
 
 
@@ -129,6 +131,9 @@ def _region_of(url: str) -> str:
 def signed_post(leaderboard_url: str, body: dict[str, Any],
                 timeout_s: float = 10.0) -> dict[str, Any]:
     """POST to the leaderboard's /scores, SigV4-signed with this box's credentials."""
+    score = body.get("score")
+    if type(score) is not int or not 0 <= score <= MAX_SCORE:
+        raise ScoreScaleError(f"score must be an integer from 0 to {MAX_SCORE}")
     from botocore.auth import SigV4Auth  # noqa: PLC0415 (only the post path needs it)
     from botocore.awsrequest import AWSRequest  # noqa: PLC0415
     from botocore.session import Session  # noqa: PLC0415
@@ -175,6 +180,11 @@ def run(game_url: str, leaderboard_url: str, game_name: str, once: bool,
             else:
                 table = read_json(scores_url)
             best = best_entry(table)
+        except ScoreScaleError as exc:
+            print(f"  ... {exc}", file=out, flush=True)
+            if once:
+                return 1
+            best = None
         except (urllib.error.URLError, OSError, ValueError) as exc:
             print(f"  ... {exc}", file=out, flush=True)
             scores_url = ""       # rediscover: the game may still be starting
