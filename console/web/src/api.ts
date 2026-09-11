@@ -166,6 +166,8 @@ export interface RunRoute {
 }
 
 export interface RunSummary {
+  source?: 'persisted';
+  saved_at?: string;
   run_id: string;
   task: string;
   status: string;

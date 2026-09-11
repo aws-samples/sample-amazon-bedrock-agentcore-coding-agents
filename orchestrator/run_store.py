@@ -195,7 +195,7 @@ def active_snapshot_is_stale(payload: dict[str, Any],
     return (now if now is not None else time.time()) - stamp > ACTIVE_STALE_AFTER_S
 
 
-def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
+def recent(runs_dir: str, limit: int | None = 10) -> list[dict[str, Any]]:
     """The most recent persisted runs, newest first.
 
     Lets an attendee who lost their session id ask "what did I run?" instead of
@@ -209,7 +209,9 @@ def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
     ``run_<HHMMSS>`` -- time of day with no date -- so sorting filenames puts last
     night's 23:59 run ahead of this morning's 00:05 one.
     """
-    if limit <= 0:
+    # None lists the retained history for the console's paginated index. Pruning
+    # still bounds the files on disk; pagination must not lose older saved runs.
+    if limit is not None and limit <= 0:
         return []
 
     # run_id -> (modified timestamp, already-loaded payload, S3 key)
@@ -278,7 +280,7 @@ def recent(runs_dir: str, limit: int = 10) -> list[dict[str, Any]]:
         if payload is None:
             continue
         out.append(payload)
-        if len(out) >= limit:
+        if limit is not None and len(out) >= limit:
             break
     return out
 

@@ -52,11 +52,9 @@ CODING_AGENTS_DIR = tempfile.mkdtemp(prefix="e2e-coding-agents-")
 # server MUST launch with isolated_server_env() so the GitHub state is the honest
 # "not connected" the tests assert and no run can leak a PR. (The console subprocess
 # does not load orchestrator/conftest.py, so it must be isolated here.)
-# NOTE: we isolate only the CREDENTIAL file, NOT WORKSHOP_RUNS_DIR; the journey
-# tests read the composed deliverable + critique under the default .runs/work and
-# .runs/composed; relocating the runs dir would break those path assertions. With no
-# credential resolved, compose stays local under .runs and pr_url is null, exactly
-# the honest no-GitHub path under test.
+# WORKSHOP_RUNS_DIR is inherited from the root conftest's temporary directory.
+# Parent and subprocess therefore inspect the same isolated worktrees and ledger;
+# fixture verdicts never enter the attendee's durable history.
 _GH_ISOLATE_DIR = tempfile.mkdtemp(prefix="e2e-gh-isolate-")
 
 

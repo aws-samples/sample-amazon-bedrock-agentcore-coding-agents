@@ -17,9 +17,8 @@ import os
 import tempfile
 
 # Neutralize any REAL GitHub credential / wired runtime ARN so the suite never
-# opens a real PR or dispatches to a real runtime. We DON'T relocate the whole
-# runs dir (tests that exercise compose/PR manage their own .runs and mock the
-# wire), only:
+# opens a real PR or dispatches to a real runtime. The root conftest already
+# isolates the runs directory and disables the durable S3 mirror. Also:
 #   * point the GitHub credential store at an empty tmp file (no developer PAT on
 #     the ladder), and the runtime config likewise; both read these env vars by
 #     design (real-seam isolation, not an internal monkeypatch);

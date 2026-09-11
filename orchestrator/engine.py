@@ -1020,6 +1020,7 @@ class Engine:
             "options": dict(run.options),
             "preset": run._preset_req,
             "user_identity": dict(run.user_identity),
+            "executor": self.executor.name,
             "work_items": {
                 agent: item.public()
                 for agent, item in run.work_items.items()

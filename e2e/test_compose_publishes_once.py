@@ -229,6 +229,7 @@ def test_compose_recovers_a_shared_worktree_left_dirty_by_a_previous_run(
     """
     import importlib
 
+    previous_runs_dir = os.environ.get("WORKSHOP_RUNS_DIR")
     monkeypatch.setenv("WORKSHOP_RUNS_DIR", str(tmp_path))
     engine = importlib.reload(importlib.import_module("engine"))
     eng = engine.Engine.__new__(engine.Engine)
@@ -265,5 +266,8 @@ def test_compose_recovers_a_shared_worktree_left_dirty_by_a_previous_run(
     finally:
         # Restore the module for the rest of the session (its _RUNS_DIR is read at
         # import time, so the reload above rebound it to tmp_path).
-        monkeypatch.delenv("WORKSHOP_RUNS_DIR", raising=False)
+        if previous_runs_dir is None:
+            monkeypatch.delenv("WORKSHOP_RUNS_DIR", raising=False)
+        else:
+            monkeypatch.setenv("WORKSHOP_RUNS_DIR", previous_runs_dir)
         importlib.reload(importlib.import_module("engine"))

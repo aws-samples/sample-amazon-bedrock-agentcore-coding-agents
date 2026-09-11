@@ -603,6 +603,9 @@ const RunCard = memo(function RunCard({ runId, runKind, compact = false }: { run
   </Container>;
   return <div id={`run-${runId}`}><SpaceBetween size="l">
     {pollError && <Alert type="warning">{pollError}</Alert>}
+    {run.source === 'persisted' && <Alert type="info" header="Recorded build">
+      Pull requests and checks were loaded from saved history. Terminal sessions from the previous console process are no longer attached.
+    </Alert>}
     <RunDetailPanel run={run} />
     {live && <Container header={<Header variant="h2">Agent activity</Header>}>
       <RunActivityRows route={run.route} progress={run.progress} roleEvents={run.roleEvents} live={live} />

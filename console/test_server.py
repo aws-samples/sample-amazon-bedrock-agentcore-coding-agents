@@ -38,6 +38,8 @@ sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
 # setdefault so a caller (e.g. the e2e conftest) that already isolated them wins.
 # Real-seam isolation (the modules read these env vars by design), never a monkeypatch.
 _ISO = tempfile.mkdtemp(prefix="test-server-iso-")
+os.environ.setdefault("WORKSHOP_RUNS_DIR", os.path.join(_ISO, "runs"))
+os.environ.pop("WORKSHOP_RUNTIME_BUCKET", None)
 os.environ.setdefault("WORKSHOP_GITHUB_STORE", "local")
 os.environ.setdefault("WORKSHOP_GITHUB_SETTINGS", os.path.join(_ISO, "github.local.json"))
 os.environ.setdefault("WORKSHOP_RUNTIME_CONFIG", os.path.join(_ISO, "runtime.local.json"))

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -37,10 +38,12 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import chat as _chat  # noqa: E402  the orchestrator brain (chatbot agent + streaming)
+import engine as _engine  # noqa: E402
 import github  # noqa: E402
 import kiro_config  # noqa: E402  Kiro API key -> Token Vault (Settings pane)
 import presets  # noqa: E402
 import runtime_config  # noqa: E402
+import run_store  # noqa: E402
 from engine import (  # noqa: E402
     AGENTS,
     TERMINAL,
@@ -70,6 +73,65 @@ _chat.use_engine(ENGINE)
 _CONVERSATIONS: dict[str, list] = {}
 _CONV_LOCK = __import__("threading").Lock()
 _MAX_TURNS = 40  # messages retained per conversation (user+assistant entries)
+
+# Only public evidence crosses the HTTP boundary. The durable snapshot also
+# contains dispatch options and the admitted identity, which history does not need.
+_HISTORY_FIELDS = (
+    "run_id", "task", "status", "phase", "created_at", "agents", "roles",
+    "route", "fail_reason", "progress", "work_items", "integration_brief",
+    "integration_base", "final_base_branch", "role_prs", "gate_history",
+    "gate", "review", "pr_url", "merge_state", "next_action",
+    "resubmission_allowed", "composed_from", "iterations", "artifact_endpoint",
+    "composed_branch", "composed_commit", "pr", "compose_base",
+)
+_SUMMARY_FIELDS = (
+    "run_id", "task", "status", "phase", "created_at", "agents", "roles",
+    "route", "fail_reason", "source", "saved_at",
+)
+
+
+def _history_view(saved: dict) -> dict:
+    """Read a saved verdict without reviving its engine or rerunning any work."""
+    view = {key: saved[key] for key in _HISTORY_FIELDS if key in saved}
+    view.update(source="persisted", saved_at=saved.get("_saved_at"))
+    # Match the CLI's recovery semantics. A snapshot is evidence, not a heartbeat
+    # from a worker this process owns.
+    if run_store.active_snapshot_is_stale(saved):
+        reason = "COORDINATOR_SESSION_INTERRUPTED"
+        view.update(
+            status="needs_human", fail_reason=reason,
+            next_action=next_action("needs_human", reason, saved.get("pr"),
+                                    saved.get("pr_url"), saved.get("role_prs")),
+            resubmission_allowed=resubmission_allowed(
+                "needs_human", reason, saved.get("role_prs")),
+        )
+    return view
+
+
+def _history_response(run_id: str, resource: str) -> tuple[int, dict]:
+    # A live registry lookup accepts arbitrary strings; a filename lookup cannot.
+    if not re.fullmatch(r"run_[A-Za-z0-9_-]+", run_id):
+        return 404, {"error": "run not found"}
+    saved = run_store.load(_engine._RUNS_DIR, run_id)
+    if not saved or saved.get("run_id") != run_id:
+        return 404, {"error": "run not found"}
+    view = _history_view(saved)
+    if resource == "result":
+        if view.get("status") not in TERMINAL:
+            return 409, {"status": view.get("status"), "phase": view.get("phase")}
+        return 200, view
+    if resource == "events":
+        return 200, {"run_id": run_id, "events": saved.get("events", [])}
+    if resource == "terminals":
+        # PTYs belonged to the old process. Only the bounded activity was saved;
+        # never present it as a currently attached terminal.
+        return 200, {"run_id": run_id, "terminals": {},
+                     "events": saved.get("activity", {}), "source": "persisted"}
+    if resource == "diff":
+        return 200, {"run_id": run_id, "commit": saved.get("composed_commit"),
+                     "branch": saved.get("composed_branch"), "files": [],
+                     "reason": "Open the pull request for this recorded build's full diff."}
+    return 200, view
 
 
 def chat_stream(conversation_id: str, prompt: str, model_id: str | None = None,
@@ -198,7 +260,25 @@ def dispatch(method: str, path: str, body: dict | None,
             # infinite-scroll a long history instead of fetching everything each
             # poll. No params -> the full list (back-compat). `total` lets the
             # client know when it has reached the end.
-            all_runs = list(reversed(ENGINE.list()))
+            # The lab restarts the console after editing identity mapping. The
+            # old endpoint read only ENGINE._runs, hiding every completed PR on
+            # that restart even though the engine had saved its evidence.
+            # Keep this on the reporting path: no saved Run enters the engine.
+            rows = {}
+            for saved in run_store.recent(_engine._RUNS_DIR, limit=None):
+                if not saved.get("run_id"):
+                    continue
+                view = _history_view(saved)
+                rows[saved["run_id"]] = {
+                    key: view[key] for key in _SUMMARY_FIELDS if key in view
+                }
+            rows.update({run.run_id: public_run(run) for run in ENGINE.list()})
+            all_runs = sorted(
+                rows.values(),
+                key=lambda row: (row.get("created_at") or row.get("saved_at") or "",
+                                 row.get("run_id") or ""),
+                reverse=True,
+            )
             total = len(all_runs)
             qs = parse_qs(query or "")
             try:
@@ -212,13 +292,16 @@ def dispatch(method: str, path: str, body: dict | None,
                     window = window[:max(0, int(limit_raw))]
                 except ValueError:
                     pass
-            return 200, {"runs": [public_run(r) for r in window],
+            return 200, {"runs": window,
                          "total": total, "offset": offset}
         if path.startswith("/api/runs/"):
             parts = path.split("/")
             run = ENGINE.get(parts[3] if len(parts) > 3 else "")
             if not run:
-                return 404, {"error": "run not found"}
+                return _history_response(
+                    parts[3] if len(parts) > 3 else "",
+                    parts[4] if len(parts) == 5 else "",
+                )
             if len(parts) == 5 and parts[4] == "result":
                 if run.status in TERMINAL:
                     return 200, public_result(run)

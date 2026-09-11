@@ -61,7 +61,7 @@ _REPO = os.path.dirname(_HERE)
 for sub in ("interactive-api", "orchestrator", "metrics-api"):
     sys.path.insert(0, os.path.join(_REPO, sub))
 
-_LEDGER = os.path.join(_REPO, ".runs", "telemetry.jsonl")
+_LEDGER = os.path.join(os.environ["WORKSHOP_RUNS_DIR"], "telemetry.jsonl")
 
 
 def _post(url: str, body: dict) -> dict:

@@ -25,6 +25,12 @@ import os
 import tempfile
 
 _ISOLATED = tempfile.mkdtemp(prefix="solution-test-isolate-")
+# Runs include durable verdicts, worktrees, and the ledger. Leaving their default
+# at the real host's .runs made offline fixtures appear in console history after
+# a restart. Always isolate before engine import, even in an attendee shell which
+# exports a production WORKSHOP_RUNS_DIR. Individual tests may override it later.
+os.environ["WORKSHOP_RUNS_DIR"] = os.path.join(_ISOLATED, "runs")
+os.environ.pop("WORKSHOP_RUNTIME_BUCKET", None)
 # Credential store -> empty tmp file (no developer PAT on the ladder). Runtime ARN
 # config -> empty tmp file (no real wired runtime). Both read these env vars at
 # import by design. setdefault so a more specific package conftest / a test that
