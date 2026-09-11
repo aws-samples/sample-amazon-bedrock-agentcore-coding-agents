@@ -50,6 +50,16 @@ REALLY EXERCISING the work rather than reading it.
   by nesting user-controlled strings inside shell quotes or `python -c`/`node -e`
   snippets. Quotes, newlines, and markup are ordinary test inputs; serialize them with
   the language's JSON library or a literal data file so they cannot become code.
+- **A valid-case probe must satisfy the other input constraints.** When testing
+  escaping or round-trip fidelity, keep the value within the documented length and
+  type limits. Include generated suffixes when checking its size. Test a rejected
+  property separately so the reason for refusal is observable. Do not require the
+  same input class to be both accepted and rejected in different assertions.
+- **Leave unspecified design choices with the builder.** Verify the requested
+  interfaces and the behavior the game or application documents. Do not add a
+  preferred genre, control scheme, screen sequence, or scoring formula to the
+  acceptance criteria. A documented result must still be reachable and consistent
+  with actual execution.
 - **Syntax-check the executable before handing it off.** You may run a parse-only check
   such as `bash -n`, `python -m py_compile`, or `node --check`. Do not start the
   deliverable or execute the acceptance behavior yourself; the orchestrator owns that
