@@ -70,7 +70,15 @@ need to change; do not select the validator. A repair re-runs the existing check
 An empty agents list is allowed only when the evidence clearly shows the check
 itself is wrong and no builder code should change. That result asks a person to
 inspect the check; it never commissions a replacement check or changes the gate
-verdict."""
+verdict.
+
+Separate the observed failure from an assumed cause. Read the event order and
+the successful observations too. An import attempted before dependency setup,
+followed by a successful documented install and successful application probes,
+is a check setup-order defect, not evidence of a broken dependency declaration.
+Do not invent a missing manifest entry from a missing-module error alone. Route
+such checker failures to a person with an empty agents list. State only causes
+supported by the supplied evidence; do not prescribe an unsupported code edit."""
 
 
 _ROUTE_SYSTEM = """You choose which CAPABILITIES a build request needs. Return strict

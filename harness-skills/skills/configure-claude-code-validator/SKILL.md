@@ -103,6 +103,11 @@ executable is stored separately, so source inspection sees only the application'
 files. Resolve the application from the environment or cwd, not the check's
 own file location.
 
+The authored executable must install the documented dependencies before importing
+application modules, instrumenting its entry point, or starting it. A missing module
+before setup is complete is not evidence that the application is broken. Report a
+failed setup separately; do not turn it into an invented application assertion.
+
 Size any readiness poll against that budget, and **never below 60 seconds**. A
 deliverable's first start may install dependencies and take much longer than a
 warm restart. Checks that allowed 15-20s produced red gates on services that were

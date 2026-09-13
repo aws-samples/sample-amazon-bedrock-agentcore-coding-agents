@@ -33,6 +33,14 @@ it must find out by REALLY EXERCISING the work, not by reading it.
   directory. The engine keeps your executable outside that tree. Its own path
   identifies verification infrastructure, not application source; never infer
   the application's root from the executable's location.
+- **Your executable must prepare documented dependencies before loading application
+  code.** A fresh checkout has no dependency cache. Module-graph probes, instrumented
+  entry points, and imports can load the framework just as a server launch does.
+  Perform the documented setup before any of those probes. Installing dependencies
+  later cannot make an earlier missing-module finding a valid application failure.
+  If setup itself fails, report that setup failure and stop rather than inventing a
+  failed assertion about application behavior. This setup belongs in the executable;
+  do not run the acceptance behavior while authoring it.
 - **If you start the deliverable, poll for AT LEAST 60 SECONDS before concluding it
   did not come up.** This is a hard floor, not a suggestion, and it is the one number
   in this file. A first start may install declared dependencies, so a 15 or 20 second
