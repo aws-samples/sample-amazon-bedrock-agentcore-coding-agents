@@ -17,10 +17,11 @@ routing projects in that language.
 | `model/load.py` | Bedrock model construction |
 | `stage_engine.py` | Stage the root coordinator and use cases into the build context |
 | `configure_deploy.py` | Wire role ARNs, IAM roles, and account settings into generated CLI config |
+| `probe_coordinator.py` | Require a real, non-error answer from the deployed coordinator |
 | `Dockerfile` | Build the coordinator container |
 
-The model can clarify a request or call `list_presets`, `dispatch_backend`,
-`dispatch_frontend`, `dispatch_validator`, `run_build`, and `run_status`.
+The model can clarify a request or call `list_presets`, `run_build`, `run_status`,
+and the builder dispatch tools generated from the connected role registry.
 `list_presets` is advisory and starts nothing. Dispatch tools submit work through
 the same `orchestrator/engine.py` used by the console.
 
@@ -48,7 +49,10 @@ includes the worker ARNs, execution roles, account, region, repository, and merg
 policy. Generated files under `CodingAgents/` stay untracked.
 
 The closing read-only probe asks the deployed coordinator which roles
-`add-a-feature` uses. It should answer without creating a run.
+`add-a-feature` uses. It should answer without creating a run. The wrapper checks
+the CLI's structured result and response, because a streamed model error can
+otherwise return exit code zero. An error, empty answer, or 180-second timeout
+stops the script before it prints the build-submission instructions.
 
 Export model settings before running the script. It forwards the stack's
 `WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_OPENCODE_MODEL`, and `WORKSHOP_SMALL_MODEL`

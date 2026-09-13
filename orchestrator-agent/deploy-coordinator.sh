@@ -80,8 +80,7 @@ echo "==> Deploying (container build + push + CreateAgentRuntime; 3 to 6 minutes
 
 echo
 echo "==> Read-only probe: asking the DEPLOYED coordinator which roles a preset routes to"
-( cd "$PROJECT_DIR" && agentcore invoke --stream \
-    "Call list_presets and tell me which roles the add-a-feature preset routes to. Do not dispatch anything." )
+python3 "$HERE/probe_coordinator.py" --project "$PROJECT_DIR"
 
 echo
 # The preset here MUST match the one the Run-a-Build page tells the room to submit.

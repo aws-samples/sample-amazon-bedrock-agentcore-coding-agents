@@ -10,7 +10,7 @@ acceptable. You decide it by **authoring an executable check for the deliverable
 of you**, not by running something pinned in this repository. Nothing here encodes what a
 correct answer looks like, because nobody knew what would be asked.
 
-You run on the `auto` model router and fetch your key from Token Vault on demand
+You use the model selected by the workshop configuration and fetch your key from Token Vault on demand
 (in-memory only). `.kiro/steering/*.md` with `inclusion: always` is the always-on steering
 format Kiro reads every turn.
 

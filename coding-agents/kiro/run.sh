@@ -10,11 +10,11 @@
 #     runtime's IAM role (GetWorkloadAccessToken + GetResourceApiKey)
 #   - The key never touches disk; it lives only in this shell's memory
 #   - Each new PTY session fetches a fresh key (rotation-friendly)
-#   - The runtime IAM role is the only principal that can read the key
+#   - The runtime IAM role is authorized to read its credential provider
 #
 # Authentication methods (tried in order):
-#   1. KIRO_API_KEY from AgentCore Identity Token Vault (Pro+ headless)
-#   2. Fallback: device-flow login (prints URL + code for browser auth)
+#   1. KIRO_API_KEY from AgentCore Identity Token Vault (headless)
+#   2. Explicit /app/run.sh login: device flow for a hand-opened shell
 #
 # Usage (from connect.py):
 #   /app/run.sh                         # interactive kiro-cli
@@ -97,7 +97,7 @@ else
   KIRO_API_KEY="$(fetch_api_key)"
   export KIRO_API_KEY
   if [ -n "$KIRO_API_KEY" ]; then
-    echo "[auth] KIRO_API_KEY retrieved successfully (Pro+ headless mode)"
+    echo "[auth] KIRO_API_KEY retrieved successfully (API-key headless mode)"
   else
     echo "[auth] WARNING: Could not retrieve KIRO_API_KEY (no env var, no Token Vault provider)"
   fi
@@ -151,17 +151,19 @@ ACTION="${1:-interactive}"
 shift 2>/dev/null || true
 PROMPT="$*"
 
-# ── Choose the working directory (mirror codex/run.sh) ───────
-# The validator reads its role from the working tree it starts in. The attendee stages
-# `.kiro/steering/` onto the shared mount, so run there when it exists: a relative path
-# like `.kiro/steering/validator.md` then resolves to the STAGED file, not the
-# image-baked ~/.kiro copy. An explicit per-run cwd from the orchestrator wins; HOME is
-# the last resort (baked steering only).
+# ── Choose the working directory ────────────────────────────
+# Kiro also discovers AGENTS.md in its project. Starting on the shared mount
+# therefore imports the frontend's role instructions into the checker (observed
+# in a real Lab 1 response). Refresh ONLY Kiro's staged steering into its private
+# home, then start there. The shared notes remain available at /mnt/s3files.
+# An explicit dispatched worktree already has its own role context and wins.
 if [ -n "${WORKSHOP_AGENT_WORKDIR:-}" ]; then
   RUN_DIR="$WORKSHOP_AGENT_WORKDIR"
-elif [ -d /mnt/s3files ]; then
-  RUN_DIR="/mnt/s3files"
 else
+  if [ -f /mnt/s3files/.kiro/steering/validator.md ]; then
+    mkdir -p "$HOME/.kiro/steering"
+    cp /mnt/s3files/.kiro/steering/validator.md "$HOME/.kiro/steering/validator.md"
+  fi
   RUN_DIR="$HOME"
 fi
 cd "$RUN_DIR"
@@ -179,13 +181,11 @@ fi
 
 # ── Require an API key for non-interactive use ───────────────
 # Without KIRO_API_KEY the CLI would drop into an interactive "Select login
-# method" picker and hang the headless PTY. Fail loud with ONE actionable line
-# instead of opening a browser login. Two real remediations:
-#   1. Token Vault: create the workload identity + api-key credential provider
-#      for this account so fetch_api_key() above succeeds, OR
-#   2. pass KIRO_API_KEY as a runtime env var at deploy time.
+# method" picker and hang the headless PTY. The attendee updates Token Vault
+# through the hidden prompt in Lab 1; never recommend putting a plaintext key
+# in Runtime settings.
 if [ -z "$KIRO_API_KEY" ]; then
-  echo "[auth] ERROR: no KIRO_API_KEY. Set it via Token Vault (create-workload-identity + create-api-key-credential-provider for this account) or pass KIRO_API_KEY at deploy time. Run '/app/run.sh login' for an interactive device-flow login." >&2
+  echo "[auth] ERROR: no Kiro API key in Token Vault. Re-run Lab 1's hidden key prompt to update the kiro-api-key credential provider, then open a new session. Do not put the key in Runtime environment variables." >&2
   exit 1
 fi
 

@@ -45,17 +45,9 @@ def test_validator_setup_is_executable():
 def test_mounted_role_guidance_overrides_the_image_fallback():
     """The files attendees stage must be the project guidance the CLI reads.
 
-    Each role reaches that conclusion its OWN way, so assert the real mechanism rather
-    than one shape: Kiro (the served validator) picks a RUN_DIR and lets the relative
-    `.kiro/steering/` path resolve against it, while the Claude Code roles probe for a
-    staged guidance file by name.
+    Kiro's executable launcher tests separately verify that staged checker guidance
+    is read without importing the frontend's AGENTS.md from the shared mount.
     """
-    kiro = (ROOT / "coding-agents" / "kiro" / "run.sh").read_text()
-    assert 'RUN_DIR="$WORKSHOP_AGENT_WORKDIR"' in kiro
-    assert 'elif [ -d /mnt/s3files ]; then' in kiro
-    assert 'RUN_DIR="/mnt/s3files"' in kiro
-    assert 'cd "$RUN_DIR"' in kiro
-
     validator = (ROOT / "coding-agents" / "claude-code-validator" / "run.sh").read_text()
     assert 'VALIDATOR_WORKDIR="/mnt/s3files/validator"' in validator
     assert 'if [ -f "$VALIDATOR_WORKDIR/CLAUDE.md" ]; then' in validator
