@@ -76,7 +76,7 @@ export function AttributionSection() {
           { id: 'input', header: 'Input tokens', sortingField: 'input_tokens', cell: row => tokens(row.input_tokens) },
           { id: 'output', header: 'Output tokens', sortingField: 'output_tokens', cell: row => tokens(row.output_tokens) },
         ]} />
-      <Box color="text-body-secondary" fontSize="body-s">A manually supplied label proves the export path, not a Cognito sign-in. Kiro credits, coordinator and review calls, and infrastructure charges are outside this query.</Box>
+      <Box color="text-body-secondary" fontSize="body-s">Signed-in Chat builds and Agents sessions receive a user label automatically. A manually supplied label does not establish a Cognito sign-in. Kiro credits, coordinator and review calls, and infrastructure charges are outside this query.</Box>
       {!!data?.untagged_requests && <ExpandableSection headerText="Why are some requests untagged?">
         <SpaceBetween size="s">
           <Box>These events reached CloudWatch without a user label. CLI requests without console sign-in and requests made before identity mapping was enabled can appear here.</Box>

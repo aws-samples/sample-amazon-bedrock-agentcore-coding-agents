@@ -338,9 +338,8 @@ def test_a_dollar_sign_inside_tui_output_is_not_a_shell_prompt():
 
 # --- Dispatch env contract (Lab 3 telemetry seam) ---------------------------
 # _build_command assembles the env prefix for every dispatched role. These
-# tests pin what ships: telemetry EMISSION is on for every role (the agent
-# CLIs export to the collector sidecar at 127.0.0.1:4318), but telemetry
-# IDENTITY is absent until the attendee implements to_otel_env() in Lab 3.
+# tests pin each role's exporter settings and its correlation attributes.
+# Known users receive a person label; anonymous requests remain unlabelled.
 
 def _cmd_for(agent_id, monkeypatch, identity=None):
     import identity_baggage

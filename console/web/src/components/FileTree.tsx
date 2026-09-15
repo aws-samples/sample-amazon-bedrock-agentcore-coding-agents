@@ -221,6 +221,7 @@ function TreeRow({
             }}
             style={{ paddingLeft: pad }}
             title={node.name}
+            aria-expanded={node.is_dir ? open : undefined}
             className={`workspace-file-row flex w-full items-center gap-1 rounded-sm pr-2 text-left hover:bg-accent ${active ? 'bg-accent' : ''} ${isDropHere ? 'bg-accent/60 ring-1 ring-inset ring-primary/50' : ''}`}
           >
             {node.is_dir ? (
