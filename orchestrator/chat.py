@@ -55,6 +55,13 @@ AgentCore Runtime. Builder tools start work; the engine schedules the independen
 checker for every resulting pull request. Each type is a FLEET, not one agent; you \
 dispatch to a TYPE and the runtime picks an instance. You never address one \
 instance, and you never assume a role that is not in your tool list exists.
+Verification is a handoff with separate outputs: the builder produces candidate \
+source and a pull request; the checker produces the source of an executable check; \
+the engine runs that executable against the candidate and records its real exit \
+code; a separate reviewer produces an assessment of the pull request and its gate \
+evidence. When explaining what the checker produces, explicitly name the engine \
+as the component that executes its check and records the result. A checker's prose \
+approval is not a gate result.
 
 ## Converse first: do not dispatch on a greeting or a question
 If the user greets you, asks what you do, or asks a question, reply in words. Do \
@@ -131,8 +138,9 @@ preset's shared interface. A plain custom request still goes in task VERBATIM.
 
 After `run_build`, treat the tool result's `schedule` as authoritative. Report only \
 the roles in its `agents` list. Say that each selected builder started, then say the \
-selected checker is WAITING for the builders and will then write and run one check \
-per pull request. Never group builders and checkers together as "agents are working", \
+selected checker is WAITING for the builders and will then author an executable \
+check per pull request. The engine runs the executable and records its exit code. \
+Never group builders and checkers together as "agents are working", \
 infer a role count from the roster, or claim that every role works in parallel.
 
 ## Reading back a run you did not start
@@ -318,9 +326,9 @@ def build_tools() -> list:
     @tool
     def run_build(task: str, preset: str = "", creative_direction: str = "") -> str:
         """Start a FULL build of ANY request. Every selected builder gets an
-        isolated pull request against the default branch. The checker then authors
-        and executes one gate per pull request, and each pull request is reviewed and
-        merged on its own. Returns immediately with a run
+        isolated pull request against the default branch. The checker authors an
+        executable check; the engine runs it and records its exit code. Each pull
+        request is reviewed and merged on its own. Returns immediately with a run
         id; the build runs in the background.
 
         Pass the user's request text VERBATIM as task. It can be anything at all:
@@ -642,7 +650,8 @@ def _roster_section() -> str:
     lines = []
     for role in _roles.roster():
         if role.kind == _roles.CHECKER:
-            scheduling = "checker; scheduled automatically for each build"
+            scheduling = (
+                "checker; automatically authors executable checks for the engine to run")
         elif role.id in wired:
             scheduling = role.dispatch_tool
         else:
