@@ -474,7 +474,7 @@ async def runtime_session_open(request: Request):
     # loop and freeze the other pages.
     result = await run_in_threadpool(
         runtime_shell.open_runtime_session, agent_id, cols, rows, instance_arn,
-        user_id)
+        user_id, user_identity=user.to_baggage() if user else None)
     if "error" in result:
         return JSONResponse(result, status_code=400)
     return JSONResponse(result, status_code=201)

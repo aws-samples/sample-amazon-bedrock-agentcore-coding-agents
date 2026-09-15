@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import sys
 import threading
 import uuid
@@ -397,7 +398,8 @@ def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
                          instance_arn: str | None = None,
                          user_id: str = "unknown", opened_by: str = "user",
                          launch_command: str | None = None,
-                         run_subdir: str = "") -> dict:
+                         run_subdir: str = "",
+                         user_identity: dict[str, str] | None = None) -> dict:
     """Open a real runtime shell session. Fails loud if no ARN wired (or if a
     requested instance is not one of the role's wired instances)."""
     arn = get_runtime_arn(agent_id, instance_arn)
@@ -417,6 +419,24 @@ def open_runtime_session(agent_id: str, cols: int = 80, rows: int = 24,
             "an interactive shell. Wire a deployed ARN (agentcore deploy) to open a terminal.")}
 
     session_id = f"console-{uuid.uuid4().hex}{uuid.uuid4().hex[:4]}"
+    if launch_command is None and user_identity:
+        # Snapshot the server-admitted identity before the connection thread
+        # starts. The registry's display label alone does not reach the CLI.
+        # Exports remain in this shell after /exit and apply to later commands.
+        from identity_baggage import UserIdentity
+        import roles
+
+        identity = UserIdentity.from_dict(user_identity)
+        env = {**roles.get(agent_id).telemetry_env,
+               **identity.to_env(), **identity.to_otel_env()}
+        correlation = f"agent.id={agent_id},session.id={session_id}"
+        existing = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
+        env["OTEL_RESOURCE_ATTRIBUTES"] = (
+            f"{existing},{correlation}" if existing else correlation)
+        exports = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+        launch_command = (
+            f"export {exports}\n"
+            + _AGENT_LAUNCH.get(agent_id, "/bin/bash\n"))
     session = RuntimeShellSession(
         session_id, agent_id, arn, user_id=user_id, opened_by=opened_by,
         launch_command=launch_command, run_subdir=run_subdir)

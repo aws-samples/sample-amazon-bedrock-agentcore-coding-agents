@@ -102,7 +102,7 @@ _TREE_EXCLUDES = ("node_modules", "__pycache__", ".git", ".venv", "venv",
 # Telemetry note (Lab 3): every agent image runs an OTel collector sidecar on
 # 127.0.0.1:4318 (started at boot by entrypoint.sh); a role's telemetry_env makes
 # its CLI emit to it. Enabling emission is only half the story: WHO ran it comes
-# from identity.to_otel_env() (the Lab 3 seam) merged in _build_command.
+# from identity.to_otel_env() merged in _build_command.
 
 
 def _role(agent_id: str) -> "_roles.Role":
@@ -310,10 +310,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         identity = get_current_identity()
         if identity is not None and not identity.is_anonymous():
             env.update(identity.to_env())
-            # Lab 3 seam: stamp the run's telemetry with the submitting user.
-            # to_otel_env() ships returning {} (the gap attendees find on
-            # page 1 and close on page 2); once implemented, every signal the
-            # agent emits carries user.id and the per-user cost view works.
+            # Carry the known submitter into exported request events.
             env.update(identity.to_otel_env())
     except Exception:
         identity = None

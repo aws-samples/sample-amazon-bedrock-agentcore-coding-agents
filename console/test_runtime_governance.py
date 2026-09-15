@@ -128,6 +128,35 @@ def test_live_identity_does_not_infer_authentication_from_an_email(monkeypatch):
     assert body["static_credentials_on_agent"] is None
 
 
+def test_open_session_uses_server_identity_instead_of_body_label(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    baggage = {"user_id": "verified-cognito-subject",
+               "user_email": "frontend-dev@workshop.aws", "user_name": "Frontend"}
+
+    class SignedInUser:
+        email = baggage["user_email"]
+
+        def to_baggage(self):
+            return dict(baggage)
+
+    calls = []
+    monkeypatch.setattr(server, "_authed", lambda _: True)
+    monkeypatch.setattr(server, "_current_user", lambda _: SignedInUser())
+    monkeypatch.setattr(
+        server.runtime_shell, "open_runtime_session",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or
+        {"session_id": "console-test-session"})
+    with TestClient(server.app) as client:
+        response = client.post("/api/dev/runtime-sessions", json={
+            "agent_id": "claude-code",
+            "user_identity": {"user_id": "forged", "user_email": "another@workshop.aws"},
+            "user_id": "forged",
+        })
+    assert response.status_code == 201
+    assert calls[0][0][4] == "frontend-dev@workshop.aws"
+    assert calls[0][1]["user_identity"] == baggage
+
 def test_failed_stop_keeps_the_terminal_registered_and_records_failure(monkeypatch):
     class Session:
         session_id = "console-live-session"

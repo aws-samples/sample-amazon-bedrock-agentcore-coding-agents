@@ -59,7 +59,7 @@ export function AttributionSection() {
         {[
           { label: 'Request events', value: data ? fmtNum(data.total_requests) : pendingValue, hint: 'In the selected window' },
           { label: 'Tagged requests', value: data ? fmtNum(data.tagged_requests) : pendingValue, hint: data?.coverage_percent != null ? `${data.coverage_percent}% carry a user label` : 'A named user.id resource attribute' },
-          { label: 'Untagged requests', value: data ? fmtNum(data.untagged_requests) : pendingValue, hint: 'The attribution gap to investigate' },
+          { label: 'Untagged requests', value: data ? fmtNum(data.untagged_requests) : pendingValue, hint: 'Received without a user label' },
         ].map(metric => <SpaceBetween key={metric.label} size="xs"><Box color="text-label" fontWeight="bold">{metric.label}</Box>
           <div className={data ? 'console-metric-value' : 'governance-metric-empty'}>{metric.value}</div>
           <Box color="text-body-secondary" fontSize="body-s">{metric.hint}</Box></SpaceBetween>)}
@@ -77,6 +77,12 @@ export function AttributionSection() {
           { id: 'output', header: 'Output tokens', sortingField: 'output_tokens', cell: row => tokens(row.output_tokens) },
         ]} />
       <Box color="text-body-secondary" fontSize="body-s">A manually supplied label proves the export path, not a Cognito sign-in. Kiro credits, coordinator and review calls, and infrastructure charges are outside this query.</Box>
+      {!!data?.untagged_requests && <ExpandableSection headerText="Why are some requests untagged?">
+        <SpaceBetween size="s">
+          <Box>These events reached CloudWatch without a user label. CLI requests without console sign-in and requests made before identity mapping was enabled can appear here.</Box>
+          <Box>Sign in before starting a new Chat build or opening an Agents session. A shared terminal keeps the identity of the person who opened it. Earlier events keep their original labels, even after you sign in or update the mapping.</Box>
+        </SpaceBetween>
+      </ExpandableSection>}
       <ExpandableSection headerText="Query and evidence details">
         <SpaceBetween size="m">
           {data && <KeyValuePairs columns={3} items={[

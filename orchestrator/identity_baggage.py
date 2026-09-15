@@ -47,26 +47,19 @@ class UserIdentity:
     def to_otel_env(self) -> dict[str, str]:
         """OpenTelemetry identity for the dispatched agent process.
 
-        Lab 3 seam: the dispatch already knows WHO submitted the run (this
-        object). Claude Code's role configuration already enables telemetry
-        export through its collector at 127.0.0.1:4318. This method adds the
-        submitting user as an OTel resource attribute. Attendees complete it
-        in Lab 3; until then it returns {} and those request events reach
-        CloudWatch UNTAGGED.
-
-        The finished mapping (the Lab 3 reference implementation). The
-        anonymous guard matters: a run with no signed-in user must stay
-        unstamped, never stamped as "user.id=" with an empty value:
-
-            ident = self.email or self.user_id
-            if not ident:
-                return {}
-            return {
-                "OTEL_RESOURCE_ATTRIBUTES": (
-                    f"user.id={ident},team.id=workshop"),
-            }
+        Dispatch already knows the submitter. The role's telemetry settings
+        configure export; this mapping adds the known user to those events.
+        Console requests carry the Cognito identity admitted by the server.
+        A CLI request without user metadata remains unlabeled. Never infer
+        a person from the Runtime execution role or a later console login.
         """
-        return {}
+        ident = self.email or self.user_id
+        if not ident:
+            return {}
+        return {
+            "OTEL_RESOURCE_ATTRIBUTES": (
+                f"user.id={ident},team.id=workshop"),
+        }
 
     def to_headers(self) -> dict[str, str]:
         return {

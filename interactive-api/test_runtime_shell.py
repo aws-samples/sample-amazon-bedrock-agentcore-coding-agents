@@ -190,6 +190,63 @@ def test_open_session_forged_instance_fails_loud():
     assert "not wired" in out["error"]
 
 
+@pytest.mark.parametrize("email", [
+    "attendee@workshop.aws",
+    "frontend-dev@workshop.aws",
+])
+def test_session_launcher_exports_its_own_user_and_complete_transport(
+        monkeypatch, tmp_path, email):
+    """Execute the generated shell: its identity survives a child CLI's exit."""
+    import json
+    import shlex
+    import subprocess
+    import roles
+
+    runtime_config.save_runtime("claude-code", _A1)
+    monkeypatch.setattr(runtime_shell.RuntimeShellSession, "start", lambda *_: None)
+    names = [*roles.get("claude-code").telemetry_env, "OTEL_RESOURCE_ATTRIBUTES",
+             "AGENTCORE_USER_ID", "AGENTCORE_USER_EMAIL", "AGENTCORE_USER_NAME"]
+    read_env = (
+        "import os,json; print(json.dumps({k:os.getenv(k) for k in "
+        + repr(names) + "}))")
+    probe = shlex.quote(sys.executable) + " -c " + shlex.quote(read_env)
+    monkeypatch.setitem(runtime_shell._AGENT_LAUNCH, "claude-code", probe + "\n")
+    identity = {"user_id": "cognito-subject", "user_email": email,
+                "user_name": "$(touch unexpected-file); O'Brien"}
+    result = runtime_shell.open_runtime_session(
+        "claude-code", user_id=email, user_identity=identity)
+    try:
+        session = runtime_shell.get_session(result["session_id"])
+        process = subprocess.run(
+            ["bash", "-c", session._launch_command + "\n" + probe],
+            cwd=tmp_path, env={"PATH": os.environ.get("PATH", ""),
+                              "OTEL_RESOURCE_ATTRIBUTES": "user.id=another-user"},
+            capture_output=True, text=True, check=True)
+        initial, after_cli_exit = [json.loads(line) for line in process.stdout.splitlines()]
+        assert initial == after_cli_exit
+        for name, value in roles.get("claude-code").telemetry_env.items():
+            assert initial[name] == value
+        assert f"user.id={email}" in initial["OTEL_RESOURCE_ATTRIBUTES"]
+        assert f"session.id={result['session_id']}" in initial["OTEL_RESOURCE_ATTRIBUTES"]
+        assert initial["AGENTCORE_USER_ID"] == "cognito-subject"
+        assert initial["AGENTCORE_USER_NAME"] == identity["user_name"]
+        assert not (tmp_path / "unexpected-file").exists()
+    finally:
+        runtime_shell._sessions.pop(result["session_id"], None)
+
+
+def test_registry_display_label_alone_does_not_claim_a_user_identity(monkeypatch):
+    runtime_config.save_runtime("claude-code", _A1)
+    monkeypatch.setattr(runtime_shell.RuntimeShellSession, "start", lambda *_: None)
+    result = runtime_shell.open_runtime_session(
+        "claude-code", user_id="display-only@workshop.aws")
+    try:
+        session = runtime_shell.get_session(result["session_id"])
+        assert session._launch_command is None
+    finally:
+        runtime_shell._sessions.pop(result["session_id"], None)
+
+
 # --- Explicit interactive tools drive the manually opened PTY -----------------
 class _FakeShellSession:
     """A live session stand-in: records sends + exposes the shared buffer, with no

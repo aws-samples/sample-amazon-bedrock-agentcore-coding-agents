@@ -38,7 +38,7 @@ export function ControlsOverview() {
               : <StatusIndicator type="pending">No Cognito identity</StatusIndicator> },
             { label: 'Telemetry mapping', value: <StatusIndicator type={data.identity.mapping_state === 'present' ? 'info' : 'pending'}>
               {data.identity.mapping_state === 'present' ? 'Resource attributes returned'
-                : data.identity.mapping_state === 'empty' ? 'Empty: complete the Lab 3 mapping' : 'Sign in to inspect your mapping'}
+                : data.identity.mapping_state === 'empty' ? 'No resource attributes returned' : 'Sign in to inspect your mapping'}
             </StatusIndicator> },
           ]} />
           <KeyValuePairs columns={1} items={[

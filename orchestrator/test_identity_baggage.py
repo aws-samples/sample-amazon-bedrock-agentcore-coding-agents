@@ -1,12 +1,5 @@
-"""Identity propagation and the intentionally empty Lab 3 exercise seam.
-
-The default suite verifies the shipped empty mapping. WORKSHOP_LAB3_COMPLETE=1
-requires the attendee's saved implementation, including email preference, user-ID
-fallback and anonymous behavior. It must fail if the edit is still empty.
-"""
+"""Known submitters are attributed by default; anonymous requests stay anonymous."""
 from __future__ import annotations
-
-import os
 
 from identity_baggage import (
     ANONYMOUS,
@@ -28,22 +21,12 @@ def test_to_env_carries_the_full_attribution_triplet():
     }
 
 
-def test_to_otel_env_ships_empty():
-    # CI pins the shipped Lab 3 gap. After the attendee implements the mapping,
-    # completion mode switches this same test to the finished contract so a
-    # correct workshop edit produces a green suite, not an intentional red.
-    out = IDENT.to_otel_env()
-    if os.environ.get("WORKSHOP_LAB3_COMPLETE") == "1":
-        assert out, "Lab 3 completion mode requires a non-empty OTel identity stamp"
-    else:
-        assert out == {}
+def test_known_submitter_is_attributed_without_an_exercise_flag(monkeypatch):
+    monkeypatch.delenv("WORKSHOP_LAB3_COMPLETE", raising=False)
+    assert IDENT.to_otel_env(), "A signed-in request must not ship without its user label"
 
 
-def test_to_otel_env_contract_once_implemented():
-    # The shipped gap is intentional; completion mode is checked independently
-    # above. Once implemented, both identity sources must retain their meaning.
-    if not IDENT.to_otel_env():
-        return
+def test_to_otel_env_prefers_email_and_falls_back_to_subject():
     assert IDENT.to_otel_env() == {
         "OTEL_RESOURCE_ATTRIBUTES": "user.id=attendee@workshop.aws,team.id=workshop",
     }

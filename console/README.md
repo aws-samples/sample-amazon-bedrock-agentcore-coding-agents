@@ -70,15 +70,21 @@ shown only after CloudWatch reports `Complete`. Errors, pending results, and
 missing usage are never presented as zero usage. Navigating between governance
 pages preserves the current query evidence.
 
-Development is where the attendee implements and tests
-`UserIdentity.to_otel_env()`. The method intentionally ships empty. Restart the
-host service from the VS Code terminal after saving the change; restarting it
-from its own Development terminal disconnects that terminal. The change affects
-future host-console dispatches, not an already deployed coordinator.
+`UserIdentity.to_otel_env()` carries known submitters by default. Chat builds and
+new Agents sessions receive the server-admitted Cognito identity and the role's
+complete telemetry transport settings. A shared Agents terminal keeps the
+identity of the person who opened it; viewing or typing into it does not change
+that identity. Open a new session after switching users.
 
-A separate, manually tagged prompt in a new Agents session proves export. Its
-label is not proof of Cognito authentication. The Usage table counts
-Claude Code request events; it is not Kiro usage reporting or a complete bill.
+Lab 3 inspects this mapping in Development and verifies it against exported
+requests. If you customize the mapping, restart the host service from VS Code;
+restarting from Development disconnects that terminal. Changes affect future
+host-console sessions and dispatches, not an already deployed coordinator.
+
+CLI requests without user metadata and historical unlabeled events remain
+Untagged. A label supplied manually is not proof of Cognito authentication.
+The Usage table counts Claude Code request events; it is not Kiro usage
+reporting or a complete bill.
 
 Controls reads the same identity mapping, merge policy, role registry, and
 execution limits used by this host. **Evaluate action** runs the real policy

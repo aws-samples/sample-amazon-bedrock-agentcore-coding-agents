@@ -116,8 +116,9 @@ npm --prefix console/web run build
 Runtime credentials so no test can read a token or open a pull request.
 The offline suite verifies platform behavior, not a future agent-generated
 application. A fresh event run still needs its real executable and review
-evidence. Lab 3's identity mapping intentionally ships empty; its completion
-tests require `WORKSHOP_LAB3_COMPLETE=1` after the attendee implements it.
+evidence. Known console submitters are mapped to telemetry by default. Lab 3
+verifies that mapping and the exported request events. CLI requests without user
+metadata and previously unlabeled events remain unattributed.
 
 ## When something is not working
 
