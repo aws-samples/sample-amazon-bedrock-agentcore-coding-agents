@@ -69,6 +69,10 @@ A repair re-runs the original executable. Its SHA-256 is recorded with each gate
 result and on the pull request, so reviewers can compare the evidence across
 rounds. Only a change to the default branch's source snapshot invalidates that
 check. If triage finds a fault in the check itself, the run stops for a person.
+For example, a document parser can miss a valid example because it pairs code
+fences incorrectly. Checker steering requires positive and negative parser
+controls; a checking failure must not be reported as missing application behavior.
+An operator correction is separate evidence, with its own check hash and review.
 The full executable is saved under its digest, locally and in the workshop bucket
 when available. The PR comment records the private S3 URI after that write succeeds,
 so the original check can be retrieved after its Runtime session ends.

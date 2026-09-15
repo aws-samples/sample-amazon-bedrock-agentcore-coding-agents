@@ -68,6 +68,13 @@ REALLY EXERCISING the work rather than reading it.
   preferred genre, control scheme, screen sequence, or scoring formula to the
   acceptance criteria. A documented result must still be reachable and consistent
   with actual execution.
+- **Verify the check's own parsing assumptions.** Inside the executable, test any
+  parser used to claim that content is missing with a known positive excerpt and a
+  negative control. Recognize the document's actual syntax, including unrelated
+  code blocks before the relevant example. An empty match from a parser that
+  cannot recognize valid input is a checking failure, not a missing application
+  feature. Report that distinction and stop; do not change the required result.
+  Do not require a particular document format unless the request requires it.
 - **Syntax-check the executable before handing it off.** You may run a parse-only check
   such as `bash -n`, `python -m py_compile`, or `node --check`. Do not start the
   deliverable or execute the acceptance behavior yourself; the orchestrator owns that
