@@ -23,7 +23,7 @@ attendee types any request into the agent's live terminal.
 {
   "agent_id": "claude-code",
   "label": "Claude Code",
-  "model": "us.anthropic.claude-opus-4-6-v1",   // overridable at deploy
+  "model": "us.anthropic.claude-opus-5",   // overridable at deploy
   "credential": "bedrock-native",               // no API key; IAM role has bedrock:InvokeModel
   "status": "ready",                            // not_deployed | deploying | ready | error
   "runtime_arn": "arn:aws:bedrock-agentcore:us-west-2:<acct>:runtime/claude-code-agent-XXXX",

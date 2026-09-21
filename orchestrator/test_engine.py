@@ -653,15 +653,16 @@ def test_suspected_checker_failure_stops_without_rewriting_the_check(monkeypatch
 
 def test_run_view_matches_frozen_contract():
     engine = _engine()
-    run = _wait_terminal(engine.submit(CONVERT_TASK, ALL_AGENTS))
-    view = public_run(run)
-    # frozen fields + the additive "route" and "fail_reason" (API_CONTRACT.md
-    # "Engine additions"). fail_reason lets the console state WHY a run stopped
-    # (e.g. RUNTIME_NOT_WIRED:<role>) instead of a bare status: a fail-loud
-    # verdict must be legible, never look like a silent mock.
-    assert set(view) == {"run_id", "task", "status", "phase",
-                         "created_at", "agents", "roles", "route", "fail_reason"}
-    engine.shutdown()
+    try:
+        run = _wait_terminal(engine.submit(CONVERT_TASK, ALL_AGENTS))
+        view = public_run(run)
+        # Include the documented additive fields: route, the reason a run
+        # stopped, and its admitted submitter label (null when unavailable).
+        assert set(view) == {"run_id", "task", "status", "phase",
+                             "created_at", "submitted_by", "agents", "roles",
+                             "route", "fail_reason"}
+    finally:
+        engine.shutdown()
 
 
 def test_harness_setup_block_extends_a_role():

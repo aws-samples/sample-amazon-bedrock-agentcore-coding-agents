@@ -408,11 +408,17 @@ def deploy_runtime(role_arn: str) -> dict:
         # literally called "agent", so you could not tell which agent wrote what.
         "WORKSHOP_AGENT_NAME": AGENT_NAME,
     }
-    # Optional deploy-time model override: pass WORKSHOP_MODEL into the runtime so
-    # run.sh uses it as the default (for accounts without Opus 4.6 Marketplace
-    # access). Only forwarded when set, so the baked default stays the norm.
-    if os.environ.get("WORKSHOP_MODEL"):
-        env_vars["WORKSHOP_MODEL"] = os.environ["WORKSHOP_MODEL"]
+    # Keep the stack default and the more specific model overrides available to
+    # the launcher. Forward only these public settings, never host credentials.
+    for name in ("WORKSHOP_CLAUDE_MODEL", "WORKSHOP_MODEL",
+                 "WORKSHOP_MODEL_CLAUDE_CODE"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            env_vars[name] = value
+    # An explicitly empty effort means "use the CLI's own default"; omitting it
+    # would restore the launcher's high setting after deployment.
+    if "WORKSHOP_CLAUDE_EFFORT" in os.environ:
+        env_vars["WORKSHOP_CLAUDE_EFFORT"] = os.environ["WORKSHOP_CLAUDE_EFFORT"].strip()
 
     # Check if runtime already exists
     config_path = os.path.join(SCRIPT_DIR, "runtime_config.json")

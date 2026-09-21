@@ -180,21 +180,28 @@ _CLAUDE_TELEMETRY = {
 # rather than assumed: `claude --effort` accepts low|medium|high|xhigh|max and warns
 # and IGNORES anything else, so a bad value degrades to the default instead of failing
 # the run. Wirable for an operator who wants to trade quality for latency or spend.
-_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
+_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "high").strip()
+_CLAUDE_VALIDATOR_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
 # opencode calls the same idea a model VARIANT and its accepted values are
 # provider-specific (its help names high, max, minimal), so it gets its own variable.
 _OPENCODE_VARIANT = os.environ.get("WORKSHOP_OPENCODE_VARIANT", "high").strip()
 
-# The headless one-shot form of each CLI. Placeholders are filled by Role.command.
-_CLAUDE_CLI = ("claude --dangerously-skip-permissions --print --max-turns 50 "
-               + (f"--effort {_CLAUDE_EFFORT} " if _CLAUDE_EFFORT else "")
-               + "--model {model} {prompt}")
+
+def _claude_cli(effort: str) -> str:
+    """The headless command; Role.command supplies the model and prompt."""
+    return ("claude --dangerously-skip-permissions --print --max-turns 50 "
+            + (f"--effort {effort} " if effort else "")
+            + "--model {model} {prompt}")
+
+
+_CLAUDE_CLI = _claude_cli(_CLAUDE_EFFORT)
 
 # Each role's default model is WIRABLE, because an account without Opus access must
 # be able to run the workshop by exporting one variable rather than editing code.
 # These are the same names the Stage 1 harness configurators read, so the shelf, the
 # deployed image, and the dispatch all name one model.
-_CLAUDE_MODEL = os.environ.get("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opus-4-6-v1")
+_CLAUDE_MODEL = (os.environ.get("WORKSHOP_CLAUDE_MODEL", "").strip()
+                or "us.anthropic.claude-opus-5")
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
 _CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "us.openai.gpt-5.6-sol")
@@ -224,7 +231,9 @@ REGISTRY: tuple[Role, ...] = (
         cli=_CLAUDE_CLI,
         default_model=_CLAUDE_MODEL,
         skills=("configure-claude-code-backend", "harness-setup"),
-        env=_CLAUDE_ENV,
+        # Interactive dispatch starts run.sh instead of the headless CLI above.
+        # Carry the same effort into that process, including an explicit blank.
+        env={**_CLAUDE_ENV, "WORKSHOP_CLAUDE_EFFORT": _CLAUDE_EFFORT},
         telemetry_env=_CLAUDE_TELEMETRY,
         model_env="ANTHROPIC_MODEL",
     ),
@@ -331,10 +340,13 @@ REGISTRY: tuple[Role, ...] = (
                     "this task, writes the check, and never edits the work.",
         steering_file="CLAUDE.md",
         harness_dir="claude-code-validator",
-        cli=_CLAUDE_CLI,
-        default_model=_CLAUDE_MODEL,
+        # WORKSHOP_CLAUDE_MODEL is the stack's BackendModelId, not a checker
+        # override. Keep this restore default independent; engine._role_model
+        # still resolves WORKSHOP_MODEL and WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR.
+        cli=_claude_cli(_CLAUDE_VALIDATOR_EFFORT),
+        default_model="us.anthropic.claude-opus-4-6-v1",
         skills=("configure-claude-code-validator",),
-        env=_CLAUDE_ENV,
+        env={**_CLAUDE_ENV, "WORKSHOP_CLAUDE_EFFORT": _CLAUDE_VALIDATOR_EFFORT},
         telemetry_env=_CLAUDE_TELEMETRY,
         model_env="ANTHROPIC_MODEL",
         hidden=True,

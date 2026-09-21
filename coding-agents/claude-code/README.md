@@ -21,6 +21,18 @@ python deploy.py
 
 `deploy.py` writes the Runtime ARN to `runtime_config.json`.
 
+The backend defaults to `us.anthropic.claude-opus-5` with `high` effort. To
+change either setting, export `WORKSHOP_CLAUDE_MODEL` or
+`WORKSHOP_CLAUDE_EFFORT` before running `deploy.py`; the settings are forwarded
+to the Runtime. Use the same exports when configuring the coordinator.
+
+For model selection, an explicit launcher `--model` wins, followed by
+`WORKSHOP_MODEL_CLAUDE_CODE`, `WORKSHOP_MODEL`, `WORKSHOP_CLAUDE_MODEL`,
+`ANTHROPIC_MODEL`, then the packaged default. `run-as-user.sh` uses the same
+environment precedence. An explicit launcher `--effort` overrides
+`WORKSHOP_CLAUDE_EFFORT`; setting that variable to an empty string omits the
+CLI flag.
+
 ## Open a shell
 
 Use the AgentCore CLI from this directory:
