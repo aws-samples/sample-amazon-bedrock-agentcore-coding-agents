@@ -277,12 +277,14 @@ def test_attendee_shell_scripts_parse():
         ROOT / "coding-agents" / "deploy-prebuilt.sh",
         GATEWAY / "config.sh",
         GATEWAY / "deploy-credential.sh",
+        GATEWAY / "deploy-runtime.sh",
         GATEWAY / "deploy-gateway.sh",
         GATEWAY / "deploy-all.sh",
         GATEWAY / "verify-gateway.sh",
         ROOT / "coding-agents" / "kiro" / "run.sh",
         ROOT / "coding-agents" / "claude-code-validator" / "run.sh",
         ROOT / "coding-agents" / "opencode" / "run.sh",
+        ROOT / "orchestrator-agent" / "deploy-coordinator.sh",
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)

@@ -19,6 +19,7 @@ import uuid
 
 import pytest
 
+from e2e.collector_fixture import collector_environment, run_entrypoint
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "coding-agents" / "codex"
@@ -56,7 +57,7 @@ raise SystemExit(int(os.environ.get("RECORDING_EXIT", "0")))
 """)
     recorder.chmod(0o755)
     # No inherited credential locations or live Runtime settings.
-    return {
+    env = {
         "HOME": str(home),
         "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
         "AWS_EC2_METADATA_DISABLED": "true",
@@ -64,13 +65,14 @@ raise SystemExit(int(os.environ.get("RECORDING_EXIT", "0")))
         "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "no-credentials"),
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+    with collector_environment(tmp_path) as (collector_env, _, _):
+        env.update(collector_env)
+        env["PATH"] = str(bin_dir) + os.pathsep + collector_env["PATH"]
+        yield env
 
 
 def _boot(env, *args, cwd=None):
-    return subprocess.run(
-        ["bash", str(HARNESS / "entrypoint.sh"), *args],
-        env=env, cwd=cwd, capture_output=True, text=True, timeout=10,
-    )
+    return run_entrypoint(HARNESS / "entrypoint.sh", env, args, cwd=cwd)
 
 
 def _record(result):
@@ -326,6 +328,8 @@ def _deploy_module(tmp_path, monkeypatch, *, region="us-east-1", ap_region=None,
     role = folder / "codex"
     role.mkdir(parents=True)
     shutil.copyfile(HARNESS / "deploy.py", role / "deploy.py")
+    for name in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+        shutil.copyfile(ROOT / "coding-agents" / name, folder / name)
     ap = f"arn:aws:s3files:{ap_region or region}:123456789012:file-system/fs-one/access-point/ap-one"
     (folder / "infra.config").write_text(
         f"INFRA_REGION={region}\nINFRA_ACCOUNT_ID=123456789012\n"
@@ -352,10 +356,13 @@ def test_deploy_passes_model_and_region_and_honors_deferred_mount(tmp_path, monk
 
         def create_agent_runtime(self, **kwargs):
             calls.append(kwargs)
-            return {"agentRuntimeId": "codex-test", "agentRuntimeArn": "arn:test"}
+            return {"agentRuntimeId": "codex-test", "agentRuntimeArn": "arn:test",
+                    "agentRuntimeVersion": "1", "status": "CREATING", "createdAt": 100}
 
         def get_agent_runtime(self, **kwargs):
-            return {"status": "READY"}
+            return {"status": "READY", "platformVersion": "V2", "agentRuntimeVersion": "1",
+                    "createdAt": 100, "lastUpdatedAt": 100,
+                    "agentRuntimeId": "codex-test", "agentRuntimeArn": "arn:test"}
 
     module.boto3 = SimpleNamespace(Session=lambda **kw: SimpleNamespace(
         client=lambda *a, **k: Control()))
@@ -366,6 +373,7 @@ def test_deploy_passes_model_and_region_and_honors_deferred_mount(tmp_path, monk
     monkeypatch.setenv("GATEWAY_URL", "https://example.invalid/mcp")
     module.deploy_runtime("arn:aws:iam::123456789012:role/codex")
     args = calls[0]
+    assert args["platformVersion"] == "V2"
     env = args["environmentVariables"]
     assert env["AWS_REGION"] == env["AWS_DEFAULT_REGION"] == "us-east-1"
     assert env["WORKSHOP_CODEX_MODEL"] == "us.openai.stack-model"

@@ -33,7 +33,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 case "$GITHUB_REPO" in */*) ;; *) die "GITHUB_REPO must look like owner/repository, not '$GITHUB_REPO'." ;; esac
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
 [ -n "$AWS_REGION" ] || die "No AWS region. Export AWS_REGION."
-command -v agentcore >/dev/null || die "The agentcore CLI is missing. Install it with: sudo npm install -g @aws/agentcore@latest"
+command -v agentcore >/dev/null || die "The agentcore CLI is missing. Install the workshop's pinned @aws/agentcore version."
+python3 "$REPO_ROOT/coding-agents/runtime_deploy.py"
 
 echo "==> The coordinator will be wired to:"
 role_names=$(PYTHONPATH="$REPO_ROOT/orchestrator${PYTHONPATH:+:$PYTHONPATH}" \
@@ -78,6 +79,8 @@ echo "==> Injecting the role ARNs, GitHub configuration, and deploy target"
 # ── 5. Deploy, then prove the deployed thing answers ────────────────────────
 echo "==> Deploying (container build + push + CreateAgentRuntime; 3 to 6 minutes)"
 ( cd "$PROJECT_DIR" && agentcore deploy --yes --json )
+echo "==> Preparing platform V2 (READY completes immediately; snapshot preparation can take several minutes)"
+python3 "$HERE/promote_runtime.py" --project "$PROJECT_DIR"
 ( cd "$PROJECT_DIR" && agentcore status --runtime orchestrator --json )
 
 echo

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "clis": {
+    "claude-code": {
+      "version": "2.1.278",
+      "command": "claude",
+      "npm_package": "@anthropic-ai/claude-code",
+      "update_env": {
+        "DISABLE_AUTOUPDATER": "1"
+      }
+    },
+    "codex": {
+      "version": "0.155.1",
+      "command": "codex",
+      "npm_package": "@openai/codex",
+      "update_config": {
+        "check_for_update_on_startup": false
+      }
+    },
+    "kiro": {
+      "version": "2.22.1",
+      "command": "kiro-cli",
+      "siblings": [
+        "kiro-cli-chat"
+      ],
+      "archives": {
+        "linux-aarch64": {
+          "url": "https://prod.download.cli.kiro.dev/stable/2.22.1/kirocli-aarch64-linux-musl.zip",
+          "sha256": "cae114f8dcf44ca09c68690959d208e95b465b4ad3c4064b06ff567ebfaa9341",
+          "bytes": 323319865
+        }
+      },
+      "update_config": {
+        "app.disableAutoupdates": true
+      }
+    },
+    "agentcore": {
+      "version": "0.30.0",
+      "command": "agentcore",
+      "npm_package": "@aws/agentcore"
+    }
+  },
+  "deploy_sdk": {
+    "boto3": "1.43.95",
+    "botocore": "1.43.95"
+  },
+  "runtime": {
+    "platform_version": "V2",
+    "base_image": "public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b"
+  }
+}

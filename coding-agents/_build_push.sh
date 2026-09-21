@@ -13,10 +13,28 @@
 #                      then a separate `finch push`.
 #
 # Usage (sourced or called):
-#   build_and_push_arm64 "<ECR_URI>" "<DOCKERFILE>" "<BUILD_CONTEXT>" "<REGION>" "<ACCOUNT_ID>"
-build_and_push_arm64() {
+#   build_and_push_arm64 "<ECR_URI>" "<DOCKERFILE>" "<BUILD_CONTEXT>" "<REGION>" "<ACCOUNT_ID>" [--toolchain]
+build_and_push_arm64() (
   local ecr_uri="$1" dockerfile="$2" context="$3" region="$4" account_id="$5"
   local registry="${account_id}.dkr.ecr.${region}.amazonaws.com"
+  local -a build_options=(--platform linux/arm64)
+
+  if [ -n "${6:-}" ]; then
+    [ "$6" = "--toolchain" ] || { echo "Unknown build option: $6" >&2; return 2; }
+    local tools_dir
+    tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # This function runs in a subshell. Keep the cleanup path in that scope:
+    # Bash 3 unwinds function-local variables before an errexit EXIT trap.
+    workshop_build_stage="$(mktemp -d "${TMPDIR:-/tmp}/workshop-image.XXXXXX")"
+    trap 'rm -rf -- "$workshop_build_stage"' EXIT
+    # Only this role's tracked files, its explicitly staged skill, and the two
+    # shared toolchain files enter the context. No repo-root/private config copy.
+    python3 "${tools_dir}/cli_versions.py" stage-context \
+      --source "$context" --destination "${workshop_build_stage}/context" >/dev/null
+    build_options+=(--build-arg "WORKSHOP_RUNTIME_BASE_IMAGE=$(python3 "${tools_dir}/cli_versions.py" get runtime.base_image)")
+    context="${workshop_build_stage}/context"
+    dockerfile="${context}/$(basename "$dockerfile")"
+  fi
 
   # Pick a real builder: prefer docker+buildx, fall back to finch. A box with
   # neither fails loud (no silent skip); there is no fake "pretend it built".
@@ -43,7 +61,7 @@ build_and_push_arm64() {
   echo "Building arm64 image: ${ecr_uri}"
   if [ "$builder" = "docker-buildx" ]; then
     docker buildx build \
-      --platform linux/arm64 \
+      "${build_options[@]}" \
       -t "${ecr_uri}" \
       -f "${dockerfile}" \
       "${context}" \
@@ -51,7 +69,7 @@ build_and_push_arm64() {
   else
     # Finch: build then push (no single-step --push).
     finch build \
-      --platform linux/arm64 \
+      "${build_options[@]}" \
       -t "${ecr_uri}" \
       -f "${dockerfile}" \
       "${context}"
@@ -59,4 +77,4 @@ build_and_push_arm64() {
   fi
 
   echo "Image pushed: ${ecr_uri}"
-}
+)

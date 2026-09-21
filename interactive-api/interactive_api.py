@@ -379,6 +379,14 @@ def _codex_config_text(workdirs=()):
                                 module.model_from_env(env), workdirs)
 
 
+def _cli_toolchain():
+    path = os.path.join(_ENGINES, "coding-agents", "cli_versions.py")
+    spec = importlib.util.spec_from_file_location("workshop_cli_versions", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _stage_agent_config(session: dict) -> None:
     """Write the chosen agent's config files into the session before the
     shell opens, so its CLI starts configured the moment you type its name.
@@ -437,7 +445,10 @@ def _stage_agent_config(session: dict) -> None:
         # and the binary resolves from the system PATH as before.
         real_home = os.path.expanduser("~")
         real_share = os.path.join(real_home, ".local", "share", "claude")
-        if os.path.isdir(real_share):
+        toolchain = _cli_toolchain()
+        version = toolchain.load_manifest()["clis"]["claude-code"]["version"]
+        native = os.path.join(real_share, "versions", version)
+        if os.path.isfile(native):
             ws_bin = os.path.join(root, ".local", "bin")
             ws_share = os.path.join(root, ".local", "share")
             os.makedirs(ws_bin, exist_ok=True)
@@ -448,11 +459,13 @@ def _stage_agent_config(session: dict) -> None:
                 if not os.path.lexists(share_link):
                     os.symlink(real_share, share_link)
                 versions = os.path.join(share_link, "versions")
-                latest = sorted(os.listdir(versions))[-1] if os.path.isdir(versions) else None
-                if latest and not os.path.lexists(bin_link):
-                    os.symlink(os.path.join(versions, latest), bin_link)
+                if not os.path.lexists(bin_link):
+                    os.symlink(os.path.join(versions, version), bin_link)
             except OSError:
                 pass  # mirror is best-effort; worst case is the doctor note
+            if os.path.lexists(bin_link):
+                toolchain.verify_cli("claude-code", home=root,
+                                     prefix=os.path.join(root, ".local"))
     elif agent_id == "codex":
         d = os.path.join(root, ".codex")
         os.makedirs(d, exist_ok=True)
@@ -472,6 +485,8 @@ def _stage_agent_config(session: dict) -> None:
                 "small_model": _SMALL_MODEL,
             }, f, indent=2)
     elif agent_id == "kiro":
+        # This session has its own HOME, so the host's update setting is not read.
+        _cli_toolchain().configure_home("kiro", root)
         # The staged filename comes from the REGISTRY, not a literal: this is the
         # THIRD place Kiro steering is staged (the other two are the Dockerfile's
         # baked copy and runtime_exec's per-dispatch stage), and all three must name
@@ -523,11 +538,11 @@ def _stage_agent_config(session: dict) -> None:
 _PTY_BANNER = {
     "codex": ("command -v codex >/dev/null "
               "&& echo \"$(codex --version 2>/dev/null): type 'codex' to start it here\" "
-              "|| echo 'Codex CLI not on PATH (npm i -g @openai/codex@0.155.1)'; "
+              f"|| echo 'Codex CLI not on PATH (npm i -g {_cli_toolchain().npm_spec('codex')})'; "
               "echo 'configured: ~/.codex/config.toml -> amazon-bedrock-runtime, AWS SDK credentials'"),
     "claude-code": ("command -v claude >/dev/null "
                     "&& echo \"claude $(claude --version 2>/dev/null | head -1): type 'claude' to start it here\" "
-                    "|| echo 'claude CLI not on PATH (npm i -g @anthropic-ai/claude-code)'; "
+                    f"|| echo 'claude CLI not on PATH (npm i -g {_cli_toolchain().npm_spec('claude-code')})'; "
                     "echo \"Bedrock-connected: CLAUDE_CODE_USE_BEDROCK=$CLAUDE_CODE_USE_BEDROCK "
                     "model=$ANTHROPIC_MODEL region=$AWS_REGION (no API key)\""),
     "opencode": ("command -v opencode >/dev/null "
@@ -540,7 +555,7 @@ _PTY_BANNER = {
     # cannot name a different file from the one _stage_agent_config just wrote.
     "kiro": ("command -v kiro-cli >/dev/null "
              "&& echo \"kiro-cli installed: type 'kiro-cli chat' to start it here\" "
-             "|| echo 'kiro-cli not on PATH (curl -fsSL https://cli.kiro.dev/install | bash)'; "
+             "|| echo 'kiro-cli not on PATH; run the pinned workshop CLI installer from Development'; "
              f"echo 'configured: ~/{_roles.get('kiro').steering_file.replace(os.sep, '/')}"
              " -> model auto (vendor key brokered, never on disk)'"),
 }

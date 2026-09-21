@@ -30,8 +30,9 @@ Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs
     agentcore dev --stream "List the preset starting points. Do not dispatch anything."
 
-Deploy it (new @aws/agentcore CLI, container, CDK):
+Deploy it from CodingAgents/ (pinned @aws/agentcore CLI, container, CDK):
     agentcore deploy
+    python3 ../orchestrator-agent/promote_runtime.py --project .
     agentcore invoke --stream "List the preset starting points. Do not dispatch anything."
 """
 

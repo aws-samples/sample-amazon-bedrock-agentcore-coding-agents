@@ -13,6 +13,7 @@ import sys
 from types import SimpleNamespace
 
 import boto3
+from botocore.exceptions import ClientError
 import pytest
 
 
@@ -182,6 +183,8 @@ def _deploy_module(tmp_path, monkeypatch, control):
     backend.mkdir(parents=True)
     source = backend / "deploy.py"
     shutil.copyfile(HARNESS / "deploy.py", source)
+    for shared in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+        shutil.copyfile(ROOT / "coding-agents" / shared, agents / shared)
     (agents / "infra.config").write_text(
         "INFRA_REGION=us-west-2\nINFRA_ACCOUNT_ID=123456789012\n"
         "INFRA_SUBNET_1=subnet-one\nINFRA_SUBNET_2=subnet-two\n"
@@ -204,24 +207,29 @@ def _deploy_module(tmp_path, monkeypatch, control):
 def test_deploy_forwards_only_public_backend_settings_on_create_and_update(
         tmp_path, monkeypatch, existing, effort):
     calls = []
-    conflict = type("Conflict", (Exception,), {})
-
     class Control:
-        exceptions = SimpleNamespace(
-            ConflictException=conflict, ResourceNotFoundException=type("Missing", (Exception,), {}),
-        )
+        revision = "1"
 
         def create_agent_runtime(self, **kwargs):
             calls.append(kwargs)
             if existing == "conflict":
-                raise conflict()
-            return {"agentRuntimeId": "backend-test", "agentRuntimeArn": "arn:test"}
+                raise ClientError({"Error": {"Code": "ConflictException", "Message": "name exists"}},
+                                  "CreateAgentRuntime")
+            return {"agentRuntimeId": "backend-test", "agentRuntimeArn": "arn:test",
+                    "agentRuntimeVersion": "1", "status": "CREATING", "createdAt": 100}
 
         def update_agent_runtime(self, **kwargs):
             calls.append(kwargs)
+            self.revision = "2"
+            return {"agentRuntimeId": "backend-test", "agentRuntimeArn": "arn:test",
+                    "agentRuntimeVersion": "2", "status": "UPDATING",
+                    "createdAt": 100, "lastUpdatedAt": 200}
 
         def get_agent_runtime(self, **kwargs):
-            return {"status": "READY"}
+            return {"status": "READY", "platformVersion": "V2",
+                    "agentRuntimeVersion": self.revision, "agentRuntimeName": "claude_code",
+                    "createdAt": 100, "lastUpdatedAt": 200 if self.revision == "2" else 100,
+                    "agentRuntimeId": "backend-test", "agentRuntimeArn": "arn:test"}
 
         def get_paginator(self, name):
             return SimpleNamespace(paginate=lambda: [{
@@ -244,6 +252,7 @@ def test_deploy_forwards_only_public_backend_settings_on_create_and_update(
         monkeypatch.setenv(name, "test-do-not-forward")
     result = module.deploy_runtime("arn:aws:iam::123456789012:role/backend")
     assert result["runtime_id"] == "backend-test"
+    assert result["platform_version"] == "V2"
     for arguments in calls:
         assert arguments["environmentVariables"] == {
             "AWS_REGION": "us-west-2", "WORKSHOP_AGENT_NAME": "claude_code", **settings,

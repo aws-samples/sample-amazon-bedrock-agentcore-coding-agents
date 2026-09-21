@@ -139,12 +139,8 @@ mkdir -p "$HOME/.kiro/settings"
 # running in trust all tools mode" acceptance prompt, so the headless PTY starts
 # straight into work instead of hanging on a "Yes, I accept" picker. Paired with
 # the `chat --trust-all-tools` launch below.
-cat > "$HOME/.kiro/settings/cli.json" <<EOF
-{
-  "chat.defaultModel": "${MODEL}",
-  "chat.disableTrustAllConfirmation": true
-}
-EOF
+python3 "${WORKSHOP_CLI_HELPER:-/opt/workshop-cli/cli_versions.py}" configure \
+  --cli kiro --home "$HOME" --kiro-model "$MODEL" >/dev/null
 
 # ── Determine the action ─────────────────────────────────────
 ACTION="${1:-interactive}"

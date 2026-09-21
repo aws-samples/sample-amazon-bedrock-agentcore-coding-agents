@@ -1,7 +1,7 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
 Run Claude Code (backend), Codex (frontend), and Kiro (validator) on Amazon
-Bedrock AgentCore Runtime. Give the team one request; the coordinator opens a
+Bedrock AgentCore Runtime V2. Give the team one request; the coordinator opens a
 checked and reviewed pull request for each selected builder. The guided game selects Claude Code
 and Kiro, producing one builder PR. A separate Claude Code validator remains a
 restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
@@ -13,6 +13,19 @@ The backend defaults to **Claude Opus 5** (`us.anthropic.claude-opus-5`) with
 `BackendModelId` and `FrontendModelId` parameters select different models when
 needed. Model access depends on the account; verify a complete tool turn in
 Lab 1 before starting a build.
+
+The tested CLI versions are Claude Code **2.1.278**, Codex **0.155.1**, and
+Kiro CLI **2.22.1**, declared in `coding-agents/cli-versions.json`. Host and
+container installation use that manifest, verify the installed versions, and
+disable automatic updates. Change a pin deliberately and repeat the Runtime
+tool, shared-file, and telemetry checks before releasing it.
+
+Runtime V2 prepares a snapshot during deployment. The deployers wait for the
+expected Runtime revision to report both `READY` and `platformVersion=V2`;
+preparation can take several minutes. They stop on failure or a bounded deadline.
+The platform version is separate from the numbered configuration revisions.
+The coordinator keeps its generated CDK project, then uses the SDK to select V2
+because CloudFormation does not expose that setting yet.
 
 The game preset leaves its concept, appearance, controls, and progression to the
 builder. Teams share a small score interface: `GET /api/scores` returns saved

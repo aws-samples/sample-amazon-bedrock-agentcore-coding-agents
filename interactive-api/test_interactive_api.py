@@ -40,9 +40,44 @@ def test_codex_local_session_uses_the_runtime_provider_and_its_own_trust(
     assert config["model_provider"] == "amazon-bedrock-runtime"
     assert config["model_providers"]["amazon-bedrock-runtime"]["aws"]["region"] == "us-east-1"
     assert config["projects"] == {str(tmp_path.resolve()): {"trust_level": "trusted"}}
+    assert config["check_for_update_on_startup"] is False
     files = ia._harness_files("codex")
     assert "AGENTS.md" in files
     assert tomllib.loads(files[".codex/config.toml"])["model"] == "us.openai.role-model"
+    assert tomllib.loads(files[".codex/config.toml"])["check_for_update_on_startup"] is False
+
+
+def test_kiro_local_session_disables_updates_in_its_own_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    settings = tmp_path / ".kiro/settings/cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"existing.preference":"keep"}')
+    ia._stage_agent_config({"agent_id": "kiro", "_root": str(tmp_path)})
+    import json
+    assert json.loads(settings.read_text()) == {
+        "existing.preference": "keep", "app.disableAutoupdates": True}
+
+
+def test_claude_session_mirrors_and_verifies_the_pinned_native_binary(tmp_path, monkeypatch):
+    real_home = tmp_path / "real-home"
+    versions = real_home / ".local/share/claude/versions"
+    versions.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    expected = ia._cli_toolchain().load_manifest()["clis"]["claude-code"]["version"]
+    for version in (expected, "9.9.999"):
+        binary = versions / version
+        binary.write_text("#!/bin/sh\necho '" + version + " (Claude Code)'\n")
+        binary.chmod(0o755)
+    session_home = tmp_path / "session"
+    session_home.mkdir()
+    session = {"agent_id": "claude-code", "_root": str(session_home)}
+    ia._stage_agent_config(session)
+    assert (session_home / ".local/bin/claude").resolve() == versions / expected
+    # A version-looking filename is not executable version evidence.
+    (versions / expected).write_text("#!/bin/sh\necho '0.1.0 (Claude Code)'\n")
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        ia._stage_agent_config(session)
 
 
 def _open_session():

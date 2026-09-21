@@ -40,6 +40,8 @@ import os
 from pathlib import Path
 import shutil
 
+from botocore.exceptions import ClientError
+
 _CODE_ROOT = Path(__file__).resolve().parents[1]
 _CODING_AGENTS = _CODE_ROOT / "coding-agents"
 
@@ -66,6 +68,8 @@ def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch):
     role_dir.mkdir(parents=True, exist_ok=True)
     deploy_py = role_dir / "deploy.py"
     shutil.copy2(source, deploy_py)
+    for shared in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+        shutil.copy2(_CODING_AGENTS / shared, config_root / shared)
 
     # These valid-configuration tests are not region-mismatch tests. Pin their
     # environment to their own fixture instead of inheriting the host's region.
@@ -143,18 +147,6 @@ def test_ap_scoped_s3files_resources_when_mounted(tmp_path, monkeypatch):
 def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypatch):
     """A damaged local config must reconcile by Runtime name and repair itself."""
 
-    class ResourceNotFoundException(Exception):
-        pass
-
-    class ConflictException(Exception):
-        pass
-
-    class Exceptions:
-        pass
-
-    Exceptions.ResourceNotFoundException = ResourceNotFoundException
-    Exceptions.ConflictException = ConflictException
-
     class Paginator:
         def __init__(self, runtime_name, runtime_id):
             self.runtime_name = runtime_name
@@ -167,15 +159,14 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypa
             }]}]
 
     class Control:
-        exceptions = Exceptions
-
         def __init__(self, runtime_name, runtime_id):
             self.runtime_name = runtime_name
             self.runtime_id = runtime_id
             self.updated_ids = []
 
         def create_agent_runtime(self, **_kwargs):
-            raise ConflictException("already exists")
+            raise ClientError({"Error": {"Code": "ConflictException", "Message": "already exists"}},
+                              "CreateAgentRuntime")
 
         def get_paginator(self, operation):
             assert operation == "list_agent_runtimes"
@@ -183,18 +174,33 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypa
 
         def update_agent_runtime(self, **kwargs):
             self.updated_ids.append(kwargs["agentRuntimeId"])
+            assert kwargs["platformVersion"] == "V2"
+            return {
+                "agentRuntimeId": self.runtime_id,
+                "agentRuntimeArn": f"arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/{self.runtime_id}",
+                "agentRuntimeVersion": "2", "status": "UPDATING",
+                "createdAt": 100, "lastUpdatedAt": 200,
+            }
 
         def get_agent_runtime(self, **kwargs):
             assert kwargs["agentRuntimeId"] == self.runtime_id
-            return {"status": "READY"}
+            return {
+                "status": "READY", "agentRuntimeName": self.runtime_name,
+                "agentRuntimeId": self.runtime_id,
+                "agentRuntimeArn": f"arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/{self.runtime_id}",
+                "agentRuntimeVersion": "2" if self.updated_ids else "1",
+                "platformVersion": "V2" if self.updated_ids else "V1",
+                "createdAt": 100, "lastUpdatedAt": 200 if self.updated_ids else 100,
+            }
 
     class Session:
         def __init__(self, control):
             self.control = control
 
-        def client(self, service, region_name=None):
+        def client(self, service, region_name=None, config=None):
             assert service == "bedrock-agentcore-control"
             assert region_name
+            assert config.connect_timeout == 5 and config.read_timeout == 10
             return self.control
 
     for role in _HARNESS_ROLES:
@@ -218,6 +224,8 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypa
         repaired = json.loads(config_path.read_text())
         assert repaired["runtime_id"] == runtime_id
         assert repaired["runtime_arn"].endswith(f"/{runtime_id}")
+        assert repaired["platform_version"] == "V2"
+        assert repaired["runtime_version"] == "2"
         assert control.updated_ids == [runtime_id]
 
 

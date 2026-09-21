@@ -353,3 +353,14 @@ def test_incomplete_infrastructure_cannot_silently_select_a_different_bucket(
     _write_infra(tmp_path, bucket="")
     with pytest.raises(RuntimeError, match="INFRA_BUCKET"):
         _configure(monkeypatch, tmp_path)
+
+
+def test_oversized_coordinator_environment_fails_before_project_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKSHOP_MODEL_EXTRA", "x" * 2500)
+    with pytest.raises(RuntimeError, match="V2 container environment") as exc:
+        _configure(monkeypatch, tmp_path)
+    project = tmp_path / "CodingAgents/agentcore/agentcore.json"
+    assert json.loads(project.read_text()) == {
+        "runtimes": [{"name": "orchestrator", "build": "Container"}]}
+    assert not (project.parent / "aws-targets.json").exists()
+    assert "x" * 2500 not in str(exc.value)

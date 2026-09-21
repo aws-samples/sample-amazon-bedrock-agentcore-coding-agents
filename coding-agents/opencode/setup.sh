@@ -68,7 +68,7 @@ else
   # ── Build & push (builder-portable: docker buildx or finch) ────────────────
   source "${SCRIPT_DIR}/../_build_push.sh"
   build_and_push_arm64 "${ECR_URI}" "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}" \
-    "${INFRA_REGION}" "${INFRA_ACCOUNT_ID}"
+    "${INFRA_REGION}" "${INFRA_ACCOUNT_ID}" --toolchain
 fi
 
 # ── Save agent config ────────────────────────────────────────────────────────

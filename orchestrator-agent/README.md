@@ -17,6 +17,7 @@ routing projects in that language.
 | `model/load.py` | Bedrock model construction |
 | `stage_engine.py` | Stage the root coordinator and use cases into the build context |
 | `configure_deploy.py` | Wire role ARNs, IAM roles, and account settings into generated CLI config |
+| `promote_runtime.py` | Select platform V2 on the deployed Runtime and wait for its new revision |
 | `probe_coordinator.py` | Require a real, non-error answer from the deployed coordinator |
 | `Dockerfile` | Build the coordinator container |
 
@@ -48,6 +49,23 @@ runs `configure_deploy.py` before validation and deployment. Configuration
 includes the worker ARNs, execution roles, account, region, repository, and merge
 policy. Generated files under `CodingAgents/` stay untracked.
 
+After the CLI deployment succeeds, the wrapper sets `platformVersion=V2` through
+the AgentCore API. CloudFormation does not yet expose that setting. Snapshot
+preparation can take several minutes; the wrapper waits for the expected Runtime
+revision to become `READY` on V2 before running the application probe. A failed
+revision stops deployment and prints its failure reason.
+
+If you deploy the generated project manually, complete the same step from
+`CodingAgents/` after `agentcore deploy` succeeds:
+
+```bash
+python3 ../orchestrator-agent/promote_runtime.py --project .
+```
+
+The shared `coding-agents/cli-versions.json` pins the deployment CLI, AWS SDK,
+and coding-agent CLIs. Install those versions through the workshop setup scripts
+before deploying.
+
 The closing read-only probe asks the deployed coordinator which roles
 `add-a-feature` uses. It should answer without creating a run. The wrapper checks
 the CLI's structured result and response, because a streamed model error can
@@ -55,7 +73,7 @@ otherwise return exit code zero. An error, empty answer, or 180-second timeout
 stops the script before it prints the build-submission instructions.
 
 Export model settings before running the script. It forwards the stack's
-`WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_OPENCODE_MODEL`, and `WORKSHOP_SMALL_MODEL`
+`WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_CODEX_MODEL`, and `WORKSHOP_SMALL_MODEL`
 values into the coordinator process. `ORCHESTRATOR_MODEL_ID` independently
 selects the coordinator's chat model. Existing `WORKSHOP_MODEL` and
 `WORKSHOP_MODEL_<ROLE>` overrides still take precedence for role dispatch;
