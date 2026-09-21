@@ -20,6 +20,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from contextlib import aclosing, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+import hashlib
+import threading
 from typing import Any, Iterator
 
 import engine as _engine          # the in-process build engine
@@ -34,6 +40,245 @@ import run_store as _run_store    # durable run state (a verdict outlives its se
 # ``use_engine`` so the runs the chat tools create are the same runs its
 # /api/runs endpoints poll; standalone (the deployed runtime) uses this default.
 ENGINE = _engine.Engine()
+
+# Request text is admitted by the host, never reconstructed from a tool argument.
+# Limits reject complete values; they must never hide a clipped request/context.
+MAX_USER_REQUEST_BYTES = 64 * 1024
+MAX_USER_CONTEXT_BYTES = 64 * 1024
+MAX_USER_CONTEXT_TURNS = 16
+MAX_REQUEST_PROVENANCE_BYTES = 160 * 1024
+
+
+class UserRequestError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class UserRequest:
+    current: str
+    prior: tuple[tuple[int, str], ...] = ()
+    closed: threading.Event = field(default_factory=threading.Event, compare=False)
+    admission_lock: Any = field(default_factory=threading.RLock, compare=False)
+
+    def require_active(self) -> None:
+        if self.closed.is_set():
+            raise UserRequestError("USER_REQUEST_CLOSED")
+
+    def require_open(self) -> None:
+        self.require_active()
+        if not isinstance(self.current, str) or not self.current.strip():
+            raise UserRequestError("EMPTY_USER_REQUEST")
+        if len(self.current.encode("utf-8")) > MAX_USER_REQUEST_BYTES:
+            raise UserRequestError("USER_REQUEST_TOO_LARGE")
+
+    def close(self) -> None:
+        # A tool already inside submit is admitted; a later call cannot start work
+        # after a disconnect, even if its synchronous model/routing call returns late.
+        with self.admission_lock:
+            self.closed.set()
+
+
+_USER_REQUEST: ContextVar[UserRequest | None] = ContextVar("chat_user_request", default=None)
+
+
+def _prior_user_turns(messages: list | None) -> tuple[tuple[int, str], ...]:
+    """Read actual user text, stopping the context at a successful dispatch result.
+
+    Strands represents tool results as user messages too. They are not human input.
+    Match their real tool-use IDs before treating one as a dispatch boundary.
+    """
+    turns: list[tuple[int, str]] = []
+    dispatch_ids: set[str] = set()
+    for index, message in enumerate(messages or []):
+        if not isinstance(message, dict):
+            continue
+        blocks = message.get("content") or []
+        if not isinstance(blocks, list):
+            continue
+        if message.get("role") == "assistant":
+            for block in blocks:
+                use = block.get("toolUse") if isinstance(block, dict) else None
+                if (isinstance(use, dict) and use.get("name") in _dispatch_tool_names()
+                        and isinstance(use.get("toolUseId"), str) and use["toolUseId"]):
+                    dispatch_ids.add(use["toolUseId"])
+            continue
+        if message.get("role") != "user":
+            continue
+        results = [block["toolResult"] for block in blocks
+                   if isinstance(block, dict) and "toolResult" in block]
+        if results:
+            for result in results:
+                if not isinstance(result, dict) or result.get("toolUseId") not in dispatch_ids:
+                    continue
+                if result.get("status") == "error":
+                    continue
+                for block in result.get("content") or []:
+                    if not isinstance(block, dict):
+                        continue
+                    try:
+                        data = block.get("json") or json.loads(block.get("text", ""))
+                    except (TypeError, ValueError):
+                        continue
+                    if (isinstance(data, dict) and data.get("status") == "started"
+                            and isinstance(data.get("run_id"), str) and data["run_id"]):
+                        turns.clear()
+            continue
+        # _build_prompt puts the actual prompt first, followed by attachments.
+        # Attachment contents are reference material, not additional user turns.
+        if blocks and isinstance(blocks[0], dict):
+            text = blocks[0].get("text")
+            if isinstance(text, str) and text.strip():
+                turns.append((index, text))
+    return tuple(turns)
+
+
+@contextmanager
+def _bind_request(request: UserRequest):
+    token = _USER_REQUEST.set(request)
+    try:
+        yield request
+    finally:
+        _USER_REQUEST.reset(token)
+
+
+@contextmanager
+def bind_user_request(prompt: str, messages: list | None = None):
+    """Bind server-owned input for a direct invocation of the decorated tools."""
+    request = UserRequest(prompt, _prior_user_turns(messages))
+    try:
+        with _bind_request(request):
+            yield request
+    finally:
+        request.close()
+
+
+def _current_user_request() -> UserRequest:
+    request = _USER_REQUEST.get()
+    if request is None:
+        raise UserRequestError("USER_REQUEST_NOT_BOUND")
+    request.require_open()
+    return request
+
+
+def _user_context(request: UserRequest, turn_ids: list[int] | None) -> list[dict]:
+    if not isinstance(turn_ids, (list, type(None))):
+        raise UserRequestError("INVALID_USER_CONTEXT")
+    ids = turn_ids or []
+    if len(ids) > MAX_USER_CONTEXT_TURNS:
+        raise UserRequestError("USER_CONTEXT_TOO_LARGE")
+    if any(type(i) is not int for i in ids) or len(set(ids)) != len(ids):
+        raise UserRequestError("INVALID_USER_CONTEXT")
+    available = dict(request.prior)
+    if any(i not in available for i in ids):
+        raise UserRequestError("USER_CONTEXT_UNAVAILABLE")
+    # Chronology is server-owned too; tool argument order cannot reverse precedence.
+    selected = [{"turn": i, "text": text} for i, text in request.prior if i in ids]
+    if sum(len(item["text"].encode("utf-8")) for item in selected) > MAX_USER_CONTEXT_BYTES:
+        raise UserRequestError("USER_CONTEXT_TOO_LARGE")
+    return selected
+
+
+def _explicit_preset(text: str, preset: str, canonical: str) -> bool:
+    """Recognize literal registry selectors, not a classifier for arbitrary work."""
+    markers = (preset, f"preset={preset}", _presets.PRESETS[preset]["title"], canonical)
+    value = text.strip()
+    if any(value == marker or value.startswith(marker + "\n")
+           or value.startswith(marker + "\r\n") for marker in markers if marker):
+        return True
+    # The workshop's CLI command is "Use preset=<id>. Creative direction: ...".
+    # Recognize that explicit command at the start, not a mention inside a
+    # question, negation, or a longer identifier.
+    return bool(re.match(
+        re.escape(f"use preset={preset}") + r"(?:\.(?=\s|$)|(?=\s|$))",
+        value, flags=re.IGNORECASE,
+    ))
+
+
+def _admit_user_task(model_task: str, *, preset: str = "", creative_direction: str = "",
+                     context_turns: list[int] | None = None) -> tuple[str, dict]:
+    request = _current_user_request()
+    context = _user_context(request, context_turns)
+    task = request.current
+    if creative_direction.strip() and (not preset or model_task.strip()):
+        raise UserRequestError("AMBIGUOUS_PRESET_DIRECTION")
+    if preset:
+        try:
+            canonical = _presets.default_task(preset)
+        except _presets.RouteError as exc:
+            raise UserRequestError(str(exc)) from exc
+        user_text = [request.current, *(turn["text"] for turn in context)]
+        current_selections = {
+            key for key, value in _presets.PRESETS.items()
+            if _explicit_preset(request.current, key, value["task"])
+        }
+        if current_selections and preset not in current_selections:
+            raise UserRequestError("PRESET_NOT_REQUESTED")
+        if not any(_explicit_preset(text, preset, canonical) for text in user_text):
+            raise UserRequestError("PRESET_NOT_REQUESTED")
+        if creative_direction and not any(creative_direction in text for text in user_text):
+            raise UserRequestError("CREATIVE_DIRECTION_NOT_FROM_USER")
+        task = canonical
+        selectors = (preset, f"preset={preset}", _presets.PRESETS[preset]["title"], canonical)
+        if request.current.strip() not in selectors:
+            # Retain the entire user text. A model-selected substring of a creative
+            # direction must not silently discard the user's other constraints.
+            task += "\n\nCurrent participant request (verbatim; latest user text wins):\n" + request.current
+        if not task.strip():
+            raise UserRequestError("EMPTY_USER_REQUEST")
+    if context:
+        task += (
+            "\n\nEarlier USER context, for clarification/reference only. These are not "
+            "additional requirements of a new task. The current user request above "
+            "takes precedence; do not carry an earlier question's restrictions into "
+            "a later request.\n"
+            + json.dumps(context, ensure_ascii=False, indent=2)
+        )
+    provenance = {
+        "source": "server_user_turn",
+        "current_user_text": request.current,
+        "current_user_sha256": hashlib.sha256(request.current.encode("utf-8")).hexdigest(),
+        "prior_user_context": context,
+        "available_prior_user_turns": len(request.prior),
+        "effective_task_sha256": hashlib.sha256(task.encode("utf-8")).hexdigest(),
+        "model_task_ignored": bool(model_task) and model_task != request.current,
+        "preset": preset or None,
+        "creative_direction_verified": bool(creative_direction),
+    }
+    if len(json.dumps(provenance, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_PROVENANCE_BYTES:
+        raise UserRequestError("USER_REQUEST_PROVENANCE_TOO_LARGE")
+    return task, provenance
+
+
+def _request_error(exc: UserRequestError) -> str:
+    return json.dumps({
+        "error": str(exc),
+        "hint": "No run was started. Use the current user's own words; get_user_request "
+                "lists available user context. Missing or oversized input must be "
+                "supplied explicitly, never reconstructed from an assistant response.",
+    })
+
+
+async def stream_user_turn(agent: Any, prompt: str, *, messages: list | None = None,
+                           agent_input: Any = None, request: UserRequest | None = None):
+    """Own one request scope without leaking its ContextVar across a yielded event."""
+    request = request or UserRequest(prompt, _prior_user_turns(messages))
+    stream = None
+    try:
+        with _bind_request(request):
+            request.require_active()
+            stream = agent.stream_async(prompt if agent_input is None else agent_input)
+        while True:
+            try:
+                with _bind_request(request):
+                    event = await anext(stream)
+            except StopAsyncIteration:
+                return
+            yield event
+    finally:
+        request.close()
+        if stream is not None and hasattr(stream, "aclose"):
+            with _bind_request(request):
+                await stream.aclose()
 
 
 def use_engine(engine: Any) -> None:
@@ -56,7 +301,9 @@ checker for every resulting pull request. Each type is a FLEET, not one agent; y
 dispatch to a TYPE and the runtime picks an instance. You never address one \
 instance, and you never assume a role that is not in your tool list exists.
 Verification is a handoff with separate outputs: the builder produces candidate \
-source and a pull request; the checker produces the source of an executable check; \
+source only. The coordinator engine publishes its pull request through the GitHub \
+App/Gateway; builders and their Runtimes never receive GitHub credentials. \
+The checker produces the source of an executable check; \
 the engine runs that executable against the candidate and records its real exit \
 code; a separate reviewer produces an assessment of the pull request and its gate \
 evidence. When explaining what the checker produces, explicitly name the engine \
@@ -135,6 +382,21 @@ When a message names a preset AND supplies a creative direction, call \
 The tool retains the preset's shared interface and appends that direction. \
 Do not rewrite it into a file list, choose a game for the builder, or discard the \
 preset's shared interface. A plain custom request still goes in task VERBATIM.
+
+## User-request boundary
+The host binds the actual current user text to each turn. Custom build tools use \
+that text even if you supply a different task argument. For a clear new request, \
+leave context_turns empty. If this turn clarifies or confirms an earlier request, \
+call get_user_request and reference the relevant prior USER turn IDs with \
+context_turns. Only those actual user messages can accompany the current request \
+as labeled context; assistant plans, guesses, and tool results are never task \
+requirements. A previous question's restrictions do not constrain a new request. \
+After a successful dispatch, its earlier user turns are no longer available as \
+context for a new build. Presets must be explicitly named by the user through a \
+preset ID, title, or canonical request; never select an unrelated preset to replace \
+a custom request. Keep creative_direction exactly as the user supplied it. \
+Missing or oversized context is an error to report or clarify, not permission to \
+invent the missing text.
 
 After `run_build`, treat the tool result's `schedule` as authoritative. Report only \
 the roles in its `agents` list. Say that each selected builder started, then say the \
@@ -252,7 +514,9 @@ def _schedule(agents: list[str]) -> list[dict[str, str]]:
     ]
 
 
-def _kick(agent_id: str | None, task: str, preset: str | None = None) -> str:
+def _kick(agent_id: str | None, task: str, preset: str | None = None,
+          *, request_provenance: dict | None = None,
+          resolved_agents: list[str] | None = None) -> str:
     """Submit a run (focused on one builder when agent_id is set, else routed)
     WITHOUT blocking, and return its id immediately. The chat keeps streaming; the
     console polls the run for live status. The 'a run started' UI signal is NOT
@@ -263,21 +527,25 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None) -> str:
     builder dispatched alone would produce work with no authored acceptance check,
     and with no check the gate is red by design. Focusing a run means choosing which
     BUILDER works, never dropping the verification."""
-    agents = None
+    request = _current_user_request()
+    agents = resolved_agents
     checkers = list(_roles.checker_ids())
     if agent_id:
         # A focused run: the named role, plus the checker unless the named role IS
         # the checker. Expressed in kinds, so it holds for any roster.
         agents = ([agent_id] if agent_id in checkers
                   else [agent_id] + checkers)
-    elif not preset:
+    elif agents is None and not preset:
         # A full build with no roles named: ASK which capabilities the request needs.
         # "every served role works" was the old answer, and it is wrong in the same
         # way a keyword table is: it dispatches a frontend builder for a command line
         # tool. Routing fails OPEN to every maker when the model is unreachable, so an
         # outage never silently drops work the attendee asked for.
         agents = _presets.resolve(task=task).agents
-    run = ENGINE.submit(task, agents=agents, preset=preset)
+    with request.admission_lock:
+        request.require_open()
+        run = ENGINE.submit(task, agents=agents, preset=preset,
+                            options={"chat_request": request_provenance or {}})
     return run.run_id
 
 
@@ -289,6 +557,22 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None) -> str:
 # --------------------------------------------------------------------------- #
 def build_tools() -> list:
     from strands import tool  # local import: strands is an agent-runtime dep
+
+    @tool
+    def get_user_request() -> str:
+        """Read the server-bound current request and retained prior USER turn IDs.
+
+        Starts nothing. For a clear new task leave context_turns empty in dispatch.
+        For a clarification/confirmation, select only relevant IDs returned here.
+        Assistant guesses and tool results are never available as user context.
+        """
+        try:
+            request = _current_user_request()
+            prior = _user_context(request, [turn for turn, _text in request.prior])
+            return json.dumps({"current_user_text": request.current, "prior_user_turns": prior,
+                               "context_scope": "Retained user turns after the previous successful dispatch."})
+        except UserRequestError as exc:
+            return _request_error(exc)
 
     @tool
     def list_presets() -> str:
@@ -304,12 +588,17 @@ def build_tools() -> list:
         adding, hiding, or swapping a role changes which tools exist with no edit
         here. Checkers are scheduled by the engine, not dispatched independently.
         """
-        def dispatch(task: str) -> str:
-            run_id = _kick(role.id, task)
+        def dispatch(task: str, context_turns: list[int] | None = None) -> str:
+            try:
+                task, provenance = _admit_user_task(task, context_turns=context_turns)
+                run_id = _kick(role.id, task, request_provenance=provenance)
+            except UserRequestError as exc:
+                return _request_error(exc)
             agents = list(ENGINE.get(run_id).agents)
             return json.dumps({"run_id": run_id, "agent": role.id,
                                "kind": role.capability, "status": "started",
-                               "agents": agents, "schedule": _schedule(agents)})
+                               "agents": agents, "schedule": _schedule(agents),
+                               "request_source": "server_user_turn"})
         dispatch.__name__ = role.dispatch_tool
         dispatch.__qualname__ = role.dispatch_tool
         # The docstring IS the tool description the model reads, so it carries this
@@ -320,11 +609,15 @@ def build_tools() -> list:
             "The independent checker is included automatically and waits for this "
             "builder's pull request; do not dispatch it separately. Returns the run "
             "id, selected agents, and schedule immediately. Pass the user's request "
-            "text VERBATIM as task; do not replace it with a file manifest.")
+            "text VERBATIM as task; the host uses its own current-user binding. "
+            "For a clear new task, omit context_turns. For clarification only, use "
+            "prior USER turn IDs from get_user_request. Never use a file manifest "
+            "or assistant guesses in place of the request.")
         return tool(dispatch)
 
     @tool
-    def run_build(task: str, preset: str = "", creative_direction: str = "") -> str:
+    def run_build(task: str, preset: str = "", creative_direction: str = "",
+                  context_turns: list[int] | None = None) -> str:
         """Start a FULL build of ANY request. Every selected builder gets an
         isolated pull request against the default branch. The checker authors an
         executable check; the engine runs it and records its exit code. Each pull
@@ -336,40 +629,42 @@ def build_tools() -> list:
         get right. Optionally pass a `preset` id (see list_presets) to start from one
         of the example requests instead. To personalize a preset, leave task empty
         and pass the user's exact creative_direction; the preset's interface stays
-        intact while the builder chooses the implementation."""
-        if creative_direction.strip():
-            if not preset or task.strip():
-                return json.dumps({
-                    "error": "AMBIGUOUS_PRESET_DIRECTION",
-                    "hint": "Use a preset with empty task and creative_direction, "
-                            "or put the complete custom request in task alone. No run was started.",
-                })
-            task = (
-                _presets.default_task(preset)
-                + "\n\nCreative direction from the participant:\n"
-                + creative_direction.strip()
-            )
-        if not task.strip() and not preset:
-            return json.dumps({
-                "error": "EMPTY_TASK",
-                "hint": "No run was started. Ask the user what they want built, in "
-                        "their own words, or offer a starting point from list_presets.",
-            })
+        intact while the builder chooses the implementation. The host uses its
+        actual current-user binding, not a model-authored replacement. For a clear
+        new task omit context_turns. Only for clarification/confirmation, reference
+        prior USER turn IDs returned by get_user_request."""
+        try:
+            task, provenance = _admit_user_task(
+                task, preset=preset, creative_direction=creative_direction,
+                context_turns=context_turns)
+        except UserRequestError as exc:
+            return _request_error(exc)
         # Routing is the MODEL's decision when the attendee typed their own request:
         # `resolve` asks which capabilities the request needs. It used to hand back
         # the whole roster here, which dispatched a frontend builder for a command
         # line tool. A preset carries its own declared capabilities, so it skips the
         # model turn.
-        route = (_presets.resolve(preset=preset) if preset
-                 else _presets.resolve(task=task))
-        agents = route.agents
+        route = _presets.resolve(task=task, preset=preset or None)
+        try:
+            run_id = _kick(None, task, preset=preset or None, request_provenance=provenance,
+                           # Keep preset admission (including read-only) intact.
+                           # Custom routes, including "your-own", retain their
+                           # single model-selected roster.
+                           resolved_agents=(list(route.agents)
+                                            if route.preset == "routed" else None))
+        except UserRequestError as exc:
+            return _request_error(exc)
+        # Preset admission happens asynchronously. Before it fills the run,
+        # report that preset's declared roster, not an empty schedule.
+        agents = list(ENGINE.get(run_id).agents) or list(route.agents)
         return json.dumps({
-            "run_id": _kick(None, task, preset=preset or None),
+            "run_id": run_id,
             "kind": "build",
             "status": "started",
             "agents": agents,
             "routing": route.rule,
             "schedule": _schedule(agents),
+            "request_source": "server_user_turn",
         })
 
     @tool
@@ -442,9 +737,9 @@ def build_tools() -> list:
     @tool
     def agent_send(agent_id: str, message: str) -> str:
         """Send a message into a coding agent's LIVE interactive terminal (the same
-        Claude Code / opencode / Kiro TUI the human is watching), then return what
-        the agent has printed so far. Use agent_id 'claude-code', 'opencode', or
-        'kiro'. The agent's terminal must already be open. Follow up
+        native TUI the human is watching), then return what the agent has printed
+        so far. Use an agent_id from the configured roster. The agent's terminal
+        must already be open. Follow up
         with agent_read to see more output as the agent works."""
         try:
             m = _shell_mod()
@@ -459,8 +754,8 @@ def build_tools() -> list:
 
     @tool
     def agent_read(agent_id: str) -> str:
-        """Read the current screen of a coding agent's LIVE terminal (claude-code /
-        opencode / kiro), to see what it printed since your last agent_send."""
+        """Read the current screen of a configured coding agent's LIVE terminal,
+        to see what it printed since your last agent_send."""
         try:
             m = _shell_mod()
         except Exception:
@@ -469,7 +764,7 @@ def build_tools() -> list:
 
     @tool
     def agent_status(agent_id: str) -> str:
-        """Check whether a coding agent (claude-code / opencode / kiro)
+        """Check whether a coding agent from the configured roster
         has a LIVE terminal open that you can drive with agent_send/agent_read."""
         try:
             m = _shell_mod()
@@ -567,7 +862,7 @@ def build_tools() -> list:
     wired = _wired_roles()
     # Inspection needs no wired coding role. A missing project is reported as
     # missing configuration; it never falls back to inspecting the platform.
-    tools = [list_presets, read_file, list_files, grep_workspace, exec_command]
+    tools = [list_presets, get_user_request, read_file, list_files, grep_workspace, exec_command]
     # A checker-only build is structurally invalid. Exposing a checker dispatch
     # made a live model start a valid focused build AND a redundant rejected run.
     dispatchable = [r for r in _roles.roster()
@@ -780,6 +1075,7 @@ def stream_chat(prompt: str, *, model_id: str | None = None,
 
     q: queue.Queue = queue.Queue()
     _DONE = object()
+    request = UserRequest(prompt, _prior_user_turns(messages))
     agent = build_agent(model_id=model_id, messages=messages)
     # A plain string for a text-only turn; a list of content blocks (text + image)
     # when the user attached an image: the Strands multimodal prompt shape.
@@ -808,26 +1104,39 @@ def stream_chat(prompt: str, *, model_id: str | None = None,
     # the worker inside it, so the run is attributed to the signed-in user, not
     # the host account the process runs as.
     _caller_ctx = contextvars.copy_context()
+    worker: dict[str, Any] = {}
 
     def _run() -> None:
         """Worker thread: drive the async stream, push events onto the queue."""
         async def _drive() -> None:
-            async for event in agent.stream_async(agent_input):
-                if not isinstance(event, dict):
-                    continue
-                # reasoning/thinking deltas (when the model emits them natively)
-                rt = event.get("reasoningText") or event.get("reasoning_text")
-                if rt:
-                    q.put({"type": "reasoning", "text": str(rt)})
-                # assistant text deltas: `data` is the human-readable token
-                data = event.get("data")
-                if isinstance(data, str) and data:
-                    q.put({"type": "text", "text": data})
+            async with aclosing(stream_user_turn(
+                    agent, prompt, agent_input=agent_input, request=request)) as events:
+                async for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    # reasoning/thinking deltas (when the model emits them natively)
+                    rt = event.get("reasoningText") or event.get("reasoning_text")
+                    if rt:
+                        q.put({"type": "reasoning", "text": str(rt)})
+                    # assistant text deltas: `data` is the human-readable token
+                    data = event.get("data")
+                    if isinstance(data, str) and data:
+                        q.put({"type": "text", "text": data})
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(_drive())
+        worker.update(loop=loop, task=task)
+        if request.closed.is_set():
+            task.cancel()
         try:
-            asyncio.new_event_loop().run_until_complete(_drive())
+            loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:  # noqa: BLE001 (surface, never hang the stream)
             q.put({"type": "error", "error": str(exc)})
         finally:
+            request.close()
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
             q.put(_DONE)
 
     threading.Thread(target=lambda: _caller_ctx.run(_run), daemon=True).start()
@@ -839,13 +1148,22 @@ def stream_chat(prompt: str, *, model_id: str | None = None,
     # stream must too. A typed event (not an SSE comment) so it survives the
     # JSON encode in console/server.py; every consumer ignores unknown types.
     keepalive_s = float(os.environ.get("WORKSHOP_CHAT_KEEPALIVE_S", "15"))
-    while True:
-        try:
-            ev = q.get(timeout=keepalive_s)
-        except queue.Empty:
-            yield {"type": "keepalive"}
-            continue
-        if ev is _DONE:
-            break
-        yield ev
-    yield {"type": "done", "messages": list(getattr(agent, "messages", []) or [])}
+    try:
+        while True:
+            try:
+                ev = q.get(timeout=keepalive_s)
+            except queue.Empty:
+                yield {"type": "keepalive"}
+                continue
+            if ev is _DONE:
+                break
+            yield ev
+        yield {"type": "done", "messages": list(getattr(agent, "messages", []) or [])}
+    finally:
+        request.close()
+        loop, task = worker.get("loop"), worker.get("task")
+        if loop is not None and task is not None and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass  # The worker already closed its loop and its request binding.

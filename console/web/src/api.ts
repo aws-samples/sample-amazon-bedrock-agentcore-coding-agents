@@ -40,22 +40,45 @@ export interface AttributionConfiguration {
   region: string | null;
   log_group: string;
   query: string;
+  agents: AttributionSource[];
 }
 
-export interface AttributionEvidence extends AttributionConfiguration {
-  status: 'Complete';
-  query_id: string;
-  start_time: number;
-  end_time: number;
+export interface AttributionSource {
+  id: 'claude-code' | 'codex';
+  label: string;
+  event_description: string;
+}
+
+export type AttributionTokenField = 'input_tokens' | 'output_tokens' | 'cache_creation_tokens' | 'cache_read_tokens'
+  | 'total_input_tokens' | 'reasoning_output_tokens';
+
+export interface AttributionTokens {
+  requests: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_tokens: number | null;
+  cache_read_tokens: number | null;
+  total_input_tokens: number | null;
+  reasoning_output_tokens: number | null;
+  reported_requests: Record<AttributionTokenField, number>;
+}
+
+export interface AttributionCoverage {
   total_requests: number;
   tagged_requests: number;
   untagged_requests: number;
   coverage_percent: number | null;
-  rows: Array<{
+}
+
+export interface AttributionEvidence extends AttributionConfiguration, AttributionCoverage {
+  status: 'Complete';
+  query_id: string;
+  start_time: number;
+  end_time: number;
+  agents: Array<AttributionSource & AttributionTokens & AttributionCoverage>;
+  rows: Array<AttributionTokens & {
+    agent: AttributionSource['id'];
     user: string | null;
-    requests: number;
-    input_tokens: number | null;
-    output_tokens: number | null;
   }>;
 }
 
@@ -173,6 +196,7 @@ export interface RunSummary {
   status: string;
   phase: string;
   created_at?: string;
+  submitted_by?: string | null;
   route?: RunRoute | null;
   pr_url?: string | null;
   merge_state?: string | null;

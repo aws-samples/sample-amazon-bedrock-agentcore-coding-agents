@@ -10,7 +10,8 @@ by the hosting deployment; the standalone server is not a Cognito service.
 ### `GET /api/metrics/attribution`
 
 Returns `source: "cloudwatch-logs-insights"`, the configured `region` (nullable),
-`log_group`, and fixed `query`. This reads configuration and does not start a
+`log_group`, fixed `query`, and supported `agents`. Each agent has `id`, `label`,
+and `event_description`. This reads configuration and does not start a
 CloudWatch query.
 
 ### `POST /api/metrics/attribution/query`
@@ -26,17 +27,69 @@ A 200 response always has `status: "Complete"` and these fields:
 | `source` | `"cloudwatch-logs-insights"` |
 | `query_id` | Actual CloudWatch query identifier |
 | `region`, `log_group`, `query` | Actual source and query |
-| `start_time`, `end_time` | Query bounds, Unix seconds |
-| `rows` | Array of `{user, requests, input_tokens, output_tokens}` |
-| `rows[].user` | String, or null for an untagged group |
-| `rows[].requests` | Nonnegative integer |
-| `rows[].input_tokens`, `rows[].output_tokens` | Nonnegative integers, or null if absent |
+| `start_time`, `end_time` | Actual query bounds, Unix seconds; the UI displays ISO timestamps labeled UTC |
+| `agents` | Separate Claude Code and Codex summaries with `id`, `label`, `event_description`, token values, reporting counts, and coverage |
+| `rows` | Array grouped by agent and user label |
+| `rows[].agent` | `"claude-code"` or `"codex"` |
+| `rows[].user` | Original nonblank label, or null for that agent's combined untagged group |
+| `rows[].requests` | Nonnegative count of matching exported usage events |
+| `rows[].input_tokens` | Sum of reported **uncached input** tokens; retains its existing meaning |
+| `rows[].cache_creation_tokens` | Sum of reported input tokens written to the prompt cache |
+| `rows[].cache_read_tokens` | Sum of reported input tokens read from the prompt cache |
+| `rows[].output_tokens` | Sum of reported output tokens |
+| `rows[].reasoning_output_tokens` | Reported reasoning tokens, a subset of output |
+| `rows[].total_input_tokens` | Input including cache; native Codex input total, or a complete sum of Claude Code's three input components |
+| `rows[].reported_requests` | Counts for all six token fields: events supporting each measurement, from 0 through `requests` |
 | `total_requests`, `tagged_requests`, `untagged_requests` | Counts from completed result rows |
 | `coverage_percent` | Tagged requests / total requests, rounded to one decimal; null when total is zero |
 
-The query filters `body = "claude_code.api_request"` and groups on
-`resource.user.id`. It does not count Kiro usage or the whole AWS bill. A manual
-resource label does not attest an authenticated identity.
+Token values are nonnegative integers or null when unavailable. A component with
+no reporting events is null even if CloudWatch returns an aggregate zero. An
+explicitly reported zero stays zero. When only some requests report a component,
+its available sum is retained with the smaller `reported_requests` count; the UI
+labels it **Partial**. An aggregate omitted for a group with reporting events
+remains null, including when merging it with another group that has a value.
+
+Claude Code's `total_input_tokens` is available only when each input component
+has an aggregate and its reporting count equals `requests`. Codex's native input
+count already includes its cache tokens. That count becomes `total_input_tokens`
+with its own reporting coverage, even when the cache breakdown is missing.
+Codex's uncached `input_tokens` is derived by subtraction only when all input
+components are complete. Missing output does not invalidate an input total.
+
+The UI displays null as **Unavailable**. `status: "Complete"` describes the
+CloudWatch query, not the completeness of every token field. Missing or invalid
+coverage counts and inconsistent aggregates return an error rather than inferred
+completeness. Reasoning is not added to output. Each agent summary combines only
+that agent's rows; an agent with no events has zero requests and unavailable tokens.
+
+The fixed query accepts `body = "claude_code.api_request"` or Codex events with
+`attributes.event.name = "codex.sse_event"`,
+`attributes.event.kind = "response.completed"`, an `input_token_count`, and no
+`error.message`. Raw SSE frames and Codex API attempt events are excluded. It
+groups by emitter and `resource.user.id`. Missing, empty, and whitespace-only
+user labels are combined into one null-user row **per agent**; other labels keep
+their exact values. An empty field does not count as tagged. A manual resource
+label does not attest an authenticated identity, and `attributes.user.id` is not
+this grouping key.
+
+Requests count exported usage events, without deduplication; they are not counts
+of every API attempt, prompt, session, or build. Cached input processed by multiple
+requests contributes to each request's token count. Kiro credits, coordinator and
+review SDK calls, infrastructure charges, and the complete AWS bill are outside
+this query.
+
+Each query captures one end time and subtracts the selected 1, 3, or 24 hours.
+Every new POST obtains new bounds; absolute bounds cannot be supplied by a client.
+For an independent comparison, reuse the returned bounds exactly in UTC against
+the same region and log group. Event timestamps determine the window; later
+ingestion can change the results of a subsequent query over that window.
+
+The UI's **Export JSON** downloads the entire completed response as
+`agent-studio-cloudwatch-usage.json`, including nulls, reporting counts, source,
+query ID, and bounds. Table filtering, sorting, and pagination do not alter the
+export. **Copy query** copies the exact query for a source check in CloudWatch.
+This endpoint and UI do not provide a CSV export.
 
 Errors return `{error, code, source}` with a non-200 status. Key cases:
 
@@ -49,6 +102,10 @@ Errors return `{error, code, source}` with a non-200 status. Key cases:
 | 503 | Missing region or unavailable/expired credentials |
 | 504 | Console query wait budget exceeded |
 | 502 | Failed, cancelled, malformed, truncated, or otherwise unavailable query result |
+
+A pagination token or at least 10,000 returned source groups produces
+`RESULT_LIMIT` (502). The limit is checked before untagged groups are combined,
+so normalization cannot conceal a potentially truncated result.
 
 `Running` results are never returned as completed counts. The service attempts
 to cancel a query still pending when it fails. If cancellation is not confirmed,

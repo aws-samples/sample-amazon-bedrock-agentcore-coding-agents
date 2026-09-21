@@ -5,13 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# The SERVED roster (orchestrator/roles.py): backend, frontend, validator. Kept-but-
-# hidden restore paths (claude-code-validator, codex) are NOT deployed by default;
-# deploy one explicitly with `./deploy-prebuilt.sh <role>` when you restore it.
-# This list previously named `cursor`, `hermes`, and `open-code`, none of which are
-# directories in this repo, and OMITTED the real `opencode`: the loop skips missing
-# dirs, so it silently deployed two of the three served roles.
-AGENTS=(claude-code opencode kiro)
+# Read the served roster, including WORKSHOP_ROLES restores, from its source of
+# truth. Do not silently omit a declared role because its build directory is gone.
+role_names=$(PYTHONPATH="$SCRIPT_DIR/../orchestrator${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -c 'from roles import roster_ids; print(" ".join(roster_ids()))')
+read -r -a AGENTS <<< "$role_names"
 
 echo "=============================================="
 echo "  Deploying all coding agents"
@@ -20,8 +18,8 @@ echo "=============================================="
 for agent in "${AGENTS[@]}"; do
   AGENT_DIR="${SCRIPT_DIR}/${agent}"
   if [ ! -d "$AGENT_DIR" ]; then
-    echo "  SKIP: ${agent}/ not found"
-    continue
+    echo "ERROR: configured role ${agent}/ not found" >&2
+    exit 1
   fi
 
   echo ""
@@ -48,7 +46,7 @@ for agent in "${AGENTS[@]}"; do
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "  ${agent}: deploy.py"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  (cd "$AGENT_DIR" && python deploy.py)
+  (cd "$AGENT_DIR" && python3 deploy.py)
 done
 
 echo ""

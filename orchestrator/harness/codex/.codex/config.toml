@@ -1,7 +1,7 @@
 # Codex project configuration paired with the root AGENTS.md.
-model = "openai.gpt-5.5"
-model_provider = "amazon-bedrock"
+model = "us.openai.gpt-5.6-sol"
+model_provider = "amazon-bedrock-runtime"
 model_reasoning_effort = "medium"
 
-[model_providers.amazon-bedrock.aws]
-region = "us-east-2"
+# The Runtime's global configuration supplies the deployment region.
+# Do not pin a different region in a source archive or on the shared mount.

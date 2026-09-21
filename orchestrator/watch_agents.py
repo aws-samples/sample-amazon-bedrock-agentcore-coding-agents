@@ -5,11 +5,11 @@ The sample console multiplexes each Runtime PTY: one
 console-hosted session, many subscribers. This developer utility attaches a
 terminal to those same sessions. Console Chat builds register a fresh interactive
 PTY for every isolated work item, so this view and the Agents page show the native
-Claude Code / opencode / Kiro TUI. Deployed-coordinator CLI builds have no console
+role's native TUI. Deployed-coordinator CLI builds have no console
 registry and remain visible through ``run_status``.
 
     python3 orchestrator/watch_agents.py                 # follow every role
-    python3 orchestrator/watch_agents.py --agent opencode
+    python3 orchestrator/watch_agents.py --agent codex
     python3 orchestrator/watch_agents.py --plain          # no colour/ANSI
 
 It is a READ-ONLY subscriber: it opens no session, sends no input, and closes

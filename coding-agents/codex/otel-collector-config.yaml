@@ -1,0 +1,77 @@
+# Codex sends native OTLP logs to a collector running with the Runtime IAM role.
+# Export only completed responses with token counts. Raw SSE frames, prompts,
+# tool commands and tool output do not belong in the workshop usage log.
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  filter/usage:
+    error_mode: propagate
+    logs:
+      log_record:
+        - 'attributes["event.name"] != "codex.sse_event"'
+        - 'attributes["event.kind"] != "response.completed"'
+        - 'attributes["input_token_count"] == nil'
+        - 'attributes["error.message"] != nil'
+        # OTTL Int also coerces booleans and truncates floats. Admit only native
+        # nonnegative integers or decimal digit strings before conversion.
+        - 'attributes["input_token_count"] != nil and not (IsInt(attributes["input_token_count"]) and attributes["input_token_count"] >= 0) and not (IsString(attributes["input_token_count"]) and IsMatch(attributes["input_token_count"], "^[0-9]+$"))'
+        - 'attributes["output_token_count"] != nil and not (IsInt(attributes["output_token_count"]) and attributes["output_token_count"] >= 0) and not (IsString(attributes["output_token_count"]) and IsMatch(attributes["output_token_count"], "^[0-9]+$"))'
+        - 'attributes["cached_token_count"] != nil and not (IsInt(attributes["cached_token_count"]) and attributes["cached_token_count"] >= 0) and not (IsString(attributes["cached_token_count"]) and IsMatch(attributes["cached_token_count"], "^[0-9]+$"))'
+        - 'attributes["cache_write_token_count"] != nil and not (IsInt(attributes["cache_write_token_count"]) and attributes["cache_write_token_count"] >= 0) and not (IsString(attributes["cache_write_token_count"]) and IsMatch(attributes["cache_write_token_count"], "^[0-9]+$"))'
+        - 'attributes["reasoning_token_count"] != nil and not (IsInt(attributes["reasoning_token_count"]) and attributes["reasoning_token_count"] >= 0) and not (IsString(attributes["reasoning_token_count"]) and IsMatch(attributes["reasoning_token_count"], "^[0-9]+$"))'
+  transform/usage:
+    error_mode: propagate
+    log_statements:
+      - context: log
+        statements:
+          # Codex 0.155.1 records observedTimeUnixNano with timeUnixNano = 0.
+          # The CloudWatch exporter uses time, so preserve the observed event
+          # time instead of submitting a timestamp in January 1970.
+          - 'set(time, observed_time) where time_unix_nano == 0'
+          - 'keep_keys(attributes, ["event.name", "event.kind", "event.timestamp", "conversation.id", "app.version", "model", "input_token_count", "output_token_count", "cached_token_count", "cache_write_token_count", "reasoning_token_count"])'
+          - 'keep_keys(resource.attributes, ["service.name", "service.version", "user.id", "team.id", "agent.id", "run.id", "session.id"])'
+          # Native input/output are string-valued OTel attributes; give Logs
+          # Insights numeric fields without changing the reported values.
+          - 'set(attributes["input_token_count"], Int(attributes["input_token_count"]))'
+          - 'set(attributes["output_token_count"], Int(attributes["output_token_count"])) where attributes["output_token_count"] != nil'
+          - 'set(attributes["cached_token_count"], Int(attributes["cached_token_count"])) where attributes["cached_token_count"] != nil'
+          - 'set(attributes["cache_write_token_count"], Int(attributes["cache_write_token_count"])) where attributes["cache_write_token_count"] != nil'
+          - 'set(attributes["reasoning_token_count"], Int(attributes["reasoning_token_count"])) where attributes["reasoning_token_count"] != nil'
+  filter/typed_usage:
+    error_mode: propagate
+    logs:
+      log_record:
+        # Failed conversions can leave the original string in place, including
+        # digit strings outside int64. Never export those as measured counters.
+        - 'not IsInt(attributes["input_token_count"])'
+        - 'attributes["output_token_count"] != nil and not IsInt(attributes["output_token_count"])'
+        - 'attributes["cached_token_count"] != nil and not IsInt(attributes["cached_token_count"])'
+        - 'attributes["cache_write_token_count"] != nil and not IsInt(attributes["cache_write_token_count"])'
+        - 'attributes["reasoning_token_count"] != nil and not IsInt(attributes["reasoning_token_count"])'
+  batch/logs:
+    timeout: 5s
+
+exporters:
+  awscloudwatchlogs:
+    region: "${env:AWS_REGION}"
+    log_group_name: "/workshop/coding-agents/telemetry"
+    log_stream_name: "${env:WORKSHOP_AGENT_NAME:-codex}"
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [filter/usage, transform/usage, filter/typed_usage, batch/logs]
+      exporters: [awscloudwatchlogs]
+  telemetry:
+    logs:
+      level: warn

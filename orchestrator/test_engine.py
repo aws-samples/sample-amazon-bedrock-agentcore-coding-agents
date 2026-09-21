@@ -32,7 +32,7 @@ from fixture_executor import FixtureExecutor  # noqa: E402
 # The served roster: two makers plus the served CHECKER (Kiro today, the Claude Code
 # validator on the restore path). `presets.resolve` rejects an unserved id at admission,
 # so these must be roles the registry actually serves.
-ALL_AGENTS = ["claude-code", "kiro", "opencode"]
+ALL_AGENTS = list(roles.roster_ids())
 
 # Any sentence at all is a valid request now; nothing classifies it.
 CONVERT_TASK = "build a small thing and prove it works"
@@ -413,9 +413,9 @@ def test_routing_selects_roles_and_nothing_else():
     engine = _engine()
     ODD = "write me a haiku about tuesday and serve it somehow"
     # explicit roles: exactly those roles work (plus nothing else)
-    fe = _wait_terminal(engine.submit(ODD, ["opencode", "kiro"]),
+    fe = _wait_terminal(engine.submit(ODD, ["codex", "kiro"]),
                         timeout_s=120)
-    assert fe.agents == ["opencode", "kiro"]
+    assert fe.agents == ["codex", "kiro"]
     assert fe.route["preset"] == "custom" and fe.status == "passed"
     # a preset supplies its own request text and role set
     cli = _wait_terminal(engine.submit("", preset="cli-tool"), timeout_s=120)
@@ -501,7 +501,7 @@ def test_terminals_record_real_role_shell_work():
     role runs follow from what it decided to build, which the engine does not know."""
     engine = _engine()
     run = _wait_terminal(engine.submit("build any small thing", ALL_AGENTS))
-    assert set(run.terminals) == {"claude-code", "kiro", "opencode"}
+    assert set(run.terminals) == set(ALL_AGENTS)
     for agent_id, lines in run.terminals.items():
         assert lines, f"{agent_id} recorded no shell work"
         assert all(line["exit"] == 0 for line in lines), f"{agent_id} had a failing command"

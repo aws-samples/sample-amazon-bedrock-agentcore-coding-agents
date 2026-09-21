@@ -27,16 +27,17 @@ The API reflects that lifecycle.
   "status": "running",                  // queued | running | passed | failed | needs_human
   "phase": "agent_execution",           // the orchestration blueprint phase (see below)
   "created_at": "2026-06-09T07:40:00Z",
-  "agents": ["claude-code", "opencode", "kiro"],
+  "submitted_by": "attendee@workshop.aws", // admitted user label, or null when absent
+  "agents": ["claude-code", "codex", "kiro"],
   "roles": {                            // role per agent, composed, NOT raced
     "claude-code": "backend-builder",
-    "opencode": "frontend-builder",
+    "codex": "frontend-builder",
     "kiro": "validator"
   },
   "route": {                            // the routing verdict (additive; see below)
     "preset": "web-app",
     "rule": "preset 'web-app': Build a web app, front and back",
-    "agents": ["claude-code", "opencode", "kiro"],
+    "agents": ["claude-code", "codex", "kiro"],
     "read_only": false
   },
   "fail_reason": null                   // machine-readable reason when status is failed/needs_human
@@ -46,6 +47,12 @@ The API reflects that lifecycle.
 ### Phase (the orchestration blueprint, deterministic except agent_execution)
 `admission` → `context_hydration` → `pre_flight` → `agent_execution` → `finalization`
 A run also has a terminal status once finalization completes.
+
+`submitted_by` is an additive field on live and recorded run summaries, details,
+and terminal results. It contains the admitted identity's `user_email`, falling
+back to `user_id`. It never comes from the user reading the record. A run without
+a usable recorded identity returns `null`; the API does not expose the complete identity
+object or private dispatch options.
 
 ### AgentProgress (per role, inside a run's detail)
 ```json
@@ -88,22 +95,22 @@ A run also has a terminal status once finalization completes.
     "summary": "Build the API and UI against one shared interface.",
     "shared_contract": ["The UI consumes the issue JSON API."],
     "role_assignments": { /* exclusive builder ownership */ },
-    "merge_order": ["claude-code", "opencode"]
+    "merge_order": ["claude-code", "codex"]
   },
   "final_base_branch": "main",          // every pull request targets this ONE branch
   "gate_history": [                     // one row per executable run, per pull request
     {"sequence": 1, "stage": "work_claude-code_a1b2c3 round 1", "passed": true,
      "work_id": "work_claude-code_a1b2c3", "agent": "claude-code",
      "patch_digest": "8bc4…", "summary": "12 checks passed"},
-    {"sequence": 2, "stage": "work_opencode_d4e5f6 round 1", "passed": true,
-     "work_id": "work_opencode_d4e5f6", "agent": "opencode",
+    {"sequence": 2, "stage": "work_codex_d4e5f6 round 1", "passed": true,
+     "work_id": "work_codex_d4e5f6", "agent": "codex",
      "patch_digest": "9fa1…", "summary": "12 checks passed"}
   ],
   "role_prs": [                         // one row per pull request, each independent
     {"work_id": "work_claude-code_a1b2c3", "agent": "claude-code", "role": "backend",
      "pr_url": "https://github.com/your-org/your-repo/pull/42",
      "state": "merged", "sha": "517e4d…"},
-    {"work_id": "work_opencode_d4e5f6", "agent": "opencode", "role": "frontend",
+    {"work_id": "work_codex_d4e5f6", "agent": "codex", "role": "frontend",
      "pr_url": "https://github.com/your-org/your-repo/pull/43",
      "state": "awaiting_review"}
   ],
@@ -184,19 +191,18 @@ Console renders these on the Stage 1 shelf.
 {
   "agents": [
     {"id": "claude-code",           "label": "Claude Code", "default_role": "backend-builder",   "model": "us.anthropic.claude-opus-4-6-v1",          "credential": "bedrock-native"},
-    {"id": "opencode",              "label": "opencode",    "default_role": "frontend-builder",  "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6", "credential": "runtime-iam"},
-    {"id": "kiro",                  "label": "Kiro",        "default_role": "validator",         "model": "",                                         "credential": "api-key"}
+    {"id": "codex",                 "label": "Codex",       "default_role": "frontend-builder",  "model": "us.openai.gpt-5.6-sol",                       "credential": "runtime-iam"},
+    {"id": "kiro",                  "label": "Kiro",        "default_role": "validator",         "model": "claude-opus-5",                              "credential": "api-key"}
   ]
 }
 ```
 The list is derived from `roles.py` (the one declarative registry) and is wirable at runtime
-via `WORKSHOP_ROLES`. The Claude Code validator and Codex remain in the registry as a restore
+via `WORKSHOP_ROLES`. The Claude Code validator and opencode remain in the registry as a restore
 path but are not included in the served roster by default.
 
-Kiro's `model` is EMPTY on purpose, and that is an honest fact rather than a missing value:
-`kiro-cli` takes no model flag at all, so nothing here can select one. Its model is Kiro's own
-`auto` router, written as `chat.defaultModel` into `~/.kiro/settings/cli.json` by its
-`run.sh`. Its `credential` is `api-key`: the attendee's own `ksk_`, fetched at session start
+Kiro's model is selected in its vendor namespace by `WORKSHOP_KIRO_MODEL` and
+passed with `--model`, separately from Bedrock model ids. Its `credential` is
+`api-key`: the attendee's own `ksk_`, fetched at session start
 from the AgentCore Identity Token Vault and never injected as a runtime environment variable.
 
 ### `POST /api/runs`: submit one task (fire-and-forget)
@@ -223,8 +229,8 @@ Returns a **Run** plus a `progress` array of **AgentProgress**:
 {
   "run_id": "run_0001", "task": "…", "status": "running", "phase": "agent_execution",
   "created_at": "…",
-  "agents": ["claude-code","opencode","kiro"],
-  "roles": {"claude-code":"backend-builder","opencode":"frontend-builder",
+  "agents": ["claude-code","codex","kiro"],
+  "roles": {"claude-code":"backend-builder","codex":"frontend-builder",
             "kiro":"validator"},
   "route": {"preset":"web-app","rule":"…","agents":[…],"read_only":false},
   "fail_reason": null,

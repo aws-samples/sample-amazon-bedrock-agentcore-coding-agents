@@ -1,16 +1,11 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
-[![The sample console: Claude Code, opencode and Kiro on AgentCore Runtime, with a live Claude Code session attached to its Runtime ARN](docs/media/console-walkthrough-poster.png)](docs/media/console-walkthrough.mp4)
-
-*A prior real deployment showing the served roles and a Runtime session.
-Navigation and the current Attribution view have changed since this recording.
-[Play the earlier walkthrough (22s)](docs/media/console-walkthrough.mp4).*
-
-Run Claude Code (backend), opencode (frontend), and Kiro (validator) on Amazon
-Bedrock AgentCore Runtime. Give the team one request; each selected builder opens
-its own checked and reviewed pull request. The guided game selects Claude Code
+Run Claude Code (backend), Codex (frontend), and Kiro (validator) on Amazon
+Bedrock AgentCore Runtime. Give the team one request; the coordinator opens a
+checked and reviewed pull request for each selected builder. The guided game selects Claude Code
 and Kiro, producing one builder PR. A separate Claude Code validator remains a
 restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
+opencode remains the alternate frontend, selected the same way.
 
 The game preset leaves its concept, appearance, controls, and progression to the
 builder. Teams share a small score interface: `GET /api/scores` returns saved
@@ -30,8 +25,10 @@ adversarial verification and design/integration. The reviewer never sees a
 builder's conversation or edits a builder's code.
 
 This repo is the full code payload. Clone it and follow the workshop content.
-Labs 1 and 2 use the prepared host terminal; Lab 3 uses Development, Agents, and
-Governance in the console. The underlying commands and query remain inspectable.
+Labs 1 and 2 use the prepared host terminal. After playing the generated game,
+Lab 3 uses Chat to request a focused improvement, then Development, Agents, and
+Governance to follow its identity and usage. Participants review the PR and play
+the merged fix. The underlying commands and query remain inspectable.
 
 > **Current project-language support:** Python and Node.js 22
 > (JavaScript/TypeScript). Add the required toolchain to
@@ -48,7 +45,7 @@ followed by the CLI steps the workshop teaches.
 In Lab 2, create a separate **private GitHub repository** for the app your agents
 will build. Choose **No template** and turn **Add README** on so it has an initial
 commit and default branch. This platform repository stays in the workshop's VS Code
-checkout. Each builder opens ONE role pull request against the app
+checkout. The coordinator opens one role pull request per builder against the app
 repository's default branch, and each pull request is checked and reviewed
 on its own. Under the default `human_review` policy, an approved PR stays open
 for a person to merge. There is no combined candidate, merge queue, or separate final
@@ -94,9 +91,10 @@ stack-specific bucket names; `WORKSHOP_RUNTIME_BUCKET` remains an explicit overr
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
   - `claude-code/` backend builder (Claude Code, native Bedrock)
-  - `opencode/` frontend builder (opencode, native Bedrock)
+  - `codex/` frontend builder (Codex 0.155.1, Bedrock Runtime Responses, `us.openai.gpt-5.6-sol`)
   - `kiro/` acceptance-contract validator (Kiro CLI; steered by `.kiro/steering/*.md` with `inclusion: always`, which directs it to author an executable check whose exit code is the gate; authenticates with your own `ksk_` key, fetched from the AgentCore Identity Token Vault at session start)
-  - `claude-code-validator/` restore path (hidden; kept restorable like `codex/`, not on the served roster by default): the same acceptance-check-authoring contract in a `CLAUDE.md`, Bedrock-native with no key, for an account without a Kiro subscription
+  - `opencode/` alternate frontend (hidden; restore with `WORKSHOP_ROLES=claude-code,opencode,kiro`)
+  - `claude-code-validator/` alternate checker (hidden; restore with `WORKSHOP_ROLES=claude-code,codex,claude-code-validator`): the same acceptance-check-authoring contract in a `CLAUDE.md`, Bedrock-native with no key, for an account without a Kiro subscription
 - `orchestrator/` the Strands orchestrator engine (routing, engine, executor, reviewer, github)
   - `orchestrator/roles.py` declares the served roster (`WORKSHOP_ROLES`-configurable); this is the single place role ids, kinds (builder/checker), and capabilities (backend/frontend/validator) live
 - `orchestrator-agent/` the deployable Strands agent bundle
@@ -121,8 +119,12 @@ Runtime credentials so no test can read a token or open a pull request.
 The offline suite verifies platform behavior, not a future agent-generated
 application. A fresh event run still needs its real executable and review
 evidence. Known console submitters are mapped to telemetry by default. Lab 3
-verifies that mapping and the exported request events. CLI requests without user
-metadata and previously unlabeled events remain unattributed.
+verifies that mapping and the exported usage events from Claude Code and Codex,
+shown separately for each user. CLI requests without user metadata and previously
+unlabeled events remain unattributed. Codex's input total includes cache tokens;
+the API normalizes both CLI formats without counting that cache twice. Missing
+measurements remain unavailable. Kiro credits and coordinator SDK usage are
+outside this CloudWatch query.
 
 ## When something is not working
 
@@ -148,11 +150,11 @@ from a NEW coordinator session, and `list_runs` finds it when the run id is lost
 
 Each of these cost real time on a live run, and each has a cheap tell.
 
-- **opencode needs a pseudo-terminal.** Version 1.17.20's default formatter blocks when
+- **The opencode restore path needs a pseudo-terminal.** Version 1.17.20's default formatter blocks when
   stdout is not a tty, so a non-PTY invocation hangs with no output, no error and almost
-  no CPU, its debug log stopping right after `init`. The served paths already run it in a
+  no CPU, its debug log stopping right after `init`. Its supported paths run it in a
   PTY (`agentcore exec --it`, and a Runtime PTY per dispatched turn). Preserve
-  that PTY in served paths.
+  that PTY when restoring it.
 - **A closed shell is not a successful command.** Read the Runtime's termination
   status, including a non-zero `ExitCode` cause. A connection that closes without
   a command result reports an execution error.
@@ -165,10 +167,12 @@ Each of these cost real time on a live run, and each has a cheap tell.
   `CLAUDE_CODE_ENABLE_TELEMETRY=1` the CLI collects and sends nowhere, and Logs Insights
   stays empty. Check the sidecar too: inside the Runtime,
   `curl -fsS http://127.0.0.1:13133` answers `"status":"Server available"`.
-- **Only stage steering a role actually reads.** Everything under `/mnt/s3files` is
-  visible to every role whose launcher works there, including the validator. Claude Code
-  keeps `$HOME` in a hand-opened shell and reads its baked `CLAUDE.md`; opencode and Kiro
-  pick `/mnt/s3files` when steering is there.
+- **Only stage steering a role actually reads.** Every mounted role can read
+  `/mnt/s3files`. In a hand-opened shell, Claude Code stays in `$HOME` and reads
+  its baked `CLAUDE.md`; Codex uses `/mnt/s3files` when the mount is attached.
+  Kiro copies only `.kiro/steering/validator.md` from the mount into its private
+  `$HOME` and starts there, keeping the frontend's `AGENTS.md` out of its context.
+  Kiro uses an explicit `WORKSHOP_AGENT_WORKDIR` when one is provided for dispatched work.
 - **A session id must be at least 33 characters**, which is why every example generates a
   UUID. And `.bashrc` exports reach interactive shells only, so scripted runs must pass
   the environment explicitly.

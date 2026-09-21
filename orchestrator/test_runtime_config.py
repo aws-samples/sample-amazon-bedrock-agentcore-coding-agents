@@ -21,6 +21,8 @@ def _isolate(tmp_path, monkeypatch):
     (WORKSHOP_RUNTIME_CONFIG, no patching of module internals) and clear the
     role env vars so each test starts from a clean, unwired slate."""
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
+    # These fleet fixtures deliberately exercise the opencode restore roster.
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,opencode,kiro")
     for role in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(role), raising=False)
     monkeypatch.delenv("WORKSHOP_EXECUTOR", raising=False)
@@ -36,6 +38,14 @@ def _isolate(tmp_path, monkeypatch):
 
 def test_unset_role_resolves_to_none():
     assert runtime_config.resolve("claude-code") is None
+
+
+def test_default_frontend_wires_codex_and_hides_the_restore_roster(monkeypatch):
+    monkeypatch.delenv("WORKSHOP_ROLES")
+    arn = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/codex-test"
+    assert "error" not in runtime_config.save_runtime("codex", arn)
+    assert runtime_config.resolve_map() == {"codex": arn}
+    assert "opencode" not in runtime_config.roles()
 
 
 def test_save_then_resolve_from_settings():

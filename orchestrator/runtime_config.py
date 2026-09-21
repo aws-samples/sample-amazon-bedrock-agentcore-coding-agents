@@ -51,7 +51,7 @@ def _settings_path() -> str:
 # Everything independently wirable: the orchestrator plus every role this
 # deployment SERVES. Both come from the registry (``roles.py``), which is the one
 # place the roster is declared and is configurable at runtime via WORKSHOP_ROLES.
-# A registered-but-hidden role (codex, claude-code-validator) is off this list by
+# A registered-but-hidden role (opencode, claude-code-validator) is off this list by
 # default, so it
 # never appears as a wireable agent or a dispatch target, and naming it in
 # WORKSHOP_ROLES restores it with no code change.
@@ -132,8 +132,8 @@ def _load_file() -> dict[str, list[str]]:
 
 
 # The harness deploy.py writes coding-agents/<role>/runtime_config.json with the
-# real deployed ARN. The event pre-provisions opencode and the Claude Code
-# validator at box boot (the CFN ProvisionPreBuiltAgents step), so those files
+# real deployed ARN. The event pre-provisions its frontend and checker
+# at box boot (the CFN ProvisionPreBuiltAgents step), so those files
 # exist BEFORE the attendee touches Settings. Auto-discovering them here is what
 # makes the console show them as already wired (matching what the content says:
 # "the event already wired its Runtime ARN"), the same source of truth the Stage 1
@@ -278,7 +278,7 @@ def instances(role: str) -> list[tuple[str, str]]:
       3. ``deployed``    : auto-discovered from the harness's own
          ``coding-agents/<role>/runtime_config.json`` that ``deploy.py`` wrote.
          This is what surfaces a role the EVENT STACK pre-provisioned (today
-         opencode and the Kiro validator, from the prebuilt central-ECR images)
+         Codex and the Kiro validator, from the prebuilt images)
          as already wired without the attendee pasting anything.
     Returns [] for a role with nothing wired anywhere."""
     env = os.environ.get(_env_key(role))

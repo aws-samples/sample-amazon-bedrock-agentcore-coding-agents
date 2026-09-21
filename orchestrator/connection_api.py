@@ -75,7 +75,8 @@ _CONV_LOCK = __import__("threading").Lock()
 _MAX_TURNS = 40  # messages retained per conversation (user+assistant entries)
 
 # Only public evidence crosses the HTTP boundary. The durable snapshot also
-# contains dispatch options and the admitted identity, which history does not need.
+# contains private dispatch options and identity fields. History exposes only
+# the admitted submitter's display label, never that full identity object.
 _HISTORY_FIELDS = (
     "run_id", "task", "status", "phase", "created_at", "agents", "roles",
     "route", "fail_reason", "progress", "work_items", "integration_brief",
@@ -86,13 +87,14 @@ _HISTORY_FIELDS = (
 )
 _SUMMARY_FIELDS = (
     "run_id", "task", "status", "phase", "created_at", "agents", "roles",
-    "route", "fail_reason", "source", "saved_at",
+    "route", "fail_reason", "source", "saved_at", "submitted_by",
 )
 
 
 def _history_view(saved: dict) -> dict:
     """Read a saved verdict without reviving its engine or rerunning any work."""
     view = {key: saved[key] for key in _HISTORY_FIELDS if key in saved}
+    view["submitted_by"] = _engine.public_submitter(saved.get("user_identity"))
     view.update(source="persisted", saved_at=saved.get("_saved_at"))
     # Match the CLI's recovery semantics. A snapshot is evidence, not a heartbeat
     # from a worker this process owns.

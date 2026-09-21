@@ -49,7 +49,8 @@ def test_configure_wires_role_arns_execution_role_and_runtime_environment(
     env = {item["name"]: item["value"] for item in runtime["envVars"]}
     assert runtime["executionRoleArn"].endswith(":role/orchestrator")
     assert env["AGENTCORE_RUNTIME_CLAUDE_CODE"].endswith("/claude-code")
-    assert env["AGENTCORE_RUNTIME_OPENCODE"].endswith("/opencode")
+    assert env["AGENTCORE_RUNTIME_CODEX"].endswith("/codex")
+    assert "AGENTCORE_RUNTIME_OPENCODE" not in env
     assert env["AGENTCORE_RUNTIME_KIRO"].endswith("/kiro")
     assert env["WORKSHOP_RUNTIME_BUCKET"] == "coding-agents-123456789012-us-west-2"
     assert env["WORKSHOP_GITHUB_STORE"] == "secretsmanager"
@@ -124,6 +125,7 @@ def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp
     """The host's stack model parameters must survive the deployment boundary."""
     settings = {
         "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-sonnet-4-6",
+        "WORKSHOP_CODEX_MODEL": "us.openai.gpt-5.6-sol",
         "WORKSHOP_OPENCODE_MODEL": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "WORKSHOP_SMALL_MODEL": "us.anthropic.claude-sonnet-4-6",
         "ORCHESTRATOR_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -146,11 +148,12 @@ def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp
         [sys.executable, "-c",
          "import json, roles; print(json.dumps({"
          "role: roles.get(role).default_model "
-         "for role in ('claude-code', 'opencode')}))"],
+         "for role in ('claude-code', 'codex', 'opencode')}))"],
         env=child_env, text=True,
     )
     assert json.loads(result) == {
         "claude-code": settings["WORKSHOP_CLAUDE_MODEL"],
+        "codex": settings["WORKSHOP_CODEX_MODEL"],
         "opencode": settings["WORKSHOP_OPENCODE_MODEL"],
     }
 
@@ -158,7 +161,7 @@ def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp
 @pytest.mark.parametrize("value", [None, "", "  "])
 def test_absent_model_settings_keep_coordinator_defaults(monkeypatch, tmp_path, value):
     names = (
-        "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_OPENCODE_MODEL",
+        "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_CODEX_MODEL", "WORKSHOP_OPENCODE_MODEL",
         "WORKSHOP_SMALL_MODEL", "ORCHESTRATOR_MODEL_ID",
     )
     for name in names:

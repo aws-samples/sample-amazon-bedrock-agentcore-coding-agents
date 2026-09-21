@@ -1,65 +1,71 @@
 ---
 name: configure-codex-frontend
 description: >-
-  Configure Codex as the frontend builder in the three-agent AgentCore harness.
+  Configure Codex as the frontend builder in the AgentCore harness.
   Use for deploying the Codex Runtime, staging AGENTS.md and .codex/config.toml,
   or verifying that the generated interface resolves its service address at runtime
-  and delegates work to the MCP server.
+  when the request calls for a networked interface.
 ---
-
-> **RESTORE PATH - NOT THE SERVED ROLE**
->
-> Codex requires GPT-5.x (OpenAI) via Bedrock Mantle. Workshop Studio accounts
-> cannot be granted the `openai.gpt-5.5` Mantle entitlement (org SCP blocks the
-> grant; see EE-14394). Any attempt to run Codex on a Workshop Studio account
-> returns a 401. The served frontend in the workshop is opencode (Bedrock-native
-> `claude-sonnet-4-6`, no Mantle entitlement needed; see
-> `configure-opencode-frontend`).
->
-> Use this skill only if you are restoring the Codex path in a context where the
-> Mantle entitlement is available (non-Workshop Studio account with GPT-5.x
-> enabled). All Codex assets (`coding-agents/codex/`) remain in the repository as
-> the restore path.
 
 # Configure the Codex frontend builder
 
-Codex builds the frontend interface. Claude Code builds the backend and a second
-Claude Code (the validator) validates the composed result. There is no race and no
-winner.
+Codex builds the frontend interface. Claude Code builds the backend; Kiro authors
+an executable check that the engine runs. A separate reviewer inspects the pull
+request, and the workshop's default merge policy leaves it open for a person.
+The request determines the files, language, and design.
 
 ## Prerequisites
 
 - `coding-agents/infra.config` exists.
-- `openai.gpt-5.5` is enabled for Bedrock Mantle in `us-east-2`.
+- The account can invoke `us.openai.gpt-5.6-sol` in the deployment region, or
+  `WORKSHOP_CODEX_MODEL` names an available Runtime Responses model.
+- `AWS_REGION` or `AWS_DEFAULT_REGION` identifies the deployment region.
 - The Runtime execution role can use the AWS SDK credential chain.
 - Docker Buildx or Finch can build arm64 images.
 
 Codex does not need an OpenAI key, AgentCore workload identity, or API-key
-credential provider. The Runtime IAM role is the authentication path.
+credential provider. Codex **0.155.1** uses the built-in
+`amazon-bedrock-runtime` provider and the Runtime IAM role's AWS credential chain.
+The deploy helper grants invocation and streaming on OpenAI model/profile
+targets, plus `bedrock:InvokeModel` on the regional `project/default` ARN.
+Do not add a Mantle wildcard or a GitHub Gateway grant to this worker.
 
 ## Deploy
 
 ```bash
 cd coding-agents/codex
 ./setup.sh
-python deploy.py
+python3 deploy.py
 ```
 
 `runtime_config.json` must contain a Runtime ARN and the Runtime must reach
-`READY` before continuing.
+`READY` before continuing. Test an actual CLI turn too; `/ping` and `READY`
+confirm process/deployment health, not model access.
 
 ## Stage project guidance
 
-Copy the whole project configuration so hidden settings are preserved:
+From the repository root, stage the frontend's project guidance and design skill
+for a direct Lab 1 shell:
 
 ```bash
-cp -R orchestrator/harness/codex/. /mnt/s3files/
+cp orchestrator/harness/codex/AGENTS.md /mnt/s3files/AGENTS.md
+mkdir -p /mnt/s3files/skills
+cp -R harness-skills/skills/frontend-design /mnt/s3files/skills/
 test -s /mnt/s3files/AGENTS.md
-test -s /mnt/s3files/.codex/config.toml
+test -s /mnt/s3files/skills/frontend-design/SKILL.md
 ```
 
-The root `AGENTS.md` defines the frontend role. The hidden
-`.codex/config.toml` selects the `amazon-bedrock` provider and model.
+The root `AGENTS.md` defines the frontend role. The container's global Codex
+configuration supplies provider, model, and region. `entrypoint.sh` configures it
+before serving shells, including direct `codex exec` dispatch. The launcher
+trusts its actual work directory for that process without changing `CODEX_HOME`.
+
+Lab 2 parses the canonical steering's `harness:setup` block and stages the same
+design skill beside the role's source in its named linked worktree under `/tmp`.
+The skill travels in its own Runtime input archive. Honor exclusive ownership in
+`.workshop/integration-brief.md`; do not implement a sibling role's capability.
+Keep Git metadata local and transfer only source archives. No GitHub credential
+belongs in the Runtime.
 
 ## The thin-client rule (why it is a browser fact, not a preference)
 
@@ -78,15 +84,15 @@ task.
 ## Verify
 
 ```bash
-agentcore exec --it \
-  --runtime "$(jq -r .runtime_arn coding-agents/codex/runtime_config.json)" \
-  --region us-west-2
+RUNTIME_ARN="$(jq -r .runtime_arn coding-agents/codex/runtime_config.json)"
+RUNTIME_REGION="$(printf '%s' "$RUNTIME_ARN" | cut -d: -f4)"
+agentcore exec --it --runtime "$RUNTIME_ARN" --region "$RUNTIME_REGION"
 ```
 
-Inside the Runtime, run `/app/run.sh` and give Codex the task. Verify that the
-produced interface resolves the backend service address at runtime (not hardcoded),
-delegates backend work to the MCP server via `tools/call`, and handles `OPTIONS`
-preflight correctly if it runs cross-origin. Do not claim completion until the
-interface loads and a round-trip through the backend succeeds.
+Inside the Runtime, run `/app/run.sh` and give Codex the task. Verify the real
+command exit and produced files. If the interface calls a backend, exercise that
+round trip and its browser behavior, including cross-origin preflight when
+applicable. The validator decides the task-specific executable check; deployment
+configuration must not prescribe the application or turn a failed check green.
 
-Reference: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-55.html>
+Reference: <https://docs.aws.amazon.com/bedrock/latest/userguide/inference-responses.html>

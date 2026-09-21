@@ -9,14 +9,14 @@
 # But the pre-build is best-effort and NOT guaranteed on every account. To keep ONE
 # command working everywhere (the governing test), this script self-heals: if the
 # image was not pre-built, it runs the agent's setup.sh first (build + push), then
-# deploy.py. opencode is Bedrock-native with no vendor key. Kiro's IMAGE also builds
+# deploy.py. Codex uses Bedrock Runtime with no vendor key. Kiro's IMAGE also builds
 # keyless: the key is per-attendee and is minted AFTER provisioning, then read from
 # the Token Vault at session start (see --skip-identity below).
 #
-# claude-code-validator and codex stay accepted targets because both are kept
+# claude-code-validator and opencode stay accepted targets because both are kept
 # REGISTERED restore paths (restorable with WORKSHOP_ROLES alone): the Claude Code
 # validator is the Bedrock-native, no-key checker for an account with no Kiro
-# subscription, and codex needs a GPT entitlement a Workshop Studio account lacks.
+# subscription, and opencode is the alternate native Bedrock frontend.
 #
 # claude-code is accepted for the same reason, from the other direction: the stack
 # pre-builds its IMAGE but deliberately does NOT create its Runtime, so this is the
@@ -24,16 +24,15 @@
 #
 # Usage (from coding-agents):
 #   ./deploy-prebuilt.sh claude-code                 # the backend; image pre-built, Runtime created here
-#   ./deploy-prebuilt.sh opencode
+#   ./deploy-prebuilt.sh codex                      # the frontend
 #   ./deploy-prebuilt.sh kiro                        # the served validator; builds --skip-identity if keyless
 #   ./deploy-prebuilt.sh claude-code-validator       # restore path (Bedrock-native, no key)
-#   ./deploy-prebuilt.sh codex                       # restore path (needs a GPT entitlement)
+#   ./deploy-prebuilt.sh opencode                   # alternate frontend
 set -euo pipefail
 
 AGENT="${1:-}"
 case "$AGENT" in
-  # claude-code + opencode + kiro are the served roster; claude-code-validator and
-  # codex are the kept restore targets.
+  # All registered harnesses remain valid explicit targets, including restores.
   claude-code|opencode|kiro|claude-code-validator|codex) ;;
   *) echo "Usage: $0 <claude-code|opencode|kiro|claude-code-validator|codex>" >&2; exit 2 ;;
 esac

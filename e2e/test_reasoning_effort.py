@@ -1,4 +1,4 @@
-"""Reasoning effort is set HIGH by default, on every surface, and stays wirable.
+"""Claude Code and the opencode restore path keep their effort settings wirable.
 
 These roles are handed real projects (several features, real persistence, real input
 rejection) and their work is graded by an executable another agent wrote. Thinking less
@@ -26,13 +26,9 @@ if _ORCH not in sys.path:
     sys.path.insert(0, _ORCH)
 
 _CLAUDE_EFFORT_VALUES = {"low", "medium", "high", "xhigh", "max"}
-# Only the roles whose CLI HAS a reasoning-effort knob. Kiro (the served validator) is a
-# DOCUMENTED EXEMPTION, not an oversight: kiro-cli has no --effort or --variant
-# equivalent and takes no model flag at all. Its model is the `auto` router, written as
-# `chat.defaultModel` into ~/.kiro/settings/cli.json by its own run.sh from a --model
-# argument. So there is no per-run knob here to assert, and inventing one would ship a
-# flag kiro-cli rejects. `test_dispatch_defaults_to_high_effort` iterates the real roster
-# and skips non-claude/non-opencode CLIs for the same reason.
+# These assertions cover Claude Code's --effort and opencode's --variant, including
+# registered restore paths. Codex uses model_reasoning_effort in its native config;
+# Kiro's model selection is separate from the two effort settings tested here.
 _RUN_SH = {
     "claude-code": os.path.join(_ROOT, "coding-agents", "claude-code", "run.sh"),
     "claude-code-validator": os.path.join(
@@ -58,7 +54,7 @@ def test_dispatch_defaults_to_high_effort():
     """The ORCHESTRATOR path (roles.py -> the headless CLI line)."""
     try:
         roles = _roles_with({})
-        for role in roles.roster():
+        for role in roles.REGISTRY:
             cli = role.cli
             if cli.startswith("claude"):
                 assert "--effort xhigh" in cli, cli
@@ -74,13 +70,13 @@ def test_effort_is_wirable_both_up_and_off():
     try:
         roles = _roles_with({"WORKSHOP_CLAUDE_EFFORT": "max",
                              "WORKSHOP_OPENCODE_VARIANT": "max"})
-        clis = [r.cli for r in roles.roster()]
+        clis = [r.cli for r in roles.REGISTRY]
         assert any("--effort max" in c for c in clis), clis
         assert any("--variant max" in c for c in clis), clis
 
         roles = _roles_with({"WORKSHOP_CLAUDE_EFFORT": "",
                              "WORKSHOP_OPENCODE_VARIANT": ""})
-        for c in (r.cli for r in roles.roster()):
+        for c in (r.cli for r in roles.REGISTRY):
             assert "--effort" not in c and "--variant" not in c, c
     finally:
         _roles_with({})
@@ -91,7 +87,7 @@ def test_the_default_is_a_value_the_claude_cli_accepts():
     make this whole setting a no-op that nothing reports."""
     try:
         roles = _roles_with({})
-        for role in roles.roster():
+        for role in roles.REGISTRY:
             if not role.cli.startswith("claude"):
                 continue
             parts = role.cli.split()
@@ -128,9 +124,8 @@ def test_opencode_never_passes_a_flag_it_does_not_have():
     assert "--auto" in code
     try:
         roles = _roles_with({})
-        oc = [r for r in roles.roster() if r.id == "opencode"]
-        if oc:
-            assert "--dangerously-skip-permissions" not in oc[0].cli
-            assert "--auto" in oc[0].cli
+        oc = roles.get("opencode")
+        assert "--dangerously-skip-permissions" not in oc.cli
+        assert "--auto" in oc.cli
     finally:
         _roles_with({})

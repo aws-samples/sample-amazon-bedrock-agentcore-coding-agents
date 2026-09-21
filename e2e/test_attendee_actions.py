@@ -301,18 +301,18 @@ def test_real_deploy_captures_agent_on_the_shelf(console, cookie):
 #     that persists and layers over the catalog; an empty name is rejected.
 # ---------------------------------------------------------------------------
 def test_edit_agent_name_and_purpose_persists(console, cookie):
-    """POST /api/agents/opencode/edit {name, purpose} -> the catalog reflects the custom
+    """POST /api/agents/codex/edit {name, purpose} -> the catalog reflects the custom
     fields on the next GET; an empty name is a 400, not a silent wipe."""
     new_name = "Frontend builder"
     new_purpose = "Owns the chatbot UI for the orchestrator."
-    _, edited = _req(console, "POST", "/api/dev/agents/opencode/edit",
+    _, edited = _req(console, "POST", "/api/dev/agents/codex/edit",
                      {"name": new_name, "purpose": new_purpose}, headers=cookie)
     assert edited["name"] == new_name and edited["purpose"] == new_purpose
 
     # It persists: a fresh GET of the catalog carries the override.
     _, lst = _req(console, "GET", "/api/dev/agents", headers=cookie)
-    opencode = next(a for a in lst["agents"] if a["agent_id"] == "opencode")
-    assert opencode["name"] == new_name and opencode["purpose"] == new_purpose
+    frontend = next(a for a in lst["agents"] if a["agent_id"] == "codex")
+    assert frontend["name"] == new_name and frontend["purpose"] == new_purpose
 
     # An empty name is rejected (400) and must not blank the stored name.
     # A non-string value is a clean 400 (not a 500), and an over-long value is
@@ -320,23 +320,23 @@ def test_edit_agent_name_and_purpose_persists(console, cookie):
     for bad in ({"name": "   "}, {"name": ["array"]}, {"purpose": {"obj": 1}},
                 {"name": "x" * 5000}):
         try:
-            _req(console, "POST", "/api/dev/agents/opencode/edit", bad, headers=cookie)
+            _req(console, "POST", "/api/dev/agents/codex/edit", bad, headers=cookie)
             raise AssertionError(f"bad edit {bad!r} should have been rejected")
         except HTTPError as e:
             assert e.code == 400, f"{bad!r} returned {e.code}, expected 400"
     _, lst2 = _req(console, "GET", "/api/dev/agents", headers=cookie)
-    opencode2 = next(a for a in lst2["agents"] if a["agent_id"] == "opencode")
-    assert opencode2["name"] == new_name, "rejected edit must not wipe the name"
-    assert opencode2["purpose"] == new_purpose, "rejected edit must not wipe the purpose"
+    frontend2 = next(a for a in lst2["agents"] if a["agent_id"] == "codex")
+    assert frontend2["name"] == new_name, "rejected edit must not wipe the name"
+    assert frontend2["purpose"] == new_purpose, "rejected edit must not wipe the purpose"
 
     # Clearing the purpose is a real edit: it must stick as empty, not snap back
     # to the hardcoded catalog default.
-    _, cleared = _req(console, "POST", "/api/dev/agents/opencode/edit",
+    _, cleared = _req(console, "POST", "/api/dev/agents/codex/edit",
                       {"purpose": ""}, headers=cookie)
     assert cleared["purpose"] == "", f"cleared purpose reverted to default: {cleared['purpose']!r}"
     _, lst3 = _req(console, "GET", "/api/dev/agents", headers=cookie)
-    opencode3 = next(a for a in lst3["agents"] if a["agent_id"] == "opencode")
-    assert opencode3["purpose"] == "" and opencode3["name"] == new_name
+    frontend3 = next(a for a in lst3["agents"] if a["agent_id"] == "codex")
+    assert frontend3["purpose"] == "" and frontend3["name"] == new_name
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +352,7 @@ _PRESET_CASES = [
     # comes with them, and any other request works too (see the custom-roles test).
     ("game-from-scratch", ["claude-code", "kiro"]),
     ("service-from-scratch", ["claude-code", "kiro"]),
-    ("web-app", ["claude-code", "opencode", "kiro"]),
+    ("web-app", ["claude-code", "codex", "kiro"]),
     ("cli-tool", ["claude-code", "kiro"]),
     ("review-a-run", ["kiro"]),
 ]

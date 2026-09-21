@@ -75,24 +75,27 @@ Keep its saved results consistent with the score API. This ownership boundary
 does not require a server call for every frame or force every game into the
 same interaction model.
 
-### Resolve the backend address; never hardcode it
+### Preserve the service route and hosting path
 
-An address you bake in at build time is wrong the moment the page moves, and it
-always moves: from the machine that built it, into a repository, onto a reviewer's
-laptop, behind a proxy. Worse, `localhost` and `127.0.0.1` mean *the machine running
-the browser*, so a page opened through a proxy or a tunnel resolves them to the
-viewer's own machine and quietly reaches nothing.
+When changing an existing application, inspect how it reaches its service and
+preserve that contract. A same-origin application may be hosted beneath a path
+prefix. Replacing a working relative URL with the page's origin or a leading
+slash can discard that prefix and send requests to a different application.
 
-Resolve the address at runtime and let the first of these that exists win:
+For example, from `/proxy/8001/`, `api/scores` resolves beneath that directory;
+`/api/scores` resolves at the host root. Choose the URL form that matches the
+actual deployment, including any document base URL and client-side routing.
+Verify both reads and writes through the address a person will open.
 
-1. an explicit override the user can pass (a query parameter such as `?endpoint=`),
-2. a value the hosting page injected (a global, a `meta` tag, a small config file),
-3. **the page's own origin** as the default, for when one process serves the page and
-   answers its calls. That case needs no configuration, so make it the default rather
-   than an afterthought.
+Do not bake in a machine-specific hostname or port. In a browser, `localhost`
+and `127.0.0.1` refer to the viewer's machine. If a separate service requires
+runtime configuration, use the application's existing configuration mechanism
+or add the smallest one the task needs.
 
-Show the resolved address in the UI, and when a call fails say which address failed.
-A silent empty state sends the user hunting in the wrong place.
+Add an endpoint setting or address display only when it helps the product's
+user make a decision. A game does not need a service-address banner merely
+because it saves scores. Show actionable failures without exposing credentials
+or presenting a failed request as an empty result.
 
 ### Expect the browser's cross-origin rules
 
@@ -171,8 +174,8 @@ can allow it, and surface the browser's own error instead of showing an empty re
 
 - It renders with no console errors, at 360px and at a desktop width.
 - Every data value on screen came from a backend call you can point to.
-- The backend address is resolved, not hardcoded, and the page works when served from
-  the same origin as the service with nothing configured.
+- Service reads and writes work through the actual hosting path, including a proxy
+  prefix when present. Existing routes still work without new configuration.
 - Keyboard-only: you can reach and operate every control, focus is always visible.
 - Loading, empty, and error states all exist and are distinct.
 - No business logic, pricing, or copied data lives in the page.

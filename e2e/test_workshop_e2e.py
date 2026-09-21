@@ -117,7 +117,7 @@ def test_stage2_composes_whatever_the_roles_wrote():
     try:
         run = _wait_terminal(eng.submit(
             "Build an MCP server with a chatbot UI",
-            ["claude-code", "kiro", "opencode"]))
+            ["claude-code", "codex", "kiro"]))
         assert run.status == "passed", run.fail_reason
         # the gate was a real execution with a real verdict
         assert run.gate["passed"] is True and run.gate["summary"]
@@ -155,7 +155,7 @@ def test_stage3_metrics_aggregate_the_real_runs():
 
     cost = metrics_lib.get_cost_breakdown(by="agent")["breakdown"]
     # the three roles all show up as attributed cost buckets (estimated, not a race)
-    assert set(cost) & {"claude-code", "kiro", "opencode"}, f"no per-agent attribution: {cost}"
+    assert set(cost) & {"claude-code", "codex", "kiro"}, f"no per-agent attribution: {cost}"
 
     me = __import__("getpass").getuser()
     metrics = metrics_lib.get_user_metrics(me, "24h")

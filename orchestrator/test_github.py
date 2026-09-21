@@ -413,9 +413,11 @@ def _run_fixture_per_pr(monkeypatch, tmp_path, policy: str, *,
     (branch protection), so the sibling's independence can be observed.
     """
     import engine
+    import roles
     from fixture_executor import FixtureExecutor
 
     _wire(monkeypatch, tmp_path)
+    monkeypatch.delenv("WORKSHOP_ROLES", raising=False)
     monkeypatch.setenv("WORKSHOP_MERGE_POLICY", policy)
     if red_gate:
         monkeypatch.setenv("FIXTURE_CHECK_EXIT", "1")
@@ -439,7 +441,7 @@ def _run_fixture_per_pr(monkeypatch, tmp_path, policy: str, *,
     instance = engine.Engine(executor_obj=FixtureExecutor())
     run = instance.submit(
         "Build a service and interface",
-        ["claude-code", "kiro", "opencode"])
+        roles.roster_ids())
     deadline = time.monotonic() + 180
     while run.status not in engine.TERMINAL:
         assert time.monotonic() < deadline, f"stuck in {run.status}/{run.phase}"

@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import sys
 import termios
 import tty
@@ -35,7 +36,6 @@ from bedrock_agentcore.runtime.shell import ShellChannel, ShellSession
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REGION = os.environ.get("AWS_REGION", "us-west-2")
 
 
 def load_config() -> dict:
@@ -61,14 +61,31 @@ async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
 
         loop = asyncio.get_event_loop()
         stdin_fd = sys.stdin.fileno()
+        input_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        def on_stdin_ready():
+            try:
+                data = os.read(stdin_fd, 4096)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                loop.remove_reader(stdin_fd)
+                input_queue.put_nowait(None)
+                return
+            if data:
+                input_queue.put_nowait(data)
+            else:
+                loop.remove_reader(stdin_fd)
+                input_queue.put_nowait(None)
 
         async def read_stdin():
             while True:
-                data = await loop.run_in_executor(None, os.read, stdin_fd, 4096)
-                if not data:
-                    break
+                data = await input_queue.get()
+                if data is None:
+                    return
                 await shell.send_bytes(data)
 
+        loop.add_reader(stdin_fd, on_stdin_ready)
         stdin_task = asyncio.create_task(read_stdin())
 
         try:
@@ -82,6 +99,7 @@ async def interactive_pty(shell: ShellSession, initial_cmd: str | None = None):
                 elif frame.channel == ShellChannel.CLOSE:
                     break
         finally:
+            loop.remove_reader(stdin_fd)
             stdin_task.cancel()
             try:
                 await stdin_task
@@ -114,7 +132,10 @@ async def run(args):
     session_id = args.session or str(uuid.uuid4())
     shell_id = str(uuid.uuid4())
 
-    client = AgentCoreRuntimeClient(region=REGION)
+    parts = runtime_arn.split(":")
+    if len(parts) < 6 or not parts[3]:
+        raise SystemExit("Invalid Runtime ARN in runtime_config.json")
+    client = AgentCoreRuntimeClient(region=parts[3])
 
     # Status banners go to STDERR so a `--cmd` run can be redirected
     # (`connect.py --cmd "cat file" > out`) and capture ONLY the command's STDOUT.
@@ -123,7 +144,7 @@ async def run(args):
     print(f"  Session: {session_id}", file=sys.stderr)
     print(file=sys.stderr)
 
-    model_flag = f" --model {args.model}" if args.model else ""
+    model_flag = f" --model {shlex.quote(args.model)}" if args.model else ""
 
     async with client.open_shell(
         runtime_arn=runtime_arn,
@@ -131,8 +152,7 @@ async def run(args):
         shell_id=shell_id,
     ) as shell:
         if args.prompt:
-            safe_prompt = args.prompt.replace("'", "'\\''")
-            cmd = f"/app/run.sh{model_flag} '{safe_prompt}'; exit\n"
+            cmd = f"/app/run.sh{model_flag} -- {shlex.quote(args.prompt)}; exit $?\n"
             print(f"Running prompt: {args.prompt}\n", file=sys.stderr)
             await stream_output(shell, cmd)
         elif args.cmd:
@@ -152,7 +172,7 @@ def main():
     parser.add_argument("--session", help="Runtime session ID (reuse same microVM)")
     parser.add_argument("--prompt", help="Run a prompt in headless mode (one-shot, exits when done)")
     parser.add_argument("--cmd", help="Run a raw shell command on the microVM")
-    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. openai.gpt-5.5)")
+    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. us.openai.gpt-5.6-sol)")
     args = parser.parse_args()
 
     try:

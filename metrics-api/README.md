@@ -31,11 +31,28 @@ The server derives its AWS region from the environment or SDK configuration.
 `/workshop/coding-agents/telemetry`. The caller may choose 1, 3, or 24 hours;
 it cannot supply a query or log group.
 
-The fixed query filters `claude_code.api_request`, groups on `resource.user.id`,
-and sums the exported request and token fields. Only a complete result becomes
-a table. Untagged rows remain visible. Missing token aggregates remain null;
-an empty completed query has no coverage percentage. A missing group, denied
-request, incomplete query, or absent credentials is an error.
+The fixed query reads Claude Code `claude_code.api_request` events and Codex
+`codex.sse_event` events whose kind is `response.completed` and which contain
+token usage without an error. It groups by CLI and `resource.user.id`. The API
+returns separate `agents` summaries and user `rows` for Claude Code and Codex;
+the same user can have one row for each CLI.
+
+Claude Code reports uncached input, cache creation, and cache read separately.
+Codex reports an input total that already includes cache tokens. The response
+normalizes `total_input_tokens` and uncached `input_tokens` without adding Codex's
+cache tokens twice. Reasoning tokens are a subset of output, not an extra charge
+to add to that total. See the contract for field coverage and partial results.
+
+Only a complete query result becomes a table. Untagged rows remain visible.
+Missing token aggregates remain null; an empty completed query has no coverage
+percentage. A missing group, denied request, incomplete query, or absent
+credentials is an error. These counts describe exported usage events, not every
+API attempt, prompt, session, or build.
+
+Usage shows both CLI summaries, an agent filter, and a compact user table. Cache
+and reasoning details expand separately. **Copy query** supports an independent
+CloudWatch check; **Export JSON** preserves the full response and exact UTC window,
+including rows hidden by the current table filter.
 
 The query permits two concurrent requests, uses a 20-second polling budget and
 bounded SDK calls, and attempts to cancel a still-pending query on failure.

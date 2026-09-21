@@ -44,7 +44,7 @@ export const AGENT_BACKENDS: Record<AgentBackend, AgentMeta> = {
   codex: {
     label: 'Codex',
     icon: codexIcon,
-    description: 'OpenAI Codex CLI on Amazon Bedrock (GPT-5.5/5.4).',
+    description: 'OpenAI Codex CLI on Amazon Bedrock Runtime Responses.',
   },
   cursor: {
     label: 'Cursor',

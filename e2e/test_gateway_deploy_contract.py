@@ -102,7 +102,7 @@ def test_opencode_config_writer_preserves_session_telemetry(tmp_path):
 
 def test_served_role_connectors_do_not_block_on_stdin_on_exit():
     """Closing a Runtime TUI must not leave an executor thread blocking process exit."""
-    for role in ("claude-code", "kiro", "opencode", "claude-code-validator"):
+    for role in ("claude-code", "codex", "kiro", "opencode", "claude-code-validator"):
         connector = (ROOT / "coding-agents" / role / "connect.py").read_text()
         assert "loop.add_reader(stdin_fd, on_stdin_ready)" in connector
         assert "run_in_executor(None, os.read" not in connector

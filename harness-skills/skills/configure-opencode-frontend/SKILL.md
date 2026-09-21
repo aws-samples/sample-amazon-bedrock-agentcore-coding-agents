@@ -11,6 +11,10 @@ description: >-
 
 # Configure the opencode frontend builder
 
+This is the registered alternate frontend. Deploy and wire it, then select
+`WORKSHOP_ROLES=claude-code,opencode,kiro` to restore it. The default frontend
+is Codex; keep this path's native Bedrock configuration and PTY intact.
+
 opencode builds the frontend interface. Claude Code builds the backend and Kiro
 (the validator) validates the composed result. There is no race and no winner.
 

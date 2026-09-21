@@ -47,11 +47,11 @@ function PullRequests({ run }: { run: RunDetail }) {
       state: pr.state, branch: '', turns: undefined!, refreshes: undefined, error: pr.error,
     });
   }
-  return <ResourceTable title="Pull requests" variant="embedded" items={rows} trackBy="id"
-    description="Each builder's pull request is checked, reviewed, and merged independently."
+  return <ResourceTable title="Pull requests" variant="embedded" items={rows} trackBy="id" showCounter={false}
+    description="Follow each builder from work in progress to its checked and reviewed pull request."
     searchText={row => `${row.id} ${row.agent} ${row.role} ${row.state}`}
     empty={<SpaceBetween size="s"><Box variant="strong">No pull requests recorded</Box>
-      <Box color="text-body-secondary">A builder opens its pull request after producing work.</Box></SpaceBetween>}
+      <Box color="text-body-secondary">The coordinator opens a pull request after a builder produces work.</Box></SpaceBetween>}
     columns={[
       { id: 'role', header: 'Role', sortingField: 'role', minWidth: 160, cell: row => <SpaceBetween direction="horizontal" size="xs">
         <AgentIcon agentId={row.agent} size={20} /><div><Box variant="strong">{label(row.role || row.agent)}</Box>
@@ -152,6 +152,7 @@ export function RunDetailPanel({ run }: { run: RunDetail }) {
         <KeyValuePairs columns={3} items={[
           { label: 'Build ID', value: <code className="console-code">{run.run_id}</code> },
           { label: 'Created', value: run.created_at ? new Date(run.created_at).toLocaleString() : 'Not recorded' },
+          { label: 'Submitted by', value: run.submitted_by || 'Not recorded' },
           { label: 'Phase', value: run.phase ? label(run.phase) : 'Not recorded' },
           { label: 'Selected roles', value: run.route?.agents.map(agentInstanceLabel).join(', ') || 'Not recorded' },
           { label: 'Pull requests opened', value: prs.filter(pr => pr.pr_url).length },

@@ -58,18 +58,35 @@ local = load_dotconfig(LOCAL_CONFIG)
 
 # Resolve everything tolerantly at import time so the module can be imported for
 # tests/tooling without the deploy prerequisites present. Hard requirements (infra.config,
-# ECR_URI, GATEWAY_URL) are only enforced inside main() when an actual deploy runs.
-REGION = os.environ.get("AWS_REGION", infra.get("INFRA_REGION", "us-west-2"))
+# ECR_URI) are only enforced inside main() when an actual deploy runs.
+REGION = (os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+          or infra.get("INFRA_REGION") or boto3.session.Session().region_name or "")
 ACCOUNT_ID = infra.get("INFRA_ACCOUNT_ID", "")
 SUBNET_1 = infra.get("INFRA_SUBNET_1", "")
 SUBNET_2 = infra.get("INFRA_SUBNET_2", "")
 SECURITY_GROUP = infra.get("INFRA_SECURITY_GROUP", "")
 S3FILES_AP_ARN = infra.get("INFRA_S3FILES_AP_ARN", "")
+MOUNT_AP_ARN = "" if os.environ.get("WORKSHOP_DEFER_MOUNT") == "1" else S3FILES_AP_ARN
 S3FILES_BUCKET = infra.get("INFRA_BUCKET", "")
 ECR_URI = local.get("ECR_URI") or os.environ.get("ECR_URI", "")
 
 AGENT_NAME = local.get("AGENT_NAME", "codex")
 S3FILES_MOUNT_PATH = "/mnt/s3files"
+
+
+def _assert_same_region(ap_arn, region):
+    if not ap_arn or not region:
+        return
+    parts = ap_arn.split(":")
+    ap_region = parts[3] if len(parts) > 3 else ""
+    if ap_region and ap_region != region:
+        raise SystemExit(
+            f"REGION_MISMATCH: S3 Files access point is in {ap_region}, "
+            f"but the Runtime would deploy to {region}. Set AWS_REGION to "
+            f"{ap_region}, or use an access point in {region}.")
+
+
+_assert_same_region(S3FILES_AP_ARN, REGION)
 
 
 def _s3files_policy_resources() -> list:
@@ -87,26 +104,16 @@ def _s3files_policy_resources() -> list:
         f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:access-point/*",
     ]
 
-# GATEWAY_URL comes from env first. The optional gateway_mcp deployed-state file may not
-# exist in this layout, so only read it when present, never hard-fail at import.
-GATEWAY_MCP_STATE = os.path.join(ROOT_DIR, "..", "gateway_mcp", ".deployed-state.json")
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
-if not GATEWAY_URL and os.path.exists(GATEWAY_MCP_STATE):
-    with open(GATEWAY_MCP_STATE) as f:
-        GATEWAY_URL = json.load(f).get("gateway_url", "")
-
-
 def require_deploy_prereqs():
     """Enforce deploy prerequisites. Called from main(), not at import."""
     if not infra:
         print("Error: infra.config not found. Run ../infra/setup.sh first.")
         sys.exit(1)
+    if not REGION:
+        raise SystemExit("No AWS region. Set AWS_REGION or INFRA_REGION.")
     if not ECR_URI:
         print("Error: ECR_URI not found. Run ./setup.sh first.")
         sys.exit(1)
-    if not GATEWAY_URL:
-        print("Warning: GATEWAY_URL not found. Deploy will continue without gateway support.")
-        print("  Either export GATEWAY_URL or deploy the gateway first.")
 
 
 def create_execution_role() -> str:
@@ -167,30 +174,41 @@ def create_execution_role() -> str:
                 ],
             },
             {
-                "Sid": "BedrockInvoke",
+                "Sid": "UsageLogs",
+                "Effect": "Allow",
+                "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams",
+                ],
+                "Resource": [
+                    f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/workshop/coding-agents/telemetry",
+                    f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/workshop/coding-agents/telemetry:*",
+                ],
+            },
+            {
+                "Sid": "BedrockOpenAIInference",
                 "Effect": "Allow",
                 "Action": [
                     "bedrock:InvokeModel",
                     "bedrock:InvokeModelWithResponseStream",
-                    "bedrock:ListInferenceProfiles",
-                    "bedrock:GetFoundationModel",
-                    "bedrock:ListFoundationModels",
                 ],
                 "Resource": [
-                    "arn:aws:bedrock:*::foundation-model/*",
-                    f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:*",
+                    # Cross-region profiles can route to another model region.
+                    # Grant only the OpenAI family, not every foundation model.
+                    "arn:aws:bedrock:*::foundation-model/openai.*",
+                    f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:inference-profile/*.openai.*",
                 ],
             },
             {
-                "Sid": "BedrockMantle",
+                "Sid": "BedrockRuntimeProjectInvoke",
                 "Effect": "Allow",
-                "Action": [
-                    "bedrock-mantle:CreateInference",
-                    "bedrock-mantle:*",
-                ],
+                # The OpenAI-compatible API also requires the default project,
+                # in addition to the inference target grants above.
+                "Action": ["bedrock:InvokeModel"],
                 "Resource": [
-                    f"arn:aws:bedrock-mantle:*:{ACCOUNT_ID}:project/*",
-                    f"arn:aws:bedrock-mantle:*:{ACCOUNT_ID}:*",
+                    f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:project/default",
                 ],
             },
             {
@@ -252,34 +270,8 @@ def create_execution_role() -> str:
                     f"arn:aws:s3:::{S3FILES_BUCKET}/*",
                 ],
             },
-            {
-                "Sid": "AgentCoreIdentity",
-                "Effect": "Allow",
-                "Action": [
-                    "bedrock-agentcore:GetWorkloadAccessToken",
-                    "bedrock-agentcore:GetResourceApiKey",
-                ],
-                "Resource": ["*"],
-            },
-            {
-                "Sid": "BedrockApiKey",
-                "Effect": "Allow",
-                "Action": [
-                    "bedrock:CallWithBearerToken",
-                    "sts:GetCallerIdentity",
-                ],
-                "Resource": ["*"],
-            },
-            # No SecretsManager grant: codex reaches GitHub only through the Gateway
-            # (InvokeGateway below) and never calls GetSecretValue in run.sh. A
-            # blanket secret:* read would let prompt-injected model output exfiltrate
-            # other secrets (e.g. the isolated GitHub App private key), so it is omitted.
-            {
-                "Sid": "AgentCoreGateway",
-                "Effect": "Allow",
-                "Action": ["bedrock-agentcore:InvokeGateway"],
-                "Resource": [f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT_ID}:gateway/*"],
-            },
+            # No Gateway or SecretsManager grant: the coordinator owns GitHub.
+            # The worker receives source archives and returns source archives.
             {
                 "Sid": "EventBridge",
                 "Effect": "Allow",
@@ -376,25 +368,24 @@ def deploy_runtime(role_arn: str) -> dict:
     # Attach the S3 Files mount only when the access point is known (mountless until
     # the attendee creates it in Stage 1; re-running deploy.py then attaches it).
     fs_kwargs = {}
-    if S3FILES_AP_ARN:
+    if MOUNT_AP_ARN:
         fs_kwargs["filesystemConfigurations"] = [
             {
                 "s3FilesAccessPoint": {
-                    "accessPointArn": S3FILES_AP_ARN,
+                    "accessPointArn": MOUNT_AP_ARN,
                     "mountPath": S3FILES_MOUNT_PATH,
                 }
             }
         ]
     env_vars = {
         "AWS_REGION": REGION,
-        # The collector sidecar names its CloudWatch log stream from this
-        # (otel-collector-config.yaml). Unset, every agent shared one stream
-        # literally called "agent", so you could not tell which agent wrote what.
+        "AWS_DEFAULT_REGION": REGION,
         "WORKSHOP_AGENT_NAME": AGENT_NAME,
-        "BEDROCK_MANTLE_REGION": "us-east-2",
     }
-    if GATEWAY_URL:
-        env_vars["GATEWAY_URL"] = GATEWAY_URL
+    for name in ("WORKSHOP_CODEX_MODEL", "WORKSHOP_MODEL_CODEX", "WORKSHOP_MODEL"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            env_vars[name] = value
 
     config_path = os.path.join(SCRIPT_DIR, "runtime_config.json")
     existing_id = _load_runtime_id(config_path)
@@ -484,9 +475,7 @@ def main():
     print(f"Deploying {AGENT_NAME} to AgentCore Runtime")
     print(f"  Region:      {REGION}")
     print(f"  Image:       {ECR_URI}")
-    print(f"  S3 Files:    {S3FILES_AP_ARN}")
-    if GATEWAY_URL:
-        print(f"  Gateway URL: {GATEWAY_URL}")
+    print(f"  S3 Files:    {MOUNT_AP_ARN or '(mount deferred or not configured)'}")
     print("=" * 60)
 
     role_arn = create_execution_role()
@@ -498,7 +487,7 @@ def main():
         "runtime_arn": runtime["runtime_arn"],
         "region": REGION,
         "ecr_uri": ECR_URI,
-        "s3files_access_point_arn": S3FILES_AP_ARN,
+        "s3files_access_point_arn": MOUNT_AP_ARN,
         "s3files_mount_path": S3FILES_MOUNT_PATH,
     }
 

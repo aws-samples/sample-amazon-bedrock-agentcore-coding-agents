@@ -9,7 +9,7 @@ description: >-
   or asks which agent owns the server/tools side.
   Claude Code runs Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM bedrock:InvokeModel,
   NO API key) on default model us.anthropic.claude-opus-4-6-v1. Opus suits the
-  multi-file backend work. Do NOT use this for Kiro (the validator) or opencode
+  multi-file backend work. Do NOT use this for Kiro (the validator) or Codex
   (frontend builder); those have their own configure skills.
 ---
 
@@ -21,8 +21,11 @@ harness. Roles do not rotate:
 | Agent | Role | Owns |
 |---|---|---|
 | **Claude Code** (this skill) | **BACKEND** | implements the backend deliverable the task names and exposes it behind the Gateway |
-| Claude Code (validator) | VALIDATOR | authors the acceptance check; its exit code decides "done" |
-| opencode | FRONTEND BUILDER | builds the interface that calls the backend |
+| Codex | FRONTEND BUILDER | builds the interface that calls the backend when the task needs one |
+| Kiro | VALIDATOR | authors the acceptance check; the engine runs it and reads its exit code |
+
+These are the default roles in `orchestrator/roles.py`. `WORKSHOP_ROLES` can
+select the registered opencode frontend or Claude Code validator restore paths.
 
 This is **not** a race and there is **no winner**. The three agents are the single
 agentic step of the orchestration blueprint, fanned into three roles and composed into ONE
@@ -34,7 +37,7 @@ Why Claude Code is the backend: this role is multi-file, contract-driven server 
 Per per-task model routing, the most capable model is the right call for complex/critical
 work; Opus recognizes rabbit holes and self-corrects, where mid-tier models persist in
 unproductive loops. That is why the default model here is `us.anthropic.claude-opus-4-6-v1`
-and why Claude Code, not Kiro or opencode, owns the server.
+and why this role owns the server side.
 
 ---
 
@@ -43,7 +46,8 @@ and why Claude Code, not Kiro or opencode, owns the server.
 Confirm before touching AWS. Ask the user (AskUserQuestion-style); accept defaults if
 they say "use defaults":
 
-1. **AWS region**: default `us-west-2` (all base-repo examples assume this).
+1. **AWS region**: use the existing `AWS_REGION` / `AWS_DEFAULT_REGION` or AWS
+   CLI configuration. Ask only when the deployment region is unresolved.
 2. **Model id**: default `us.anthropic.claude-opus-4-6-v1` (the cross-region id seen
    in the repo). Override only if the user wants e.g. `global.anthropic.claude-opus-4-6-v1`.
    Do NOT downgrade to Sonnet/Haiku for this role; backend work is the Opus opt-in case.
@@ -78,7 +82,7 @@ echo "$GATEWAY_URL"
 
 This is the Bedrock-native, **no-API-key** path. The runtime IAM role carries
 `bedrock:InvokeModel`; there is NO key in env, no Token Vault, no credential provider.
-(opencode likewise uses its Runtime IAM role for Bedrock. Kiro, the validator, is the
+(Codex likewise uses its Runtime IAM role for Bedrock Runtime Responses. Kiro, the validator, is the
 one served role with a vendor key, fetched at session start from the AgentCore Identity
 Token Vault.)
 
@@ -161,7 +165,7 @@ completion to the orchestrator.
 - **No-key by design.** Claude Code is the Bedrock-native lane on purpose: keeping the
   credential surface minimal (IAM `bedrock:InvokeModel`, no key) is the security-by-default
   and "put the LLM in a box" tenet. Do not bolt a Token Vault / credential provider onto
-  this agent; the Kiro validator and opencode skills each own their own credential path.
+  this agent; the Kiro validator and Codex skills each own their own credential path.
 - **Why Opus for this role.** Model routing is per-task: `pr_review` -> Haiku (cheap,
   read-only), `new_task`/`pr_iteration` -> Sonnet (balanced), complex/critical ->
   **Opus**. Backend server work is the complex/critical case, so the default stays
