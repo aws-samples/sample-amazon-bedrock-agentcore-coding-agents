@@ -33,7 +33,7 @@ IMAGE_TAG="latest"
 IMAGE_URI="${ECR_URI}:${IMAGE_TAG}"
 
 echo "Building image from ${APP_DIR}..."
-docker build -t "${ECR_REPO_NAME}:${IMAGE_TAG}" "$APP_DIR"
+docker build --platform linux/arm64 -t "${ECR_REPO_NAME}:${IMAGE_TAG}" "$APP_DIR"
 
 echo "Tagging and pushing to ${IMAGE_URI}..."
 docker tag "${ECR_REPO_NAME}:${IMAGE_TAG}" "$IMAGE_URI"
