@@ -23,6 +23,13 @@
 # ============================================================
 set -euo pipefail
 
+# AgentCore exec shells may omit the image's virtual environment from PATH.
+# Use its installed SDK; retain PATH-based Python for host/test invocations.
+KIRO_PYTHON="/opt/workshop-python/bin/python3"
+if [ ! -x "$KIRO_PYTHON" ]; then
+  KIRO_PYTHON=python3
+fi
+
 # Inherit env vars from PID 1 (container entrypoint) if not already set
 if [ -z "${GATEWAY_URL:-}" ] && [ -r /proc/1/environ ]; then
   GATEWAY_URL=$(cat /proc/1/environ | tr '\0' '\n' | grep ^GATEWAY_URL= | cut -d= -f2- || true)
@@ -68,7 +75,7 @@ CREDENTIAL_PROVIDER="${AGENTCORE_CREDENTIAL_PROVIDER:-kiro-api-key}"
 # branch below stays only as an escape hatch for a hand-run local test where an
 # operator exports it themselves; the shipped runtime never has it set.
 fetch_api_key() {
-  python3 -W ignore -c "
+  "$KIRO_PYTHON" -W ignore -c "
 import boto3, sys, warnings
 warnings.filterwarnings('ignore')
 
@@ -139,12 +146,8 @@ mkdir -p "$HOME/.kiro/settings"
 # running in trust all tools mode" acceptance prompt, so the headless PTY starts
 # straight into work instead of hanging on a "Yes, I accept" picker. Paired with
 # the `chat --trust-all-tools` launch below.
-cat > "$HOME/.kiro/settings/cli.json" <<EOF
-{
-  "chat.defaultModel": "${MODEL}",
-  "chat.disableTrustAllConfirmation": true
-}
-EOF
+"$KIRO_PYTHON" "${WORKSHOP_CLI_HELPER:-/opt/workshop-cli/cli_versions.py}" configure \
+  --cli kiro --home "$HOME" --kiro-model "$MODEL" >/dev/null
 
 # ── Determine the action ─────────────────────────────────────
 ACTION="${1:-interactive}"

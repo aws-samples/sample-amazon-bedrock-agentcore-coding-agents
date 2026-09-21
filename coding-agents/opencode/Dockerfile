@@ -1,8 +1,18 @@
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023
+ARG WORKSHOP_RUNTIME_BASE_IMAGE
+FROM ${WORKSHOP_RUNTIME_BASE_IMAGE}
 
 RUN dnf install -y --allowerasing \
-    git curl python3 python3-pip jq tar gzip nodejs npm which findutils awscli \
-    && dnf clean all
+    git curl python3.13 python3.13-pip jq tar gzip nodejs22 nodejs22-npm \
+    openssl-snapsafe-libs which findutils awscli \
+    && dnf clean all \
+    && ln -s /usr/bin/node-22 /usr/local/bin/node \
+    && ln -s /usr/bin/npm-22 /usr/local/bin/npm \
+    && ln -s /usr/bin/npx-22 /usr/local/bin/npx \
+    && python3.13 -m venv /opt/workshop-python
+ENV PATH="/opt/workshop-python/bin:/usr/local/bin:${PATH}"
+RUN node --version && npm --version && npx --version && python3 --version \
+    && python3 -c 'import ssl; print(ssl.OPENSSL_VERSION)' \
+    && rpm -q openssl-snapsafe-libs
 
 # OpenTelemetry collector sidecar (otelcol-contrib): baked in so entrypoint.sh can
 # start it at container boot and re-sign the agent's unsigned OTLP to CloudWatch
@@ -20,13 +30,15 @@ RUN curl -fsSL -o /tmp/otelcol.tar.gz \
 # Pinned: 1.18.x dropped the AI-SDK ai.streamText usage spans that Lab 3's
 # per-user token query in aws/spans depends on. 1.17.20 is the last release
 # that exports token usage over OTel traces.
-RUN npm install -g opencode-ai@1.17.20 typescript ts-node
+RUN npm install -g opencode-ai@1.17.20 typescript ts-node \
+    && opencode --version
 
 RUN useradd -m -d /home/agent -u 1000 agent
 
 # boto3 + awscurl support AWS and MCP calls. opencode authenticates to Bedrock
 # through the runtime role's normal AWS SDK credential chain.
-RUN pip3 install --quiet boto3 awscurl
+COPY _toolchain/ /opt/workshop-cli/
+RUN python3 -m pip install --quiet awscurl $(python3 /opt/workshop-cli/cli_versions.py sdk-requirements)
 
 # opencode config: Amazon Bedrock provider, Claude Sonnet 4.5. A per-run project
 # AGENTS.md in the working directory carries the role/UI instructions.

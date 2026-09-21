@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSHOP_RUNTIME_PLATFORM_VERSION=$(python3 "$SCRIPT_DIR/../runtime_deploy.py" --print-platform)
+export WORKSHOP_RUNTIME_PLATFORM_VERSION
 source "$SCRIPT_DIR/config.sh"
 
 echo "==> Deploying AgentCore Runtime: ${RUNTIME_NAME}"
@@ -32,7 +34,7 @@ IMAGE_TAG="latest"
 IMAGE_URI="${ECR_URI}:${IMAGE_TAG}"
 
 echo "Building image from ${APP_DIR}..."
-docker build -t "${ECR_REPO_NAME}:${IMAGE_TAG}" "$APP_DIR"
+docker build --platform linux/arm64 -t "${ECR_REPO_NAME}:${IMAGE_TAG}" "$APP_DIR"
 
 echo "Tagging and pushing to ${IMAGE_URI}..."
 docker tag "${ECR_REPO_NAME}:${IMAGE_TAG}" "$IMAGE_URI"
@@ -186,90 +188,15 @@ state_set "iam_role_arn" "$ROLE_ARN"
 state_set "iam_role_name" "$IAM_ROLE_NAME"
 echo "Role ARN: ${ROLE_ARN}"
 
-# 4. Create AgentCore Runtime
+# 4. Create/update the same Runtime, then verify the selected platform is READY.
 echo ""
 echo "--- Step 4: AgentCore Runtime ---"
 
-# Find existing runtime by state or by listing
-RUNTIME_ID=$(state_get "runtime_id")
-EXISTING_RUNTIME=""
-if [[ -n "$RUNTIME_ID" ]]; then
-  EXISTING_RUNTIME=$(aws bedrock-agentcore-control get-agent-runtime \
-    --agent-runtime-id "$RUNTIME_ID" \
-    --region "$AWS_REGION" 2>/dev/null || true)
-fi
-if [[ -z "$EXISTING_RUNTIME" ]]; then
-  RUNTIME_ID=$(aws bedrock-agentcore-control list-agent-runtimes \
-    --region "$AWS_REGION" \
-    --query "agentRuntimes[?agentRuntimeName=='${RUNTIME_NAME}'].agentRuntimeId | [0]" \
-    --output text 2>/dev/null || true)
-  if [[ -n "$RUNTIME_ID" && "$RUNTIME_ID" != "None" ]]; then
-    EXISTING_RUNTIME=$(aws bedrock-agentcore-control get-agent-runtime \
-      --agent-runtime-id "$RUNTIME_ID" \
-      --region "$AWS_REGION" 2>/dev/null || true)
-  else
-    RUNTIME_ID=""
-  fi
-fi
-
-if [[ -n "$EXISTING_RUNTIME" ]]; then
-  echo "Runtime '${RUNTIME_NAME}' already exists (${RUNTIME_ID}). Updating..."
-  aws bedrock-agentcore-control update-agent-runtime \
-    --agent-runtime-id "$RUNTIME_ID" \
-    --region "$AWS_REGION" \
-    --agent-runtime-artifact "{\"containerConfiguration\": {\"containerUri\": \"${IMAGE_URI}\"}}" \
-    --role-arn "$ROLE_ARN" \
-    --network-configuration "{\"networkMode\": \"${RUNTIME_NETWORK_MODE}\"}" \
-    --protocol-configuration "{\"serverProtocol\": \"${RUNTIME_PROTOCOL}\"}" \
-    --environment-variables "GITHUB_APP_SECRET_ARN=${SECRET_ARN}" \
-    --lifecycle-configuration "{\"idleRuntimeSessionTimeout\": ${RUNTIME_IDLE_TIMEOUT}, \"maxLifetime\": ${RUNTIME_MAX_LIFETIME}}"
-  RUNTIME_ARN=$(echo "$EXISTING_RUNTIME" | jq -r '.agentRuntimeArn')
-else
-  echo "Creating runtime '${RUNTIME_NAME}'..."
-  # Retry ONLY "Role validation failed", which means the control plane cannot yet
-  # assume the execution role this script just made. For a role created seconds ago
-  # that is IAM propagation, not a wrong trust policy: the same document works on the
-  # pre-deployed runtimes. Seen live on 2026-09-03, where a fresh event account
-  # refused a 10s-old role for 18 minutes and this script exited 254 three times in a
-  # row, so re-running the page's one command could not clear it. Every other error
-  # still fails immediately, and a genuinely wrong role fails after the budget.
-  RUNTIME_CREATE_DEADLINE=$(( $(date +%s) + 300 ))
-  RUNTIME_CREATE_ATTEMPT=0
-  while :; do
-    RUNTIME_CREATE_ATTEMPT=$(( RUNTIME_CREATE_ATTEMPT + 1 ))
-    set +e
-    RUNTIME_RESPONSE=$(aws bedrock-agentcore-control create-agent-runtime \
-      --agent-runtime-name "$RUNTIME_NAME" \
-      --region "$AWS_REGION" \
-      --agent-runtime-artifact "{\"containerConfiguration\": {\"containerUri\": \"${IMAGE_URI}\"}}" \
-      --role-arn "$ROLE_ARN" \
-      --network-configuration "{\"networkMode\": \"${RUNTIME_NETWORK_MODE}\"}" \
-      --protocol-configuration "{\"serverProtocol\": \"${RUNTIME_PROTOCOL}\"}" \
-      --environment-variables "GITHUB_APP_SECRET_ARN=${SECRET_ARN}" \
-      --lifecycle-configuration "{\"idleRuntimeSessionTimeout\": ${RUNTIME_IDLE_TIMEOUT}, \"maxLifetime\": ${RUNTIME_MAX_LIFETIME}}" \
-      --output json 2>&1)
-    RUNTIME_CREATE_RC=$?
-    set -e
-    if [[ $RUNTIME_CREATE_RC -eq 0 ]]; then
-      break
-    fi
-    if ! grep -q "Role validation failed" <<<"$RUNTIME_RESPONSE" \
-       || [[ $(date +%s) -ge $RUNTIME_CREATE_DEADLINE ]]; then
-      echo "$RUNTIME_RESPONSE" >&2
-      exit $RUNTIME_CREATE_RC
-    fi
-    echo "  Role not assumable by the service yet (attempt ${RUNTIME_CREATE_ATTEMPT});"
-    echo "  IAM is still propagating the new role. Retrying in 20s..."
-    sleep 20
-  done
-  RUNTIME_ID=$(echo "$RUNTIME_RESPONSE" | jq -r '.agentRuntimeId')
-  RUNTIME_ARN=$(echo "$RUNTIME_RESPONSE" | jq -r '.agentRuntimeArn')
-fi
-
-state_set "runtime_id" "$RUNTIME_ID"
-state_set "runtime_arn" "$RUNTIME_ARN"
-echo "Runtime ID: ${RUNTIME_ID}"
-echo "Runtime ARN: ${RUNTIME_ARN}"
+python3 "$SCRIPT_DIR/deploy_runtime.py" \
+  --state "$STATE_FILE" --name "$RUNTIME_NAME" --image "$IMAGE_URI" \
+  --role "$ROLE_ARN" --region "$AWS_REGION" --secret-arn "$SECRET_ARN" \
+  --network "$RUNTIME_NETWORK_MODE" --protocol "$RUNTIME_PROTOCOL" \
+  --idle-timeout "$RUNTIME_IDLE_TIMEOUT" --max-lifetime "$RUNTIME_MAX_LIFETIME"
 
 echo ""
 echo "==> Runtime deployment complete."

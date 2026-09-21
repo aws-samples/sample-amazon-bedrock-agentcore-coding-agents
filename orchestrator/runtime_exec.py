@@ -249,8 +249,16 @@ def _vault_key_prelude(role: "_roles.Role", region: str) -> str:
         "print(c.get_resource_api_key(workloadIdentityToken=t,"
         f"resourceCredentialProviderName={provider!r})['apiKey'],end='')"
     )
+    # AgentCore exec shells may omit the image's SDK environment from PATH.
+    # Match run.sh's host fallback and keep selection inside this key fetch.
+    fetch_command = (
+        "__workshop_vault_python=/opt/workshop-python/bin/python3; "
+        'if [ ! -x "$__workshop_vault_python" ]; then '
+        "__workshop_vault_python=python3; fi; "
+        f'"$__workshop_vault_python" -W ignore -c {shlex.quote(py)}'
+    )
     return (
-        f"{key_env}=\"$(python3 -W ignore -c {shlex.quote(py)})\"; "
+        f'{key_env}="$({fetch_command})"; '
         f"export {key_env}; "
         f"if [ -z \"${key_env}\" ]; then "
         f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Store the key with kiro_config.save_api_key(...) (console Settings > AgentCore runtimes > + Add API key) and re-run.')} >&2; "

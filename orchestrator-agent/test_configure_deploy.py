@@ -353,3 +353,41 @@ def test_incomplete_infrastructure_cannot_silently_select_a_different_bucket(
     _write_infra(tmp_path, bucket="")
     with pytest.raises(RuntimeError, match="INFRA_BUCKET"):
         _configure(monkeypatch, tmp_path)
+
+
+@pytest.mark.parametrize("platform,limit", [("V1", 4096), ("V2", 2500)])
+def test_oversized_coordinator_environment_fails_before_project_write(
+        monkeypatch, tmp_path, platform, limit):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
+    monkeypatch.setenv("WORKSHOP_MODEL_EXTRA", "x" * limit)
+    with pytest.raises(RuntimeError, match=f"{platform} container environment") as exc:
+        _configure(monkeypatch, tmp_path)
+    project = tmp_path / "CodingAgents/agentcore/agentcore.json"
+    assert json.loads(project.read_text()) == {
+        "runtimes": [{"name": "orchestrator", "build": "Container"}]}
+    assert not (project.parent / "aws-targets.json").exists()
+    assert "x" * limit not in str(exc.value)
+
+
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_coordinator_configure_uses_selected_platform_budget(monkeypatch, tmp_path, platform):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
+    monkeypatch.setenv("WORKSHOP_MODEL_EXTRA", "x" * 2100)
+    if platform == "V2":
+        with pytest.raises(RuntimeError, match="V2 container environment"):
+            _configure(monkeypatch, tmp_path)
+    else:
+        env = _configure(monkeypatch, tmp_path)
+        assert env["WORKSHOP_MODEL_EXTRA"] == "x" * 2100
+        assert 2500 < configure_deploy.runtime_deploy.validate_environment(env) < 4096
+        assert "WORKSHOP_RUNTIME_PLATFORM_VERSION" not in env, "deployment choice is not a container setting"
+
+
+def test_invalid_coordinator_platform_fails_before_project_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", "v2")
+    with pytest.raises(RuntimeError, match="WORKSHOP_RUNTIME_PLATFORM_VERSION"):
+        _configure(monkeypatch, tmp_path)
+    project = tmp_path / "CodingAgents/agentcore/agentcore.json"
+    assert json.loads(project.read_text()) == {
+        "runtimes": [{"name": "orchestrator", "build": "Container"}]}
+    assert not (project.parent / "aws-targets.json").exists()

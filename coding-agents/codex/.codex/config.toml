@@ -2,6 +2,7 @@
 model = "us.openai.gpt-5.6-sol"
 model_provider = "amazon-bedrock-runtime"
 model_reasoning_effort = "medium"
+check_for_update_on_startup = false
 
 [otel]
 environment = "workshop"

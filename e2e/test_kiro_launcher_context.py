@@ -16,6 +16,9 @@ def launch(tmp_path, *, staged=True, explicit_worktree=False):
     private_steering.parent.mkdir(parents=True)
     staged_steering.parent.mkdir(parents=True)
     private_steering.write_text("Baked checker instructions\n")
+    settings = private_home / ".kiro/settings/cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"existing.preference": "preserve", "app.disableAutoupdates": False}))
     if staged:
         staged_steering.write_text("Attendee-edited checker instructions\n")
     (shared / "AGENTS.md").write_text("You are the FRONTEND BUILDER\n")
@@ -55,6 +58,7 @@ pathlib.Path(os.environ["WORKSHOP_TEST_REPORT"]).write_text(json.dumps(record))
         "GATEWAY_URL": "https://gateway.example",
         "KIRO_API_KEY": "fake-token-for-launcher-test",
         "WORKSHOP_TEST_REPORT": str(report),
+        "WORKSHOP_CLI_HELPER": str(ROOT / "coding-agents/cli_versions.py"),
     }
     if explicit_worktree:
         env["WORKSHOP_AGENT_WORKDIR"] = str(worktree)
@@ -65,6 +69,9 @@ pathlib.Path(os.environ["WORKSHOP_TEST_REPORT"]).write_text(json.dumps(record))
     assert (shared / "AGENTS.md").read_text() == "You are the FRONTEND BUILDER\n"
     assert (shared / "notes.md").read_text() == "Shared note remains available\n"
     assert not (private_home / "AGENTS.md").exists()
+    configured = json.loads(settings.read_text())
+    assert configured["app.disableAutoupdates"] is True
+    assert configured["existing.preference"] == "preserve"
     return json.loads(report.read_text()), private_home, worktree, private_steering
 
 

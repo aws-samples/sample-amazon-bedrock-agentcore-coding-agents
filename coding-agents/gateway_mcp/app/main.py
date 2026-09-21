@@ -10,6 +10,7 @@ it via the GitHub API.
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 import json
 import os
 import time
@@ -30,8 +31,6 @@ AWS_REGION = (
 )
 GITHUB_APP_SECRET_ARN = os.environ.get("GITHUB_APP_SECRET_ARN", "")
 
-_secrets_client = boto3.client("secretsmanager", region_name=AWS_REGION)
-
 GITHUB_TOKEN: Optional[str] = None
 GITHUB_TOKEN_EXP: int = 0
 
@@ -41,7 +40,10 @@ def _load_app_creds() -> dict:
 
     The secret JSON contains: app_id, private_key, installation_id.
     """
-    resp = _secrets_client.get_secret_value(SecretId=GITHUB_APP_SECRET_ARN)
+    # This runs only when a request needs a token. A fresh explicit Session
+    # avoids credentials retained by boto3.DEFAULT_SESSION before V2 restore.
+    with closing(boto3.Session().client("secretsmanager", region_name=AWS_REGION)) as client:
+        resp = client.get_secret_value(SecretId=GITHUB_APP_SECRET_ARN)
     return json.loads(resp["SecretString"])
 
 
@@ -99,8 +101,7 @@ class TokenMiddleware(Middleware):
         if GITHUB_TOKEN is None or now >= GITHUB_TOKEN_EXP - 300:
             GITHUB_TOKEN, GITHUB_TOKEN_EXP = _mint_installation_token()
             print(
-                f"[TokenMiddleware] minted token prefix={GITHUB_TOKEN[:8]}... "
-                f"expires_in={GITHUB_TOKEN_EXP - now}s",
+                f"[TokenMiddleware] minted token expires_in={GITHUB_TOKEN_EXP - now}s",
                 flush=True,
             )
         return await call_next(context)

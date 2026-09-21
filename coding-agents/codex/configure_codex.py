@@ -39,6 +39,7 @@ def render_config(region, model, workdirs=()):
         f"model = {quote(model)}\n"
         f"model_provider = {quote(PROVIDER)}\n"
         'model_reasoning_effort = "medium"\n'
+        'check_for_update_on_startup = false\n'
         '\n[otel]\n'
         'environment = "workshop"\n'
         'log_user_prompt = false\n'

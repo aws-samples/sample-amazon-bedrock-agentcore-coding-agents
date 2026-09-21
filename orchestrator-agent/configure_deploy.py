@@ -27,6 +27,9 @@ sys.path.insert(0, str(HERE.parent / "orchestrator"))
 import roles as _roles  # noqa: E402
 import runtime_stage  # noqa: E402
 
+sys.path.insert(0, str(HERE.parent / "coding-agents"))
+import runtime_deploy  # noqa: E402
+
 
 def ROLES() -> tuple[str, ...]:
     """The role ids whose deployed runtime ARNs the orchestrator project needs."""
@@ -161,6 +164,9 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     kiro_model = os.environ.get("WORKSHOP_KIRO_MODEL", "").strip()
     if kiro_model:
         env["WORKSHOP_KIRO_MODEL"] = kiro_model
+    # Reject oversized container settings before CDK builds or changes resources.
+    # Promotion also checks the final environment after CDK injects its values.
+    runtime_deploy.validate_environment(env)
     runtime["executionRoleArn"] = execution_role
     runtime["envVars"] = [{"name": name, "value": value} for name, value in sorted(env.items())]
 

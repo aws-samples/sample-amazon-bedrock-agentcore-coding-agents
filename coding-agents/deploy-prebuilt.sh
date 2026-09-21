@@ -38,6 +38,8 @@ case "$AGENT" in
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSHOP_RUNTIME_PLATFORM_VERSION=$(python3 "$SCRIPT_DIR/runtime_deploy.py" --print-platform)
+export WORKSHOP_RUNTIME_PLATFORM_VERSION
 INFRA_CONFIG="${SCRIPT_DIR}/infra.config"
 
 if [ ! -f "$INFRA_CONFIG" ]; then

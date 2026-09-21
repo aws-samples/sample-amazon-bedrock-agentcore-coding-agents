@@ -1,0 +1,8 @@
+# Only release inputs belong in the image; local environments and caches do not.
+**
+!Dockerfile
+!README.md
+!main.py
+!pyproject.toml
+!uv.lock
+!verify_snapshot_crypto.py

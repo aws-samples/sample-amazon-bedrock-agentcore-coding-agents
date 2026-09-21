@@ -128,16 +128,16 @@ def test_supported_toolchains_cross_every_execution_boundary(
 
     # Both advertised toolchains must exist where the check is AUTHORED (the served
     # validator's image) and where it is RUN (the coordinator image). The two images
-    # get Node a different way, so assert each one's real mechanism rather than one
-    # base-image string: Kiro's is Amazon Linux 2023 installing `nodejs` via dnf, the
-    # coordinator's is a node:22-slim base.
+    # install Node 22 explicitly from Amazon Linux packages. Their base image
+    # alone does not supply the advertised toolchain; image builds also check
+    # the installed binaries.
     validator = open(os.path.join(
         _REPO, "coding-agents", "kiro", "Dockerfile"),
         encoding="utf-8").read()
     gate = open(os.path.join(_REPO, "orchestrator-agent", "Dockerfile"),
                 encoding="utf-8").read()
-    assert "nodejs" in validator, "the validator image has no Node toolchain"
-    assert "node:22-slim" in gate
+    assert "nodejs22" in validator, "the validator image has no Node 22 toolchain"
+    assert "nodejs22" in gate, "the coordinator image has no Node 22 toolchain"
     assert "python3" in validator and "python3" in gate
 
     rule = engine._SUPPORTED_TOOLCHAINS_RULE.lower()

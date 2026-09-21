@@ -17,6 +17,11 @@ import time
 import boto3
 
 
+# Share deployment behavior across served and restored roles.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import runtime_deploy
+
+
 def load_dotconfig(path):
     cfg = {}
     if not os.path.exists(path):
@@ -151,7 +156,10 @@ def create_execution_role() -> str:
     # account/region, so the ECR-pull grant below lands on the repo that actually
     # holds the image (cross-account pull). URI shape:
     #   <acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
-    ecr_repo = ECR_URI.split("/")[1].split(":")[0] if "/" in ECR_URI else "coding-agents-codex"
+    ecr_repo = (
+        ECR_URI.split("/", 1)[1].split("@", 1)[0].split(":", 1)[0]
+        if "/" in ECR_URI else "coding-agents-codex"
+    )
     _reg = ECR_URI.split(".dkr.ecr.")[0] if ".dkr.ecr." in ECR_URI else ACCOUNT_ID
     ecr_account = _reg.split("/")[-1] if _reg else ACCOUNT_ID
     ecr_region = ECR_URI.split(".dkr.ecr.")[1].split(".")[0] if ".dkr.ecr." in ECR_URI else REGION
@@ -322,40 +330,24 @@ def create_execution_role() -> str:
     return role_arn
 
 
-def _create_runtime_with_role_retry(control, kwargs: dict, budget_s: int = 240):
-    """CreateAgentRuntime, retrying ONLY the 'Role validation failed' answer.
 
-    That answer means the control plane could not yet assume the execution role it was
-    handed, which for a role created seconds ago is IAM propagation, not a wrong trust
-    policy (the policy is the same one the pre-deployed roles pass with). Seen live on
-    2026-09-03: a 10s-old role and a 30s-old role both got it, and a one-shot script that
-    dies on it leaves an attendee re-running a command that then fails the same way. The
-    retry says what it is waiting for and gives up loudly after the budget so a genuinely
-    wrong role still fails, later but honestly. Every OTHER error is raised immediately.
-    """
-    deadline = time.monotonic() + budget_s
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            return control.create_agent_runtime(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - narrowed on the very next line
-            # Deliberately NOT control.exceptions.ValidationException: that attribute is
-            # generated per API version, so naming it can itself raise AttributeError
-            # inside the error path, which is the worst possible place to learn that.
-            # The message is what identifies this condition, and anything else re-raises
-            # unchanged on the next line, including the ConflictException the caller
-            # handles.
-            if "Role validation failed" not in str(exc) or time.monotonic() >= deadline:
-                raise
-            print(f"  Role not assumable by the service yet (attempt {attempt}); "
-                  f"IAM is still propagating the new role. Retrying in 20s...")
-            time.sleep(20)
+
+def _runtime_environment() -> dict:
+    env_vars = {
+        "AWS_REGION": REGION,
+        "AWS_DEFAULT_REGION": REGION,
+        "WORKSHOP_AGENT_NAME": AGENT_NAME,
+    }
+    for name in ("WORKSHOP_CODEX_MODEL", "WORKSHOP_MODEL_CODEX", "WORKSHOP_MODEL"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            env_vars[name] = value
+    return env_vars
 
 
 def deploy_runtime(role_arn: str) -> dict:
     session = boto3.Session(region_name=REGION)
-    control = session.client("bedrock-agentcore-control", region_name=REGION)
+    control = runtime_deploy.control_client(REGION, session)
 
     artifact = {"containerConfiguration": {"containerUri": ECR_URI}}
     network = {
@@ -377,98 +369,21 @@ def deploy_runtime(role_arn: str) -> dict:
                 }
             }
         ]
-    env_vars = {
-        "AWS_REGION": REGION,
-        "AWS_DEFAULT_REGION": REGION,
-        "WORKSHOP_AGENT_NAME": AGENT_NAME,
-    }
-    for name in ("WORKSHOP_CODEX_MODEL", "WORKSHOP_MODEL_CODEX", "WORKSHOP_MODEL"):
-        value = os.environ.get(name, "").strip()
-        if value:
-            env_vars[name] = value
-
-    config_path = os.path.join(SCRIPT_DIR, "runtime_config.json")
-    existing_id = _load_runtime_id(config_path)
-
-    if existing_id:
-        try:
-            control.get_agent_runtime(agentRuntimeId=existing_id)
-            print(f"\nUpdating existing runtime '{existing_id}'...")
-            control.update_agent_runtime(
-                agentRuntimeId=existing_id,
-                agentRuntimeArtifact=artifact,
-                roleArn=role_arn,
-                networkConfiguration=network,
-                environmentVariables=env_vars,
-                description="Codex PTY agent",
-                **fs_kwargs,
-            )
-            runtime_id = existing_id
-            runtime_arn = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT_ID}:runtime/{existing_id}"
-        except control.exceptions.ResourceNotFoundException:
-            existing_id = None
-
-    if not existing_id:
-        print(f"\nCreating runtime '{AGENT_NAME}'...")
-        try:
-            response = _create_runtime_with_role_retry(control, dict(
-                agentRuntimeName=AGENT_NAME,
-                agentRuntimeArtifact=artifact,
-                roleArn=role_arn,
-                networkConfiguration=network,
-                protocolConfiguration={"serverProtocol": "HTTP"},
-                environmentVariables=env_vars,
-                description="Codex PTY agent",
-                **fs_kwargs,
-            ))
-            runtime_id = response["agentRuntimeId"]
-            runtime_arn = response["agentRuntimeArn"]
-        except control.exceptions.ConflictException:
-            # A runtime with this name already exists (e.g. the local
-            # runtime_config.json was lost but the boot pre-deploy already created
-            # it). Look it up by name and UPDATE instead of failing, so deploy.py is
-            # idempotent against the real AWS state, not just the local file.
-            print(f"Runtime '{AGENT_NAME}' already exists; updating it instead...")
-            found = None
-            paginator = control.get_paginator("list_agent_runtimes")
-            for page in paginator.paginate():
-                for rt in page.get("agentRuntimes", []):
-                    if rt.get("agentRuntimeName") == AGENT_NAME:
-                        found = rt["agentRuntimeId"]
-                        break
-                if found:
-                    break
-            if not found:
-                raise
-            control.update_agent_runtime(
-                agentRuntimeId=found,
-                agentRuntimeArtifact=artifact,
-                roleArn=role_arn,
-                networkConfiguration=network,
-                environmentVariables=env_vars,
-                description="Codex PTY agent",
-                **fs_kwargs,
-            )
-            runtime_id = found
-            runtime_arn = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT_ID}:runtime/{found}"
-
-    print(f"Runtime ID: {runtime_id}")
-    print("Waiting for READY...")
-    while True:
-        status_resp = control.get_agent_runtime(agentRuntimeId=runtime_id)
-        status = status_resp["status"]
-        print(f"  Status: {status}")
-        if status == "READY":
-            break
-        if status in ("CREATE_FAILED", "UPDATE_FAILED"):
-            print(f"Failed: {status_resp.get('failureReason', 'Unknown')}")
-            sys.exit(1)
-        time.sleep(15)
-
-    return {"runtime_id": runtime_id, "runtime_arn": runtime_arn}
+    return runtime_deploy.deploy(control, dict(
+        agentRuntimeName=AGENT_NAME,
+        agentRuntimeArtifact=artifact,
+        roleArn=role_arn,
+        networkConfiguration=network,
+        protocolConfiguration={"serverProtocol": "HTTP"},
+        environmentVariables=_runtime_environment(),
+        description='Codex PTY agent',
+        **fs_kwargs,
+    ), runtime_id=_load_runtime_id(os.path.join(SCRIPT_DIR, "runtime_config.json")))
 
 
 def main():
+    runtime_deploy.require_runtime_sdk()
+    runtime_deploy.validate_environment(_runtime_environment())
     require_deploy_prereqs()
 
     print("=" * 60)
@@ -483,8 +398,7 @@ def main():
 
     config = {
         "agent_name": AGENT_NAME,
-        "runtime_id": runtime["runtime_id"],
-        "runtime_arn": runtime["runtime_arn"],
+        **runtime,
         "region": REGION,
         "ecr_uri": ECR_URI,
         "s3files_access_point_arn": MOUNT_AP_ARN,
@@ -505,4 +419,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except runtime_deploy.RuntimeDeploymentError as error:
+        raise SystemExit(str(error)) from None
