@@ -184,7 +184,10 @@ def create_execution_role() -> str:
     # Parse the registry account + region FROM the image URI (per-account image ->
     # this account; PREBUILT image from a central workshop ECR -> that account), so
     # the ECR-pull grant below lands on the repo that actually holds the image.
-    ecr_repo = ECR_URI.split("/")[1].split(":")[0] if "/" in ECR_URI else "coding-agents-kiro"
+    ecr_repo = (
+        ECR_URI.split("/", 1)[1].split("@", 1)[0].split(":", 1)[0]
+        if "/" in ECR_URI else "coding-agents-kiro"
+    )
     _reg = ECR_URI.split(".dkr.ecr.")[0] if ".dkr.ecr." in ECR_URI else ACCOUNT_ID
     ecr_account = _reg.split("/")[-1] if _reg else ACCOUNT_ID
     ecr_region = ECR_URI.split(".dkr.ecr.")[1].split(".")[0] if ".dkr.ecr." in ECR_URI else REGION

@@ -41,6 +41,7 @@ from pathlib import Path
 import shutil
 
 from botocore.exceptions import ClientError
+import pytest
 
 _CODE_ROOT = Path(__file__).resolve().parents[1]
 _CODING_AGENTS = _CODE_ROOT / "coding-agents"
@@ -52,7 +53,7 @@ if (_CODING_AGENTS / "codex" / "deploy.py").exists():
     _HARNESS_ROLES.append("codex")
 
 
-def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch):
+def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch, *, ecr_uri=None):
     """Import ``coding-agents/<role>/deploy.py`` with a MOUNTLESS infra config.
 
     deploy.py reads ``../infra.config`` and ``<role>/agent.config`` at import time,
@@ -88,9 +89,10 @@ def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch):
         "INFRA_S3FILES_ROLE_ARN=arn:aws:iam::123456789012:role/agentcore-s3files-us-west-2-role\n"
         # NOTE: no INFRA_S3FILES_AP_ARN -> the mountless predeploy state.
     )
+    ecr_uri = ecr_uri or f"123456789012.dkr.ecr.us-west-2.amazonaws.com/coding-agents-{role}:latest"
     agent_path.write_text(
         f"AGENT_NAME={role.replace('-', '_')}\n"
-        f"ECR_URI=123456789012.dkr.ecr.us-west-2.amazonaws.com/coding-agents-{role}:latest\n"
+        f"ECR_URI={ecr_uri}\n"
     )
 
     spec = importlib.util.spec_from_file_location(
@@ -107,6 +109,64 @@ def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch):
     assert mod.ACCOUNT_ID == "123456789012"
     assert mod.S3FILES_AP_ARN == ""
     return mod
+
+
+@pytest.mark.parametrize("role", _HARNESS_ROLES)
+@pytest.mark.parametrize("repository", ["coding-agent", "workshop/team/coding-agent"])
+@pytest.mark.parametrize("reference", [":reviewed", "@sha256:" + "a" * 64])
+@pytest.mark.parametrize("existing_role", [False, True], ids=["new-role", "existing-role"])
+def test_ecr_pull_policy_scopes_actual_image_repository(
+    role, repository, reference, existing_role, tmp_path, monkeypatch,
+):
+    """Real IAM reconciliation must strip image refs, preserving the full repo path."""
+    from types import SimpleNamespace
+
+    # A central image can be in another account and region than this Runtime.
+    image = f"444455556666.dkr.ecr.us-east-1.amazonaws.com/{repository}{reference}"
+    mod = _load_deploy_module_mountless(role, tmp_path, monkeypatch, ecr_uri=image)
+    role_name = f"agentcore-{mod.AGENT_NAME}-{mod.REGION}-role"
+    role_arn = f"arn:aws:iam::{mod.ACCOUNT_ID}:role/{role_name}"
+    policies, waits = [], []
+
+    class EntityAlreadyExists(Exception):
+        pass
+
+    class IAM:
+        exceptions = SimpleNamespace(EntityAlreadyExistsException=EntityAlreadyExists)
+
+        def create_role(self, **kwargs):
+            assert kwargs["RoleName"] == role_name
+            if existing_role:
+                raise EntityAlreadyExists()
+            return {"Role": {"Arn": role_arn}}
+
+        def put_role_policy(self, **kwargs):
+            assert kwargs["RoleName"] == role_name
+            assert kwargs["PolicyName"] == f"{mod.AGENT_NAME}-policy"
+            policies.append(json.loads(kwargs["PolicyDocument"]))
+
+    iam = IAM()
+
+    def client(service):
+        assert service == "iam", "IAM policy construction must not deploy a Runtime"
+        return iam
+
+    aws_session = SimpleNamespace(client=client)
+    if hasattr(mod, "session"):
+        monkeypatch.setattr(mod, "session", aws_session)
+    monkeypatch.setattr(mod, "boto3", SimpleNamespace(Session=lambda **_kwargs: aws_session))
+    monkeypatch.setattr(mod, "time", SimpleNamespace(sleep=waits.append))
+    assert mod.create_execution_role() == role_arn
+    assert waits == ([20] if not existing_role else [])
+    assert len(policies) == 1, "Existing roles must also reconcile their pull policy"
+    statements = {statement["Sid"]: statement for statement in policies[0]["Statement"]}
+    assert statements["ECRPull"] == {
+        "Sid": "ECRPull",
+        "Effect": "Allow",
+        "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+        "Resource": [f"arn:aws:ecr:us-east-1:444455556666:repository/{repository}"],
+    }
+    assert statements["ECRAuth"]["Resource"] == ["*"]
 
 
 def test_mountless_s3files_resources_are_valid_arns(tmp_path, monkeypatch):
