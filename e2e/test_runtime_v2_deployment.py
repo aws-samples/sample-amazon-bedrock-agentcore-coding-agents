@@ -519,6 +519,243 @@ def project_state(tmp_path, *, account=ACCOUNT, region=REGION):
     return state_path
 
 
+def native_cdk_project(tmp_path, monkeypatch):
+    """CLI 0.30.0's observed CDK state has ID/ARN/role, without runtimeVersion."""
+    import boto3
+
+    state_path = project_state(tmp_path)
+    state = json.loads(state_path.read_text())
+    resources = state["targets"]["default"]["resources"]
+    resources.update(stackName="AgentCore-CodingAgents-default", deployHash="current-deploy")
+    entry = resources["runtimes"]["orchestrator"]
+    entry.pop("runtimeVersion")
+    entry.pop("sessionId")
+    entry["roleArn"] = ROLE
+    state_path.write_text(json.dumps(state))
+    stack_id = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/AgentCore-CodingAgents-default/id"
+    properties = {
+        "AgentRuntimeName": "agent",
+        "Description": "coordinator fixture",
+        "AgentRuntimeArtifact": {"ContainerConfiguration": {
+            "ContainerUri": "registry/agent@sha256:current"}},
+        "RoleArn": ROLE,
+        "NetworkConfiguration": {"NetworkMode": "PUBLIC"},
+        "EnvironmentVariables": {"EXISTING": "kept", "WORKSHOP_CLAUDE_EFFORT": ""},
+        "Tags": {"agentcore:created-by": "agentcore-cli"},
+    }
+    event = {
+        "StackId": stack_id, "LogicalResourceId": "CoordinatorRuntime",
+        "ResourceType": "AWS::BedrockAgentCore::Runtime",
+        "PhysicalResourceId": "runtime-kept",
+        "ResourceStatus": "CREATE_COMPLETE", "Timestamp": 201,
+        "ResourceProperties": json.dumps(properties),
+    }
+    cloudformation = Mock()
+    cloudformation.describe_stacks.return_value = {"Stacks": [{
+        "StackId": stack_id, "StackStatus": "CREATE_COMPLETE", "CreationTime": 180,
+    }]}
+    cloudformation.describe_stack_events.return_value = {"StackEvents": [
+        event, dict(event, ResourceStatus="CREATE_IN_PROGRESS", Timestamp=190,
+                    PhysicalResourceId=""),
+    ]}
+    session = Mock()
+    session.client.return_value = cloudformation
+    monkeypatch.setattr(boto3, "Session", lambda **kwargs: session)
+    return state_path, cloudformation
+
+
+def current_cdk_runtime(**overrides):
+    return runtime(**{
+        "agentRuntimeVersion": "1", "lastUpdatedAt": 200,
+        "description": "coordinator fixture",
+        "agentRuntimeArtifact": {"containerConfiguration": {
+            "containerUri": "registry/agent@sha256:current"}},
+        "networkConfiguration": {"networkMode": "PUBLIC"},
+        **overrides,
+    })
+
+
+def test_coordinator_native_cdk_state_without_revision_promotes_observed_runtime(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_missing_version", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, cloudformation = native_cdk_project(tmp_path, monkeypatch)
+    control = Control(current_cdk_runtime())
+    result = module.promote_project(tmp_path, control=control)
+    entry = json.loads(state_path.read_text())["targets"]["default"]["resources"]["runtimes"]["orchestrator"]
+    assert result["runtime_version"] == "2" and result["platform_version"] == "V2"
+    assert entry == {"runtimeId": "runtime-kept", "runtimeArn": ARN,
+                     "roleArn": ROLE, "runtimeVersion": 2}
+    assert len(control.updates) == 1 and control.creates == []
+    assert control.updates[0]["agentRuntimeArtifact"] == current_cdk_runtime()["agentRuntimeArtifact"]
+    assert cloudformation.describe_stack_events.call_count >= 1
+
+
+@pytest.mark.parametrize("stale_field", ["image", "environment", "extra-environment", "timestamp"])
+def test_coordinator_native_cdk_state_rejects_stale_v2_ready_before_shortcut(
+        clock, tmp_path, monkeypatch, stale_field):
+    module = load_file("coordinator_native_stale_ready", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, _ = native_cdk_project(tmp_path, monkeypatch)
+    stale = current_cdk_runtime(platformVersion="V2")
+    if stale_field == "image":
+        stale["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] = "registry/agent:stale"
+    elif stale_field == "environment":
+        stale["environmentVariables"] = {"EXISTING": "old-deployment"}
+    elif stale_field == "extra-environment":
+        stale["environmentVariables"]["REMOVED_BY_CDK"] = "must-not-return"
+    else:
+        stale["lastUpdatedAt"] = 100
+    current = current_cdk_runtime(agentRuntimeVersion="8", platformVersion="V2")
+    control = Mock()
+    control.get_agent_runtime.side_effect = [stale, current, current]
+    result = module.promote_project(tmp_path, control=control)
+    assert result["runtime_version"] == "8"
+    assert json.loads(state_path.read_text())["targets"]["default"]["resources"][
+        "runtimes"]["orchestrator"]["runtimeVersion"] == 8
+    control.update_agent_runtime.assert_not_called()
+    control.create_agent_runtime.assert_not_called()
+    assert clock[0] == 10
+
+
+def test_coordinator_native_cdk_state_never_replays_stale_configuration(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_stale_update", ROOT / "orchestrator-agent/promote_runtime.py")
+    native_cdk_project(tmp_path, monkeypatch)
+    current = current_cdk_runtime(agentRuntimeVersion="7")
+
+    class StaleFirst(Control):
+        def get_agent_runtime(self, **kwargs):
+            result = super().get_agent_runtime(**kwargs)
+            if len(self.gets) == 1:
+                result["environmentVariables"] = {"OLD_SETTING": "must-not-return"}
+                result["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] = "registry/agent:stale"
+            return result
+
+    control = StaleFirst(current)
+    result = module.promote_project(tmp_path, control=control)
+    assert result["runtime_version"] == "8" and len(control.updates) == 1
+    assert control.updates[0]["agentRuntimeArtifact"] == current["agentRuntimeArtifact"]
+    assert control.updates[0]["environmentVariables"] == current["environmentVariables"]
+    assert clock[0] == 10
+
+
+def test_coordinator_native_cdk_state_stale_until_deadline_preserves_files(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_stale_timeout", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, _ = native_cdk_project(tmp_path, monkeypatch)
+    original = state_path.read_bytes()
+    control = Control(current_cdk_runtime(platformVersion="V2", lastUpdatedAt=100))
+    with pytest.raises(deploy.RuntimeDeploymentError, match="deadline"):
+        module.promote_project(tmp_path, control=control, timeout_s=11)
+    assert clock[0] == 11
+    assert control.updates == [] and state_path.read_bytes() == original
+    assert not (state_path.parent / "runtime-platforms.json").exists()
+
+
+@pytest.mark.parametrize("invalid", ["stack-account", "stack-status", "event-id", "properties", "start"])
+def test_coordinator_native_cdk_state_requires_completed_matching_deployment(
+        clock, tmp_path, monkeypatch, invalid):
+    module = load_file("coordinator_native_cdk_guard", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, cloudformation = native_cdk_project(tmp_path, monkeypatch)
+    original = state_path.read_bytes()
+    stack = cloudformation.describe_stacks.return_value["Stacks"][0]
+    events = cloudformation.describe_stack_events.return_value["StackEvents"]
+    if invalid == "stack-account":
+        stack["StackId"] = stack["StackId"].replace(ACCOUNT, "999999999999")
+    elif invalid == "stack-status":
+        stack["StackStatus"] = "UPDATE_IN_PROGRESS"
+    elif invalid == "event-id":
+        events[0]["PhysicalResourceId"] = "another-runtime"
+    elif invalid == "properties":
+        events[0]["ResourceProperties"] = "{}"
+    else:
+        events.pop()
+    control = Mock()
+    with pytest.raises(deploy.RuntimeDeploymentError):
+        module.promote_project(tmp_path, control=control)
+    assert control.mock_calls == [] and state_path.read_bytes() == original
+    assert not (state_path.parent / "runtime-platforms.json").exists()
+
+
+def test_coordinator_native_cdk_state_requires_deployment_anchor_even_with_saved_floor(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_saved_floor", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, _ = native_cdk_project(tmp_path, monkeypatch)
+    state = json.loads(state_path.read_text())
+    state["targets"]["default"]["resources"]["runtimes"]["orchestrator"]["runtimeVersion"] = 2
+    state_path.write_text(json.dumps(state))
+    stale = current_cdk_runtime(agentRuntimeVersion="2", platformVersion="V2", lastUpdatedAt=100)
+    current = current_cdk_runtime(agentRuntimeVersion="9", platformVersion="V2")
+    control = Mock()
+    control.get_agent_runtime.side_effect = [stale, current, current]
+    assert module.promote_project(tmp_path, control=control)["runtime_version"] == "9"
+    control.update_agent_runtime.assert_not_called()
+    assert clock[0] == 10
+
+
+def test_coordinator_native_cdk_state_reads_paginated_operation_start(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_cdk_pages", ROOT / "orchestrator-agent/promote_runtime.py")
+    _, cloudformation = native_cdk_project(tmp_path, monkeypatch)
+    complete, started = cloudformation.describe_stack_events.return_value["StackEvents"]
+    cloudformation.describe_stack_events.side_effect = [
+        {"StackEvents": [complete], "NextToken": "older-events"},
+        {"StackEvents": [started]},
+    ]
+    result = module.promote_project(tmp_path, control=Control(current_cdk_runtime()))
+    assert result["runtime_version"] == "2"
+    assert cloudformation.describe_stack_events.call_args.kwargs["NextToken"] == "older-events"
+
+
+def test_coordinator_native_cdk_state_stack_change_blocks_update(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_cdk_concurrent", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, cloudformation = native_cdk_project(tmp_path, monkeypatch)
+    original = state_path.read_bytes()
+    stack = cloudformation.describe_stacks.return_value["Stacks"][0]
+    cloudformation.describe_stacks.side_effect = [
+        {"Stacks": [stack]}, {"Stacks": [stack]},
+        {"Stacks": [dict(stack, StackStatus="UPDATE_IN_PROGRESS", LastUpdatedTime=210)]},
+    ]
+    control = Control(current_cdk_runtime())
+    with pytest.raises(deploy.RuntimeDeploymentError, match="CDK stack changed"):
+        module.promote_project(tmp_path, control=control)
+    assert control.updates == [] and state_path.read_bytes() == original
+
+
+def test_coordinator_native_cdk_state_concurrent_deploy_hash_is_preserved(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_native_hash_change", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, _ = native_cdk_project(tmp_path, monkeypatch)
+
+    class ConcurrentDeploy(Control):
+        def update_agent_runtime(self, **kwargs):
+            result = super().update_agent_runtime(**kwargs)
+            state = json.loads(state_path.read_text())
+            state["targets"]["default"]["resources"]["deployHash"] = "newer-deploy"
+            state_path.write_text(json.dumps(state))
+            return result
+
+    control = ConcurrentDeploy(current_cdk_runtime())
+    with pytest.raises(deploy.RuntimeDeploymentError, match="state changed during promotion"):
+        module.promote_project(tmp_path, control=control)
+    resources = json.loads(state_path.read_text())["targets"]["default"]["resources"]
+    assert resources["deployHash"] == "newer-deploy"
+    assert "runtimeVersion" not in resources["runtimes"]["orchestrator"]
+    assert not (state_path.parent / "runtime-platforms.json").exists()
+
+
+def test_coordinator_missing_revision_without_cdk_anchor_fails_before_api_calls(tmp_path):
+    module = load_file("coordinator_no_revision_anchor", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path = project_state(tmp_path)
+    state = json.loads(state_path.read_text())
+    state["targets"]["default"]["resources"]["runtimes"]["orchestrator"].pop("runtimeVersion")
+    state_path.write_text(json.dumps(state))
+    control = Mock()
+    with pytest.raises(deploy.RuntimeDeploymentError, match="no accepted Runtime revision or CDK stack"):
+        module.promote_project(tmp_path, control=control)
+    assert control.mock_calls == []
+
+
 def test_coordinator_promotes_exact_cdk_runtime_and_keeps_cli_state(clock, tmp_path):
     module = load_file("coordinator_v2_promotion", ROOT / "orchestrator-agent/promote_runtime.py")
     state_path = project_state(tmp_path)
