@@ -4,7 +4,7 @@ Instead of spawning a local bash and pretending, this module opens a WebSocket
 shell to the deployed runtime via AgentCoreRuntimeClient.open_shell() and proxies
 I/O between the browser (via SSE + POST) and the runtime's PTY.
 
-Each agent (claude-code, opencode, kiro) gets connected to its WIRED runtime ARN.
+Each selected role gets connected to its WIRED runtime ARN.
 If no ARN is wired, the connection fails loud.
 
 API (mounted by interactive_api.dispatch):
@@ -51,6 +51,7 @@ _AGENT_LAUNCH = {
     # The validator is a second Claude Code container, so it launches identically.
     "claude-code-validator": "/app/run.sh\n",
     "opencode": "/app/run.sh\n",
+    "codex": "/app/run.sh\n",
     "kiro": "/app/run.sh\n",
 }
 

@@ -3,7 +3,7 @@ import {
   Collapsible, CollapsibleTrigger, CollapsibleContent, cn,
 } from '@foxl/ui';
 import {
-  ChevronRight, Route, Server, CheckCircle2, AlertCircle,
+  ChevronRight, Route, Server, CheckCircle2, AlertCircle, Clock3,
 } from 'lucide-react';
 import { AgentIcon } from './AgentIcon';
 import { AgentEventFeed } from './AgentEventFeed';
@@ -30,7 +30,8 @@ interface ProgressEntry {
   note?: string;
 }
 
-const TERMINAL_STATES = ['passed', 'done', 'completed', 'failed', 'error', 'needs_human'];
+const TERMINAL_STATES = ['passed', 'done', 'completed', 'failed', 'error', 'needs_human', 'blocked', 'cancelled', 'stopped'];
+const WAITING_STATES = ['pending', 'waiting', 'queued'];
 
 /**
  * The orchestrator's WORK for one run, rendered as the reference's compact
@@ -124,13 +125,13 @@ function DispatchRow({
   live: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const roleLive = live && !TERMINAL_STATES.includes(entry.state);
+  const roleLive = live && !TERMINAL_STATES.includes(entry.state) && !WAITING_STATES.includes(entry.state);
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="group flex w-full items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-left text-xs transition-colors hover:bg-muted/70">
         <ChevronRight className={cn('size-3 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
         <Server className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="font-medium">dispatching</span>
+        <span className="font-medium">Agent</span>
         <span className="flex items-center gap-1">
           <AgentIcon agentId={entry.agent} size={12} />
           <span className="font-mono text-[11px]">{entry.agent}</span>
@@ -156,11 +157,12 @@ function RoleStatus({ state, live, className = '' }: { state: string; live: bool
       </span>
     );
   }
-  const failed = state === 'failed' || state === 'error';
+  const failed = ['failed', 'error', 'needs_human', 'blocked'].includes(state);
+  const succeeded = ['passed', 'done', 'completed'].includes(state);
   return (
     <span className={cn('flex items-center gap-1 text-[10px]', failed ? 'text-destructive' : 'text-muted-foreground', className)}>
-      {failed ? <AlertCircle className="size-3" /> : <CheckCircle2 className="size-3" />}
-      {state || 'done'}
+      {failed ? <AlertCircle className="size-3" /> : succeeded ? <CheckCircle2 className="size-3" /> : <Clock3 className="size-3" />}
+      {state || 'waiting'}
     </span>
   );
 }

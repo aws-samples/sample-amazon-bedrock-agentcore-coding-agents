@@ -12,14 +12,51 @@ import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+# These are CloudWatch's flattened discovered fields, not jsonParse map keys.
+# Claude's body is its canonical emitter; its event.name is only "api_request".
 QUERY = """filter body = "claude_code.api_request"
-| stats sum(attributes.input_tokens) as input_tokens,
-        sum(attributes.output_tokens) as output_tokens,
-        count(*) as requests
-  by resource.user.id as user
+    or (attributes.event.name = "codex.sse_event"
+        and attributes.event.kind = "response.completed"
+        and ispresent(attributes.input_token_count)
+        and not ispresent(attributes.error.message))
+| fields coalesce(body, attributes.event.name) as emitter,
+         coalesce(attributes.input_tokens, attributes.input_token_count) as measured_input,
+         coalesce(attributes.output_tokens, attributes.output_token_count) as measured_output,
+         coalesce(attributes.cache_creation_tokens, attributes.cache_write_token_count) as cache_creation,
+         coalesce(attributes.cache_read_tokens, attributes.cached_token_count) as cache_read,
+         attributes.reasoning_token_count as reasoning_output
+| stats sum(measured_input) as input_tokens,
+        sum(measured_output) as output_tokens,
+        sum(cache_creation) as cache_creation_tokens,
+        sum(cache_read) as cache_read_tokens,
+        sum(reasoning_output) as reasoning_output_tokens,
+        count(*) as requests,
+        sum(ispresent(measured_input)) as input_tokens_reported,
+        sum(ispresent(measured_output)) as output_tokens_reported,
+        sum(ispresent(cache_creation)) as cache_creation_tokens_reported,
+        sum(ispresent(cache_read)) as cache_read_tokens_reported,
+        sum(ispresent(reasoning_output)) as reasoning_output_tokens_reported
+  by emitter, resource.user.id as user
 | sort requests desc"""
+RAW_TOKEN_FIELDS = (
+    "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
+    "reasoning_output_tokens",
+)
+TOKEN_FIELDS = (*RAW_TOKEN_FIELDS, "total_input_tokens")
+INPUT_FIELDS = ("input_tokens", "cache_creation_tokens", "cache_read_tokens")
+EMITTERS = {
+    "claude_code.api_request": {
+        "id": "claude-code", "label": "Claude Code",
+        "event_description": "Exported API request events",
+    },
+    "codex.sse_event": {
+        "id": "codex", "label": "Codex",
+        "event_description": "Completed responses with token usage",
+    },
+}
 DEFAULT_LOG_GROUP = "/workshop/coding-agents/telemetry"
 POLL_BUDGET_S = 20
+MAX_QUERY_GROUPS = 10000
 _SLOTS = threading.BoundedSemaphore(2)
 
 
@@ -37,6 +74,7 @@ def configuration() -> dict[str, Any]:
         "region": os.environ.get("AWS_REGION") or boto3.Session().region_name,
         "log_group": os.environ.get("WORKSHOP_TELEMETRY_LOG_GROUP", DEFAULT_LOG_GROUP),
         "query": QUERY,
+        "agents": list(EMITTERS.values()),
     }
 
 
@@ -67,22 +105,97 @@ def _integer(value: str | None, *, optional: bool = False) -> int | None:
                                "CloudWatch returned an invalid aggregate; no totals were inferred.") from None
 
 
-def _summarize(results: list[list[dict[str, str]]]) -> dict[str, Any]:
-    rows = []
-    for result in results:
-        fields = {field["field"]: field.get("value") for field in result}
-        user = fields.get("user") or None
-        rows.append({
-            "user": user,
-            "requests": _integer(fields.get("requests")),
-            "input_tokens": _integer(fields.get("input_tokens"), optional=True),
-            "output_tokens": _integer(fields.get("output_tokens"), optional=True),
-        })
+def _sum_tokens(parts: list[dict[str, Any]], fields=TOKEN_FIELDS) -> dict[str, Any]:
+    """Keep observed partial sums; never fill a missing measurement with zero."""
+    row: dict[str, Any] = {
+        "requests": sum(part["requests"] for part in parts),
+        "reported_requests": {},
+    }
+    for name in fields:
+        row["reported_requests"][name] = sum(
+            part["reported_requests"][name] for part in parts)
+        values = [part[name] for part in parts if part["reported_requests"][name]]
+        row[name] = sum(values) if values and all(value is not None for value in values) else None
+    return row
+
+
+def _complete(row: dict[str, Any], *names: str) -> bool:
+    return all(row[name] is not None and row["reported_requests"][name] == row["requests"]
+               for name in names)
+
+
+def _coverage(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = sum(row["requests"] for row in rows)
     tagged = sum(row["requests"] for row in rows if row["user"] is not None)
-    return {"rows": rows, "total_requests": total, "tagged_requests": tagged,
+    return {"total_requests": total, "tagged_requests": tagged,
             "untagged_requests": total - tagged,
             "coverage_percent": round(tagged / total * 100, 1) if total else None}
+
+
+def _summarize(results: list[list[dict[str, str]]]) -> dict[str, Any]:
+    # CloudWatch can return separate groups for missing and empty labels. Normalize
+    # those groups before counting/displaying users, without trimming named labels.
+    groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+    for result in results:
+        fields = {field["field"]: field.get("value") for field in result}
+        emitter = EMITTERS.get(fields.get("emitter"))
+        if emitter is None:
+            raise AttributionError("INVALID_QUERY_RESULT",
+                                   "CloudWatch returned an unknown usage source.")
+        agent = emitter["id"]
+        user = fields.get("user")
+        if user is not None and not isinstance(user, str):
+            raise AttributionError("INVALID_QUERY_RESULT", "CloudWatch returned an invalid user label.")
+        user = user if user and user.strip() else None
+        requests = _integer(fields.get("requests"))
+        part: dict[str, Any] = {"requests": requests, "reported_requests": {}}
+        for name in RAW_TOKEN_FIELDS:
+            reported = _integer(fields.get(f"{name}_reported"))
+            value = _integer(fields.get(name), optional=True)
+            if reported > requests or (reported == 0 and value not in (None, 0)):
+                raise AttributionError(
+                    "INVALID_QUERY_RESULT",
+                    "CloudWatch returned inconsistent token coverage; no totals were inferred.")
+            # SUM can return zero for a field no event contained. That is unknown,
+            # unlike an explicit zero reported by an event.
+            part[name] = value if reported else None
+            part["reported_requests"][name] = reported
+        groups.setdefault((agent, user), []).append(part)
+
+    rows = []
+    for (agent, user), parts in groups.items():
+        row = {"agent": agent, "user": user, **_sum_tokens(parts, RAW_TOKEN_FIELDS)}
+        # The two CLIs report input differently. Claude's input excludes both
+        # cache components; Codex's Responses input already includes them.
+        # Preserve Codex's observed total even if a cache breakdown is absent.
+        if agent == "codex":
+            total, reported = row["input_tokens"], row["reported_requests"]["input_tokens"]
+            if _complete(row, *INPUT_FIELDS):
+                uncached = total - row["cache_creation_tokens"] - row["cache_read_tokens"]
+                if uncached < 0:
+                    raise AttributionError(
+                        "INVALID_QUERY_RESULT", "Codex cache tokens exceed its reported input.")
+                row["input_tokens"] = uncached
+            else:
+                row["input_tokens"] = None
+                row["reported_requests"]["input_tokens"] = 0
+            row["total_input_tokens"] = total
+            row["reported_requests"]["total_input_tokens"] = reported
+        else:
+            complete = _complete(row, *INPUT_FIELDS)
+            row["total_input_tokens"] = sum(row[name] for name in INPUT_FIELDS) if complete else None
+            row["reported_requests"]["total_input_tokens"] = row["requests"] if complete else 0
+        if (_complete(row, "output_tokens", "reasoning_output_tokens")
+                and row["reasoning_output_tokens"] > row["output_tokens"]):
+            raise AttributionError(
+                "INVALID_QUERY_RESULT", "Reasoning tokens exceed the reported output.")
+        rows.append(row)
+    rows.sort(key=lambda row: row["requests"], reverse=True)
+    agents = []
+    for emitter in EMITTERS.values():
+        agent_rows = [row for row in rows if row["agent"] == emitter["id"]]
+        agents.append({**emitter, **_sum_tokens(agent_rows), **_coverage(agent_rows)})
+    return {"rows": rows, "agents": agents, **_coverage(rows)}
 
 
 def _aws_error(exc: Exception) -> AttributionError:
@@ -121,7 +234,7 @@ def query_attribution(window_hours: int = 3) -> dict[str, Any]:
         deadline = time.monotonic() + POLL_BUDGET_S
         started = client.start_query(
             logGroupName=group, startTime=end - window_hours * 3600,
-            endTime=end, queryString=QUERY, limit=10000)
+            endTime=end, queryString=QUERY, limit=MAX_QUERY_GROUPS)
         query_id = started["queryId"]
         pending = True
         while time.monotonic() < deadline:
@@ -132,7 +245,7 @@ def query_attribution(window_hours: int = 3) -> dict[str, Any]:
                 if not isinstance(result.get("results"), list):
                     raise AttributionError("INVALID_QUERY_RESULT",
                                            "CloudWatch omitted its results. No empty dataset was inferred.")
-                if result.get("nextToken") or len(result.get("results", [])) >= 10000:
+                if result.get("nextToken") or len(result["results"]) >= MAX_QUERY_GROUPS:
                     raise AttributionError("RESULT_LIMIT",
                                            "Too many identity groups for a complete view. Choose a shorter window.")
                 return {

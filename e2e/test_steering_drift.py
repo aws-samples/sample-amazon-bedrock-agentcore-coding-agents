@@ -232,7 +232,7 @@ def test_the_image_bakes_steering_at_the_path_dispatch_looks_for():
             f"COPY destinations found: {destinations}")
 
 
-def test_the_interactive_session_stages_steering_at_the_registry_path(tmp_path):
+def test_the_interactive_session_stages_steering_at_the_registry_path(tmp_path, monkeypatch):
     """The THIRD staging site must name the registry's file too.
 
     Kiro steering is staged in three places, and this file already covers two of
@@ -248,6 +248,9 @@ def test_the_interactive_session_stages_steering_at_the_registry_path(tmp_path):
     exists anywhere in the repository and contradicting agentic-only validation on
     the one path an attendee actually watches.
     """
+    # Config generation requires a deployment region; this steering test must
+    # not depend on the developer's AWS profile or another test's environment.
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
     sys.path.insert(0, os.path.join(_REPO, "interactive-api"))
     import interactive_api
 

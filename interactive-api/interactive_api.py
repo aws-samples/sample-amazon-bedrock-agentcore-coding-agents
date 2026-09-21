@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import atexit
 import getpass
+import importlib.util
 import json
 import os
 import re
@@ -89,9 +90,8 @@ def _prune_dirs(parent: str, keep: int) -> None:
     for stale in entries[keep:]:
         shutil.rmtree(stale, ignore_errors=True)
 
-# The frontend builder runs opencode on Bedrock (the runtime's own region), so it
-# is unaffected by the GPT-5.x allowlisting that gates the Codex path. Default
-# region for its config is the workshop region.
+# opencode remains a registered restore path. Its own model setting must not be
+# reused for the default Codex frontend or the Claude coordinator.
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
 _OPENCODE_REGION = os.environ.get("WORKSHOP_OPENCODE_REGION", "us-west-2")
@@ -101,12 +101,6 @@ _CLAUDE_MODEL = os.environ.get("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opu
 _SMALL_MODEL = "amazon-bedrock/" + os.environ.get(
     "WORKSHOP_SMALL_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 ).removeprefix("amazon-bedrock/")
-# LEGACY (Codex path, no longer in the active flow): the Codex harness stays in
-# the repo (coding-agents/codex/) but is not a wired role. These are kept so a
-# manual Codex deploy still resolves its model/region; the frontend role is now
-# opencode (above).
-_MANTLE_REGION = os.environ.get("WORKSHOP_MANTLE_REGION", "us-east-2")
-_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "openai.gpt-5.5")
 
 _OS_USER = getpass.getuser()
 _CMD_TIMEOUT_S = 10
@@ -341,9 +335,29 @@ def _agent_env(agent_id: str) -> dict[str, str]:
                     "DISABLE_AUTOUPDATER": "1"})
     elif agent_id == "opencode":
         env.update({"AWS_REGION": env.get("AWS_REGION", _OPENCODE_REGION)})
+    elif agent_id == "codex":
+        # A local session uses the same deployment region as a Runtime session.
+        # Do not resurrect the old Mantle region or materialize SDK credentials.
+        import boto3
+        region = (env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
+                  or boto3.session.Session().region_name or "")
+        if not region:
+            raise ValueError("No AWS region. Set AWS_REGION or AWS_DEFAULT_REGION.")
+        env.update({"AWS_REGION": region, "AWS_DEFAULT_REGION": region})
     elif agent_id == "kiro":
         env.update({"KIRO_MODEL": "auto"})
     return env
+
+
+def _codex_config_text(workdirs=()):
+    """Use the image's config renderer for the console's local session too."""
+    path = os.path.join(_ENGINES, "coding-agents", "codex", "configure_codex.py")
+    spec = importlib.util.spec_from_file_location("workshop_codex_config", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    env = _agent_env("codex")
+    return module.render_config(module.region_from_env(env),
+                                module.model_from_env(env), workdirs)
 
 
 def _stage_agent_config(session: dict) -> None:
@@ -352,7 +366,8 @@ def _stage_agent_config(session: dict) -> None:
 
     The same files the base-repo containers bake in: opencode reads
     ``~/.config/opencode/opencode.json`` (model + amazon-bedrock provider), Kiro reads
-    ``~/.kiro/steering/*.md``, Claude Code is env-only (CLAUDE_CODE_USE_BEDROCK).
+    ``~/.kiro/steering/*.md``, Codex reads ``~/.codex/config.toml``, and
+    Claude Code uses CLAUDE_CODE_USE_BEDROCK.
     The PTY exports HOME at the workspace root, so ``~`` is the session."""
     root = session["_root"]
     agent_id = session["agent_id"]
@@ -418,6 +433,11 @@ def _stage_agent_config(session: dict) -> None:
                     os.symlink(os.path.join(versions, latest), bin_link)
             except OSError:
                 pass  # mirror is best-effort; worst case is the doctor note
+    elif agent_id == "codex":
+        d = os.path.join(root, ".codex")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "config.toml"), "w", encoding="utf-8") as f:
+            f.write(_codex_config_text((root,)))
     elif agent_id == "opencode":
         # opencode reads ~/.config/opencode/opencode.json: the amazon-bedrock
         # provider + the model. No trust gate to pre-clear (that was a Codex
@@ -481,6 +501,10 @@ def _stage_agent_config(session: dict) -> None:
 
 
 _PTY_BANNER = {
+    "codex": ("command -v codex >/dev/null "
+              "&& echo \"$(codex --version 2>/dev/null): type 'codex' to start it here\" "
+              "|| echo 'Codex CLI not on PATH (npm i -g @openai/codex@0.155.1)'; "
+              "echo 'configured: ~/.codex/config.toml -> amazon-bedrock-runtime, AWS SDK credentials'"),
     "claude-code": ("command -v claude >/dev/null "
                     "&& echo \"claude $(claude --version 2>/dev/null | head -1): type 'claude' to start it here\" "
                     "|| echo 'claude CLI not on PATH (npm i -g @anthropic-ai/claude-code)'; "
@@ -535,6 +559,10 @@ def _pty_open(session: dict, rows: int = 0, cols: int = 0) -> dict:
     # the build CLIs resolve like a build-box login); a role session jails HOME to its
     # scratch workspace so `cd ~` stays in-session and each CLI's config is per-run.
     env["HOME"] = session.get("_home") or session["_root"]
+    if session["agent_id"] == "codex":
+        # A host CODEX_HOME would bypass the session configuration and steering.
+        # Let Codex resolve its usual ~/.codex inside this session's real HOME.
+        env.pop("CODEX_HOME", None)
     # Pinning HOME to a jail hides ~/.aws from the AWS SDK's default chain: on a
     # laptop the chain then falls through to IMDS (169.254.169.254) and the CLI sits
     # in "Retrying in 5s" forever. Point the SDK explicitly at the REAL home's files
@@ -1350,7 +1378,9 @@ def _harness_files(agent_id: str) -> dict[str, str]:
         # the attendee sees why, and Lab 1 cannot appear to succeed on a missing file.
         files[name] = (f"# {agent_id}\n\nThe shipped steering for this role was not "
                        f"found at {src}. Nothing was scaffolded.\n")
-    if agent_id == "opencode":
+    if agent_id == "codex":
+        files[".codex/config.toml"] = _codex_config_text()
+    elif agent_id == "opencode":
         files[".config/opencode/opencode.json"] = (
             "{\n"
             '  "$schema": "https://opencode.ai/config.json",\n'

@@ -38,6 +38,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 
 _CODE_ROOT = Path(__file__).resolve().parents[1]
 _CODING_AGENTS = _CODE_ROOT / "coding-agents"
@@ -49,63 +50,65 @@ if (_CODING_AGENTS / "codex" / "deploy.py").exists():
     _HARNESS_ROLES.append("codex")
 
 
-def _load_deploy_module_mountless(role: str):
+def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch):
     """Import ``coding-agents/<role>/deploy.py`` with a MOUNTLESS infra config.
 
     deploy.py reads ``../infra.config`` and ``<role>/agent.config`` at import time,
     so we seed a minimal infra.config WITHOUT ``INFRA_S3FILES_AP_ARN`` (the
     predeploy-mountless state) and an agent.config with an ECR URI, then import the
-    module in isolation. We only touch pure helpers; no AWS call is made."""
-    role_dir = _CODING_AGENTS / role
+    module in isolation. Copy the actual script unchanged so its __file__-relative
+    config reads use only this test's files, never a real deployment's dotconfigs.
+    No AWS call is made."""
+    source = _CODING_AGENTS / role / "deploy.py"
+    assert source.exists(), f"{source} missing"
+    config_root = tmp_path / "coding-agents"
+    role_dir = config_root / role
+    role_dir.mkdir(parents=True, exist_ok=True)
     deploy_py = role_dir / "deploy.py"
-    assert deploy_py.exists(), f"{deploy_py} missing"
+    shutil.copy2(source, deploy_py)
 
-    # Seed the two dotconfigs deploy.py loads at import. Keep any real ones intact
-    # by only writing when absent, and always restoring after.
-    infra_path = _CODING_AGENTS / "infra.config"
+    # These valid-configuration tests are not region-mismatch tests. Pin their
+    # environment to their own fixture instead of inheriting the host's region.
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    infra_path = config_root / "infra.config"
     agent_path = role_dir / "agent.config"
-    created = []
-    if not infra_path.exists():
-        infra_path.write_text(
-            "INFRA_REGION=us-west-2\n"
-            "INFRA_ACCOUNT_ID=123456789012\n"
-            "INFRA_BUCKET=coding-agents-123456789012-us-west-2\n"
-            "INFRA_VPC_ID=vpc-000\n"
-            "INFRA_SUBNET_1=subnet-a\n"
-            "INFRA_SUBNET_2=subnet-b\n"
-            "INFRA_SECURITY_GROUP=sg-000\n"
-            "INFRA_S3FILES_ROLE_ARN=arn:aws:iam::123456789012:role/agentcore-s3files-us-west-2-role\n"
-            # NOTE: no INFRA_S3FILES_AP_ARN -> the mountless predeploy state.
-        )
-        created.append(infra_path)
-    if not agent_path.exists():
-        agent_path.write_text(
-            f"AGENT_NAME={role.replace('-', '_')}\n"
-            f"ECR_URI=123456789012.dkr.ecr.us-west-2.amazonaws.com/coding-agents-{role}:latest\n"
-        )
-        created.append(agent_path)
+    infra_path.write_text(
+        "INFRA_REGION=us-west-2\n"
+        "INFRA_ACCOUNT_ID=123456789012\n"
+        "INFRA_BUCKET=coding-agents-123456789012-us-west-2\n"
+        "INFRA_VPC_ID=vpc-000\n"
+        "INFRA_SUBNET_1=subnet-a\n"
+        "INFRA_SUBNET_2=subnet-b\n"
+        "INFRA_SECURITY_GROUP=sg-000\n"
+        "INFRA_S3FILES_ROLE_ARN=arn:aws:iam::123456789012:role/agentcore-s3files-us-west-2-role\n"
+        # NOTE: no INFRA_S3FILES_AP_ARN -> the mountless predeploy state.
+    )
+    agent_path.write_text(
+        f"AGENT_NAME={role.replace('-', '_')}\n"
+        f"ECR_URI=123456789012.dkr.ecr.us-west-2.amazonaws.com/coding-agents-{role}:latest\n"
+    )
 
+    spec = importlib.util.spec_from_file_location(
+        f"_deploy_{role.replace('-', '_')}", deploy_py)
+    mod = importlib.util.module_from_spec(spec)
+    # Preserve the script's documented working directory as well as __file__.
+    cwd = os.getcwd()
+    os.chdir(role_dir)
     try:
-        spec = importlib.util.spec_from_file_location(
-            f"_deploy_{role.replace('-', '_')}", deploy_py)
-        mod = importlib.util.module_from_spec(spec)
-        # deploy.py is written to run from its own dir for the config-relative reads.
-        cwd = os.getcwd()
-        os.chdir(role_dir)
-        try:
-            spec.loader.exec_module(mod)
-        finally:
-            os.chdir(cwd)
-        return mod
+        spec.loader.exec_module(mod)
     finally:
-        for p in created:
-            p.unlink(missing_ok=True)
+        os.chdir(cwd)
+    assert mod.REGION == "us-west-2"
+    assert mod.ACCOUNT_ID == "123456789012"
+    assert mod.S3FILES_AP_ARN == ""
+    return mod
 
 
-def test_mountless_s3files_resources_are_valid_arns():
+def test_mountless_s3files_resources_are_valid_arns(tmp_path, monkeypatch):
     """A mountless (empty-AP) deploy must yield only real ARNs / ``*`` resources."""
     for role in _HARNESS_ROLES:
-        mod = _load_deploy_module_mountless(role)
+        mod = _load_deploy_module_mountless(role, tmp_path, monkeypatch)
         assert hasattr(mod, "_s3files_policy_resources"), (
             f"{role}/deploy.py must route the S3Files statement through "
             "_s3files_policy_resources() so a mountless deploy never emits empty "
@@ -122,12 +125,12 @@ def test_mountless_s3files_resources_are_valid_arns():
                 "(IAM put_role_policy would reject it as MalformedPolicyDocument)")
 
 
-def test_ap_scoped_s3files_resources_when_mounted():
+def test_ap_scoped_s3files_resources_when_mounted(tmp_path, monkeypatch):
     """When the access point IS known, resources scope to that AP + its file system."""
     ap = ("arn:aws:s3files:us-west-2:123456789012:"
           "file-system/fs-abc/access-point/ap-xyz")
     for role in _HARNESS_ROLES:
-        mod = _load_deploy_module_mountless(role)
+        mod = _load_deploy_module_mountless(role, tmp_path, monkeypatch)
         mod.S3FILES_AP_ARN = ap
         resources = mod._s3files_policy_resources()
         assert ap in resources, (
@@ -137,7 +140,7 @@ def test_ap_scoped_s3files_resources_when_mounted():
                 f"{role}: mounted resource {resource!r} must be an ARN")
 
 
-def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path):
+def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypatch):
     """A damaged local config must reconcile by Runtime name and repair itself."""
 
     class ResourceNotFoundException(Exception):
@@ -195,7 +198,7 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path):
             return self.control
 
     for role in _HARNESS_ROLES:
-        mod = _load_deploy_module_mountless(role)
+        mod = _load_deploy_module_mountless(role, tmp_path, monkeypatch)
         role_dir = tmp_path / role
         role_dir.mkdir()
         config_path = role_dir / "runtime_config.json"

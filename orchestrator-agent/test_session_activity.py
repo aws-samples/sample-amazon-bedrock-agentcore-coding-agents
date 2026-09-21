@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from contextlib import aclosing
 from pathlib import Path
 import sys
 import types
@@ -14,6 +15,8 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from session_activity import ActivityTracker  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "orchestrator"))
+import chat  # noqa: E402
 
 
 @pytest.fixture
@@ -154,7 +157,7 @@ def test_actual_entrypoint_registers_dispatched_work_before_response_closes(envi
 
     namespace = {
         "Any": object, "_activity": tracker, "log": mock.Mock(),
-        "_get_or_create_agent": Agent,
+        "_get_or_create_agent": Agent, "_chat": chat, "aclosing": aclosing,
     }
     exec(compile(ast.Module(body=[invoke], type_ignores=[]), "actual-entrypoint", "exec"), namespace)
 

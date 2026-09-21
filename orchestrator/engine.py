@@ -3705,6 +3705,16 @@ class Engine:
 
 
 # ------------------------------------------------------------------ public views
+def public_submitter(identity: dict | None) -> str | None:
+    """Expose only the user label recorded when the build was admitted."""
+    if isinstance(identity, dict):
+        for key in ("user_email", "user_id"):
+            value = identity.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def public_run(run: Run) -> dict:
     return {
         "run_id": run.run_id,
@@ -3712,6 +3722,7 @@ def public_run(run: Run) -> dict:
         "status": run.status,
         "phase": run.phase,
         "created_at": run.created_at,
+        "submitted_by": public_submitter(run.user_identity),
         "agents": run.agents,
         "roles": run.roles,
         # additive (API_CONTRACT.md "Engine additions"): the router's verdict
@@ -3999,6 +4010,7 @@ def resubmission_allowed(status: str, fail_reason: str | None,
 def public_result(run: Run) -> dict:
     return {
         "run_id": run.run_id,
+        "submitted_by": public_submitter(run.user_identity),
         "status": run.status,
         # CLI users poll this payload for 10-20 minutes. A bare "running" makes a
         # healthy build indistinguishable from a stuck one even though the engine

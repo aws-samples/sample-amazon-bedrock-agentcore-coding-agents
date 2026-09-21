@@ -57,6 +57,17 @@ def _stub_artifact(monkeypatch, text="<html>ok</html>"):
     )
 
 
+def test_runtime_inference_profile_failure_does_not_retry_a_mantle_sibling(monkeypatch):
+    model = "us.openai.gpt-5.6-sol"
+    calls = _stub_dispatch(monkeypatch, {model: (1, _BACKEND)})
+    with pytest.raises(runtime_exec.RoleExecutionError):
+        runtime_exec.run_in_runtime(
+            runtime_arn="arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/codex-test",
+            agent_id="codex", prompt="the supplied request", run_subdir="run1",
+            artifact_rel=None, model=model)
+    assert calls == [model]
+
+
 def test_codex_model_gone_falls_back_to_sibling(monkeypatch):
     """gpt-5.5 de-registered (404 'Engine not found' in CLI text) -> retry once on
     the sibling, which succeeds; the run returns the sibling's artifact."""

@@ -171,8 +171,8 @@ def start_page(manifest: dict, state: str) -> bytes:
         "<!doctype html><meta charset=utf-8><title>Create the workshop GitHub App</title>"
         f"<style>{_PAGE_CSS}</style>"
         "<h1>Creating your GitHub App</h1>"
-        "<p>GitHub will show you a confirmation page with the name and permissions "
-        "already filled in. Choose <strong>Create GitHub App</strong>.</p>"
+        "<p>On GitHub, confirm the App name and choose <strong>Create GitHub App</strong>. "
+        "Then review its permissions and select your workshop repository when you install it.</p>"
         f'<form id="f" method="post" action="https://github.com/settings/apps/new?state={state}">'
         f'<input type="hidden" name="manifest" value=\'{body}\'>'
         '<button type="submit">Continue to GitHub</button></form>'
@@ -343,8 +343,8 @@ def main() -> int:
 
         print("\nOpen this URL in the SAME browser you are using for VS Code:\n")
         print(f"    {base_url}/proxy/{args.port}/\n")
-        print("GitHub shows a confirmation page with the name and the four permissions")
-        print("already set. Choose 'Create GitHub App', then install it on your repo.")
+        print("On GitHub, confirm the App name and choose 'Create GitHub App'.")
+        print("Then review its permissions and install it on your workshop repository.")
         print("This terminal finishes on its own.\n")
 
         if not Handler.done.wait(timeout=INSTALL_WAIT_S):

@@ -61,7 +61,13 @@ npm --prefix console/web run build
 `typecheck` builds the TypeScript project graph; invoking the solution tsconfig
 without its referenced projects does not check the application.
 
-## Lab 3: attribution
+## Lab 3: improve the game and trace its usage
+
+After playing the Lab 2 game, submit one observed problem through Chat. The
+selected builder changes the existing application, the coordinator opens its PR,
+and Kiro authors its executable check. Review that evidence and the source before
+merging, then repeat the original play test. Development, Controls, and Usage
+provide the identity and telemetry exercise while the build runs.
 
 Governance > Usage runs one fixed Logs Insights query over the workshop
 telemetry log group. It does not read the host's run ledger or invoke an agent.
@@ -83,8 +89,16 @@ host-console sessions and dispatches, not an already deployed coordinator.
 
 CLI requests without user metadata and historical unlabeled events remain
 Untagged. A label supplied manually is not proof of Cognito authentication.
-The Usage table counts Claude Code request events; it is not Kiro usage
-reporting or a complete bill.
+Usage separates Claude Code API request events and Codex completed responses
+carrying token usage. Each CLI gets its own summary, user rows, and tagging
+coverage. The agent filter narrows the table; Export JSON retains the full result.
+The default table shows input including cache and output. Cache components and
+reasoning details expand separately; Codex's cache is already included in its
+input total, and reasoning is already included in output.
+
+Counts describe exported usage events, not every API attempt or a complete bill.
+Kiro credits and coordinator SDK calls use separate reporting paths. Copy query,
+the query ID, log group, region, and UTC bounds support an independent source check.
 
 Controls reads the same identity mapping, merge policy, role registry, and
 execution limits used by this host. **Evaluate action** runs the real policy
@@ -105,8 +119,8 @@ provider metadata provisioned by the CLI or event, without reading the secret.
 An unavailable metadata lookup is **unknown**, not an absent key.
 
 Runtime targets must be wired. Missing targets fail explicitly; no fallback
-agent, fabricated ARN, PR URL, or successful run is substituted. Keep opencode
-inside a PTY. Console dispatch and the Agents view share the actual Runtime
+agent, fabricated ARN, PR URL, or successful run is substituted. The alternate
+opencode frontend requires a PTY. Console dispatch and the Agents view share the actual Runtime
 terminal, so a person can observe the same work.
 
 Terminal streams mark the first history snapshot with `replay: true`. The client

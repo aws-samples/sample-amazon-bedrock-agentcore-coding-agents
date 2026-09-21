@@ -61,14 +61,24 @@ def _wire_all(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
     for r in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(r), raising=False)
-    runtime_config.save_runtime("claude-code", "claude_code-TESTID0001")
-    runtime_config.save_runtime("opencode", "opencode-TESTID0001")
-    runtime_config.save_runtime("kiro", "kiro-TESTID0001")
+    for role in chat._roles.roster_ids():
+        runtime_config.save_runtime(role, role.replace("-", "_") + "-TESTID0001")
 
 
 def _call_with(tools, name, **kwargs):
     tool = tools[name]
     fn = getattr(tool, "func", None) or getattr(tool, "_tool_func", None) or tool
+    if name == "run_build" or name.startswith("dispatch_"):
+        # These existing tool fixtures supply their own explicit participant turn.
+        # The separate boundary suite exercises the real decorated async tools,
+        # including missing bindings and model/user inputs that disagree.
+        prompt = kwargs.get("task", "")
+        if not prompt.strip() and kwargs.get("preset"):
+            prompt = f"preset={kwargs['preset']}"
+            if kwargs.get("creative_direction"):
+                prompt += "\n\n" + kwargs["creative_direction"]
+        with chat.bind_user_request(prompt):
+            return fn(**kwargs)
     return fn(**kwargs)
 
 
@@ -142,7 +152,7 @@ def test_tool_set_is_dynamic_from_wired_roles(tmp_path, monkeypatch):
     assert "dispatch_frontend" not in names and "dispatch_validator" not in names
     assert "run_build" in names
     # Wire the frontend too -> its tool appears, validator still absent.
-    runtime_config.save_runtime("opencode", "opencode-TESTID0001")
+    runtime_config.save_runtime("codex", "codex-TESTID0001")
     names = set(_tools_map())
     assert "dispatch_frontend" in names and "dispatch_validator" not in names
 
@@ -273,20 +283,24 @@ def test_run_build_refuses_an_empty_task_without_minting_a_run(tmp_path, monkeyp
     _wire_all(tmp_path, monkeypatch)
     before = len(chat.ENGINE.list())
     out = json.loads(_call("run_build", task="   "))
-    assert out["error"] == "EMPTY_TASK"
+    assert out["error"] == "EMPTY_USER_REQUEST"
     assert "own words" in out["hint"]
     assert len(chat.ENGINE.list()) == before  # no dead run created
 
 
 def test_two_creative_directions_keep_the_shared_preset_interface(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     _wire_all(tmp_path, monkeypatch)
     requests = []
 
-    def capture(agent, task, preset=None):
+    def capture(agent, task, preset=None, **_kwargs):
         requests.append((task, preset))
         return "run_test_direction"
 
     monkeypatch.setattr(chat, "_kick", capture)
+    monkeypatch.setattr(chat.ENGINE, "get", lambda _run_id: SimpleNamespace(
+        agents=chat._presets.resolve(preset="game-from-scratch").agents))
     directions = ("quiet underwater exploration", "hand-drawn kinetic rhythms")
     for direction in directions:
         result = json.loads(_call(

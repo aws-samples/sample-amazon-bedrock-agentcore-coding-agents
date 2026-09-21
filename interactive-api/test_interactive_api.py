@@ -19,12 +19,30 @@ from __future__ import annotations
 import os
 import sys
 import zipfile
+import tomllib
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import interactive_api as ia  # noqa: E402
+
+
+def test_codex_local_session_uses_the_runtime_provider_and_its_own_trust(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("WORKSHOP_CODEX_MODEL", "us.openai.session-model")
+    monkeypatch.setenv("WORKSHOP_MODEL_CODEX", "us.openai.role-model")
+    session = {"agent_id": "codex", "_root": str(tmp_path)}
+    ia._stage_agent_config(session)
+    config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text())
+    assert config["model"] == "us.openai.role-model"
+    assert config["model_provider"] == "amazon-bedrock-runtime"
+    assert config["model_providers"]["amazon-bedrock-runtime"]["aws"]["region"] == "us-east-1"
+    assert config["projects"] == {str(tmp_path.resolve()): {"trust_level": "trusted"}}
+    files = ia._harness_files("codex")
+    assert "AGENTS.md" in files
+    assert tomllib.loads(files[".codex/config.toml"])["model"] == "us.openai.role-model"
 
 
 def _open_session():
@@ -402,16 +420,20 @@ def test_pty_resize_changes_winsize():
     ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
 
 
-def test_pty_env_reaches_aws_credentials_through_the_home_jail():
+def test_pty_env_reaches_aws_credentials_through_the_home_jail(tmp_path, monkeypatch):
     """The HOME jail hides ~/.aws from the AWS SDK's default chain: on a laptop
     the chain then falls through to IMDS and the agent CLI sits in "Retrying"
     forever (the exact field failure). The PTY env must hand the SDK the real
     home's credential files explicitly. Asserted inside the live jailed bash:
     HOME is the workspace, yet AWS_SHARED_CREDENTIALS_FILE points at the real
-    ~/.aws/credentials whenever that file exists on the box."""
+    ~/.aws/credentials whenever that file exists on the box. Use an empty
+    fixture file, never a developer's credentials."""
+    real_home = tmp_path / "host-home"
+    (real_home / ".aws").mkdir(parents=True)
+    (real_home / ".aws" / "credentials").touch()
+    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.delenv("AWS_SHARED_CREDENTIALS_FILE", raising=False)
     real_creds = os.path.join(os.path.expanduser("~"), ".aws", "credentials")
-    if not os.path.isfile(real_creds):
-        pytest.skip("no ~/.aws/credentials on this box (Runtime uses the instance role)")
     sid = _open_session()
     _, opened = ia.dispatch("POST", f"/api/sessions/{sid}/pty", {"open": True})
     assert opened["pty"] is True
@@ -526,27 +548,33 @@ def test_file_tree_is_bounded_so_a_huge_folder_never_hangs(tmp_path, monkeypatch
     ia.dispatch("DELETE", f"/api/sessions/{sid}", None)
 
 
-def test_open_folder_reroots_a_dev_session(tmp_path, monkeypatch):
+@pytest.mark.parametrize("inside_home", [False, True], ids=["outside-home", "inside-home"])
+def test_open_folder_reroots_a_dev_session(tmp_path, monkeypatch, inside_home):
     """VS Code 'Open Folder': re-root a Development session at a chosen dir; the tree
     + workspace label follow, and a role session rejects the action (dev-only)."""
+    session_home = tmp_path / "session-home"
+    session_home.mkdir()
+    monkeypatch.setenv("HOME", str(session_home))
     monkeypatch.setenv("WORKSHOP_S3FILES_DIR", str(tmp_path / "s3files"))
     code, sess = ia.dispatch("POST", "/api/sessions", {"agent_id": "dev"})
     sid = sess["session_id"]
     assert code == 201 and sess["workspace"] == "/mnt/s3files" and sess["has_folder"] is True
 
-    # A real folder elsewhere with a file in it.
-    proj = tmp_path / "proj"
+    # Control the HOME relationship instead of assuming pytest's temp directory
+    # is outside the developer's HOME (authoring receipts may live inside it).
+    proj = (session_home if inside_home else tmp_path) / "proj"
+    expected_label = "~/proj" if inside_home else str(proj)
     (proj / "pkg").mkdir(parents=True)
     (proj / "pkg" / "main.py").write_text("print('hi')\n", encoding="utf-8")
 
     code, out = ia.dispatch("POST", f"/api/sessions/{sid}/open-folder", {"path": str(proj)})
     assert code == 200 and out["ok"] is True and out["has_folder"] is True
-    assert out["workspace"] == str(proj)           # an arbitrary path shows verbatim
+    assert out["workspace"] == expected_label
     paths = {e["path"] for e in out["tree"]}
-    assert f"{proj}/pkg" in paths and f"{proj}/pkg/main.py" in paths
+    assert f"{expected_label}/pkg" in paths and f"{expected_label}/pkg/main.py" in paths
     # the re-rooted tree round-trips through the files endpoint too
     _, files = ia.dispatch("GET", f"/api/sessions/{sid}/files", None)
-    assert files["workspace"] == str(proj) and files["has_folder"] is True
+    assert files["workspace"] == expected_label and files["has_folder"] is True
     # ~ renders as the VS Code-style label
     code, home_out = ia.dispatch("POST", f"/api/sessions/{sid}/open-folder", {"path": "~"})
     assert code == 200 and home_out["workspace"] == "~"

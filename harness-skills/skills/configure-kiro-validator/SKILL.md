@@ -8,7 +8,7 @@ description: >-
   agent", "deploy the Kiro validator", "wire up Kiro for testing", or asks how to
   deploy Kiro with Token Vault / Identity credentials. LOCKED role mapping in
   this harness: Claude Code = BACKEND (implements the service side), Kiro =
-  VALIDATOR (authors the check, exit code decides), opencode = FRONTEND BUILDER.
+  VALIDATOR (authors the check, exit code decides), Codex = FRONTEND BUILDER.
   This skill configures ONLY the Kiro = VALIDATOR slot. Kiro authenticates with
   the attendee's own ksk_ key through AgentCore Identity / Token Vault.
 ---
@@ -20,7 +20,7 @@ Kiro's LOCKED role is **VALIDATOR**: it reads the task and the work the builder
 roles produced, AUTHORS an executable acceptance check, and the engine runs that
 check. The check's real exit code is the gate. Kiro does not build the backend
 (that is the backend Claude Code) and does not build the frontend (that is
-opencode). Stay in lane.
+Codex by default). Stay in lane.
 
 This is an autonomous, fire-and-forget pipeline. There is **no race, no winner,
 no fastest/cheapest ranking**: each role does its job, and each builder gets ONE
@@ -52,11 +52,10 @@ Before running anything, confirm with the user (ask only for what is missing):
   app.kiro.dev -> **Settings > API Keys** -> create a key. Ask: "What is your
   Kiro API key (`ksk_...`)? It is fetched on demand at session start and held in
   memory only, never written to disk."
-- **Region**: default `us-west-2` (all workshop examples use this).
-- **Model**: default `auto` (Kiro's own router). Note that `kiro-cli` takes no
-  model flag: the model is written as `chat.defaultModel` into
-  `~/.kiro/settings/cli.json` by the container's `run.sh`, so there is no Bedrock
-  model id to select here.
+- **Region**: use the configured workshop deployment region.
+- **Model**: default `claude-opus-5` in Kiro's vendor namespace.
+  `WORKSHOP_KIRO_MODEL` overrides it. The launcher and dispatch both pass
+  `--model`; this is separate from a Bedrock model id.
 - **Prerequisites already met?**: confirm shared infra is deployed
   (`coding-agents/infra/setup.sh us-west-2` runs ONCE for all agents) and the
   GitHub MCP Gateway is up (`coding-agents/gateway_mcp/deploy-all.sh`). If not,
@@ -205,7 +204,7 @@ observed the runtime state yourself: verify, don't assume.
 ## Guardrails (stay in the VALIDATOR lane)
 
 - Kiro = VALIDATOR ONLY. It AUTHORS the check and owns the gate. It does NOT edit
-  the backend (the backend Claude Code's job) or the frontend (opencode's). Maker
+  the backend (the backend Claude Code's job) or the frontend (Codex's by default). Maker
   is never checker: this separation is the reason the gate is honest.
 - Credential path is **Token Vault** (`KIRO_API_KEY=ksk_xxx ./setup.sh`). In
   memory only, never on disk, never a runtime env var. Never commit a `ksk_` key

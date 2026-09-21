@@ -28,7 +28,7 @@ export type TaskStatus =
  *     route LLM through the relay so AgentCore credits meter (historical default).
  *   - `kiro`       Kiro CLI (https://kiro.dev). BYOK - runs on the user's own
  *     Kiro/Q key; AgentCore meters compute only.
- *   - `codex`      OpenAI Codex CLI against GPT-5.5/5.4 on Amazon Bedrock
+ *   - `codex`      OpenAI Codex CLI on Amazon Bedrock Runtime Responses
  *     (Mantle). Relay-metered like claudecode.
  *   - `cursor`     Cursor Agent CLI (cursor.com). BYOK - runs on the user's
  *     own Cursor key (CURSOR_API_KEY); AgentCore meters compute only.

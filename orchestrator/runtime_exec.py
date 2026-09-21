@@ -293,8 +293,8 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     result_archive = f"/tmp/workshop-result-{nonce}.tar.gz"
     archive_uri = archive_uri or f"s3://workshop-runtime-exchange/{run_subdir}.tar.gz"
     branch = worktree_branch(run_subdir)
-    # Every role uses the runtime's own region: opencode/claude/kiro all call
-    # plain Bedrock there (no mantle/us-east-2 special case).
+    # Every role uses the Runtime's own region, including Codex's Runtime
+    # Responses provider. There is no Mantle-region override.
     cli_region = region
     role = _role(agent_id)
     env = {"AWS_REGION": cli_region, "AWS_DEFAULT_REGION": cli_region,
@@ -327,11 +327,11 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     cli = _cli_invocation(agent_id, "P", model, workdir)
 
     # Some providers sign with SigV4 but do NOT walk the AWS credential chain the
-    # way boto3 does (opencode's Vercel AI SDK is the case in the served roster): on
+    # way boto3 does (opencode's kept Vercel AI SDK path is one such case): on
     # a runtime such a CLI only has the container role via
     # AWS_CONTAINER_CREDENTIALS_FULL_URI / IMDS, which it leaves unresolved, so it
     # errors "SigV4 authentication requires AWS credentials". Claude Code
-    # (CLAUDE_CODE_USE_BEDROCK) and Kiro resolve the chain fine. A role that needs
+    # (CLAUDE_CODE_USE_BEDROCK) and Codex resolve the chain. A role that needs
     # it declares needs_static_credentials, and we materialize its temporary keys
     # into the static env vars the SDK reads, using the awscli in the image.
     # Fail-soft: if the export cannot run, the CLI still tries the chain.
@@ -1059,9 +1059,9 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     could be de-registered or have a transient outage, surfaced as a nonzero exit
     with a model-down signature. ``llm.openai_sibling`` returns a healthy sibling
     ONLY for an ``openai.*`` model id, so this retry fires only for that provider.
-    The frontend role now runs opencode on a Bedrock Claude model, so
-    ``openai_sibling`` returns None and this block is a no-op for it; it stays in
-    place for any future ``openai.*`` dispatch and is harmless otherwise.
+    The served Codex frontend uses a ``us.openai.*`` Runtime inference profile,
+    so ``openai_sibling`` returns None. Its errors remain failures; it must not
+    silently switch to the legacy Mantle model family.
 
     TESTING SEAM: when ``runtime_arn`` is a local dev URI (``http(s)://…``, what
     ``agentcore dev`` serves), dispatch over HTTP to its ``/invocations`` instead
@@ -1077,7 +1077,7 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     region = region_for(runtime_arn, region)
 
     # Console Chat path: auto-register a run-local interactive PTY so the native
-    # Claude Code / opencode / Kiro UI appears on Agents without a manual + click.
+    # The role's native UI appears on Agents without a manual + click.
     # Importing runtime_shell is intentionally optional; the deployed coordinator
     # package does not contain it and falls through to headless execution below.
     try:

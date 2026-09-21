@@ -123,6 +123,44 @@ def test_recent_active_snapshot_is_not_misreported_as_completed(history):
     assert code == 409 and result["status"] == "running"
 
 
+@pytest.mark.parametrize("identity, expected", [
+    ({"user_email": "submitter@example.invalid", "user_id": "original-sub",
+      "private_token": "not public"}, "submitter@example.invalid"),
+    ({"user_email": "", "user_id": "original-sub"}, "original-sub"),
+    ({}, None),
+    ({"email": "unrecognized-field@example.invalid"}, None),
+    ({"user_email": {"unexpected": "object"}, "user_id": []}, None),
+])
+def test_submitter_survives_restart_and_another_user_reading_history(
+        history, identity, expected):
+    from identity_baggage import get_current_identity, set_current_identity
+
+    prior_viewer = get_current_identity()
+    run = checkpoint(user_identity=identity)
+    path = history / "state" / f"{run.run_id}.json"
+    before = path.read_bytes()
+    api.ENGINE._runs[run.run_id] = run
+    viewer = {"user_id": "later-viewer", "user_email": "viewer@example.invalid"}
+    try:
+        for source in ("live", "persisted"):
+            if source == "persisted":
+                api.ENGINE = engine.Engine(executor_obj=FixtureExecutor())
+            for suffix in ("", "/result"):
+                code, detail = api.dispatch(
+                    "GET", f"/api/runs/{run.run_id}{suffix}", None,
+                    user_identity=viewer)
+                assert code == 200
+                assert detail["submitted_by"] == expected
+                assert "user_identity" not in detail and "options" not in detail
+                assert "private_token" not in json.dumps(detail)
+            _, listing = api.dispatch("GET", "/api/runs", None, user_identity=viewer)
+            assert listing["runs"][0]["submitted_by"] == expected
+        assert api.ENGINE.list() == [], "Reading a submitter must not revive a worker"
+        assert path.read_bytes() == before, "A later viewer must not alter admitted identity"
+    finally:
+        set_current_identity(prior_viewer)
+
+
 def test_saved_activity_is_available_but_terminals_are_not_fabricated(history):
     run = checkpoint()
     _, feed = api.dispatch("GET", f"/api/runs/{run.run_id}/terminals", None)

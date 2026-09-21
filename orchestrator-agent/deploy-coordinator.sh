@@ -5,7 +5,7 @@
 # into the build context, create the AgentCore CLI project, add the agent, write this
 # account's values into the generated project, and deploy. None of them is a decision,
 # and typing them one at a time in a room buys nothing but chances to paste half a
-# line. What IS worth understanding is what the coordinator is wired to (three role
+# line. What IS worth understanding is what the coordinator is wired to (selected role
 # ARNs, the Gateway, the repository, the merge policy), and this script prints exactly
 # that before it deploys.
 #
@@ -36,7 +36,9 @@ AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/de
 command -v agentcore >/dev/null || die "The agentcore CLI is missing. Install it with: sudo npm install -g @aws/agentcore@latest"
 
 echo "==> The coordinator will be wired to:"
-for role in claude-code opencode kiro; do
+role_names=$(PYTHONPATH="$REPO_ROOT/orchestrator${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -c 'from roles import roster_ids; print(" ".join(roster_ids()))')
+for role in $role_names; do
   cfg="$REPO_ROOT/coding-agents/$role/runtime_config.json"
   arn=$(jq -r '.runtime_arn // empty' "$cfg" 2>/dev/null || true)
   [ -n "$arn" ] || die "No Runtime ARN for $role ($cfg). Finish Lab 1 before deploying the coordinator: the coordinator must not be created before its workers exist."

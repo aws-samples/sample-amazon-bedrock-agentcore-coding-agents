@@ -8,7 +8,7 @@ description: >-
   Drives the full bring-up: shared infra -> GitHub MCP Gateway -> the three per-agent skills
   (backend / validator / frontend) -> orchestrator run, with a confirm-region/agents gather step
   and a closing smoke-test checklist. Dispatches to configure-claude-code-backend, configure-kiro-validator,
-  and configure-opencode-frontend rather than duplicating their steps.
+  and configure-codex-frontend rather than duplicating their steps.
 ---
 
 # Set up the AgentCore coding-agent harness
@@ -18,16 +18,17 @@ orchestrator (deterministic glue around one agentic step).
 This is the **umbrella** skill: it sequences the shared infrastructure and then hands each
 agent off to its own focused skill. Do not inline the per-agent deploy steps here; dispatch.
 
-## Role mapping (LOCKED, do not reassign)
+## Default role mapping
 
-This harness has a fixed division of labor. Echo it back to the user before you start so the
-roles are unambiguous:
+The role registry declares this default division of labor. `WORKSHOP_ROLES`
+can select registered alternatives, including the opencode frontend and Claude
+Code validator. Each selected role still has its own builder or checker boundary.
 
 | Agent | Role | Identity model | Per-agent skill |
 |---|---|---|---|
 | **Claude Code** | **BACKEND**: implements the backend deliverable the task names and exposes it through the AgentCore Gateway | Bedrock native, runtime IAM role has `bedrock:InvokeModel`, **no API key** | `configure-claude-code-backend` |
+| **Codex** | **FRONTEND BUILDER**: builds the interface the request needs | Bedrock Runtime Responses, Runtime IAM role through the AWS SDK credential chain | `configure-codex-frontend` |
 | **Kiro** | **VALIDATOR**: reads the task and the builders' work, authors a self-contained executable check, the engine runs it, and its real exit code is the gate | Token Vault (AgentCore Identity): **your own `ksk_` key**, fetched at session start, in memory only, never on disk and never a runtime env var | `configure-kiro-validator` |
-| **opencode** | **FRONTEND BUILDER**: builds the interface on top of the backend | Bedrock native, runtime IAM role through the AWS SDK credential chain | `configure-opencode-frontend` |
 
 Framing: this is an **autonomous, fire-and-forget** pipeline. The orchestrator handles the
 deterministic work (admission, context hydration, pre-flight, finalization); the three agents
@@ -36,11 +37,10 @@ against the default branch, checked and reviewed and merged on its own: no combi
 no merge queue, no separate final PR. There is **no race, no winner, no fastest/cheapest
 ranking**: every agent has a job and does it.
 
-> Per-agent **model routing** is each agent's own concern (Sonnet for new tasks,
-> Haiku for read-only review, Opus opt-in for complex repos). The umbrella skill only confirms
-> region and which agents to configure; the per-agent skills own model selection. New agent
-> types extend the harness the same way: add a sibling skill, keep this dispatch table the
-> contract.
+> Model defaults belong to the registry and per-role configuration. Codex uses
+> `WORKSHOP_CODEX_MODEL`; Claude Code uses `WORKSHOP_CLAUDE_MODEL`. The Strands
+> coordinator uses `ORCHESTRATOR_MODEL_ID` independently. Do not pass a GPT
+> frontend model to the Claude coordinator or a Claude model to Codex.
 
 ## Step 1: Gather inputs (region + which agents)
 
@@ -50,18 +50,19 @@ skip Steps 2 to 3 instead of re-deploying.
 
 Ask:
 
-- **Region**: default `us-west-2`. All commands in the base repos assume it; Bedrock model
-  access (Claude Opus/Sonnet/Haiku for Claude Code and opencode) must be enabled there.
-  - Options: `us-west-2 (recommended)` / `other (specify)`
+- **Region**: read `AWS_REGION`, `AWS_DEFAULT_REGION`, or the AWS CLI configuration.
+  Resolve it before deployment. Claude and the Codex Runtime Responses model must
+  be available to the account in that region.
 - **Shared infra + Gateway already provisioned?** (typical at an event)
   - Options: `Yes: skip to Step 4 (verify Gateway, then deploy agents)` / `No: I'm starting from scratch (run Steps 2-3)`
 - **Which agents to configure?**
-  - Options: `All three (backend + validator + frontend)` / `Backend only (Claude Code)` / `Validator only (Kiro)` / `Frontend only (opencode)` / `Custom subset`
+  - Options: `Default roster` / `Backend only (Claude Code)` / `Validator only (Kiro)` / `Frontend only (Codex)` / `Custom subset`
 
 Capture the answers; everything below keys off them. Export region once so later commands inherit it:
 
 ```bash
-export AWS_REGION="us-west-2"   # or the region the user chose
+export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region)}}"
+: "${AWS_REGION:?Set the workshop deployment region first}"
 aws sts get-caller-identity      # confirm you're in the intended account before deploying
 ```
 
@@ -72,7 +73,7 @@ aws sts get-caller-identity      # confirm you're in the intended account before
 
 ```bash
 cd coding-agents/infra
-./setup.sh us-west-2          # shared VPC + S3 Files; idempotent-ish, but don't double-run needlessly
+./setup.sh "$AWS_REGION"     # shared VPC + S3 Files
 ```
 
 Prereqs if this is a truly fresh machine (event boxes already have these):
@@ -93,7 +94,6 @@ cd coding-agents/gateway_mcp
 export GITHUB_APP_ID="123456"
 export GITHUB_APP_PRIVATE_KEY_FILE="/path/to/your-app.private-key.pem"
 export GITHUB_APP_INSTALLATION_ID="78901234"
-export AWS_REGION="us-west-2"
 ./deploy-all.sh    # stores GitHub creds in Secrets Manager, builds+pushes the MCP container to ECR,
                    # creates the IAM role, AgentCore Runtime (MCP) + Gateway (IAM-auth)
 ```
@@ -119,26 +119,26 @@ Gateway before deploying agents; a missing Gateway makes every backend run fail 
 ## Step 5: Dispatch to the per-agent skills (per the Step 1 selection)
 
 Do NOT inline agent deploys here. Invoke the focused skill for each selected agent so the
-identity model and model routing stay owned in one place. Suggested order: backend first
-(it is the deliverable under test), then validator (it gates that deliverable), then frontend:
+identity model and model routing stay owned in one place. Use the default roster's
+order: backend, frontend, then checker.
 
 1. **BACKEND: Claude Code** -> run skill `configure-claude-code-backend`
    - Bedrock native (`CLAUDE_CODE_USE_BEDROCK=1`), no API key. Roughly:
      ```bash
      cd coding-agents/claude-code && ./setup.sh && python deploy.py
      ```
-2. **VALIDATOR: Kiro** -> run skill `configure-kiro-validator`
+2. **FRONTEND: Codex** -> run skill `configure-codex-frontend`
+   - Bedrock Runtime Responses with the Runtime IAM role; no vendor API key:
+     ```bash
+     cd coding-agents/codex && ./setup.sh && python3 deploy.py
+     ```
+3. **VALIDATOR: Kiro** -> run skill `configure-kiro-validator`
    - Token Vault (AgentCore Identity) with the attendee's own `ksk_` key. Roughly:
      ```bash
      cd coding-agents/kiro && KIRO_API_KEY=ksk_xxx ./setup.sh && python deploy.py
      ```
    - No key minted yet? `./setup.sh --skip-identity` builds and deploys keyless, and
      the key is added later on the wired instance in console Settings.
-3. **FRONTEND: opencode** -> run skill `configure-opencode-frontend`
-   - Bedrock native, runtime IAM role; no API key or Token Vault provider. Roughly:
-     ```bash
-     cd coding-agents/opencode && ./setup.sh && python deploy.py
-     ```
 
 The snippets above are orientation only; the per-agent skill is the source of truth for flags,
 model overrides, and identity. If the user picked "All three", you can also fan out the bare
@@ -175,8 +175,9 @@ Walk this before declaring the harness ready. Each item is a concrete, observabl
       `python connect.py` session opens (verified by `configure-claude-code-backend`).
 - [ ] **Validator (Kiro)**: deployed with its Token Vault credential provider (the key in the
       vault, never on the ARN); runtime READY (verified by `configure-kiro-validator`).
-- [ ] **Frontend (opencode)**: deployed AND runtime IAM role verified
-      (verified by `configure-opencode-frontend`); the frontend reaches the backend MCP endpoint.
+- [ ] **Frontend (Codex)**: deployed AND an actual CLI turn verified
+      (verified by `configure-codex-frontend`); exercise backend connectivity if
+      the request requires it.
 - [ ] **End-to-end run**: submit one request to the orchestrator and confirm it reaches a terminal
       state where the validator authored a check, the engine ran it, and the real exit code
       decided (PR opened, or a clear fail-closed reason like `GITHUB_UNREACHABLE` /
@@ -194,7 +195,7 @@ measured per-agent metrics from the run, never vendor "Nx cheaper" claims.
 
 ```bash
 python coding-agents/claude-code/cleanup.py
-python coding-agents/opencode/cleanup.py
+python coding-agents/codex/cleanup.py
 python coding-agents/kiro/cleanup.py
 cd coding-agents/infra && ./cleanup.sh      # removes VPC + S3 Files (keeps the S3 bucket)
 cd coding-agents/gateway_mcp && ./delete-all.sh

@@ -31,7 +31,7 @@ from e2e.conftest import (
     submit_run,
 )
 
-ALL_THREE = ["claude-code", "opencode", "kiro"]
+ALL_THREE = ["claude-code", "codex", "kiro"]
 VALIDATOR = "kiro"
 
 
@@ -51,9 +51,9 @@ def test_an_arbitrary_request_routes_and_runs(console, cookie):
 def test_named_roles_are_the_only_roles_that_run(console, cookie):
     """Focusing a run means choosing which BUILDER works. Nothing else gets a lane."""
     run = submit_run(console, cookie, task="change something small",
-                     agents=["opencode", VALIDATOR])
+                     agents=["codex", VALIDATOR])
     route = poll_route(console, cookie, run["run_id"])
-    assert route["agents"] == ["opencode", VALIDATOR]
+    assert route["agents"] == ["codex", VALIDATOR]
     final = poll_terminal(console, cookie, run["run_id"])
     assert "claude-code" not in (final.get("roles") or {}), final.get("roles")
 
@@ -62,7 +62,7 @@ def test_named_roles_are_the_only_roles_that_run(console, cookie):
 @pytest.mark.parametrize("preset,expected_roles", [
     ("game-from-scratch", ["claude-code", VALIDATOR]),
     ("service-from-scratch", ["claude-code", VALIDATOR]),
-    ("web-app", ["claude-code", "opencode", VALIDATOR]),
+    ("web-app", ["claude-code", "codex", VALIDATOR]),
     ("cli-tool", ["claude-code", VALIDATOR]),
 ])
 def test_a_preset_supplies_its_request_text_and_roles(console, cookie, preset, expected_roles):

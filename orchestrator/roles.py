@@ -16,7 +16,7 @@ Two properties follow, and both are the point:
   * **The roster is configurable at runtime.** ``WORKSHOP_ROLES`` selects which
     registered roles are served (see ``roster()``), so an operator can run the
     workshop with a different or smaller team without touching code. Kept-but-
-    hidden roles (Codex, the Claude Code validator) stay REGISTERED and off the
+    hidden roles (opencode, the Claude Code validator) stay REGISTERED and off the
     default roster, which is exactly what makes them a restore path rather than
     dead code.
 
@@ -97,7 +97,7 @@ class Role:
         role that authenticates with a vendor key gets NOTHING from the AWS
         credential chain and must have its key materialized explicitly. Declared
         rather than inferred from ``credential`` alone, because a role can be
-        ``api-key`` and still have no vault wiring yet (Codex), and silently
+        ``api-key`` and still have no vault wiring yet, and silently
         exporting an empty variable for it would look like success.
         """
         return bool(self.credential == "api-key" and self.api_key_env
@@ -197,7 +197,7 @@ _CLAUDE_CLI = ("claude --dangerously-skip-permissions --print --max-turns 50 "
 _CLAUDE_MODEL = os.environ.get("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opus-4-6-v1")
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
-_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "openai.gpt-5.5")
+_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "us.openai.gpt-5.6-sol")
 # Kiro names models in its OWN vendor namespace, not as Bedrock inference profiles, so
 # this cannot share _CLAUDE_MODEL. Verified against a live Runtime with
 # `kiro-cli chat --list-models`: claude-opus-5 / claude-sonnet-5 / claude-opus-4.8 /
@@ -255,6 +255,27 @@ REGISTRY: tuple[Role, ...] = (
                        "OTEL_BSP_SCHEDULE_DELAY": "1"},
         credential="runtime-iam",
         needs_static_credentials=True,
+        hidden=True,  # restore with WORKSHOP_ROLES; keep its PTY/auth path intact
+    ),
+    Role(
+        id="codex",
+        label="Codex",
+        kind=BUILDER,
+        capability="frontend",
+        role_name="frontend-builder",
+        description="Frontend builder (Codex): builds the part a person "
+                    "interacts with, through Amazon Bedrock Runtime.",
+        steering_file="AGENTS.md",
+        harness_dir="codex",
+        # The boot config supplies the Runtime region and SDK authentication.
+        # Pin the provider here too: direct dispatch does not call run.sh.
+        cli=("codex exec --dangerously-bypass-approvals-and-sandbox "
+             "--skip-git-repo-check --cd {workdir} "
+             "-c 'model_provider=\"amazon-bedrock-runtime\"' -m {model} -- {prompt}"),
+        default_model=_CODEX_MODEL,
+        skills=("configure-codex-frontend",),
+        model_env="WORKSHOP_CODEX_MODEL",
+        credential="runtime-iam",
     ),
     Role(
         id="kiro",
@@ -296,31 +317,10 @@ REGISTRY: tuple[Role, ...] = (
         vault_workload_env="WORKSHOP_KIRO_WORKLOAD",
         vault_provider_env="WORKSHOP_KIRO_PROVIDER",
     ),
-    # ---- registered, off the served roster: the restore paths ----------------
-    # Both stay REGISTERED (not deleted) so each remains a one-variable restore
-    # path, reachable with WORKSHOP_ROLES alone:
-    #
-    #   * The Claude Code validator is the BEDROCK-NATIVE, NO-KEY checker. It runs
-    #     the same container as the backend builder, steered by its own
-    #     acceptance-contract ``CLAUDE.md``, and needs no API key and no Token
-    #     Vault. Restore it (``WORKSHOP_ROLES=claude-code,opencode,claude-code-
-    #     validator``) for any account without a Kiro subscription, which is the
-    #     only thing the served Kiro checker needs that Bedrock alone cannot give.
-    #     Kiro is servable BECAUSE the event now provisions that subscription:
-    #     ``static/aws/central-account.yaml`` stands up IAM Identity Center in the
-    #     one Workshop Studio central account and, off the lifecycle-notification
-    #     bus, gives each team an Identity Center user with a Kiro / Amazon Q
-    #     Developer Pro subscription. The only remaining attendee step is minting
-    #     their own ``ksk_`` key at app.kiro.dev (the Prerequisites page "Get Your
-    #     Kiro API Key") and pasting it; the harness fetches it at session start
-    #     through AgentCore Identity / Token Vault, in memory only, never as a
-    #     runtime env var.
-    #   * Codex is DISABLED at events because the GPT-5.x models it needs are not
-    #     available on a Workshop Studio account (the entitlement is allowlist-gated
-    #     and returns 401), so opencode on native Bedrock plays the frontend. Do not
-    #     put it back on the roster until GPT is actually entitled there: naming it
-    #     in WORKSHOP_ROLES on an event account produces a role that 401s on every
-    #     dispatch.
+    # Registered restore paths stay reachable through WORKSHOP_ROLES alone.
+    # opencode above is the alternate Bedrock frontend. The Claude Code validator
+    # below is the no-key checker for an account without a Kiro subscription:
+    # WORKSHOP_ROLES=claude-code,codex,claude-code-validator.
     Role(
         id="claude-code-validator",
         label="Claude Code",
@@ -337,23 +337,6 @@ REGISTRY: tuple[Role, ...] = (
         env=_CLAUDE_ENV,
         telemetry_env=_CLAUDE_TELEMETRY,
         model_env="ANTHROPIC_MODEL",
-        hidden=True,
-    ),
-    Role(
-        id="codex",
-        label="Codex",
-        kind=BUILDER,
-        capability="frontend",
-        role_name="frontend-builder",
-        description="Frontend builder (Codex): DISABLED at events, because the "
-                    "GPT-5.x models it needs are not available on a Workshop "
-                    "Studio account. Off the served roster.",
-        steering_file="AGENTS.md",
-        harness_dir="codex",
-        cli="codex exec --dangerously-bypass-approvals-and-sandbox -m {model} {prompt}",
-        default_model=_CODEX_MODEL,
-        skills=(),
-        credential="api-key",
         hidden=True,
     ),
 )

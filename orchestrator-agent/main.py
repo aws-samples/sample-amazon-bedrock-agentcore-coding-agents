@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import aclosing
 from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -120,9 +121,13 @@ async def invoke(payload: dict[str, Any], context: Any = None):
     _activity.ensure_started()
     try:
         agent = _get_or_create_agent()
-        async for event in agent.stream_async(prompt):
-            if "data" in event and isinstance(event["data"], str):
-                yield event["data"]
+        # The cached agent owns model history, but each invocation owns a fresh,
+        # immutable user-request binding. Close it even if the caller disconnects.
+        history = list(getattr(agent, "messages", []) or [])
+        async with aclosing(_chat.stream_user_turn(agent, prompt, messages=history)) as events:
+            async for event in events:
+                if "data" in event and isinstance(event["data"], str):
+                    yield event["data"]
     finally:
         # A dispatch may outlive a completed, failed, or disconnected chat turn.
         # Register it before this response closes; the observer releases it when

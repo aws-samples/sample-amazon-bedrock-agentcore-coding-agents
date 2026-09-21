@@ -38,6 +38,8 @@ _A2 = "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/opencode-bbb"
 def _isolate(tmp_path, monkeypatch):
     """Wire config at a tmp file via the real env var; start every test unwired."""
     monkeypatch.setenv("WORKSHOP_RUNTIME_CONFIG", str(tmp_path / "runtime.local.json"))
+    # Keep the fleet fixtures exercising the registered opencode restore path.
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,opencode,kiro")
     for role in runtime_config.roles():
         monkeypatch.delenv(runtime_config._env_key(role), raising=False)
 

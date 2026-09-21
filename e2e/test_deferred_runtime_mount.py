@@ -14,7 +14,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROLES = ("opencode", "kiro", "claude-code-validator")
+ROLES = ("codex", "opencode", "kiro", "claude-code-validator")
 AP = "arn:aws:s3files:us-west-2:111122223333:file-system/fs-test/access-point/fsap-test"
 
 

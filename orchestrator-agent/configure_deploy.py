@@ -135,7 +135,7 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     # silently returns to the package defaults instead of the stack's models.
     # Forward only named model settings, never the host's whole environment.
     for var in (
-        "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_OPENCODE_MODEL",
+        "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_CODEX_MODEL", "WORKSHOP_OPENCODE_MODEL",
         "WORKSHOP_SMALL_MODEL", "ORCHESTRATOR_MODEL_ID",
     ):
         value = os.environ.get(var, "").strip()
@@ -144,7 +144,7 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     # WORKSHOP_ROLES rides in for the same reason, and its absence was a REAL defect:
     # the roster is read from the coordinator's OWN process env (roles.roster()), so a
     # facilitator who exported the documented Kiro fallback
-    # (WORKSHOP_ROLES=claude-code,opencode,claude-code-validator) and redeployed still
+    # (WORKSHOP_ROLES=claude-code,codex,claude-code-validator) and redeployed still
     # got a coordinator serving the DEFAULT roster, which then failed pre-flight with
     # RUNTIME_NOT_WIRED:kiro -- exactly the failure the fallback exists to avoid.
     # `agentcore deploy` has no env flag, so this file is the only place it can enter.

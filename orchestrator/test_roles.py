@@ -41,8 +41,8 @@ def test_hidden_roles_are_registered_but_not_served():
     roster, which is what makes it a restore path rather than dead code.
 
     Both hidden roles are hidden for a stated reason:
-      * Codex must NOT be served: the GPT-5.x models it needs are unavailable on a
-        Workshop Studio account and 401 on every dispatch.
+      * opencode is the alternate frontend, kept with its native Bedrock and PTY
+        configuration when an operator selects it instead of Codex.
       * The Claude Code validator is the BEDROCK-NATIVE, NO-KEY checker, kept for any
         account without a Kiro subscription. It is off the default roster because the
         event now provisions per-team Kiro subscriptions (central-account.yaml), so
@@ -54,7 +54,11 @@ def test_hidden_roles_are_registered_but_not_served():
     for role_id in hidden:
         assert role_id in roles.BY_ID
         assert role_id not in served
-    assert "codex" in hidden, "Codex is disabled at events (no GPT entitlement)"
+    assert "opencode" in hidden, "the alternate frontend must remain restorable"
+    assert roles.by_capability("frontend") == ("codex",)
+    assert roles.get("codex").credential == "runtime-iam"
+    assert not roles.get("codex").brokers_api_key
+    assert not roles.get("codex").needs_static_credentials
     assert "claude-code-validator" in hidden, (
         "the Bedrock-native no-key checker must stay a registered restore path")
     # And the flip is pinned in the direction it now runs: Kiro is the served checker.
@@ -92,6 +96,14 @@ def test_workshop_roles_reorders_to_makers_then_checker(monkeypatch):
     not put it ahead of the builders it checks."""
     monkeypatch.setenv("WORKSHOP_ROLES", "kiro,claude-code")
     assert roles.roster_ids() == ("claude-code", "kiro")
+
+
+def test_opencode_frontend_can_be_restored_without_changing_its_auth_or_pty(monkeypatch):
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,opencode,kiro")
+    assert roles.by_capability("frontend") == ("opencode",)
+    assert "codex" not in roles.roster_ids()
+    assert roles.get("opencode").needs_static_credentials
+    assert roles.get("opencode").credential == "runtime-iam"
 
 
 def test_an_unknown_role_in_the_override_fails_loud(monkeypatch):
