@@ -2,8 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSHOP_RUNTIME_PLATFORM_VERSION=$(python3 "$SCRIPT_DIR/../runtime_deploy.py" --print-platform)
+export WORKSHOP_RUNTIME_PLATFORM_VERSION
 source "$SCRIPT_DIR/config.sh"
-python3 "$SCRIPT_DIR/../runtime_deploy.py"
 
 echo "==> Deploying AgentCore Runtime: ${RUNTIME_NAME}"
 echo "    Region: ${AWS_REGION} | Account: ${AWS_ACCOUNT_ID}"
@@ -187,7 +188,7 @@ state_set "iam_role_arn" "$ROLE_ARN"
 state_set "iam_role_name" "$IAM_ROLE_NAME"
 echo "Role ARN: ${ROLE_ARN}"
 
-# 4. Create/update the same Runtime, then wait for actual platform V2 readiness.
+# 4. Create/update the same Runtime, then verify the selected platform is READY.
 echo ""
 echo "--- Step 4: AgentCore Runtime ---"
 

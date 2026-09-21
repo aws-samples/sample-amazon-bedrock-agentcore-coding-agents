@@ -45,14 +45,16 @@ def validation(message):
                        "CreateAgentRuntime")
 
 
-def test_role_validation_failure_is_retried_until_iam_catches_up(clock):
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_role_validation_failure_is_retried_until_iam_catches_up(clock, monkeypatch, platform):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
     denied = validation("Role validation failed for 'arn:aws:iam::1:role/x'.")
     control = _FakeControl([denied, denied, {"agentRuntimeId": "ok"}])
     assert runtime_deploy.create_runtime_with_role_retry(
         control, {"agentRuntimeName": "x"}, budget_s=240) == {"agentRuntimeId": "ok"}
     assert len(control.calls) == 3
     assert clock[0] == 40.0
-    assert all(call["platformVersion"] == "V2" for call in control.calls)
+    assert all(call["platformVersion"] == platform for call in control.calls)
     assert len({call["clientToken"] for call in control.calls}) == 1
 
 

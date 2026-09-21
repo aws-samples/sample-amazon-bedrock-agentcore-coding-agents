@@ -22,7 +22,10 @@ AP = "arn:aws:s3files:us-west-2:111122223333:file-system/fs-test/access-point/fs
 
 
 @pytest.mark.parametrize("role", ROLES)
-def test_deferred_create_then_attached_update_preserves_id_and_policy(role, tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_deferred_create_then_attached_update_preserves_id_and_policy(
+        role, tmp_path, monkeypatch, platform):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
     source = ast.parse((ROOT / "coding-agents" / role / "deploy.py").read_text())
     selected = [
         node for node in source.body
@@ -42,7 +45,7 @@ def test_deferred_create_then_attached_update_preserves_id_and_policy(role, tmp_
     runtime_arn = "arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/" + runtime_id
     runtime = {
         "agentRuntimeId": runtime_id, "agentRuntimeArn": runtime_arn,
-        "agentRuntimeName": role, "agentRuntimeVersion": "1", "platformVersion": "V2",
+        "agentRuntimeName": role, "agentRuntimeVersion": "1", "platformVersion": platform,
         "createdAt": 100, "lastUpdatedAt": 100,
         "status": "READY", "roleArn": "arn:aws:iam::111122223333:role/agentcore-test",
         "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": "registry/image:pinned"}},
@@ -76,7 +79,8 @@ def test_deferred_create_then_attached_update_preserves_id_and_policy(role, tmp_
     first = json.loads(connection.read_text())
     assert first["runtime_id"] == runtime_id
     assert first["s3files_access_point_arn"] == ""
-    assert first["platform_version"] == "V2" and first["runtime_version"] == "1"
+    assert first["platform_version"] == platform and first["runtime_version"] == "1"
+    assert control.create_agent_runtime.call_args.kwargs["platformVersion"] == platform
     assert "filesystemConfigurations" not in control.create_agent_runtime.call_args.kwargs
     assert namespace["_s3files_policy_resources"]() == [AP, AP.rsplit("/access-point/", 1)[0]]
 
@@ -86,8 +90,9 @@ def test_deferred_create_then_attached_update_preserves_id_and_policy(role, tmp_
     second = json.loads(connection.read_text())
     assert second["runtime_id"] == first["runtime_id"]
     assert second["s3files_access_point_arn"] == AP
-    assert second["platform_version"] == "V2" and second["runtime_version"] == "2"
+    assert second["platform_version"] == platform and second["runtime_version"] == "2"
     updated = control.update_agent_runtime.call_args.kwargs
+    assert updated["platformVersion"] == platform
     assert updated["agentRuntimeId"] == runtime_id
     assert updated["filesystemConfigurations"] == [{
         "s3FilesAccessPoint": {"accessPointArn": AP, "mountPath": "/mnt/s3files"},

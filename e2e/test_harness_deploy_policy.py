@@ -204,8 +204,10 @@ def test_ap_scoped_s3files_resources_when_mounted(tmp_path, monkeypatch):
                 f"{role}: mounted resource {resource!r} must be an ARN")
 
 
-def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypatch, platform):
     """A damaged local config must reconcile by Runtime name and repair itself."""
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
 
     class Paginator:
         def __init__(self, runtime_name, runtime_id):
@@ -234,7 +236,7 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypa
 
         def update_agent_runtime(self, **kwargs):
             self.updated_ids.append(kwargs["agentRuntimeId"])
-            assert kwargs["platformVersion"] == "V2"
+            assert kwargs["platformVersion"] == platform
             return {
                 "agentRuntimeId": self.runtime_id,
                 "agentRuntimeArn": f"arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/{self.runtime_id}",
@@ -249,7 +251,7 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypa
                 "agentRuntimeId": self.runtime_id,
                 "agentRuntimeArn": f"arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/{self.runtime_id}",
                 "agentRuntimeVersion": "2" if self.updated_ids else "1",
-                "platformVersion": "V2" if self.updated_ids else "V1",
+                "platformVersion": platform if self.updated_ids else "V1",
                 "createdAt": 100, "lastUpdatedAt": 200 if self.updated_ids else 100,
             }
 
@@ -284,7 +286,7 @@ def test_corrupt_runtime_config_recovers_the_existing_runtime(tmp_path, monkeypa
         repaired = json.loads(config_path.read_text())
         assert repaired["runtime_id"] == runtime_id
         assert repaired["runtime_arn"].endswith(f"/{runtime_id}")
-        assert repaired["platform_version"] == "V2"
+        assert repaired["platform_version"] == platform
         assert repaired["runtime_version"] == "2"
         assert control.updated_ids == [runtime_id]
 

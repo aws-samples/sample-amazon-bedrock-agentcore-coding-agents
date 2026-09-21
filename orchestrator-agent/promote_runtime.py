@@ -1,4 +1,4 @@
-"""Promote the exact CLI/CDK-owned Coordinator Runtime to platform V2."""
+"""Verify the exact CLI/CDK-owned Coordinator Runtime on the selected platform."""
 from __future__ import annotations
 
 import argparse
@@ -136,7 +136,8 @@ def _connection(resources, runtime_name):
 
 def promote_project(project: Path, *, target_name: str = "default",
                     runtime_name: str = "orchestrator", timeout_s=None, control=None) -> dict:
-    """Preserve CDK ownership; a successful CDK stack is not proof of V2."""
+    """Preserve CDK ownership and verify the requested Runtime platform."""
+    platform = runtime_deploy.selected_platform()
     config_root = project / "agentcore"
     targets = json.loads((config_root / "aws-targets.json").read_text(encoding="utf-8"))
     matches = [target for target in targets if target.get("name") == target_name]
@@ -175,7 +176,7 @@ def promote_project(project: Path, *, target_name: str = "default",
         control = _CdkControl(control, target, resources, entry, deadline)
     result = runtime_deploy.promote(
         control, runtime_id, timeout_s=_remaining(deadline), expected_arn=arn,
-        minimum_version=accepted_version,
+        minimum_version=accepted_version, platform=platform,
     )
     if isinstance(control, _CdkControl):
         control.assert_unchanged()

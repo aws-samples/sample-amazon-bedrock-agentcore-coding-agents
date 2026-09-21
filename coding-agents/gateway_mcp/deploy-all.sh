@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSHOP_RUNTIME_PLATFORM_VERSION=$(python3 "$SCRIPT_DIR/../runtime_deploy.py" --print-platform)
+export WORKSHOP_RUNTIME_PLATFORM_VERSION
 
 echo "========================================="
 echo " AgentCore MCP - Full Deployment"

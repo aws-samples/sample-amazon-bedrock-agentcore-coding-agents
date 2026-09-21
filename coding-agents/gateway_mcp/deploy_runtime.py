@@ -1,4 +1,4 @@
-"""Deploy the existing Gateway MCP Runtime through the shared V2 SDK path."""
+"""Deploy the existing Gateway MCP Runtime on the selected platform."""
 from __future__ import annotations
 
 import argparse

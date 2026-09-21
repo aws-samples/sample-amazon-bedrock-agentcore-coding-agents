@@ -416,7 +416,7 @@ def deploy_runtime(role_arn: str) -> dict:
 
 
 def main():
-    runtime_deploy.require_v2_sdk()
+    runtime_deploy.require_runtime_sdk()
     runtime_deploy.validate_environment(_runtime_environment())
     role_arn = create_execution_role()
     runtime = deploy_runtime(role_arn)

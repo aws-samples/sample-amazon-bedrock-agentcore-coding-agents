@@ -452,7 +452,7 @@ def deploy_runtime(role_arn: str) -> dict:
 
 
 def main():
-    runtime_deploy.require_v2_sdk()
+    runtime_deploy.require_runtime_sdk()
     runtime_deploy.validate_environment(_runtime_environment())
     print("=" * 60)
     print(f"Deploying {AGENT_NAME} to AgentCore Runtime")

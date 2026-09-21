@@ -153,7 +153,7 @@ def test_live_readback_banner_formats_verify_exactly(tmp_path, tools, name, bann
 
 def test_sdk_specs_and_executing_environment_must_agree(monkeypatch):
     assert cli.sdk_requirements() == ["boto3==1.43.95", "botocore==1.43.95"]
-    assert cli.runtime_platform_version() == "V2"
+    assert cli.runtime_platform_version() == "V1"
     monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: "1.43.90")
     with pytest.raises(RuntimeError, match="Deploy SDK mismatch"):
         cli.require_deploy_sdk()

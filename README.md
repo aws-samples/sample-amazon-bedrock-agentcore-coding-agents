@@ -1,8 +1,9 @@
 # Coding Agents on Amazon Bedrock AgentCore Runtime
 
 Run Claude Code (backend), Codex (frontend), and Kiro (validator) on Amazon
-Bedrock AgentCore Runtime V2. Give the team one request; the coordinator opens a
-checked and reviewed pull request for each selected builder. The guided game selects Claude Code
+Bedrock AgentCore Runtime, with V1 as the deployment default. Give the team one
+request; the coordinator opens a checked and reviewed pull request for each
+selected builder. The guided game selects Claude Code
 and Kiro, producing one builder PR. A separate Claude Code validator remains a
 restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
 opencode remains the alternate frontend, selected the same way.
@@ -20,12 +21,17 @@ container installation use that manifest, verify the installed versions, and
 disable automatic updates. Change a pin deliberately and repeat the Runtime
 tool, shared-file, and telemetry checks before releasing it.
 
-Runtime V2 prepares a snapshot during deployment. The deployers wait for the
-expected Runtime revision to report both `READY` and `platformVersion=V2`;
-preparation can take several minutes. They stop on failure or a bounded deadline.
-The platform version is separate from the numbered configuration revisions.
-The coordinator keeps its generated CDK project, then uses the SDK to select V2
-because CloudFormation does not expose that setting yet.
+Deployments default to **V1**. To opt into V2, run
+`export WORKSHOP_RUNTIME_PLATFORM_VERSION=V2` in the terminal used for the role,
+Gateway MCP, and coordinator deployment commands. Only exact `V1` or `V2` values
+are accepted; unset uses the default in `coding-agents/cli-versions.json`.
+
+The deployers wait for the expected Runtime revision to report `READY` on the
+selected platform. They stop on failure or a bounded deadline. V2 prepares a
+snapshot during deployment, which can take several minutes. The platform version
+is separate from the numbered configuration revisions. The coordinator keeps its
+generated CLI/CDK project, verifies the current deployment, and uses the shared
+SDK helper to verify or update the selected platform.
 
 The game preset leaves its concept, appearance, controls, and progression to the
 builder. Teams share a small score interface: `GET /api/scores` returns saved

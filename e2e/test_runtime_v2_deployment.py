@@ -27,6 +27,12 @@ AP = f"arn:aws:s3files:{REGION}:{ACCOUNT}:file-system/fs-one/access-point/ap-one
 ROLES = ("claude-code", "codex", "kiro", "claude-code-validator", "opencode")
 
 
+@pytest.fixture(autouse=True)
+def v2_opt_in(monkeypatch):
+    """Keep the original V2 regressions explicit after the workshop default changes."""
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", "V2")
+
+
 def error(code, message="denied"):
     return ClientError({"Error": {"Code": code, "Message": message}}, "AgentRuntime")
 
@@ -112,9 +118,11 @@ def load_file(name, path):
     return module
 
 
-def test_installed_sdk_and_bounded_client():
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_installed_sdk_and_bounded_client(monkeypatch, platform):
     # Model loading/client configuration is local; the fake session never requests credentials.
-    deploy.require_v2_sdk()
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    deploy.require_runtime_sdk()
     session = Mock()
     deploy.control_client(REGION, session)
     arguments = session.client.call_args.kwargs
@@ -134,15 +142,107 @@ def test_manifest_sdk_mismatch_fails_before_client_creation(monkeypatch):
     session.client.assert_not_called()
 
 
-def test_platform_comes_from_the_canonical_manifest(monkeypatch):
-    # Reload only this module so the actual import must consume the shared value.
-    # A hardcoded V2 deployment would incorrectly pass with a V1 manifest.
-    monkeypatch.setattr(deploy.cli_versions, "runtime_platform_version", lambda: "V1")
-    module = load_file("runtime_manifest_preflight", ROOT / "coding-agents/runtime_deploy.py")
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_platform_comes_from_the_canonical_manifest_when_unset(monkeypatch, platform):
+    monkeypatch.delenv(deploy.PLATFORM_ENV)
+    monkeypatch.setattr(deploy.cli_versions, "runtime_platform_version", lambda: platform)
+    assert deploy.selected_platform() == platform
+    control = Control()
+    result = deploy.deploy(control, {"agentRuntimeName": "agent"})
+    assert control.creates[0]["platformVersion"] == result["platform_version"] == platform
+
+
+def test_invalid_manifest_platform_fails_before_client_creation(monkeypatch):
+    monkeypatch.delenv(deploy.PLATFORM_ENV)
+    monkeypatch.setattr(deploy.cli_versions, "runtime_platform_version", lambda: "unknown")
     session = Mock()
-    with pytest.raises(module.RuntimeDeploymentError, match="requires platform V2"):
-        module.control_client(REGION, session)
+    with pytest.raises(deploy.RuntimeDeploymentError, match="exactly V1 or V2"):
+        deploy.control_client(REGION, session)
     session.client.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["", "v1", "v2", "V3", " V1", "V2 ", "2"])
+def test_invalid_explicit_platform_fails_before_any_control_call(monkeypatch, value):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, value)
+    control = Mock()
+    actions = (
+        lambda: deploy.control_client(REGION, control),
+        lambda: deploy.create_runtime_with_role_retry(control, {}),
+        lambda: deploy.update_request(runtime()),
+        lambda: deploy.deploy(control, {"agentRuntimeName": "agent"}),
+        lambda: deploy.promote(control, "runtime-kept"),
+        lambda: deploy.wait_ready(control, "runtime-kept", expected_version="3"),
+    )
+    for action in actions:
+        with pytest.raises(deploy.RuntimeDeploymentError, match=deploy.PLATFORM_ENV):
+            action()
+    assert control.mock_calls == []
+
+
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_explicit_platform_overrides_manifest_for_submission_and_readback(monkeypatch, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    monkeypatch.setattr(deploy.cli_versions, "runtime_platform_version",
+                        lambda: "V2" if platform == "V1" else "V1")
+    control = Control()
+    result = deploy.deploy(control, {"agentRuntimeName": "agent"})
+    assert control.creates[0]["platformVersion"] == result["platform_version"] == platform
+
+
+@pytest.mark.parametrize("platform,limit", [("V1", 4096), ("V2", 2500)])
+def test_selected_environment_limit_counts_bytes_and_redacts_values(monkeypatch, platform, limit):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    assert deploy.validate_environment({"X": "a" * (limit - 3)}) == limit
+    value = "é" * ((limit - 2) // 2)
+    with pytest.raises(deploy.RuntimeDeploymentError, match=f"{limit + 1} bytes") as exc:
+        deploy.validate_environment({"X": value})
+    assert value not in str(exc.value)
+    assert f"{platform} container environment" in str(exc.value)
+
+
+@pytest.mark.parametrize("path", ["create", "update", "promotion"])
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_v1_sized_environment_uses_destination_platform_limit(monkeypatch, clock, path, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    environment = {"CONFIG": "x" * 3000}
+    current = None if path == "create" else runtime(
+        platformVersion="V2", environmentVariables=environment)
+    control = Control(current)
+    if path == "promotion":
+        action = lambda: deploy.promote(control, "runtime-kept")
+    else:
+        action = lambda: deploy.deploy(
+            control, {"agentRuntimeName": "agent", "environmentVariables": environment},
+            runtime_id="runtime-kept" if current else None)
+    if platform == "V2":
+        with pytest.raises(deploy.RuntimeDeploymentError, match="2500 bytes"):
+            action()
+        assert control.creates == [] and control.updates == []
+    else:
+        result = action()
+        request = (control.creates or control.updates)[0]
+        assert request["environmentVariables"] == environment
+        assert request["platformVersion"] == result["platform_version"] == "V1"
+
+
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_ready_on_wrong_platform_is_rejected_for_exact_revision(clock, monkeypatch, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    control = Control(runtime(platformVersion="V2" if platform == "V1" else "V1"))
+    with pytest.raises(deploy.RuntimeDeploymentError, match=f"expected {platform}"):
+        deploy.wait_ready(control, "runtime-kept", expected_version="3")
+    assert clock[0] == 0
+
+
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_selected_platform_stays_fixed_through_submission_and_wait(monkeypatch, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    control = Control()
+    result = deploy.deploy(
+        control, {"agentRuntimeName": "agent"},
+        on_submitted=lambda record: monkeypatch.setenv(
+            deploy.PLATFORM_ENV, "V2" if platform == "V1" else "V1"))
+    assert control.creates[0]["platformVersion"] == result["platform_version"] == platform
 
 
 @pytest.mark.parametrize("operation", ["CreateAgentRuntime", "UpdateAgentRuntime", "GetAgentRuntime"])
@@ -157,7 +257,7 @@ def test_unsupported_sdk_fails_without_client_creation(monkeypatch, operation):
     monkeypatch.setattr(botocore.session, "get_session", lambda: SimpleNamespace(
         get_service_model=lambda name: model))
     with pytest.raises(deploy.RuntimeDeploymentError, match="1.43.95"):
-        deploy.require_v2_sdk()
+        deploy.require_runtime_sdk()
 
 
 def test_environment_counts_utf8_delimiters_and_does_not_print_values():
@@ -354,8 +454,10 @@ def test_unbounded_timeout_is_rejected(value):
         deploy.wait_ready(Mock(), "runtime-kept", expected_version="3", timeout_s=value)
 
 
-def test_promotion_preserves_all_configuration_and_does_not_recreate(clock):
-    before = runtime()
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_promotion_preserves_all_configuration_and_does_not_recreate(clock, monkeypatch, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    before = runtime(platformVersion="V2" if platform == "V1" else "V1")
     control = Control(before)
     result = deploy.promote(control, "runtime-kept", expected_arn=ARN)
     request = control.updates[0]
@@ -367,9 +469,10 @@ def test_promotion_preserves_all_configuration_and_does_not_recreate(clock):
     }
     assert result["runtime_id"] == "runtime-kept"
     assert result["runtime_version"] == "4"
-    assert result["platform_version"] == "V2"
+    assert request["platformVersion"] == result["platform_version"] == platform
     assert control.creates == []
-    assert before == runtime(), "preparing a request must not mutate the original receipt"
+    assert before == runtime(platformVersion="V2" if platform == "V1" else "V1"), (
+        "preparing a request must not mutate the original receipt")
     assert not {"createdAt", "workloadIdentityDetails", "status"} & request.keys()
 
 
@@ -392,8 +495,10 @@ def test_role_propagation_budget_cannot_be_unbounded():
     control.create_agent_runtime.assert_not_called()
 
 
-def test_existing_v2_promotion_is_noop(clock):
-    control = Control(runtime(platformVersion="V2"))
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_existing_selected_platform_promotion_is_noop(clock, monkeypatch, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+    control = Control(runtime(platformVersion=platform))
     assert deploy.promote(control, "runtime-kept")["runtime_version"] == "3"
     assert control.updates == []
     assert clock[0] == 0
@@ -460,7 +565,14 @@ def role_namespace(role, tmp_path, control):
 
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("path", ["create", "existing", "recover-name"])
-def test_actual_role_paths_use_v2_and_record_real_revision(role, path, clock, tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", [None, "V1", "V2"], ids=["default", "V1", "V2"])
+def test_actual_role_paths_use_selected_platform_and_record_real_revision(
+        role, path, platform, clock, tmp_path, monkeypatch):
+    if platform is None:
+        monkeypatch.delenv(deploy.PLATFORM_ENV)
+        platform = "V1"
+    else:
+        monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
     monkeypatch.setenv("KIRO_API_KEY", "never-store-this-value")
     current = runtime(agentRuntimeName=role) if path != "create" else None
     control = Control(current)
@@ -471,7 +583,7 @@ def test_actual_role_paths_use_v2_and_record_real_revision(role, path, clock, tm
     namespace["main"]()
     written = json.loads((tmp_path / "runtime_config.json").read_text())
     submitted = control.updates[-1] if path != "create" else control.creates[-1]
-    assert submitted["platformVersion"] == "V2"
+    assert submitted["platformVersion"] == platform
     assert submitted["roleArn"] == ROLE
     assert submitted["filesystemConfigurations"] == [{"s3FilesAccessPoint": {
         "accessPointArn": AP, "mountPath": "/mnt/s3files"}}]
@@ -479,11 +591,52 @@ def test_actual_role_paths_use_v2_and_record_real_revision(role, path, clock, tm
     assert written["runtime_arn"] == ARN
     assert written["runtime_id"] == "runtime-kept"
     assert written["runtime_version"] == ("1" if path == "create" else "4")
-    assert written["platform_version"] == "V2"
+    assert written["platform_version"] == platform
     assert written["region"] == REGION
 
 
-def test_gateway_adapter_preserves_state_and_mcp_configuration(clock, tmp_path):
+@pytest.mark.parametrize("role", ROLES)
+def test_invalid_platform_stops_role_main_before_iam(role, tmp_path, monkeypatch):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, "V3")
+    control = Mock()
+    namespace = role_namespace(role, tmp_path, control)
+    namespace["create_execution_role"] = Mock()
+    with pytest.raises(deploy.RuntimeDeploymentError, match=deploy.PLATFORM_ENV):
+        namespace["main"]()
+    namespace["create_execution_role"].assert_not_called()
+    assert control.mock_calls == []
+    assert not (tmp_path / "runtime_config.json").exists()
+
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_role_main_rejects_wrong_ready_platform_without_writing_connection(
+        role, tmp_path, monkeypatch, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
+
+    class WrongPlatform(Control):
+        def get_agent_runtime(self, **kwargs):
+            result = super().get_agent_runtime(**kwargs)
+            result["platformVersion"] = "V2" if platform == "V1" else "V1"
+            return result
+
+    control = WrongPlatform()
+    namespace = role_namespace(role, tmp_path, control)
+    with pytest.raises(deploy.RuntimeDeploymentError, match=f"expected {platform}"):
+        namespace["main"]()
+    assert len(control.creates) == 1 and control.updates == []
+    assert not (tmp_path / "runtime_config.json").exists()
+
+
+@pytest.mark.parametrize("platform", [None, "V1", "V2"], ids=["default", "V1", "V2"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_gateway_adapter_preserves_state_and_mcp_configuration(
+        clock, tmp_path, monkeypatch, platform, existing):
+    if platform is None:
+        monkeypatch.delenv(deploy.PLATFORM_ENV)
+        platform = "V1"
+    else:
+        monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
     gateway = load_file("gateway_v2_adapter", ROOT / "coding-agents/gateway_mcp/deploy_runtime.py")
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"runtime_id": "runtime-kept", "gateway_id": "gateway-kept",
@@ -491,9 +644,10 @@ def test_gateway_adapter_preserves_state_and_mcp_configuration(clock, tmp_path):
     args = SimpleNamespace(state=str(path), name="agent", image="registry/mcp:pinned", role=ROLE,
                            region=REGION, secret_arn="arn:secret:kept", network="PUBLIC",
                            protocol="MCP", idle_timeout=600, max_lifetime=3300, timeout=900)
-    control = Control(runtime())
+    control = Control(runtime() if existing else None)
     result = gateway.deploy(args, control)
-    request = control.updates[0]
+    request = control.updates[0] if existing else control.creates[0]
+    assert request["platformVersion"] == platform
     assert request["protocolConfiguration"] == {"serverProtocol": "MCP"}
     assert request["networkConfiguration"] == {"networkMode": "PUBLIC"}
     assert request["lifecycleConfiguration"] == {"idleRuntimeSessionTimeout": 600, "maxLifetime": 3300}
@@ -501,7 +655,7 @@ def test_gateway_adapter_preserves_state_and_mcp_configuration(clock, tmp_path):
     saved = json.loads(path.read_text())
     assert saved["gateway_id"] == "gateway-kept"
     assert saved["github_app_secret_arn"] == "arn:secret:kept"
-    assert saved["platform_version"] == result["platform_version"] == "V2"
+    assert saved["platform_version"] == result["platform_version"] == platform
 
 
 def project_state(tmp_path, *, account=ACCOUNT, region=REGION):
@@ -575,27 +729,50 @@ def current_cdk_runtime(**overrides):
     })
 
 
-def test_coordinator_native_cdk_state_without_revision_promotes_observed_runtime(
-        clock, tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", [None, "V1", "V2"], ids=["default", "V1", "V2"])
+def test_coordinator_native_cdk_state_without_revision_selects_observed_runtime(
+        clock, tmp_path, monkeypatch, platform):
+    if platform is None:
+        monkeypatch.delenv(deploy.PLATFORM_ENV)
+        platform = "V1"
+    else:
+        monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
     module = load_file("coordinator_native_missing_version", ROOT / "orchestrator-agent/promote_runtime.py")
     state_path, cloudformation = native_cdk_project(tmp_path, monkeypatch)
     control = Control(current_cdk_runtime())
     result = module.promote_project(tmp_path, control=control)
     entry = json.loads(state_path.read_text())["targets"]["default"]["resources"]["runtimes"]["orchestrator"]
-    assert result["runtime_version"] == "2" and result["platform_version"] == "V2"
+    expected_version = 2 if platform == "V2" else 1
+    assert result["runtime_version"] == str(expected_version) and result["platform_version"] == platform
     assert entry == {"runtimeId": "runtime-kept", "runtimeArn": ARN,
-                     "roleArn": ROLE, "runtimeVersion": 2}
-    assert len(control.updates) == 1 and control.creates == []
-    assert control.updates[0]["agentRuntimeArtifact"] == current_cdk_runtime()["agentRuntimeArtifact"]
+                     "roleArn": ROLE, "runtimeVersion": expected_version}
+    assert len(control.updates) == expected_version - 1 and control.creates == []
+    if control.updates:
+        assert control.updates[0]["agentRuntimeArtifact"] == current_cdk_runtime()["agentRuntimeArtifact"]
     assert cloudformation.describe_stack_events.call_count >= 1
 
 
+def test_coordinator_invalid_platform_does_not_read_cdk_or_change_state(
+        clock, tmp_path, monkeypatch):
+    module = load_file("coordinator_invalid_platform", ROOT / "orchestrator-agent/promote_runtime.py")
+    state_path, cloudformation = native_cdk_project(tmp_path, monkeypatch)
+    before = state_path.read_bytes()
+    monkeypatch.setenv(deploy.PLATFORM_ENV, "")
+    control = Mock()
+    with pytest.raises(deploy.RuntimeDeploymentError, match=deploy.PLATFORM_ENV):
+        module.promote_project(tmp_path, control=control)
+    assert control.mock_calls == [] and cloudformation.mock_calls == []
+    assert state_path.read_bytes() == before
+
+
 @pytest.mark.parametrize("stale_field", ["image", "environment", "extra-environment", "timestamp"])
-def test_coordinator_native_cdk_state_rejects_stale_v2_ready_before_shortcut(
-        clock, tmp_path, monkeypatch, stale_field):
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_coordinator_native_cdk_state_rejects_stale_ready_before_shortcut(
+        clock, tmp_path, monkeypatch, stale_field, platform):
+    monkeypatch.setenv(deploy.PLATFORM_ENV, platform)
     module = load_file("coordinator_native_stale_ready", ROOT / "orchestrator-agent/promote_runtime.py")
     state_path, _ = native_cdk_project(tmp_path, monkeypatch)
-    stale = current_cdk_runtime(platformVersion="V2")
+    stale = current_cdk_runtime(platformVersion=platform)
     if stale_field == "image":
         stale["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] = "registry/agent:stale"
     elif stale_field == "environment":
@@ -604,7 +781,7 @@ def test_coordinator_native_cdk_state_rejects_stale_v2_ready_before_shortcut(
         stale["environmentVariables"]["REMOVED_BY_CDK"] = "must-not-return"
     else:
         stale["lastUpdatedAt"] = 100
-    current = current_cdk_runtime(agentRuntimeVersion="8", platformVersion="V2")
+    current = current_cdk_runtime(agentRuntimeVersion="8", platformVersion=platform)
     control = Mock()
     control.get_agent_runtime.side_effect = [stale, current, current]
     result = module.promote_project(tmp_path, control=control)

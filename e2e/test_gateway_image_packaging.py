@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "coding-agents/gateway_mcp/deploy-runtime.sh"
@@ -15,7 +17,7 @@ REGISTRY = "000000000000.dkr.ecr.us-east-1.amazonaws.com"
 IMAGE = REGISTRY + "/github-mcp:latest"
 
 
-def run_deploy_fixture(directory: Path, fail_at: str = ""):
+def run_deploy_fixture(directory: Path, fail_at: str = "", platform: str | None = None):
     """Run the unchanged script with strict external-command fixtures."""
     gateway = directory / "gateway with spaces"
     app = gateway / "app"
@@ -49,7 +51,8 @@ state_get() {
 import json, os, pathlib, sys
 tool, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
 fd = os.open(os.environ["PACKAGING_LOG"], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-os.write(fd, (json.dumps({{"tool": tool, "args": args}}) + "\\n").encode())
+os.write(fd, (json.dumps({{"tool": tool, "args": args,
+                         "platform": os.environ.get("WORKSHOP_RUNTIME_PLATFORM_VERSION")}}) + "\\n").encode())
 os.close(fd)
 if tool == "aws":
     if args[:2] == ["ecr", "describe-repositories"]:
@@ -70,6 +73,9 @@ elif tool == "docker":
 elif tool == "python3":
     if pathlib.Path(args[0]).name not in ("runtime_deploy.py", "deploy_runtime.py"):
         raise SystemExit("Unexpected Python fixture command: " + repr(args))
+    if pathlib.Path(args[0]).name == "runtime_deploy.py":
+        os.execv(sys.executable, [sys.executable, "-B",
+                 {str(ROOT / "coding-agents/runtime_deploy.py")!r}, *args[1:]])
 else:
     raise SystemExit("Unexpected fixture executable: " + tool)
 """
@@ -86,11 +92,13 @@ else:
         "PACKAGING_FAIL_AT": fail_at,
         "DOCKER_DEFAULT_PLATFORM": "linux/amd64",
     }
+    if platform is not None:
+        env["WORKSHOP_RUNTIME_PLATFORM_VERSION"] = platform
     result = subprocess.run(
         ["bash", str(script)], env=env, capture_output=True, text=True, timeout=15,
     )
     commands = [json.loads(line) for line in log.read_text().splitlines()]
-    return result, commands, state.read_text(), app
+    return result, commands, state.read_text() if state.exists() else "", app
 
 
 def test_gateway_build_explicitly_targets_arm64_and_preserves_deploy_flow(tmp_path):
@@ -131,3 +139,22 @@ def test_gateway_build_failure_stops_before_tag_push_or_deploy(tmp_path):
 
 def test_gateway_push_failure_stops_before_iam_or_deploy(tmp_path):
     _assert_failed_docker_step_stops_deployment(tmp_path, "push")
+
+
+@pytest.mark.parametrize("platform", [None, "V1", "V2"])
+def test_gateway_runtime_shell_carries_selection_to_real_adapter_argv(tmp_path, platform):
+    result, commands, _, _ = run_deploy_fixture(tmp_path, platform=platform)
+    assert result.returncode == 0, result.stderr
+    expected = platform or "V1"
+    assert commands[0]["tool"] == "python3"
+    assert Path(commands[0]["args"][0]).name == "runtime_deploy.py"
+    assert commands[0]["args"][1:] == ["--print-platform"]
+    assert all(row["platform"] == expected for row in commands[1:])
+    assert Path(commands[-1]["args"][0]).name == "deploy_runtime.py"
+
+
+def test_gateway_invalid_platform_stops_before_config_build_or_iam(tmp_path):
+    result, commands, state, _ = run_deploy_fixture(tmp_path, platform="v2")
+    assert result.returncode != 0 and "WORKSHOP_RUNTIME_PLATFORM_VERSION" in result.stderr
+    assert len(commands) == 1 and commands[0]["tool"] == "python3"
+    assert state == ""

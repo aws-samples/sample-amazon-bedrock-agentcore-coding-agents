@@ -347,7 +347,10 @@ def test_cross_region_mount_fails_before_aws_even_when_deferred(tmp_path, monkey
 
 
 @pytest.mark.parametrize("defer_mount", [False, True])
-def test_deploy_passes_model_and_region_and_honors_deferred_mount(tmp_path, monkeypatch, defer_mount):
+@pytest.mark.parametrize("platform", ["V1", "V2"])
+def test_deploy_passes_model_and_region_and_honors_deferred_mount(
+        tmp_path, monkeypatch, defer_mount, platform):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
     module = _deploy_module(tmp_path, monkeypatch, defer_mount=defer_mount)
     calls = []
 
@@ -360,7 +363,7 @@ def test_deploy_passes_model_and_region_and_honors_deferred_mount(tmp_path, monk
                     "agentRuntimeVersion": "1", "status": "CREATING", "createdAt": 100}
 
         def get_agent_runtime(self, **kwargs):
-            return {"status": "READY", "platformVersion": "V2", "agentRuntimeVersion": "1",
+            return {"status": "READY", "platformVersion": platform, "agentRuntimeVersion": "1",
                     "createdAt": 100, "lastUpdatedAt": 100,
                     "agentRuntimeId": "codex-test", "agentRuntimeArn": "arn:test"}
 
@@ -373,7 +376,7 @@ def test_deploy_passes_model_and_region_and_honors_deferred_mount(tmp_path, monk
     monkeypatch.setenv("GATEWAY_URL", "https://example.invalid/mcp")
     module.deploy_runtime("arn:aws:iam::123456789012:role/codex")
     args = calls[0]
-    assert args["platformVersion"] == "V2"
+    assert args["platformVersion"] == platform
     env = args["environmentVariables"]
     assert env["AWS_REGION"] == env["AWS_DEFAULT_REGION"] == "us-east-1"
     assert env["WORKSHOP_CODEX_MODEL"] == "us.openai.stack-model"

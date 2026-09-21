@@ -45,7 +45,7 @@
     "botocore": "1.43.95"
   },
   "runtime": {
-    "platform_version": "V2",
+    "platform_version": "V1",
     "base_image": "public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b"
   }
 }

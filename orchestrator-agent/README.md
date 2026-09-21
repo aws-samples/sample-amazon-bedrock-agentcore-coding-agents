@@ -17,7 +17,7 @@ routing projects in that language.
 | `model/load.py` | Bedrock model construction |
 | `stage_engine.py` | Stage the root coordinator and use cases into the build context |
 | `configure_deploy.py` | Wire role ARNs, IAM roles, and account settings into generated CLI config |
-| `promote_runtime.py` | Select platform V2 on the deployed Runtime and wait for its new revision |
+| `promote_runtime.py` | Verify the selected platform on the current CLI/CDK Runtime; update it when needed |
 | `probe_coordinator.py` | Require a real, non-error answer from the deployed coordinator |
 | `Dockerfile` | Build the coordinator container |
 
@@ -37,26 +37,33 @@ actually idle session can still expire; terminal results remain in the run store
 ## Deploy the coordinator
 
 Complete Lab 1 and the GitHub Gateway setup first. In the terminal where
-`GITHUB_GATEWAY_URL`, `GITHUB_REPO`, and `AWS_REGION` are set, run:
+`GITHUB_GATEWAY_URL`, `GITHUB_REPO`, and `AWS_REGION` are set, deploy with:
 
 ```bash
 cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent
 ./deploy-coordinator.sh
 ```
 
+**V1 is the default.** To opt into V2, first run
+`export WORKSHOP_RUNTIME_PLATFORM_VERSION=V2` in that terminal. Set it to `V1`
+to select V1 explicitly. Only these exact values are accepted; an unset setting
+uses the default in `coding-agents/cli-versions.json`.
+
 The script prints the wiring, stages the engine, creates the CLI project, and
 runs `configure_deploy.py` before validation and deployment. Configuration
 includes the worker ARNs, execution roles, account, region, repository, and merge
 policy. Generated files under `CodingAgents/` stay untracked.
 
-After the CLI deployment succeeds, the wrapper sets `platformVersion=V2` through
-the AgentCore API. CloudFormation does not yet expose that setting. Snapshot
-preparation can take several minutes; the wrapper waits for the expected Runtime
-revision to become `READY` on V2 before running the application probe. A failed
-revision stops deployment and prints its failure reason.
+After the CLI deployment succeeds, the wrapper verifies the Runtime's identity
+and configuration against the current CDK deployment. A Runtime already `READY`
+on the selected platform needs no extra platform update. When an update is
+needed, the shared SDK helper waits for its exact accepted revision to become
+`READY` on the selected platform before running the application probe. V2 snapshot
+preparation can take several minutes. A failure or bounded deadline stops deployment.
 
-If you deploy the generated project manually, complete the same step from
-`CodingAgents/` after `agentcore deploy` succeeds:
+If you deploy the generated project manually, keep the same
+`WORKSHOP_RUNTIME_PLATFORM_VERSION` environment and complete the same verification
+from `CodingAgents/` after `agentcore deploy` succeeds:
 
 ```bash
 python3 ../orchestrator-agent/promote_runtime.py --project .

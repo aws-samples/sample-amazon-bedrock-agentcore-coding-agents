@@ -204,8 +204,10 @@ def _deploy_module(tmp_path, monkeypatch, control):
 
 @pytest.mark.parametrize("existing", [False, True, "conflict"])
 @pytest.mark.parametrize("effort", ["max", ""])
+@pytest.mark.parametrize("platform", ["V1", "V2"])
 def test_deploy_forwards_only_public_backend_settings_on_create_and_update(
-        tmp_path, monkeypatch, existing, effort):
+        tmp_path, monkeypatch, existing, effort, platform):
+    monkeypatch.setenv("WORKSHOP_RUNTIME_PLATFORM_VERSION", platform)
     calls = []
     class Control:
         revision = "1"
@@ -226,7 +228,7 @@ def test_deploy_forwards_only_public_backend_settings_on_create_and_update(
                     "createdAt": 100, "lastUpdatedAt": 200}
 
         def get_agent_runtime(self, **kwargs):
-            return {"status": "READY", "platformVersion": "V2",
+            return {"status": "READY", "platformVersion": platform,
                     "agentRuntimeVersion": self.revision, "agentRuntimeName": "claude_code",
                     "createdAt": 100, "lastUpdatedAt": 200 if self.revision == "2" else 100,
                     "agentRuntimeId": "backend-test", "agentRuntimeArn": "arn:test"}
@@ -252,8 +254,9 @@ def test_deploy_forwards_only_public_backend_settings_on_create_and_update(
         monkeypatch.setenv(name, "test-do-not-forward")
     result = module.deploy_runtime("arn:aws:iam::123456789012:role/backend")
     assert result["runtime_id"] == "backend-test"
-    assert result["platform_version"] == "V2"
+    assert result["platform_version"] == platform
     for arguments in calls:
+        assert arguments["platformVersion"] == platform
         assert arguments["environmentVariables"] == {
             "AWS_REGION": "us-west-2", "WORKSHOP_AGENT_NAME": "claude_code", **settings,
         }
