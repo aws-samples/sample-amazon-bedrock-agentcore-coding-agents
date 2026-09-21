@@ -192,7 +192,11 @@ def main():
     parser.add_argument("--session", help="Runtime session ID (reuse same microVM)")
     parser.add_argument("--prompt", help="Run a prompt in headless mode (one-shot, exits when done)")
     parser.add_argument("--cmd", help="Run a raw shell command on the microVM")
-    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. global.anthropic.claude-opus-4-6-v1)")
+    parser.add_argument(
+        "--model",
+        help="Override the Runtime launcher model "
+             "(default: us.anthropic.claude-opus-5 unless configured at deployment)",
+    )
     args = parser.parse_args()
 
     try:

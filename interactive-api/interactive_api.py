@@ -95,7 +95,6 @@ def _prune_dirs(parent: str, keep: int) -> None:
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
 _OPENCODE_REGION = os.environ.get("WORKSHOP_OPENCODE_REGION", "us-west-2")
-_CLAUDE_MODEL = os.environ.get("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opus-4-6-v1")
 # Cheap background model for opencode (titles/summaries). Same wirable seam as
 # the two above; must be an inference profile, never a bare model id.
 _SMALL_MODEL = "amazon-bedrock/" + os.environ.get(
@@ -324,15 +323,19 @@ def _agent_env(agent_id: str) -> dict[str, str]:
     # only the harness location is surfaced, since the jail never chrooted the FS.
     env.setdefault("WORKSHOP_CODING_AGENTS_DIR", _coding_agents_dir())
     if agent_id in ("claude-code", "claude-code-validator"):
-        # The validator is a second Claude Code, so it gets the same Bedrock env.
-        env.update({"CLAUDE_CODE_USE_BEDROCK": "1",
-                    "ANTHROPIC_MODEL": _CLAUDE_MODEL,
-                    "AWS_REGION": env.get("AWS_REGION", "us-west-2"),
-                    # Sessions are ephemeral; a mid-session self-update is wrong
-                    # and, with HOME jailed away from the install, it can only
-                    # fail ("Auto-update failed: no write permission to npm
-                    # prefix"). Turn the updater off for the session.
-                    "DISABLE_AUTOUPDATER": "1"})
+        # Each Claude role owns its model and effort, including the hidden checker.
+        # Layer the same operator model overrides used by Runtime dispatch over
+        # the shelf's selected model (which starts at the registry default).
+        role = _roles.get(agent_id)
+        env.update(role.env)
+        env[role.model_env] = (
+            env.get(f"WORKSHOP_MODEL_{agent_id.replace('-', '_').upper()}", "").strip()
+            or env.get("WORKSHOP_MODEL", "").strip()
+            or _AGENTS.get(agent_id, {}).get("model")
+            or role.default_model)
+        env["AWS_REGION"] = env.get("AWS_REGION", "us-west-2")
+        # A host config directory must not bypass this session's own settings.
+        env.pop("CLAUDE_CONFIG_DIR", None)
     elif agent_id == "opencode":
         env.update({"AWS_REGION": env.get("AWS_REGION", _OPENCODE_REGION)})
     elif agent_id == "codex":
@@ -347,6 +350,22 @@ def _agent_env(agent_id: str) -> dict[str, str]:
     elif agent_id == "kiro":
         env.update({"KIRO_MODEL": "auto"})
     return env
+
+
+def _stage_claude_settings(session: dict) -> None:
+    """Seed registry defaults once; keep later native CLI settings edits."""
+    env = _agent_env(session["agent_id"])
+    settings = {"model": env["ANTHROPIC_MODEL"]}
+    effort = env["WORKSHOP_CLAUDE_EFFORT"]
+    if effort:
+        settings["effortLevel"] = effort
+    directory = os.path.join(session["_root"], ".claude")
+    os.makedirs(directory, exist_ok=True)
+    try:
+        with open(os.path.join(directory, "settings.json"), "x", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except FileExistsError:
+        pass
 
 
 def _codex_config_text(workdirs=()):
@@ -367,11 +386,12 @@ def _stage_agent_config(session: dict) -> None:
     The same files the base-repo containers bake in: opencode reads
     ``~/.config/opencode/opencode.json`` (model + amazon-bedrock provider), Kiro reads
     ``~/.kiro/steering/*.md``, Codex reads ``~/.codex/config.toml``, and
-    Claude Code uses CLAUDE_CODE_USE_BEDROCK.
+    Claude Code uses CLAUDE_CODE_USE_BEDROCK and ``~/.claude/settings.json``.
     The PTY exports HOME at the workspace root, so ``~`` is the session."""
     root = session["_root"]
     agent_id = session["agent_id"]
     if agent_id in ("claude-code", "claude-code-validator"):
+        _stage_claude_settings(session)
         # Both the backend and the validator are Claude Code; stage the same config.
         # Pre-seed ~/.claude.json so `claude` starts straight into its session
         # (and paints its banner) instead of stopping on the first-run onboarding
@@ -1063,6 +1083,9 @@ def _run_command(session: dict, raw: str) -> str:
     cmd = raw.strip()
     if not cmd:
         return ""
+    if session["agent_id"] in ("claude-code", "claude-code-validator"):
+        # Scripted input can start the CLI before any PTY has been opened.
+        _stage_claude_settings(session)
     real_cmd = _to_real(session, cmd)
     # The session env (Bedrock-connected, no API key) with the session's own
     # ~/.local/bin FIRST on PATH, so `agentcore` resolves to the staged shim

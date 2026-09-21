@@ -158,6 +158,118 @@ def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp
     }
 
 
+@pytest.mark.parametrize("effort", ["high", "max", ""])
+def test_backend_model_and_effort_survive_a_fresh_coordinator_process(
+        monkeypatch, tmp_path, effort):
+    """Both headless and interactive backend dispatch use the forwarded effort."""
+    monkeypatch.setenv("WORKSHOP_CLAUDE_MODEL", "us.anthropic.backend-override")
+    monkeypatch.setenv("WORKSHOP_CLAUDE_EFFORT", effort)
+    monkeypatch.setenv("WORKSHOP_MODEL", "us.anthropic.shared-override")
+    monkeypatch.setenv("WORKSHOP_MODEL_CLAUDE_CODE", "us.anthropic.role-override")
+    env = _configure(monkeypatch, tmp_path)
+    assert env["WORKSHOP_CLAUDE_EFFORT"] == effort
+    assert env["WORKSHOP_MODEL"] == "us.anthropic.shared-override"
+    assert env["WORKSHOP_MODEL_CLAUDE_CODE"] == "us.anthropic.role-override"
+
+    # Only the generated deployment environment may supply model/effort settings.
+    child_env = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith(("WORKSHOP_CLAUDE_", "WORKSHOP_MODEL"))
+    }
+    child_env.update(env)
+    child_env["PYTHONPATH"] = str(HERE.parent / "orchestrator")
+    result = subprocess.check_output(
+        [sys.executable, "-c",
+         "import json, roles; role = roles.get('claude-code'); "
+         "print(json.dumps({'model': role.default_model, "
+         "'command': role.command('PROMPT', '', '/tmp/work'), "
+         "'environment': role.env}))"],
+        env=child_env, text=True,
+    )
+    backend = json.loads(result)
+    assert backend["model"] == "us.anthropic.backend-override"
+    assert "--model us.anthropic.backend-override" in backend["command"]
+    assert backend["environment"]["WORKSHOP_CLAUDE_EFFORT"] == effort
+    if effort:
+        assert f"--effort {effort}" in backend["command"]
+    else:
+        assert "--effort" not in backend["command"]
+
+
+def test_unset_backend_effort_is_not_forwarded(monkeypatch, tmp_path):
+    monkeypatch.delenv("WORKSHOP_CLAUDE_EFFORT", raising=False)
+    env = _configure(monkeypatch, tmp_path)
+    assert "WORKSHOP_CLAUDE_EFFORT" not in env
+
+
+@pytest.mark.parametrize("overrides,options,backend_model,validator_model", [
+    ({}, {}, "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-6-v1"),
+    ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
+     {}, "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-4-6"),
+    ({"WORKSHOP_MODEL": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
+     {}, "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-6"),
+    ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
+     {"models": {"claude-code-validator": "us.anthropic.claude-haiku-4-5-20251001-v1:0"}},
+     "us.anthropic.claude-opus-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+])
+def test_restored_validator_model_is_resolved_after_coordinator_configuration(
+        monkeypatch, tmp_path, overrides, options, backend_model, validator_model):
+    """The automatic backend stack default must not select the restored checker."""
+    for name in list(os.environ):
+        if name.startswith(("WORKSHOP_CLAUDE_", "WORKSHOP_MODEL")):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("WORKSHOP_CLAUDE_MODEL", "us.anthropic.claude-opus-5")
+    monkeypatch.setenv("WORKSHOP_ROLES", "claude-code,codex,claude-code-validator")
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+    env = _configure(monkeypatch, tmp_path)
+    assert env["WORKSHOP_CLAUDE_MODEL"] == "us.anthropic.claude-opus-5"
+    assert {name: env.get(name) for name in overrides} == overrides
+
+    child_env = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith(("WORKSHOP_CLAUDE_", "WORKSHOP_MODEL"))
+        and name != "WORKSHOP_ROLES"
+    }
+    child_env.update(env)
+    child_env["PYTHONPATH"] = str(HERE.parent / "orchestrator")
+    result = subprocess.check_output(
+        [sys.executable, "-c", """
+import json, shlex, sys
+from types import SimpleNamespace
+import engine, roles, runtime_exec
+run = SimpleNamespace(options=json.loads(sys.argv[1]))
+records = {}
+for role_id in ("claude-code", "claude-code-validator"):
+    role = roles.get(role_id)
+    selected = engine.Engine._role_model(run, role_id, role.default_model)
+    records[role_id] = {
+        "default": role.default_model,
+        "argv": shlex.split(runtime_exec._cli_invocation(
+            role_id, "PROMPT", selected, "/tmp/work")),
+        "effort": role.env["WORKSHOP_CLAUDE_EFFORT"],
+        "kind": role.kind, "hidden": role.hidden,
+    }
+print(json.dumps({"roster": roles.roster_ids(), "roles": records}))
+""", json.dumps(options)],
+        env=child_env, text=True, timeout=15,
+    )
+    resolved = json.loads(result)
+    assert resolved["roster"] == ["claude-code", "codex", "claude-code-validator"]
+    backend = resolved["roles"]["claude-code"]
+    validator = resolved["roles"]["claude-code-validator"]
+    assert backend["default"] == "us.anthropic.claude-opus-5"
+    assert validator["default"] == "us.anthropic.claude-opus-4-6-v1"
+    for role, expected, effort in (
+            (backend, backend_model, "high"), (validator, validator_model, "xhigh")):
+        argv = role["argv"]
+        assert argv[argv.index("--model") + 1] == expected
+        assert argv[argv.index("--effort") + 1] == role["effort"] == effort
+    assert backend["kind"] == "builder" and backend["hidden"] is False
+    assert validator["kind"] == "checker" and validator["hidden"] is True
+
+
 @pytest.mark.parametrize("value", [None, "", "  "])
 def test_absent_model_settings_keep_coordinator_defaults(monkeypatch, tmp_path, value):
     names = (

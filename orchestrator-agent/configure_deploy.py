@@ -141,6 +141,10 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
         value = os.environ.get(var, "").strip()
         if value:
             env[var] = value
+    # Preserve an explicitly empty effort: it tells the headless launcher to omit
+    # --effort. Dropping the value would silently restore the packaged default.
+    if "WORKSHOP_CLAUDE_EFFORT" in os.environ:
+        env["WORKSHOP_CLAUDE_EFFORT"] = os.environ["WORKSHOP_CLAUDE_EFFORT"].strip()
     # WORKSHOP_ROLES rides in for the same reason, and its absence was a REAL defect:
     # the roster is read from the coordinator's OWN process env (roles.roster()), so a
     # facilitator who exported the documented Kiro fallback

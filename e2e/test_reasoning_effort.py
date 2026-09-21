@@ -57,7 +57,8 @@ def test_dispatch_defaults_to_high_effort():
         for role in roles.REGISTRY:
             cli = role.cli
             if cli.startswith("claude"):
-                assert "--effort xhigh" in cli, cli
+                expected = "high" if role.id == "claude-code" else "xhigh"
+                assert f"--effort {expected}" in cli, cli
             elif cli.startswith("opencode"):
                 assert "--variant high" in cli, cli
     finally:

@@ -31,6 +31,14 @@ if [ -z "${AWS_REGION:-}" ] && [ -r /proc/1/environ ]; then
   AWS_REGION=$(cat /proc/1/environ | tr '\0' '\n' | grep ^AWS_REGION= | cut -d= -f2- || true)
   export AWS_REGION
 fi
+# Command shells may omit the environment supplied to the container entrypoint.
+# Inherit only named model settings, preserving even an explicitly empty effort.
+for setting in WORKSHOP_CLAUDE_MODEL WORKSHOP_MODEL WORKSHOP_MODEL_CLAUDE_CODE WORKSHOP_CLAUDE_EFFORT; do
+  if ! printenv "$setting" >/dev/null && [ -r /proc/1/environ ]; then
+    value=$(tr '\0' '\n' < /proc/1/environ | grep "^${setting}=" || true)
+    if [ -n "$value" ]; then export "$value"; fi
+  fi
+done
 
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}"
 export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
@@ -104,20 +112,34 @@ if [ -n "${GATEWAY_URL:-}" ]; then
 MCPEOF
 fi
 
-# ── Parse --model flag ───────────────────────────────────────
-# Default model is wirable: WORKSHOP_MODEL (a deploy-time runtime env var) wins over
-# the baked default, so an event whose account has not enabled Opus 4.6 (Bedrock
-# Marketplace subscription) can point the backend at an enabled model
-# (e.g. us.anthropic.claude-sonnet-4-6) WITHOUT editing this image. An explicit
-# --model on the command line still overrides both.
-CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT:-xhigh}"
-MODEL="${WORKSHOP_MODEL:-us.anthropic.claude-opus-4-6-v1}"
+# ── Resolve model and effort ─────────────────────────────────
+# Match the coordinator's precedence: a role override wins over the generic
+# override, then the stack's backend default. Explicit CLI flags win over all
+# environment settings. ANTHROPIC_MODEL remains a fallback for native CLI users.
+CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT-high}"
+MODEL="${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_MODEL:-${WORKSHOP_CLAUDE_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-5}}}}"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --model)
-      MODEL="$2"
+    --model|--effort)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "Error: $1 requires a value" >&2
+        exit 2
+      fi
+      if [ "$1" = --model ]; then MODEL="$2"; else CLAUDE_EFFORT="$2"; fi
       shift 2
+      ;;
+    --model=*)
+      MODEL="${1#--model=}"
+      shift
+      ;;
+    --effort=*)
+      CLAUDE_EFFORT="${1#--effort=}"
+      shift
+      ;;
+    --)
+      ARGS+=("$@")
+      break
       ;;
     *)
       ARGS+=("$1")
@@ -125,7 +147,13 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-set -- "${ARGS[@]}"
+# Older Bash versions treat an empty array as unset under nounset. A launcher
+# with no prompt still needs to reach the interactive CLI.
+if [ "${#ARGS[@]}" -gt 0 ]; then
+  set -- "${ARGS[@]}"
+else
+  set --
+fi
 
 cd "$RUN_DIR"
 

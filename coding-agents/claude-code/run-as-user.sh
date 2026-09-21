@@ -16,7 +16,18 @@ USER_ID="${1:?usage: run-as-user.sh <user> \"<prompt>\"}"
 PROMPT="${2:?usage: run-as-user.sh <user> \"<prompt>\"}"
 ROLE_ARN="${PERUSER_ROLE_ARN:?set PERUSER_ROLE_ARN to the pre-provisioned per-user role ARN}"
 REGION="${AWS_REGION:-us-west-2}"
-MODEL="${ANTHROPIC_MODEL:-us.anthropic.claude-opus-4-6-v1}"
+# A Runtime command shell may omit the settings supplied at container startup.
+# Preserve explicit shell overrides, including an empty effort.
+for setting in WORKSHOP_CLAUDE_MODEL WORKSHOP_MODEL WORKSHOP_MODEL_CLAUDE_CODE WORKSHOP_CLAUDE_EFFORT; do
+  if ! printenv "$setting" >/dev/null && [ -r /proc/1/environ ]; then
+    value=$(tr '\0' '\n' < /proc/1/environ | grep "^${setting}=" || true)
+    if [ -n "$value" ]; then export "$value"; fi
+  fi
+done
+# Use the same role/generic/stack precedence as the Runtime launcher. Keep the
+# native Claude variable as a fallback for callers outside the workshop.
+MODEL="${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_MODEL:-${WORKSHOP_CLAUDE_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-5}}}}"
+CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT-high}"
 
 # Become the user: a short-lived STS session named for the user. The session name
 # is what lands in the invocation log as assumed-role/<role>/<user>.
@@ -31,4 +42,5 @@ export AWS_SESSION_TOKEN="$(echo "$CREDS" | cut -f3)"
 export CLAUDE_CODE_USE_BEDROCK=1 AWS_REGION="$REGION"
 
 # Run the agent normally; its Bedrock calls now carry the user identity.
-claude --dangerously-skip-permissions --print --model "$MODEL" "$PROMPT"
+exec claude --dangerously-skip-permissions --print \
+  ${CLAUDE_EFFORT:+--effort "$CLAUDE_EFFORT"} --model "$MODEL" "$PROMPT"

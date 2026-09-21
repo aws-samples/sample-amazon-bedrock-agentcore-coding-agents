@@ -1,5 +1,6 @@
 {
-  "model": "us.anthropic.claude-opus-4-6-v1",
+  "model": "us.anthropic.claude-opus-5",
+  "effortLevel": "high",
   "permissionMode": "dontAsk",
   "permissions": {
     "deny": [
