@@ -117,7 +117,7 @@ fi
 # override, then the stack's backend default. Explicit CLI flags win over all
 # environment settings. ANTHROPIC_MODEL remains a fallback for native CLI users.
 CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT-high}"
-MODEL="${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_MODEL:-${WORKSHOP_CLAUDE_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-5}}}}"
+MODEL="${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_MODEL:-${WORKSHOP_CLAUDE_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-4-6-v1}}}}"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in

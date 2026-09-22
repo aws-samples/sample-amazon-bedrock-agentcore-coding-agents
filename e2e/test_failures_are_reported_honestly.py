@@ -109,6 +109,51 @@ def test_transport_failure_is_retryable_not_permanent() -> None:
     assert not engine._is_permanent("ARTIFACT_TRANSFER_ERROR")
 
 
+@pytest.mark.parametrize("review_reason", [
+    "integrated: review unavailable (model invocation unavailable: access denied)",
+    "integrated: review unavailable (response remained invalid after one repair attempt)",
+    "integrated: review unavailable (review context limit exceeded)",
+])
+def test_unavailable_review_guidance_preserves_recorded_pr_evidence(review_reason) -> None:
+    """An unavailable decision can follow a response; retain the work and its facts."""
+    from copy import deepcopy
+    import engine
+
+    recorded = {
+        "status": "needs_human",
+        "fail_reason": "REVIEW_UNAVAILABLE: fixture_backend",
+        "iterations": 1,
+        "role_prs": [{
+            "work_id": "fixture_backend", "pr_url": "https://example.invalid/pr/7",
+            "state": "blocked", "error": "REVIEW_UNAVAILABLE",
+        }],
+        "gate": {"passed": True, "checks": [], "summary": "fixture check passed"},
+        "review": {
+            "state": "changes_requested", "review_unavailable": True,
+            "reasons": [review_reason],
+        },
+    }
+    run = engine.Run(
+        run_id="run_unavailable_review", task="Inspect the existing pull request",
+        agents=["claude-code"], roles={"claude-code": "backend-builder"},
+        **deepcopy(recorded),
+    )
+    result = engine.public_result(run)
+    for name, value in recorded.items():
+        assert result[name] == value
+        assert getattr(run, name) == value
+    assert result["resubmission_allowed"] is False
+    advice = result["next_action"].lower()
+    for instruction in (
+        "did not produce a valid decision", "keep them open", "recorded review reason",
+        "access, response, or context", "retry review of the same pull request",
+        "do not rebuild the application",
+    ):
+        assert instruction in advice
+    for false_claim in ("did not run", "after model access is restored", "outage"):
+        assert false_claim not in advice
+
+
 # --- 2. a silent shell must time out ---------------------------------------------
 
 class _SilentShell:

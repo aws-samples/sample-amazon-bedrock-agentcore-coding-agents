@@ -195,7 +195,7 @@ def main():
     parser.add_argument(
         "--model",
         help="Override the Runtime launcher model "
-             "(default: us.anthropic.claude-opus-5 unless configured at deployment)",
+             "(default: us.anthropic.claude-opus-4-6-v1 unless configured at deployment)",
     )
     args = parser.parse_args()
 
