@@ -391,6 +391,8 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
             "fi; "
         )
 
+    # CLI and hydration errors may end stdout or stderr without a newline.
+    # Start the end marker on a new line so _slice can recognize it after merging.
     return (
         f"P={shlex.quote(prompt)}; "
         f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; "
@@ -419,7 +421,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"git -C {shlex.quote(seed_dir)} worktree add -q -b "
         f"{shlex.quote(branch)} {shlex.quote(workdir)} HEAD; "
         f"__hydrate_rc=$?; fi; "
-        f"if [ $__hydrate_rc -ne 0 ]; then echo \"$E1\"; "
+        f"if [ $__hydrate_rc -ne 0 ]; then printf '\\n%s\\n' \"$E1\"; "
         f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)}; "
         f"exit $__hydrate_rc; fi; "
         f"{skill_setup}"
@@ -438,7 +440,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         "--only-show-errors; __pack_rc=$?; fi; "
         f"rm -f {shlex.quote(result_archive)}; "
         f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)}; "
-        f'echo "$E1"; '
+        f"printf '\\n%s\\n' \"$E1\"; "
         f"if [ $__rc -ne 0 ]; then exit $__rc; fi; "
         f"exit $__pack_rc\n"
     )
