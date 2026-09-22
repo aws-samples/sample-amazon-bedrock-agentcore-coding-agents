@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Alert from '@cloudscape-design/components/alert';
 import Box from '@cloudscape-design/components/box';
@@ -26,6 +26,9 @@ import { ResourceTable } from '../shared/ResourceTable';
 import { AgentIcon } from '../components/AgentIcon';
 import { toast } from '../components/ConsoleNotifications';
 import { agentInstanceLabel, onAgentRoles } from './agents/environments';
+import { authSession } from '../lib/authSession';
+import { connectionStatus } from '../lib/connectionStatus';
+import { SessionRecoveryActions } from '../components/SessionRecoveryActions';
 
 const roleName = (role: string) => role === 'orchestrator' ? 'Coordinator' : agentInstanceLabel(role);
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The request failed. Try again.';
@@ -33,6 +36,7 @@ type Connection = { role: string; arn: string; source: RuntimeSource; descriptio
 const sourceName = (source: RuntimeSource) => ({ settings: 'Console settings', environment: 'Environment', deployed: 'Deployment' })[source] || source;
 
 export function SettingsPage() {
+  const auth = useSyncExternalStore(authSession.subscribe, authSession.getSnapshot);
   const [search, setSearch] = useSearchParams();
   const tab = ['repository', 'connections', 'kiro'].includes(search.get('tab') || '') ? search.get('tab')! : 'repository';
   const [github, setGithub] = useState<GithubStatus | null>(null);
@@ -40,9 +44,14 @@ export function SettingsPage() {
   const [kiro, setKiro] = useState<KiroStatus | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [refresh, setRefresh] = useState(0);
+  const [repositoryReadFailed, setRepositoryReadFailed] = useState(false);
+  const [kiroReadFailed, setKiroReadFailed] = useState(false);
   const [busy, setBusy] = useState('');
   const [repo, setRepo] = useState('');
-  const [policy, setPolicy] = useState<MergePolicy>('human_review');
+  const [policy, setPolicy] = useState<MergePolicy | null>(null);
+  const repoEdited = useRef(false);
+  const policyEdited = useRef(false);
   const [confirm, setConfirm] = useState<'auto' | 'repo' | 'kiro' | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
   const [role, setRole] = useState('');
@@ -57,13 +66,18 @@ export function SettingsPage() {
   useEffect(() => onAgentRoles(() => setRosterVersion(n => n + 1)), []);
   useEffect(() => {
     let live = true;
+    setLoading(true);
     void Promise.allSettled([
-      getGithubStatus().then(next => { if (live) { setGithub(next); setRepo(next.repo || ''); setPolicy(next.merge_policy || 'human_review'); } }).catch(e => { if (live) report('repository', errorMessage(e)); }),
-      getRuntimes().then(next => { if (live) { setRuntimes(next); setRole(next.roles[0]?.role || ''); } }).catch(e => { if (live) report('connections', errorMessage(e)); }),
-      getKiroStatus().then(next => { if (live) setKiro(next); }).catch(e => { if (live) report('kiro', errorMessage(e)); }),
+      getGithubStatus().then(next => { if (live) {
+        setGithub(next); setRepositoryReadFailed(false); report('repository'); report('policy');
+        if (!repoEdited.current) setRepo(next.repo || '');
+        if (!policyEdited.current) setPolicy(next.merge_policy || null);
+      } }).catch(e => { if (live) { setRepositoryReadFailed(true); report('repository', errorMessage(e)); } }),
+      getRuntimes().then(next => { if (live) { setRuntimes(next); setRole(current => current || next.roles[0]?.role || ''); report('connections'); } }).catch(e => { if (live) report('connections', errorMessage(e)); }),
+      getKiroStatus().then(next => { if (live) { setKiro(next); setKiroReadFailed(false); report('kiro'); } }).catch(e => { if (live) { setKiroReadFailed(true); report('kiro', errorMessage(e)); } }),
     ]).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, []);
+  }, [auth.revision, refresh]);
 
   async function saveRepo() {
     const value = repo.trim();
@@ -72,7 +86,7 @@ export function SettingsPage() {
     try {
       const next = await saveGithubCredential({ repo: value });
       if (next.error) throw new Error(next.error);
-      setGithub(next); setRepo(next.repo || ''); toast.success('Repository saved');
+      setGithub(next); setRepositoryReadFailed(false); setRepo(next.repo || ''); repoEdited.current = false; toast.success('Repository saved');
     } catch (e) { report('repository', errorMessage(e)); } finally { setBusy(''); }
   }
   async function savePolicy(next: MergePolicy) {
@@ -80,7 +94,7 @@ export function SettingsPage() {
     try {
       const result = await setMergePolicy(next);
       if (result.error) throw new Error(result.error);
-      setGithub(result); setPolicy(result.merge_policy || next); setConfirm(null); toast.success('Merge policy saved');
+      setGithub(result); setPolicy(result.merge_policy || next); policyEdited.current = false; setConfirm(null); toast.success('Merge policy saved');
     } catch (e) { report('policy', errorMessage(e)); } finally { setBusy(''); }
   }
   async function disconnectRepo() {
@@ -88,7 +102,7 @@ export function SettingsPage() {
     try {
       const next = await clearGithubCredential();
       if (next.error) throw new Error(next.error);
-      setGithub(next); setRepo(next.repo || ''); setConfirm(null); toast.success('Repository disconnected');
+      setGithub(next); setRepositoryReadFailed(false); setRepo(next.repo || ''); repoEdited.current = false; setConfirm(null); toast.success('Repository disconnected');
     } catch (e) { report('repository', errorMessage(e)); } finally { setBusy(''); }
   }
   async function connect() {
@@ -127,36 +141,40 @@ export function SettingsPage() {
     try {
       const next = clear ? await clearKiroKey() : await saveKiroKey(kiroDraft.trim());
       if (next.error) throw new Error(next.error);
-      setKiro(next); setKiroDraft(''); setConfirm(null); toast.success(clear ? 'Kiro key removed' : 'Kiro key saved');
+      setKiro(next); setKiroReadFailed(false); setKiroDraft(''); setConfirm(null); toast.success(clear ? 'Kiro key removed' : 'Kiro key saved');
     } catch (e) { report('kiro', errorMessage(e)); } finally { setBusy(''); }
   }
   async function refreshKiro() {
     setBusy('kiro-refresh'); report('kiro');
-    try { setKiro(await getKiroStatus(true)); }
-    catch (e) { report('kiro', errorMessage(e)); }
+    try { setKiro(await getKiroStatus(true)); setKiroReadFailed(false); }
+    catch (e) { setKiroReadFailed(true); report('kiro', errorMessage(e)); }
     finally { setBusy(''); }
   }
   const connections: Connection[] = runtimes?.roles.flatMap(r =>
     (r.instances ?? (r.wired && r.arn ? [{ arn: r.arn, source: r.source!, description: r.description }] : []))
       .map(instance => ({ ...instance, role: r.role }))) ?? [];
+  const repositoryStatus = connectionStatus(loading, auth.expired, github, repositoryReadFailed);
+  const kiroStatus = connectionStatus(loading, auth.expired, kiro, kiroReadFailed);
   const footer = (cancel: () => void, action: () => void, text: string, disabled = false) => <Box float="right"><SpaceBetween direction="horizontal" size="xs">
     <Button variant="link" disabled={!!busy} onClick={cancel}>Cancel</Button>
-    <Button variant="primary" loading={!!busy} disabled={disabled} onClick={action}>{text}</Button>
+    {auth.expired && <SessionRecoveryActions />}
+    <Button variant="primary" loading={!!busy} disabled={disabled || auth.expired} onClick={action}>{text}</Button>
   </SpaceBetween></Box>;
 
-  return <ContentLayout header={<Header variant="h1" description="Manage the repository, Runtime connections, and credentials used by this host.">Settings</Header>}>
+  return <ContentLayout header={<Header variant="h1" description="Manage the repository, Runtime connections, and credentials used by this host."
+    actions={<Button iconName="refresh" loading={loading} disabled={auth.expired || !!busy} onClick={() => setRefresh(n => n + 1)}>Refresh settings</Button>}>Settings</Header>}>
     <Tabs activeTabId={tab} onChange={({ detail }) => setSearch({ tab: detail.activeTabId })} tabs={[
       { id: 'repository', label: 'Repository and merging', content: <SpaceBetween size="l">
-        <Container header={<Header variant="h2" actions={<StatusIndicator type={loading ? 'loading' : github?.connected ? 'success' : 'pending'}>
-          {loading ? 'Loading' : github?.connected ? 'Configured' : 'Not configured'}</StatusIndicator>}>GitHub repository</Header>}>
+        <Container header={<Header variant="h2" actions={<StatusIndicator type={repositoryStatus.type}>
+          {repositoryStatus.label}</StatusIndicator>}>GitHub repository</Header>}>
           <form onSubmit={e => { e.preventDefault(); void saveRepo(); }}><Form errorText={errors.repository || github?.error}
             actions={github?.source !== 'environment' ? <SpaceBetween direction="horizontal" size="xs">
-              {github?.connected && <Button disabled={!!busy} onClick={() => setConfirm('repo')}>Disconnect</Button>}
-              <Button variant="primary" formAction="submit" loading={busy === 'repository'} disabled={loading || !!busy}>Save repository</Button>
+              {github?.connected && <Button disabled={auth.expired || !!busy} onClick={() => setConfirm('repo')}>Disconnect</Button>}
+              <Button variant="primary" formAction="submit" loading={busy === 'repository'} disabled={loading || auth.expired || !!busy}>Save repository</Button>
             </SpaceBetween> : undefined}>
             <SpaceBetween size="l">
               <FormField label="Repository" description="Use your private app repository, initialized with a README." constraintText="Format: owner/repository">
-                <Input value={repo} onChange={({ detail }) => setRepo(detail.value)} placeholder="owner/repository"
+                <Input value={repo} onChange={({ detail }) => { repoEdited.current = true; setRepo(detail.value); }} placeholder="owner/repository"
                   disabled={loading || !!busy || github?.source === 'environment'} autoComplete={false} />
               </FormField>
               {github?.source === 'environment' && <Alert type="info">This repository is managed by the host environment.</Alert>}
@@ -171,9 +189,9 @@ export function SettingsPage() {
           </Form></form>
         </Container>
         <Container header={<Header variant="h2" description="Each pull request must pass its executable check and independent review before it is eligible to merge.">Merge policy</Header>}>
-          <Form errorText={errors.policy} actions={<Button variant="primary" disabled={loading || !github || policy === github.merge_policy || !!busy}
-            loading={busy === 'policy'} onClick={() => policy === 'auto' ? setConfirm('auto') : void savePolicy(policy)}>Save policy</Button>}>
-            <RadioGroup value={policy} onChange={({ detail }) => setPolicy(detail.value as MergePolicy)}
+          <Form errorText={errors.policy} actions={<Button variant="primary" disabled={loading || auth.expired || repositoryReadFailed || !github || !policy || policy === github.merge_policy || !!busy}
+            loading={busy === 'policy'} onClick={() => policy === 'auto' ? setConfirm('auto') : policy && void savePolicy(policy)}>Save policy</Button>}>
+            <RadioGroup value={policy} onChange={({ detail }) => { policyEdited.current = true; setPolicy(detail.value as MergePolicy); }}
               items={[
                 { value: 'human_review', label: 'Human review', disabled: loading || !!busy, description: 'Leave approved pull requests open for a person to review and merge.' },
                 { value: 'auto', label: 'Automatic merge', disabled: loading || !!busy, description: 'Merge approved pull requests into the default branch, subject to branch protection.' },
@@ -186,31 +204,31 @@ export function SettingsPage() {
         <ResourceTable title="Runtime connections" items={connections} loading={loading} trackBy={row => `${row.role}:${row.arn}`}
           description="Connect the runtimes deployed in Labs 1 and 2. Multiple connections to one role form a fleet."
           searchText={row => `${roleName(row.role)} ${row.role} ${row.arn} ${row.description || ''} ${row.source}`}
-          actions={<Button variant="primary" iconName="add-plus" disabled={loading || !runtimes || !!busy}
+          actions={<Button variant="primary" iconName="add-plus" disabled={loading || auth.expired || !runtimes || !!busy}
             onClick={() => { setArn(''); setDescription(''); setApiKey(''); report('connect'); setConnectOpen(true); }}>Connect runtime</Button>}
           empty={<SpaceBetween size="s"><Box variant="strong">{errors.connections ? 'Runtime connections unavailable' : 'No runtimes connected'}</Box>
-            <Box color="text-body-secondary">{errors.connections ? 'Reload the page to try again.' : 'Connect a deployed Runtime ARN or a local development URL.'}</Box></SpaceBetween>}
+            <Box color="text-body-secondary">{errors.connections ? 'Choose Refresh settings to try again. If your session expired, sign in first.' : 'Connect a deployed Runtime ARN or a local development URL.'}</Box></SpaceBetween>}
           columns={[
             { id: 'role', header: 'Role', sortingField: 'role', minWidth: 160, cell: row => <SpaceBetween direction="horizontal" size="xs" alignItems="center"><AgentIcon agentId={row.role} size={20} />{roleName(row.role)}</SpaceBetween> },
             { id: 'arn', header: 'Runtime ARN or URL', minWidth: 260, cell: row => <code className="console-code">{row.arn}</code> },
             { id: 'source', header: 'Source', sortingField: 'source', minWidth: 130, cell: row => sourceName(row.source) },
             { id: 'description', header: 'Description', minWidth: 340, cell: row => <SpaceBetween size="xs"><Box>{row.description || 'No description'}</Box>
               <Link variant="secondary" onFollow={() => { setEdit(row); setDescription(row.description || ''); report('description'); }}>Edit description</Link></SpaceBetween> },
-            { id: 'actions', header: 'Actions', minWidth: 150, cell: row => row.source === 'settings' ? <Button onClick={() => { setRemove(row); report('remove'); }}>Remove</Button>
+            { id: 'actions', header: 'Actions', minWidth: 150, cell: row => row.source === 'settings' ? <Button disabled={auth.expired} onClick={() => { setRemove(row); report('remove'); }}>Remove</Button>
               : <Box color="text-body-secondary">Managed by {row.source === 'environment' ? 'environment' : 'deployment'}</Box> },
           ]} />
       </SpaceBetween> },
       { id: 'kiro', label: 'Kiro access', content: <Container header={<Header variant="h2"
-        actions={<Button iconName="refresh" loading={busy === 'kiro-refresh'} disabled={loading || !!busy} onClick={() => void refreshKiro()}>Refresh status</Button>}
+        actions={<Button iconName="refresh" loading={busy === 'kiro-refresh'} disabled={loading || auth.expired || !!busy} onClick={() => void refreshKiro()}>Refresh status</Button>}
         description="The console discovers credentials provisioned in the AgentCore Identity Token Vault, including those saved from the workshop terminal. Kiro loads the key at session start.">Kiro credential</Header>}>
         <form onSubmit={e => { e.preventDefault(); void saveKey(); }}><Form errorText={errors.kiro || kiro?.error}
           actions={<SpaceBetween direction="horizontal" size="xs">
-            {kiro?.connected && <Button disabled={!!busy} onClick={() => setConfirm('kiro')}>Remove key</Button>}
-            <Button variant="primary" formAction="submit" disabled={loading || !kiroDraft.trim() || !!busy} loading={busy === 'kiro'}>Save API key</Button>
+            {kiro?.connected && <Button disabled={auth.expired || !!busy} onClick={() => setConfirm('kiro')}>Remove key</Button>}
+            <Button variant="primary" formAction="submit" disabled={loading || auth.expired || !kiroDraft.trim() || !!busy} loading={busy === 'kiro'}>Save API key</Button>
           </SpaceBetween>}>
           <SpaceBetween size="l">
             <KeyValuePairs columns={2} items={[
-              { label: 'Credential status', value: <StatusIndicator type={loading ? 'loading' : kiro?.connected ? 'success' : kiro?.connected === false ? 'pending' : 'error'}>{loading ? 'Loading' : kiro?.connected ? 'Configured' : kiro?.connected === false ? 'Not configured' : 'Unable to verify'}</StatusIndicator> },
+              { label: 'Credential status', value: <StatusIndicator type={kiroStatus.type}>{kiroStatus.label}</StatusIndicator> },
               { label: 'Credential provider', value: kiro?.provider || 'Not returned' },
               { label: 'Region', value: kiro?.region || 'Not returned' },
               { label: 'Configuration source', value: kiro?.source === 'token-vault' ? 'Token Vault discovery' : kiro?.source === 'settings' ? 'Console settings' : 'Not available' },

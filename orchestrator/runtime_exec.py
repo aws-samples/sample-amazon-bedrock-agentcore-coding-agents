@@ -137,6 +137,22 @@ class ModelQuotaError(RoleExecutionError):
     """The CLI reached its model but the account's daily token allowance is spent."""
 
 
+class RoleTurnLimitError(RoleExecutionError):
+    """A native CLI exhausted its turn budget; a fresh dispatch restarts the task."""
+
+    def __init__(self, agent_id: str, turn_limit: int, exit_code: int,
+                 transcript: str):
+        self.agent_id = agent_id
+        self.turn_limit = turn_limit
+        self.exit_code = exit_code
+        super().__init__(
+            f"ROLE_TURN_LIMIT: {agent_id} reached its {turn_limit}-turn CLI limit "
+            f"and exited {exit_code}; transcript tail:\n{transcript[-600:]}")
+
+
+_CLAUDE_TURN_LIMIT_RE = re.compile(r"Error: Reached max turns \(([1-9][0-9]*)\)")
+
+
 _DAILY_MODEL_QUOTA_RE = re.compile(
     r"too many tokens per day|daily (?:token )?(?:allowance|limit|quota).*(?:exceed|spent)",
     re.IGNORECASE,
@@ -1135,6 +1151,17 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
             f"account's daily token allowance for {model} is exhausted; "
             f"transcript tail:\n{transcript[-600:]}")
     if run["exit"] != 0:
+        # Pinned Claude Code's text formatter ends a capped turn with this exact
+        # line and a nonzero exit. Match the full CLI-only terminal line, before
+        # display truncation, rather than quoted prose or an elapsed-time guess.
+        # Read the CLI from the registry so the kept Claude checker works too.
+        if (type(run["exit"]) is int
+                and _role(agent_id).cli.split(maxsplit=1)[0] == "claude"):
+            limit = _CLAUDE_TURN_LIMIT_RE.fullmatch(
+                _clean(transcript).rstrip().rsplit("\n", 1)[-1])
+            if limit:
+                raise RoleTurnLimitError(
+                    agent_id, int(limit.group(1)), run["exit"], transcript)
         sibling = llm.openai_sibling(model)
         if sibling and llm.cli_model_is_down(transcript):
             if on_line:

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/terminalInput';
 import type { TerminalOutput } from '../lib/terminalOutput';
+import { apiFetch, SessionChangedError, SessionExpiredError } from '../lib/authSession';
 
 /**
  * Module 1 session + PTY client (the dev workspace mount).
@@ -23,7 +24,7 @@ const S1 = '/api/dev';
 export interface FileNode { path: string; name?: string; size?: number; is_dir?: boolean; }
 
 async function pty(sessionId: string, body: unknown) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/pty`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/pty`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   const result = await r.json();
@@ -99,7 +100,7 @@ export function useSession() {
   }, [stopInput]);
 
   const open = useCallback(async (agentId: string, size: { rows: number; cols: number }, onOutput: TerminalOutput) => {
-    const r = await fetch(`${S1}/sessions`, {
+    const r = await apiFetch(`${S1}/sessions`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ agent_id: agentId }),
     });
@@ -127,7 +128,7 @@ export function useSession() {
     const sid = loadSessionId(agentId);
     if (!sid) return null;
     try {
-      const r = await fetch(`${S1}/sessions/${encodeURIComponent(sid)}`);
+      const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sid)}`);
       if (!r.ok) { clearSessionId(agentId); return null; }
       const s = await r.json();
       if (s.status !== 'open' || !s.pty_alive) { clearSessionId(agentId); return null; }
@@ -137,7 +138,8 @@ export function useSession() {
       setAlive(true);
       bindStream(sid, onOutput);   // offset 0 -> the server replays the scrollback
       return sid as string;
-    } catch {
+    } catch (error) {
+      if (error instanceof SessionExpiredError || error instanceof SessionChangedError) throw error;
       return null;   // network error: fall back to a fresh session
     }
   }, [bindStream]);
@@ -181,7 +183,7 @@ export function useSession() {
     size: { rows: number; cols: number }, onOutput: TerminalOutput,
   ) => {
     stopInput();
-    const r = await fetch(`${S1}/sessions/${encodeURIComponent(sid)}/open-folder`, {
+    const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sid)}/open-folder`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path }),
     });
@@ -226,7 +228,7 @@ function normalizeNode(n: { path: string; type?: string; is_dir?: boolean; name?
 }
 
 export async function listTree(sessionId: string): Promise<FileNode[]> {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/files`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/files`, {
     headers: { accept: 'application/json' },
   });
   if (!r.ok) return [];
@@ -235,14 +237,14 @@ export async function listTree(sessionId: string): Promise<FileNode[]> {
 }
 
 export async function readFile(sessionId: string, path: string) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }),
   });
   return r.json() as Promise<{ path: string; content?: string; binary?: boolean; language?: string; error?: string }>;
 }
 
 export async function writeFile(sessionId: string, path: string, content: string) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path, content }),
   });
@@ -250,7 +252,7 @@ export async function writeFile(sessionId: string, path: string, content: string
 }
 
 export async function deleteFile(sessionId: string, path: string) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path, op: 'delete' }),
   });
@@ -258,7 +260,7 @@ export async function deleteFile(sessionId: string, path: string) {
 }
 
 export async function renameFile(sessionId: string, path: string, to: string) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path, op: 'rename', to }),
   });
@@ -266,7 +268,7 @@ export async function renameFile(sessionId: string, path: string, to: string) {
 }
 
 export async function makeDir(sessionId: string, path: string) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path, op: 'mkdir' }),
   });
@@ -279,7 +281,7 @@ export interface SearchFileResult { path: string; hits: SearchHit[]; }
 // Content-based workspace search (the editor's Cmd+F across files). The backend
 // greps every text file in the jail and returns matching lines grouped by file.
 export async function searchFiles(sessionId: string, query: string) {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ op: 'search', query }),
   });
@@ -300,7 +302,7 @@ export interface ListDirsResult {
 // of `path` (dirs only, sorted), a display label, and the parent path for "Up"
       // navigation (null at home, so it cannot navigate above home).
 export async function listDirs(sessionId: string, path: string): Promise<ListDirsResult> {
-  const r = await fetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/list-dirs`, {
+  const r = await apiFetch(`${S1}/sessions/${encodeURIComponent(sessionId)}/list-dirs`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path }),
   });

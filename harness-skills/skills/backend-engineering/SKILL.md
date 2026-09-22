@@ -59,16 +59,22 @@ an interface, your job is to bridge to it, not to copy it.
 
 ## Build it at the size the task actually is
 
-The gate only asks "does it do what was asked?", so the cheapest thing that passes
-is a real temptation. Resist it. A reviewer reads this as production work.
+Complete every requested behavior with the simplest maintainable structure.
+Judge that structure by how clearly it supports the task and its verification.
 
-- **Match the scope to the request.** A request naming several features, real
-  persistence, and validation is a project, not a script. Do not collapse it into
-  one file because one file can be made to pass.
-- **Structure it as you would at work.** Separate the concerns the task actually
-  has (routing, domain logic, storage, validation) into their own modules with
-  real names. A single 100-line file holding all of them is a prototype, and
-  saying "keep it minimal" to yourself is not a design decision.
+- **Build a working vertical slice first.** Take one representative input through
+  the real entry point to its intended result, including persistence when required.
+  Exercise that path before expanding the implementation. Complete the remaining
+  requested behavior and failure cases before adding optional features or polish.
+- **Make startup discoverable early.** As soon as that path runs, put the actual
+  dependency setup, start command, and required configuration in the README.
+  Verify those instructions from a clean checkout and keep them current as you work.
+- **Reserve capacity for verification and handoff.** Plan for checks, fixes, and
+  documenting results within the available execution budget. Verify as you build,
+  so failures surface while there is still time to fix them.
+- **Let the task justify the structure.** Separate concerns where it makes the
+  code easier to understand, change, or verify. Choose the files and abstractions
+  needed for the requested scope; keep all requested features and design requirements.
 - **Use a real framework when the task is a real service.** A production HTTP
   service in Python is FastAPI or Flask, not a hand-rolled
   `BaseHTTPRequestHandler`; in Node it is Express or Fastify, not raw `http`.
@@ -180,6 +186,12 @@ separate validator will verify independently; your own check is so you do not
 hand off something obviously broken. When you can, leave that proof behind in a
 form a reviewer can re-run, but let the task shape what that proof looks like,
 do not force a fixed filename or harness.
+
+Once the requested behavior and relevant failure cases are verified, record the
+commands and results, stop any service you started for verification, and finish
+your turn. Broaden or repeat checks only for a new change, failure, or unresolved
+requirement. If work remains incomplete or a check fails, preserve the evidence
+and name what remains; your own checks never replace the independent validator.
 
 ## Do only your side
 

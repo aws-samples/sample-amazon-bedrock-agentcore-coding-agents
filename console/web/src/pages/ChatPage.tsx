@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, memo } from 'react';
 import { useParams, useNavigate, useHref, useSearchParams } from 'react-router-dom';
 import { newConversationId, touchChat, loadTranscript, saveTranscript, useChats, removeChat } from '../hooks/useChats';
 import ReactMarkdown from 'react-markdown';
@@ -30,6 +30,7 @@ import { RunDetailPanel } from '../components/RunDetailPanel';
 import { ResourceTable } from '../shared/ResourceTable';
 import { LoadingState, ErrorState } from '../shared/States';
 import { presentRunDecision, recordedPullRequests, gateResultLabel } from '../lib/runPresentation';
+import { authSession, SessionExpiredError } from '../lib/authSession';
 import { AgentIcon } from '../components/AgentIcon';
 import { onAgentRoles, agentInstanceLabel, type AgentRole } from './agents/environments';
 import { RunActivityRows } from '../components/RunActivityRows';
@@ -90,6 +91,7 @@ type ChatItem =
   | { kind: 'run';       runId: string; runKind: string };
 
 export function ChatPage() {
+  const auth = useSyncExternalStore(authSession.subscribe, authSession.getSnapshot);
   // /chat/:runId deep-links a run; /chat/c/:chatId selects a sub-chat.
   const { runId: deepLinkRunId, chatId } = useParams<{ runId?: string; chatId?: string }>();
   const nav = useNavigate();
@@ -141,7 +143,7 @@ export function ChatPage() {
   }, []);
   // A separate coordinator Runtime belongs to the CLI path. Requiring its ARN
   // here would disable Chat on an otherwise fully pre-wired workshop host.
-  const coordinatorAvailable = runtimes !== null && !runtimeLoadError;
+  const coordinatorAvailable = runtimes !== null && !runtimeLoadError && !auth.expired;
   const [roles, setRoles] = useState<AgentRole[]>([]);
   useEffect(() => onAgentRoles(setRoles), []);
 
@@ -170,6 +172,7 @@ export function ChatPage() {
     listModels()
       .then((r) => {
         if (r.models?.length) setModels(r.models);
+        setModelError('');
         const saved = savedModel();
         const savedStillOffered = saved && (r.models ?? []).some((m) => m.id === saved);
         if (savedStillOffered) {
@@ -178,22 +181,22 @@ export function ChatPage() {
           setModelState(r.default);
         }
       })
-      .catch(() => setModelError('Could not load the coordinator models. Reload the page to try again.'));
-  }, []);
+      .catch(error => setModelError(error instanceof Error ? error.message : 'Could not load the coordinator models.'));
+  }, [auth.revision]);
 
   // Fetch the opener chips from the presets API (the router's own source).
   useEffect(() => {
     listSuggestions()
       .then((r) => { if (r.suggestions?.length) setSuggestions(r.suggestions); })
       .catch(() => { /* no chips: the attendee types their own request */ });
-  }, []);
+  }, [auth.revision]);
 
   // Fetch GitHub connection status for the repo chip in the message bar.
   useEffect(() => {
     getGithubStatus()
-      .then(setGithub)
-      .catch(() => setGithubError('Could not read the GitHub connection.'));
-  }, []);
+      .then(next => { setGithub(next); setGithubError(''); })
+      .catch(error => setGithubError(error instanceof Error ? error.message : 'Could not read the GitHub connection.'));
+  }, [auth.revision]);
 
   // Title for the header: the first user message (truncated), else default.
   const title = useMemo(() => {
@@ -255,7 +258,7 @@ export function ChatPage() {
     // invoke this with no arg (or an event), in which case we use the draft.
     const source = typeof overrideText === 'string' ? overrideText : draft;
     const text = source.trim();
-    if ((!text && attachments.length === 0) || streaming || !coordinatorAvailable || !model) return;
+    if ((!text && attachments.length === 0) || streaming || !coordinatorAvailable || !model || authSession.getSnapshot().expired) return;
 
     const chatAttachments = attachments.map((a) =>
       a.text.startsWith('data:image/')
@@ -349,6 +352,10 @@ export function ChatPage() {
       await streamChat({ prompt, conversationId, model, attachments: chatAttachments }, onEvent, ac.signal);
     } catch (e) {
       if (!ac.signal.aborted) {
+        if (e instanceof SessionExpiredError && activeConversation.current === conversationId) {
+          setDraft(current => current || source);
+          setAttachments(current => current.length ? current : attachments);
+        }
         setItems((prev) => {
           const next = [...prev];
           const cur = next[assistantIdx];
@@ -381,7 +388,7 @@ export function ChatPage() {
 
   const composer = <ChatComposer draft={draft} onDraft={setDraft} onSend={() => void send()} onStop={stop}
     streaming={streaming} connected={coordinatorAvailable}
-    connectionError={runtimeLoadError} loadingConnection={!runtimes && !runtimeLoadError}
+    connectionError={auth.expired ? 'Sign in again, then choose Check sign-in before sending your message.' : runtimeLoadError} loadingConnection={!runtimes && !runtimeLoadError}
     models={models} model={model} onModel={setModel} modelError={modelError}
     repo={github?.connected ? github.repo : undefined} onSettings={() => setTeamOpen(true)}
     attachments={attachments} onFiles={files => { void addFiles(files); }}

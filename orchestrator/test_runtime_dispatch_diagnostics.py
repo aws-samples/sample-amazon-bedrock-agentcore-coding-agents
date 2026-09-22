@@ -183,6 +183,23 @@ def test_quota_error_is_not_retried(dispatch, after_first_failure):
         assert not result.saved["events"]
 
 
+@pytest.mark.parametrize("after_first_failure", [False, True])
+def test_native_turn_limit_is_not_retried(dispatch, after_first_failure):
+    cap = runtime_exec.RoleTurnLimitError(
+        "claude-code", 50, 1, "Error: Reached max turns (50)")
+    scripted = ([runtime_exec.RoleExecutionError("first transport failure")]
+                if after_first_failure else []) + [cap]
+    result = dispatch(scripted)
+    _assert_dispatch_contract(result, len(scripted))
+    assert result.error is cap
+    if after_first_failure:
+        assert "first transport failure" in _warning(result.saved)
+        assert "ROLE_TURN_LIMIT" not in _warning(result.saved)
+    else:
+        assert not result.saved["events"]
+        assert all("re-dispatching" not in cmd for cmd in result.commands)
+
+
 def test_first_attempt_success_does_not_retry(dispatch):
     result = dispatch(["success"])
     _assert_dispatch_contract(result, 1)

@@ -445,22 +445,15 @@ _SUPPORTED_TOOLCHAINS_RULE = (
     "workshop; another language requires its toolchain to be added to the coordinator "
     "image first.\n")
 
-# What builders are told about SCOPE. Still not a layout and not a filename: it
-# constrains the CRAFT, not the shape. Needed because the gate only asks "does it
-# do what was asked?", which the cheapest possible answer can also satisfy -- a
-# live run shipped one hand-rolled `BaseHTTPRequestHandler` file with inline-styled
-# HTML for a request that deserved a structured service, and passed. A reviewer
-# reads these pull requests as production work, so say so up front.
+# Keep scope proportional to the request while preserving every assigned behavior.
+# File count and optional polish are not completion criteria.
 _SCOPE_RULE = (
-    "BUILD IT AT THE SIZE THE REQUEST ACTUALLY IS. The check that grades you only "
-    "asks whether the behaviour is there, so the smallest thing that passes will "
-    "pass -- do not build that. Build what you would put up for review at work:\n"
-    "- Use a real framework when the request is a real service or app (a proper web "
-    "framework, not a hand-rolled request handler; a component-based UI, not one "
-    "hand-written file with inline styles), and declare your dependencies in the "
-    "manifest your ecosystem expects.\n"
-    "- Split the concerns the task actually has into separate modules with real "
-    "names. One file holding everything is a prototype.\n"
+    "BUILD IT AT THE SIZE THE REQUEST ACTUALLY IS. Complete the requested behaviour "
+    "with the simplest maintainable structure:\n"
+    "- Use established frameworks where their capabilities support the task, and "
+    "declare your dependencies in the manifest your ecosystem expects.\n"
+    "- Separate concerns where it improves understanding, change, or verification. "
+    "Choose files and abstractions to support the requested scope.\n"
     "- Cover EVERY feature the shared brief assigns to YOUR role, and honour its "
     "non-functional asks literally (if data must survive a restart, an in-memory "
     "dict is a failure even when the checks pass in one process). The combined team "
@@ -651,7 +644,7 @@ def _py(snippet: str) -> str:
 class RoleResult:
     agent: str
     role: str
-    state: str = "pending"          # pending | working | done | error
+    state: str = "pending"          # pending | working | done | error | blocked
     latency_ms: int = 0             # wall-clock for the role's work
     note: str = ""
     tokens: int = 0                 # the role's own reported usage (0 = none reported)
@@ -744,6 +737,9 @@ class Run:
     _review_target: str | None = None      # run_id under review (review/pr-v1 only)
     _integration_brief_md: str = ""
     _active_builders: set[str] | None = field(default=None, repr=False)
+    # A failed initial turn does not stop independent, completed PR candidates
+    # from reaching their gates. Keep its reason until those PRs settle.
+    _initial_execution_failure: str | None = field(default=None, repr=False)
     _refresh_context: str = ""
     # work_id -> the authored check path for THAT pull request. One check per pull
     # request, so this replaces the single _acceptance_test_file on the verdict path
@@ -1083,7 +1079,7 @@ class Engine:
             # never restart the others' work. That is what makes the bound hold at
             # every layer instead of only in the engine.
             run.iterations += 1
-            if not self._execute(run):
+            if not self._execute(run, allow_partial=True):
                 return  # fail-closed: the phase set status/reason already
             self._finalize(run)
             return  # terminal (passed, failed, or needs_human)
@@ -1475,9 +1471,9 @@ class Engine:
                     region=runtime_exec.region_for(arn),
                     on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
                 break
-            except runtime_exec.ModelQuotaError:
-                # A daily account limit cannot recover in a fresh shell. Preserve
-                # the specific reason and avoid spending another rejected request.
+            except (runtime_exec.ModelQuotaError, runtime_exec.RoleTurnLimitError):
+                # A known account/turn limit cannot recover in a fresh shell.
+                # Preserve the specific reason without restarting the same task.
                 raise
             except runtime_exec.RoleExecutionError as exc:
                 _last_exc = exc
@@ -1987,6 +1983,12 @@ class Engine:
                 if item.kind == roles.BUILDER):
             if item.agent not in active:
                 continue
+            progress = run.progress.get(item.agent)
+            if progress is not None and progress.state == "error":
+                # No accepted patch from this turn. A failed builder must not
+                # become WORK_PATCH_MISSING attributed to the checker. Other
+                # builders' completed candidates remain eligible.
+                continue
             if self.executor.name == "fixture":
                 item.state = "in_review"
                 item.stale = False
@@ -2397,7 +2399,8 @@ class Engine:
     # surrounding lifecycle can be exercised without pretending to be a customer
     # path. On the shipped path, shell output is captured in the role terminal; the
     # validator-authored executable and integrated read-only review decide the verdict.
-    def _execute(self, run: Run) -> bool:
+    def _execute(self, run: Run, *, allow_partial: bool = False,
+                 defer_failure: bool = False) -> bool:
         run.phase, run.status = "agent_execution", "running"
         budget = AGENT_EXECUTION_TIMEOUT_S
         deadline = time.monotonic() + budget
@@ -2412,6 +2415,9 @@ class Engine:
         # artifact and the review orchestrator judges it in finalization.
         if run.route and run.route.get("read_only"):
             return self._execute_review(run)
+
+        from runtime_exec import RoleTurnLimitError  # noqa: PLC0415
+        turn_limited: set[str] = set()
 
         def install_harness(agent_id: str) -> None:
             """The role installs its OWN harness: it writes the steering file into
@@ -2500,9 +2506,21 @@ class Engine:
             # request never blocks a green sibling from merging.
             self._publish_active_work_items(run)
             install_harness(role.agent)
-            run._item_checks = {}
+            subjects = [
+                item for item in self._builder_items(run, pending_only=True)
+                if item.agent in active_builders
+            ]
+            # A repair selects its owner, not every still-open PR. Preserve the
+            # other PRs' check paths, including evidence awaiting its first gate,
+            # and never redispatch a sibling's failed check-authoring turn.
+            # Invalidate selected entries before rebuilding: a failed refresh
+            # must not leave a stale check accepted for that owner's new tree.
+            for item in subjects:
+                run._item_checks.pop(item.work_id, None)
             reused_count = 0
-            for item in self._builder_items(run, pending_only=True):
+            for item in subjects:
+                if run.progress[item.agent].state == "error":
+                    continue
                 self._build_item_tree(run, item)
                 # A REPAIR ROUND RE-RUNS THE CHECK IT ALREADY HAS. It does not ask the
                 # validator to write a new one, and that is a correctness argument
@@ -2561,8 +2579,9 @@ class Engine:
                 run.log(f"validator: authored the acceptance check for "
                         f"{item.work_id}; its real exit code is that pull "
                         "request's gate")
-            role.note = (f"prepared {len(run._item_checks)} acceptance check(s); "
-                         f"{reused_count} reused from the prior round")
+            prepared_count = sum(item.work_id in run._item_checks for item in subjects)
+            role.note = (f"prepared {prepared_count} acceptance check(s); "
+                          f"{reused_count} reused from the prior round")
 
         def frontend(role: RoleResult) -> None:
             # The backend role dispatches its CLI into a deployed Runtime, which can
@@ -2600,6 +2619,32 @@ class Engine:
             its result is judged."""
 
             def _run_role() -> None:
+                if roles.get(agent_id).kind == roles.CHECKER:
+                    builders = [
+                        item for item in self._builder_items(run, pending_only=True)
+                        if item.agent in active_builders
+                    ]
+                    blocked = [item for item in builders
+                               if run.progress[item.agent].state == "error"]
+                    if blocked and len(blocked) == len(builders):
+                        # The graph still releases its join on builder failure.
+                        # There is simply no candidate to dispatch the checker
+                        # against, so do not count a checker attempt or invent
+                        # a Runtime error for a CLI that never ran.
+                        causes = ", ".join(
+                            f"{item.agent} ({item.work_id})" for item in blocked)
+                        role.state = "blocked"
+                        role.latency_ms = 0
+                        role.note = (
+                            "Not dispatched this round: the builder turn(s) "
+                            f"failed: {causes}. Inspect their recorded errors.")
+                        item = run.work_items.get(agent_id)
+                        if item is not None:
+                            item.state = "blocked"
+                        run.log(f"{role.role} blocked: {role.note}", "warn")
+                        run.add_event(agent_id, {
+                            "kind": "text", "text": f"[{role.role}] {role.note}"})
+                        return
                 t0 = time.monotonic()
                 role.state = "working"
                 role.note = ""
@@ -2641,6 +2686,9 @@ class Engine:
                         item.state = "done"
                 except Exception as exc:
                     role.state, role.note = "error", f"{type(exc).__name__}: {exc}"
+                    if isinstance(exc, RoleTurnLimitError):
+                        with run._lock:
+                            turn_limited.add(agent_id)
                     if item is not None:
                         item.state = "error"
                     run.log(f"{role.role} errored: {exc}", "error")
@@ -2732,7 +2780,10 @@ class Engine:
                 r.state, r.note = "error", (
                     "role never started before the agent-execution phase ended")
                 run.log(f"{r.role} never started -> role failure", "error")
-        errored = [r for r in run.progress.values() if r.state == "error"]
+        # A repair runs only its selected owner and checker. An earlier sibling's
+        # recorded failure must not turn a successful repair into another failure.
+        errored = [run.progress[a] for a in execution_agents
+                   if run.progress[a].state == "error"]
         if errored:
             # Tiered escalation: a single flaky role is ROLE_EXECUTION_ERROR, but
             # ALL routed roles failing is a SYSTEMIC break (harness/env), which a
@@ -2744,14 +2795,35 @@ class Engine:
             # runtime still holds, the run-level reason must say transport too,
             # or the honest per-role note is contradicted by the headline the
             # attendee actually reads.
-            if any("MODEL_QUOTA_EXHAUSTED" in (r.note or "") for r in errored):
+            if any(r.agent in turn_limited for r in errored):
+                reason = "ROLE_TURN_LIMIT"
+            elif any("MODEL_QUOTA_EXHAUSTED" in (r.note or "") for r in errored):
                 reason = "MODEL_QUOTA_EXHAUSTED"
             elif all("ARTIFACT_TRANSFER_ERROR" in (r.note or "") for r in errored):
                 reason = "ARTIFACT_TRANSFER_ERROR"
             elif any("INTEGRATION_CONFLICT" in (r.note or "") for r in errored):
                 reason = "INTEGRATION_CONFLICT"
-            run.status, run.fail_reason = "failed", reason
-            if total:
+            if allow_partial and self._checkable_builder_items(run):
+                run._initial_execution_failure = reason
+                run.log(
+                    f"agent execution: {reason}; completed sibling pull requests "
+                    "will still run their checks and reviews", "warn")
+                # Remain running until those real verdicts and the original
+                # failure are settled together. Never briefly publish a terminal
+                # result while independent PR work is still in flight.
+                return True
+            # A PR repair reports its failure to the enclosing finalizer, which
+            # still owns other PRs. Do not terminate their shared run early.
+            run.status, run.fail_reason = (
+                "running" if defer_failure else "failed", reason)
+            if reason == "ROLE_TURN_LIMIT":
+                if not defer_failure:
+                    run.status = "needs_human"
+                run.log(
+                    "agent execution: a configured CLI turn limit was reached; "
+                    "human review required, without automatic re-dispatch or "
+                    "resubmission", "warn")
+            elif total and reason == "ROLE_TOTAL_FAILURE":
                 run.log(f"agent execution: ALL {len(errored)} routed roles failed "
                         "-> systemic failure (harness or environment)", "error")
             return False
@@ -2821,6 +2893,19 @@ class Engine:
         if pending_only:
             return [item for item in items if item.merge_state != "merged"]
         return items
+
+    def _checkable_builder_items(self, run: Run) -> list[_work_items.WorkItem]:
+        """Completed, published candidates with their own authored executable.
+
+        A failed turn can still leave files or an older patch behind. Neither is
+        an accepted candidate from that turn, so require its completed role state.
+        """
+        return [
+            item for item in self._builder_items(run)
+            if run.progress[item.agent].state == "done"
+            and item._patch is not None and item.pr
+            and run._item_checks.get(item.work_id)
+        ]
 
     def _record_gate(self, run: Run, gate: dict, stage: str,
                      item: _work_items.WorkItem | None = None) -> None:
@@ -3285,6 +3370,14 @@ class Engine:
             return self._finalize_read_only(run)
 
         items = self._builder_items(run)
+        initial_failure = run._initial_execution_failure
+        checkable = {item.work_id for item in self._checkable_builder_items(run)}
+        if initial_failure:
+            # Keep every published PR in the record, including a candidate whose
+            # checker failed before authoring its executable. A failed builder
+            # with no PR is already recorded in progress/work_items, not invented
+            # as a pull request or an executed red gate.
+            items = [item for item in items if item.pr]
         run.role_prs = [{
             "work_id": item.work_id,
             "agent": item.agent,
@@ -3294,6 +3387,10 @@ class Engine:
         } for item in items]
 
         for item, row in zip(items, run.role_prs):
+            if initial_failure and item.work_id not in checkable:
+                row["state"], row["error"] = "blocked", initial_failure
+                item.merge_state = "blocked"
+                continue
             stage = f"{item.work_id} round {item.attempt}"
             run.log(f"gate: running {item.work_id}'s authored check "
                     f"on {run.final_base_branch}")
@@ -3317,9 +3414,10 @@ class Engine:
                     continue
                 if not self._repair_pull_request(run, item, gate, stage):
                     row["state"] = "blocked"
-                    row["error"] = ("CHECK_REQUIRES_HUMAN"
-                                    if not run._active_builders
-                                    else "ROLE_EXECUTION_ERROR")
+                    row["error"] = (
+                        "ROLE_TURN_LIMIT" if run.fail_reason == "ROLE_TURN_LIMIT"
+                        else "CHECK_REQUIRES_HUMAN" if not run._active_builders
+                        else "ROLE_EXECUTION_ERROR")
                     item.merge_state = "blocked"
                     continue
                 stage = f"{item.work_id} round {item.attempt}"
@@ -3369,7 +3467,7 @@ class Engine:
         run.iterations += 1
         run.log(f"{item.work_id}: one bounded repair updates this same pull request",
                 "warn")
-        return self._execute(run)
+        return self._execute(run, defer_failure=True)
 
     def _settle_run(self, run: Run, items: list[_work_items.WorkItem]) -> None:
         """Decide the run's terminal state from the pull requests' own outcomes."""
@@ -3397,7 +3495,13 @@ class Engine:
             } if skipped else dict(items[0].pr or {})
         if settled:
             self._compose_commit(run)
-        if unavailable:
+        if (run._initial_execution_failure == "ROLE_TURN_LIMIT"
+                or any(row.get("error") == "ROLE_TURN_LIMIT" for row in run.role_prs)):
+            run.status, run.fail_reason = "needs_human", "ROLE_TURN_LIMIT"
+        elif run._initial_execution_failure:
+            run.status, run.fail_reason = (
+                "needs_human", run._initial_execution_failure)
+        elif unavailable:
             run.status, run.fail_reason = (
                 "needs_human",
                 "REVIEW_UNAVAILABLE:" + ",".join(i.work_id for i in unavailable))
@@ -3826,6 +3930,12 @@ _NEXT_ACTION = {
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",
+    "ROLE_TURN_LIMIT":
+        "A role reached its configured CLI turn limit. Do not resubmit this "
+        "request automatically. Read the role's recorded limit error and original "
+        "request. If pull requests exist, inspect their recorded checks and reviews. "
+        "A person must decide how to narrow the request or continue the work. "
+        "A fresh shell would restart the same bounded task.",
     # Distinct from the above ON PURPOSE: the agent SUCCEEDED and its work is still
     # in the runtime workspace. Saying "the role produced nothing" here would send
     # the reader to debug an agent that did its job.
@@ -3933,6 +4043,15 @@ def next_action(status: str, fail_reason: str | None,
                     "`python3 orchestrator/github.py doctor`.")
         return ""
     reason = (fail_reason or "").split(":")[0].strip()
+    if reason in {"ROLE_EXECUTION_ERROR", "ROLE_TOTAL_FAILURE",
+                  "ARTIFACT_TRANSFER_ERROR"}:
+        opened = [r for r in (role_prs or []) if r.get("pr_url")]
+        if opened:
+            return (
+                f"A role failed, but {len(opened)} existing pull request(s) retain "
+                "their own recorded check and review evidence. Read that evidence "
+                "and the failed role's error before continuing as a person. "
+                "Do not resubmit the whole build to finish one role.")
     if reason == "COORDINATOR_SESSION_INTERRUPTED":
         # A recycled coordinator does not un-open the pull requests it already
         # published, and telling the reader to "submit the SAME request again" when

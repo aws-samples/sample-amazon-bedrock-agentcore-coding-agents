@@ -14,6 +14,7 @@ import { createTerminalInputQueue, type TerminalInputQueue } from '../lib/termin
 import { createTerminalResizeQueue, type TerminalResizeQueue } from '../lib/terminalResize';
 import type { TerminalOutput } from '../lib/terminalOutput';
 import { toast } from '../components/ConsoleNotifications';
+import { apiFetch } from '../lib/authSession';
 
 const API = '/api/dev/runtime-sessions';
 const _inputQueues = new Map<string, TerminalInputQueue>();
@@ -98,7 +99,7 @@ export async function openSession(
   instanceArn?: string,
 ): Promise<SessionEntry> {
   _hydrate();
-  const r = await fetch(API, {
+  const r = await apiFetch(API, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -161,7 +162,7 @@ export function sendInput(id: string, input: string) {
   let queue = _inputQueues.get(id);
   if (!queue) {
     queue = createTerminalInputQueue(async text => {
-      const response = await fetch(`${API}/${encodeURIComponent(id)}/input`, {
+      const response = await apiFetch(`${API}/${encodeURIComponent(id)}/input`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ input: text }),
@@ -182,7 +183,7 @@ export function resizeTerminal(id: string, size: { rows: number; cols: number })
   let queue = _resizeQueues.get(id);
   if (!queue) {
     queue = createTerminalResizeQueue(async measured => {
-      const response = await fetch(`${API}/${encodeURIComponent(id)}/resize`, {
+      const response = await apiFetch(`${API}/${encodeURIComponent(id)}/resize`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(measured),
@@ -199,7 +200,7 @@ export function resizeTerminal(id: string, size: { rows: number; cols: number })
 
 /** Only remove the tab after the server confirms the terminal closed. */
 export async function closeSession(id: string): Promise<void> {
-  const response = await fetch(`${API}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const response = await apiFetch(`${API}/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (response.status !== 404) {
     const result = await response.json();
     if (!response.ok || result.error || !result.ok) {
@@ -222,7 +223,7 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
   let rows: { session_id: string; agent_id: string; runtime_arn: string;
               alive: boolean; opened_by?: 'user' | 'orchestrator' }[];
   try {
-    const r = await fetch(`${API}?agent_id=${encodeURIComponent(agentId)}`);
+    const r = await apiFetch(`${API}?agent_id=${encodeURIComponent(agentId)}`);
     const data = await r.json();
     if (!r.ok || !Array.isArray(data.sessions)) return false;
     rows = data.sessions;

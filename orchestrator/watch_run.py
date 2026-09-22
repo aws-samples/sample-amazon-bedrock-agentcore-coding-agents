@@ -43,7 +43,7 @@ _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", ".runs")
 _KIND = {"tool_use": "*", "tool_result": "<", "thinking": "~", "text": " ",
          "output": ">"}   # ">" is a line the role's CLI printed, as it printed it
 
-_STATE_ORDER = ("queued", "running", "done", "failed", "skipped")
+_STATE_ORDER = ("queued", "running", "done", "failed", "blocked", "skipped")
 
 
 class _Ink:
@@ -99,6 +99,7 @@ def _state_mark(state: str, ink: _Ink) -> str:
     return {
         "done": ink.green("done"),
         "failed": ink.red("failed"),
+        "blocked": ink.yellow("blocked"),
         "running": ink.yellow("running"),
         "queued": ink.dim("queued"),
         "skipped": ink.dim("skipped"),

@@ -1,6 +1,7 @@
 # secrets / local
 .env
 github-app.env
+.github-app-setup*
 *.pem
 *.private-key.pem
 .deployed-state.json

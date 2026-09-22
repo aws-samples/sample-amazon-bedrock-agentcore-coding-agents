@@ -381,9 +381,15 @@ export function Workspace({ agentId = 'claude-code', fullHeight = false }: { age
   async function save(path: string) {
     const tab = tabs.find((t) => t.path === path);
     if (!session.sessionId || !tab) return;
-    await writeFile(session.sessionId, path, tab.body);
-    setTabs((ts) => ts.map((t) => (t.path === path ? { ...t, dirty: false } : t)));
-    await refreshTree(session.sessionId);
+    try {
+      const result = await writeFile(session.sessionId, path, tab.body);
+      if (result.error) throw new Error(result.error);
+    } catch (error) {
+      toast.error('Could not confirm file save', { description: error instanceof Error ? error.message : 'Check the file before trying again.' });
+      return;
+    }
+    setTabs((ts) => ts.map((t) => (t.path === path && t.body === tab.body ? { ...t, dirty: false } : t)));
+    await refreshTree(session.sessionId).catch(() => toast.error('File saved, but the file list could not be refreshed.'));
   }
 
   function newFile(dirPath?: string) {

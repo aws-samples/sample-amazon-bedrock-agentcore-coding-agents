@@ -8,14 +8,17 @@
  * the real run/agent/metrics surface; there is no mock data path.
  */
 
+import { apiFetch, ApiError } from './lib/authSession.ts';
+export { ApiError, getAuthMe, type AuthUser } from './lib/authSession.ts';
+
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(path, { headers: { accept: 'application/json' } });
+  const r = await apiFetch(path, { headers: { accept: 'application/json' } });
   if (!r.ok) throw new ApiError(r.status, `GET ${path} ${r.status}`);
   return (await r.json()) as T;
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await apiFetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: body === undefined ? '{}' : JSON.stringify(body),
@@ -25,14 +28,6 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     throw new ApiError(r.status, `POST ${path} ${r.status}${text ? `: ${text}` : ''}`);
   }
   return (await r.json()) as T;
-}
-
-export class ApiError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
 }
 
 export interface AttributionConfiguration {
@@ -86,7 +81,7 @@ export const getAttributionConfiguration = () =>
   get<AttributionConfiguration>('/api/metrics/attribution');
 
 export async function queryAttribution(windowHours: number, signal?: AbortSignal): Promise<AttributionEvidence> {
-  const response = await fetch('/api/metrics/attribution/query', {
+  const response = await apiFetch('/api/metrics/attribution/query', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ window_hours: windowHours }),
@@ -494,7 +489,7 @@ export async function streamChat(
   onEvent: (ev: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const r = await fetch('/api/orchestrator/chat', {
+  const r = await apiFetch('/api/orchestrator/chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -864,24 +859,3 @@ export interface ProbeResult {
 
 export const probeRuntime = (role: string) =>
   post<ProbeResult>(`/api/metrics/runtimes/${encodeURIComponent(role)}/probe`);
-
-// Auth: Cognito user identity
-export interface AuthUser {
-  authenticated: boolean;
-  login_url?: string;
-  user_id?: string;
-  email?: string;
-  name?: string;
-  groups?: string[];
-}
-
-export const getAuthMe = async (): Promise<AuthUser> => {
-  const response = await fetch('/api/auth/me', { cache: 'no-store', headers: { accept: 'application/json' } });
-  // An expired/cleared session is different from an intentionally open local
-  // console. Preserve the server's login destination so the shell can return
-  // to the Cognito form or the password gate, whichever this host uses.
-  if (!response.ok && response.status !== 401) {
-    throw new ApiError(response.status, `GET /api/auth/me ${response.status}`);
-  }
-  return await response.json() as AuthUser;
-};

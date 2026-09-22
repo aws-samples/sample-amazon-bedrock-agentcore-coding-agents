@@ -15,7 +15,19 @@ the redirect, exchanges the temporary code for the App id and private key, waits
 you to install the App, discovers the installation id from the App itself, and writes
 the three values into ./github-app.env for deploy-all.sh to read.
 
+    export GITHUB_REPO=owner/repository
     python3 create-github-app.py        # then: source github-app.env && ./deploy-all.sh
+
+RECOVERY. The callback receiver waits ten minutes. If it times out, run
+`python3 create-github-app.py --resume` in the same checkout and refresh the original
+failed callback tab. Resume keeps the original state, App name, repository and host;
+it never reposts a registration form. The saved callback window expires one hour
+after setup began. Once the App id and key are saved, --resume skips conversion and
+waits for installation instead (also at most ten minutes).
+
+If an exchange's outcome is uncertain, its code is not retried. Recover the EXISTING
+App and its private key in GitHub settings, then use --app-id ID --key-file PATH.
+This is also the path for an older helper that left no saved checkpoint.
 
 HOW THE BROWSER REACHES THIS SCRIPT. GitHub can only deliver the code to a URL your
 browser can open, so a bare localhost port on the workshop host is no good: localhost
@@ -34,23 +46,33 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
+import fcntl
 import functools
+import hashlib
+import html
 import json
+import math
 import os
+import re
 import secrets
+import shlex
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KEY_PATH = REPO_ROOT / "agentcore-github-mcp.private-key.pem"
 ENV_FILE = Path(__file__).resolve().parent / "github-app.env"
+STATE_FILE = Path(__file__).resolve().parent / ".github-app-setup.json"
 GITHUB_API = "https://api.github.com"
 # Unbuffered by construction. This script's whole job is to print ONE url and then
 # block, so a buffered stdout is not a cosmetic problem: piped or wrapped, the url
@@ -58,9 +80,295 @@ GITHUB_API = "https://api.github.com"
 # they are supposed to open. A tty happens to line-buffer, which makes the bug
 # invisible in the exact place it was authored.
 print = functools.partial(print, flush=True)  # noqa: A001 (deliberate shadow)
-# GitHub voids the temporary code one hour after the manifest is submitted, and an
-# attendee who wandered off is better served by a clear timeout than by a hung script.
+# Bound each receiver/installation wait. The saved callback expiry is conservative:
+# it starts before we publish the form, and restarting never renews it.
 INSTALL_WAIT_S = 600
+CALLBACK_WAIT_S = 600
+MANIFEST_LIFETIME_S = 3600
+
+
+class SetupError(RuntimeError):
+    """A message safe to display without a callback URL, code, state, or PEM."""
+
+
+class CallbackError(SetupError):
+    def __init__(self, message: str, status: int = 400, terminal: bool = False):
+        super().__init__(message)
+        self.status, self.terminal = status, terminal
+
+
+def private_bytes(path: Path) -> bytes:
+    """Do not follow a symlink or read another user's / shared secret file."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077):
+                raise SetupError("Setup/key files must be regular, owner-only files.")
+            return stream.read()
+    except OSError:
+        raise SetupError("Could not read the private setup/key file.") from None
+
+
+def atomic_private_write(path: Path, data: bytes, *, replace: bool = True) -> None:
+    """Publish complete 0600 bytes; a key destination is never overwritten."""
+    temporary = None
+    try:
+        if path.exists() or path.is_symlink():
+            previous = private_bytes(path)
+            if not replace:
+                if previous == data:
+                    return
+                raise SetupError("A different key already exists; it was left unchanged.")
+        fd, name = tempfile.mkstemp(prefix=".github-app-setup-", suffix=".tmp", dir=path.parent)
+        temporary = Path(name)
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)  # Atomic publication without replacing a key.
+            except FileExistsError:
+                if private_bytes(path) != data:
+                    raise SetupError("A different key already exists; it was left unchanged.")
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        raise SetupError("Could not durably save setup data. Preserve the checkpoint and use --resume.") from None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def setup_lock():
+    """Only one process may receive or resume this setup."""
+    lock_path = STATE_FILE.with_suffix(".lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            raise SetupError("The setup lock must be a regular, owner-only file.")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SetupError("Another App setup is still running in this checkout.") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def normalized_base_url(value: str) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise SetupError("The workshop base URL must be an HTTPS origin.")
+    parsed = urlparse(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment
+            or parsed.path not in ("", "/")):
+        raise SetupError("The workshop base URL must be an HTTPS origin, without a path or query.")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise SetupError("The workshop base URL has an invalid port.") from None
+    return f"https://{parsed.hostname.lower()}" + (f":{port}" if port and port != 443 else "")
+
+
+def manifest_digest(manifest: dict) -> str:
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+
+
+class SetupSession:
+    """A private journal, including the uncertainty boundary before conversion."""
+
+    def __init__(self, path: Path, data: dict):
+        self.path, self.data = path, data
+        self.lock = threading.Lock()
+        self.deadline: float | None = None
+        self.closed = False
+
+    def save(self) -> None:
+        atomic_private_write(self.path, (json.dumps(self.data, indent=2) + "\n").encode())
+
+    @classmethod
+    def create(cls, base_url: str, port: int, repo: str, key_path: Path):
+        if STATE_FILE.exists() or STATE_FILE.is_symlink():
+            raise SetupError("A saved App setup exists. Use --resume; do not create another App.")
+        if key_path.exists() or key_path.is_symlink():
+            raise SetupError("A key already exists. Finish its App with --app-id and --key-file.")
+        now = time.time()
+        name = f"AgentCore GitHub MCP {secrets.token_hex(3)}"
+        manifest = build_manifest(base_url, port, name)
+        session = cls(STATE_FILE, {
+            "version": 1, "phase": "awaiting_callback",
+            "state": secrets.token_urlsafe(24), "name": name,
+            "repo": repo, "base_url": base_url, "port": port,
+            "key_file": str(key_path), "checkout": str(REPO_ROOT.resolve()),
+            "created_at": now, "expires_at": now + MANIFEST_LIFETIME_S,
+            "manifest": manifest, "manifest_sha256": manifest_digest(manifest),
+        })
+        session.save()
+        return session
+
+    @classmethod
+    def load(cls):
+        try:
+            data = json.loads(private_bytes(STATE_FILE))
+            valid = (
+                type(data["version"]) is int and data["version"] == 1
+                and data["phase"] in {"awaiting_callback", "exchanging", "exchange_failed",
+                                      "converted", "complete"}
+                and data["checkout"] == str(REPO_ROOT.resolve())
+                and normalized_base_url(data["base_url"]) == data["base_url"]
+                and type(data["port"]) is int and 1 <= data["port"] <= 65535
+                and bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", data["repo"]))
+                and Path(data["key_file"]).is_absolute()
+                and data["manifest"] == build_manifest(data["base_url"], data["port"], data["name"])
+                and manifest_digest(data["manifest"]) == data["manifest_sha256"]
+                and all(type(data[key]) in (int, float) and math.isfinite(data[key])
+                        for key in ("created_at", "expires_at"))
+                and 0 < data["expires_at"] - data["created_at"] <= MANIFEST_LIFETIME_S
+            )
+            if data["phase"] != "complete":
+                valid = valid and isinstance(data["state"], str) and bool(
+                    re.fullmatch(r"[A-Za-z0-9_-]{24,}", data["state"]))
+            if data["phase"] in {"converted", "complete"}:
+                valid = valid and all((
+                    re.fullmatch(r"[1-9][0-9]*", data["app"]["id"]),
+                    re.fullmatch(r"[A-Za-z0-9-]+", data["app"]["slug"]),
+                    re.fullmatch(r"[0-9a-f]{64}", data["key_sha256"]),
+                ))
+            if data["phase"] == "converted":
+                valid = valid and isinstance(data["pem"], str) and bool(
+                    re.fullmatch(r"[0-9a-f]{64}", data["code_sha256"]))
+            if not valid:
+                raise ValueError("Invalid checkpoint")
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise SetupError("Invalid or foreign setup checkpoint; preserve it and recover the existing App.") from None
+        return cls(STATE_FILE, data)
+
+    def check_context(self, base_url: str, repo: str | None, port: int | None,
+                      key_path: Path | None) -> None:
+        if (base_url != self.data["base_url"]
+                or (repo is not None and repo != self.data["repo"])
+                or (port is not None and port != self.data["port"])
+                or (key_path is not None and str(key_path) != self.data["key_file"])):
+            raise SetupError("Saved setup belongs to a different host, repository, port, or key path.")
+
+    def check_waiting(self) -> None:
+        if self.data["phase"] != "awaiting_callback":
+            raise SetupError(
+                "The previous conversion may have consumed its code. It will not be retried. "
+                "Recover the existing App in GitHub settings, then use --app-id and --key-file.")
+        if time.time() >= self.data["expires_at"]:
+            raise SetupError(
+                "The saved callback window expired. Preserve this checkpoint and recover the "
+                "existing App in GitHub settings; do not register a replacement.")
+
+    def credentials(self) -> dict:
+        app = self.data["app"]
+        key_path = Path(self.data["key_file"])
+        if self.data["phase"] == "complete":
+            pem = private_bytes(key_path).decode()
+        else:
+            pem = self.data["pem"]
+        if hashlib.sha256(pem.encode()).hexdigest() != self.data["key_sha256"]:
+            raise SetupError("Saved key evidence changed; no file was overwritten.")
+        atomic_private_write(key_path, pem.encode(), replace=False)
+        return {**app, "pem": pem}
+
+    def receive(self, code: str, state: str) -> dict:
+        with self.lock:
+            if self.closed:
+                raise CallbackError("The receiver wait ended. Restart it with --resume.", 409)
+            if not secrets.compare_digest(state.encode(), self.data.get("state", "").encode()):
+                raise CallbackError("State mismatch. Use the original setup; no code was exchanged.")
+            if time.time() >= self.data["expires_at"]:
+                raise CallbackError("The saved callback window expired; recover the existing App.")
+            digest = hashlib.sha256(code.encode()).hexdigest()
+            if self.data["phase"] == "converted":
+                if digest != self.data["code_sha256"]:
+                    raise CallbackError("This setup already converted a different callback.")
+                return self.credentials()
+            try:
+                self.check_waiting()
+            except SetupError as exc:
+                raise CallbackError(str(exc), 409) from None
+            remaining = self.deadline - time.monotonic() if self.deadline is not None else CALLBACK_WAIT_S
+            if remaining <= 0:
+                raise CallbackError("The receiver wait ended. Restart it with --resume.")
+            previous = self.data.copy()
+            self.data.update(phase="exchanging", code_sha256=digest)
+            self.save()  # A lost response must never look like an unused code.
+            if self.deadline is not None:
+                remaining = self.deadline - time.monotonic()
+                if remaining <= 0:
+                    self.data = previous  # No request started; resume is still safe.
+                    self.save()
+                    raise CallbackError(
+                        "The receiver wait ended before conversion. Restart it with --resume.",
+                        409, terminal=True)
+        # Do not hold the checkpoint lock during network I/O. Closing the bounded
+        # receiver fences off late responses before another process can resume it.
+        failure = None
+        try:
+            created = github("POST", f"/app-manifests/{quote(code, safe='')}/conversions",
+                             timeout=min(30, remaining))
+            app_id, slug, pem = str(created["id"]), created["slug"], created["pem"]
+            if (not re.fullmatch(r"[1-9][0-9]*", app_id)
+                    or not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9-]+", slug)
+                    or not isinstance(pem, str) or not pem.strip()):
+                raise ValueError("Invalid conversion result")
+        except Exception as exc:
+            # No URL, response body, or callback value belongs in an error.
+            failure = {"exchange_error": type(exc).__name__}
+            if isinstance(exc, urllib.error.HTTPError):
+                failure["http_status"] = exc.code
+                exc.close()
+        with self.lock:
+            if self.closed:
+                raise CallbackError(
+                    "The receiver ended during conversion. Preserve the checkpoint; "
+                    "the exchange outcome is uncertain and will not be retried.",
+                    502, terminal=True)
+            if failure is not None:
+                self.data.update(phase="exchange_failed", **failure)
+                self.save()
+                raise CallbackError(
+                    "Conversion did not complete safely and will not be retried. Preserve the "
+                    "checkpoint; recover the existing App in GitHub settings.",
+                    502, terminal=True) from None
+            previous = self.data
+            self.data = {
+                **previous, "phase": "converted", "app": {"id": app_id, "slug": slug},
+                "pem": pem, "key_sha256": hashlib.sha256(pem.encode()).hexdigest(),
+            }
+            try:
+                self.save()  # Save the one-time response before any browser acknowledgement.
+            except Exception:
+                # A duplicate must not acknowledge an in-memory result whose
+                # durable publication failed. Only a new load may recover it.
+                self.data = previous
+                raise
+            return self.credentials()
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+
+    def complete(self, installation_id: str) -> None:
+        self.data.update(phase="complete", installation_id=installation_id)
+        for key in ("state", "pem", "code_sha256"):
+            self.data.pop(key, None)
+        self.save()
 
 
 def fail(message: str) -> "None":
@@ -115,15 +423,35 @@ def app_jwt(app_id: str, pem: str) -> str:
     return (head + b"." + body + b"." + sig).decode()
 
 
-def github(method: str, path: str, token: str | None = None) -> dict:
-    req = urllib.request.Request(f"{GITHUB_API}{path}", method=method)
-    req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("User-Agent", "agentcore-workshop")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read().decode()
-    return json.loads(raw) if raw else {}
+def github(method: str, path: str, token: str | None = None, *, timeout: float = 30) -> dict:
+    # urllib's timeout alone is per socket operation: DNS or a trickling response
+    # can outlast it. Bound the caller's entire wait without retrying the request.
+    # A timed-out POST has an uncertain outcome, handled by the durable journal.
+    done, outcome = threading.Event(), {}
+
+    def request():
+        try:
+            req = urllib.request.Request(f"{GITHUB_API}{path}", method=method)
+            req.add_header("Accept", "application/vnd.github+json")
+            req.add_header("User-Agent", "agentcore-workshop")
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+            outcome["result"] = json.loads(raw) if raw else {}
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    if timeout <= 0:
+        raise TimeoutError("GitHub request budget expired before the request.")
+    threading.Thread(target=request, daemon=True).start()
+    if not done.wait(timeout):
+        raise TimeoutError("GitHub response wait expired; the request outcome is uncertain.")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
 
 
 def build_manifest(base_url: str, port: int, name: str) -> dict:
@@ -166,14 +494,14 @@ def start_page(manifest: dict, state: str) -> bytes:
     a plain link cannot do it. The form auto-submits, and the button is the fallback for
     a browser that blocks the scripted submit.
     """
-    body = json.dumps(manifest)
+    body = html.escape(json.dumps(manifest), quote=True)
     return (
         "<!doctype html><meta charset=utf-8><title>Create the workshop GitHub App</title>"
         f"<style>{_PAGE_CSS}</style>"
         "<h1>Creating your GitHub App</h1>"
         "<p>On GitHub, confirm the App name and choose <strong>Create GitHub App</strong>. "
         "Then review its permissions and select your workshop repository when you install it.</p>"
-        f'<form id="f" method="post" action="https://github.com/settings/apps/new?state={state}">'
+        f'<form id="f" method="post" action="https://github.com/settings/apps/new?state={quote(state, safe="")}">'
         f'<input type="hidden" name="manifest" value=\'{body}\'>'
         '<button type="submit">Continue to GitHub</button></form>'
         "<script>document.getElementById('f').submit()</script>"
@@ -186,8 +514,8 @@ def result_page(title: str, html: str) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    manifest: dict = {}
-    state: str = ""
+    setup_session: SetupSession
+    resuming = False
     result: dict = {}
     done = threading.Event()
 
@@ -199,69 +527,110 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(payload)
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
         parsed = urlparse(self.path)
-        # code-server strips the /proxy/<port> prefix, so this normally sees / and
-        # /callback. Anything that is not the callback serves the start page, because
-        # the prefix handling is the proxy's business and a 404 here would look like a
-        # broken workshop rather than a path detail.
-        if parsed.path.rstrip("/").rsplit("/", 1)[-1] != "callback":
-            self._send(200, start_page(self.manifest, self.state))
+        session = self.setup_session
+        prefix = f'/proxy/{session.data["port"]}'
+        if parsed.path.rstrip("/") in ("", prefix):
+            if self.resuming or session.data["phase"] != "awaiting_callback":
+                self._send(200, result_page(
+                    "Resume the existing App setup",
+                    "<p>Refresh the original GitHub callback tab while this receiver is running. "
+                    "Do not create another App. If you no longer have that tab, recover the "
+                    "existing App from GitHub settings using <code>--app-id</code> and "
+                    "<code>--key-file</code>.</p>"))
+            else:
+                self._send(200, start_page(session.data["manifest"], session.data["state"]))
             return
-
-        query = parse_qs(parsed.query)
-        code = (query.get("code") or [""])[0]
-        state = (query.get("state") or [""])[0]
-        if not code:
+        # Accept code-server's stripped and unstripped paths, not arbitrary paths
+        # whose final component happens to be "callback".
+        if parsed.path not in ("/callback", prefix + "/callback"):
+            self._send(404, result_page("Not found", "<p>Use the original setup tab.</p>"))
+            return
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if (set(query) != {"code", "state"}
+                or any(len(query[key]) != 1 or not query[key][0] for key in query)):
             self._send(400, result_page(
-                "No code from GitHub",
-                "<p>GitHub redirected here without a <code>code</code>. Start over in "
-                "the terminal.</p>"))
+                "Invalid callback",
+                "<p>Exactly one nonempty code and state are required. No code was exchanged.</p>"))
             return
-        if state != self.state:
-            # A mismatched state means this redirect did not come from the form this
-            # run served, so refuse it rather than converting somebody else's code.
-            self._send(400, result_page(
-                "State mismatch",
-                "<p>This redirect does not belong to the run waiting in your terminal. "
-                "Start over in the terminal.</p>"))
-            return
+        finished = False
         try:
-            created = github("POST", f"/app-manifests/{code}/conversions")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode()[:400]
-            # The ordering here is deliberate and has TWO halves, because there are two
-            # observers. Record the outcome BEFORE responding: main() reads
-            # Handler.result the instant `done` releases it, so an assignment after the
-            # response leaves the two disagreeing for however long the thread takes to
-            # reach the next line. Then set `done` AFTER responding, because main()
-            # answers `done` with server.shutdown(), and a shutdown that races the write
-            # costs the attendee the page telling them to install the App. Assign on the
-            # CLASS, not on self: the handler instance is discarded after this request,
-            # so an instance attribute would never reach main() at all.
-            Handler.result = {"error": f"conversion failed: HTTP {exc.code}"}
-            self._send(502, result_page(
-                "GitHub refused the conversion",
-                f"<p>HTTP {exc.code}. The code is valid for one hour and once only.</p>"
-                f"<pre>{detail}</pre>"))
-            self.done.set()
-            return
-        Handler.result = created
-        slug = created.get("slug", "")
-        self._send(200, result_page(
-            "App created",
-            f"<p>App <code>{slug}</code> (id {created.get('id')}) exists, and its "
-            "private key is on the workshop host.</p>"
-            "<p><strong>One step left:</strong> install it on the repository you "
-            f'created, at <a href="https://github.com/apps/{slug}/installations/new" '
-            'target="_blank" rel="noreferrer">this install page</a>. Choose '
-            "<strong>Only select repositories</strong> and pick that one repo.</p>"
-            "<p>Your terminal is waiting for the installation and will finish on its "
-            "own.</p>"))
-        self.done.set()
+            try:
+                created = session.receive(query["code"][0], query["state"][0])
+            except CallbackError as exc:
+                finished = exc.terminal
+                if finished:
+                    type(self).result = {"error": str(exc)}
+                self._send(exc.status, result_page("Setup not completed", f"<p>{html.escape(str(exc))}</p>"))
+                return
+            except SetupError as exc:
+                finished = True
+                type(self).result = {"error": str(exc)}
+                self._send(500, result_page("Setup not saved", f"<p>{html.escape(str(exc))}</p>"))
+                return
+            # Both the journal and key already exist durably. Record the result
+            # before replying, and release main after replying, even on disconnect.
+            type(self).result = created
+            finished = True
+            slug = created["slug"]
+            self._send(200, result_page(
+                "App created",
+                f"<p>App <code>{slug}</code> (id {created['id']}) exists, and its "
+                "private key is saved on the workshop host.</p>"
+                "<p><strong>One step left:</strong> install it on the repository you "
+                f'created, at <a href="https://github.com/apps/{slug}/installations/new" '
+                'target="_blank" rel="noreferrer">this install page</a>. Choose '
+                "<strong>Only select repositories</strong> and pick that one repo.</p>"
+                "<p>Your terminal is waiting for the installation. If it stopped, "
+                "run this helper with <code>--resume</code>.</p>"))
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass  # The browser may leave; the saved outcome must still reach main.
+        finally:
+            if finished:
+                self.done.set()
+
+
+class CallbackServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+
+
+def wait_for_callback(session: SetupSession, *, resuming: bool) -> dict:
+    session.check_waiting()
+    handler = type("SetupHandler", (Handler,), {
+        "setup_session": session, "resuming": resuming,
+        "result": {}, "done": threading.Event(),
+    })
+    server = CallbackServer(("127.0.0.1", session.data["port"]), handler)
+    session.deadline = time.monotonic() + min(
+        CALLBACK_WAIT_S, session.data["expires_at"] - time.time())
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True).start()
+    try:
+        if resuming:
+            print("\nReceiver resumed for the SAME App. Refresh the original failed callback tab.")
+            print("Do not open a new GitHub App registration.\n")
+        else:
+            print("\nOpen this URL in the SAME browser you are using for VS Code:\n")
+            print(f'    {session.data["base_url"]}/proxy/{session.data["port"]}/\n')
+            print("On GitHub, confirm the App name and choose 'Create GitHub App'.")
+            print("Then review its permissions and install it on your workshop repository.\n")
+        print("This receiver waits at most ten minutes. If it stops, run this helper with --resume.")
+        if not handler.done.wait(timeout=max(0, session.deadline - time.monotonic())):
+            raise SetupError(
+                "Timed out waiting for the callback. The original setup is saved. Run with "
+                "--resume, then refresh the original failed callback tab; do not create another App.")
+        if "error" in handler.result:
+            raise SetupError(handler.result["error"])
+        return handler.result
+    finally:
+        session.close()  # Late network responses cannot rewrite a resumed checkpoint.
+        server.shutdown()
+        server.server_close()
 
 
 def wait_for_installation(app_id: str, pem: str, expect_owner: str | None) -> str:
@@ -271,15 +640,22 @@ def wait_for_installation(app_id: str, pem: str, expect_owner: str | None) -> st
     and the App can simply be asked. Installing is still a human decision, so this
     waits rather than assuming.
     """
-    deadline = time.time() + INSTALL_WAIT_S
+    deadline = time.monotonic() + INSTALL_WAIT_S
     reminded = False
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         try:
-            installs = github("GET", "/app/installations", token=app_jwt(app_id, pem))
+            token = app_jwt(app_id, pem)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            installs = github("GET", "/app/installations", token=token, timeout=min(30, remaining))
         except urllib.error.HTTPError as exc:
+            exc.close()
             fail(f"GitHub rejected the App JWT (HTTP {exc.code}); the private key and "
                  f"App id {app_id} do not match.")
             raise AssertionError("unreachable")
+        if time.monotonic() >= deadline:
+            break
         if installs:
             if expect_owner:
                 for item in installs:
@@ -292,76 +668,79 @@ def wait_for_installation(app_id: str, pem: str, expect_owner: str | None) -> st
         if not reminded:
             print("  waiting for you to install the App (the browser tab has the link)...")
             reminded = True
-        time.sleep(3)
+        time.sleep(max(0, min(3, deadline - time.monotonic())))
     fail("timed out waiting for the App to be installed. Install it, then re-run with "
-         "--app-id and --key-file to finish without creating a second App.")
+         "--resume for a saved setup, or --app-id and --key-file for an existing key.")
     raise AssertionError("unreachable")
 
 
 def write_env(app_id: str, key_path: Path, installation_id: str) -> None:
-    ENV_FILE.write_text(
+    atomic_private_write(ENV_FILE, (
         "# Written by create-github-app.py. Source it, then run ./deploy-all.sh\n"
         f"export GITHUB_APP_ID={app_id}\n"
-        f'export GITHUB_APP_PRIVATE_KEY_FILE="{key_path}"\n'
-        f"export GITHUB_APP_INSTALLATION_ID={installation_id}\n")
-    ENV_FILE.chmod(0o600)
+        f"export GITHUB_APP_PRIVATE_KEY_FILE={shlex.quote(str(key_path))}\n"
+        f"export GITHUB_APP_INSTALLATION_ID={installation_id}\n").encode())
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base-url", help="public https origin of this workshop host")
-    parser.add_argument("--port", type=int,
-                        default=int(os.environ.get("MANIFEST_PORT", "8765")))
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPO", ""),
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--repo",
                         help="owner/repository the App will be installed on")
-    parser.add_argument("--key-file", default=str(DEFAULT_KEY_PATH))
-    parser.add_argument("--app-id",
-                        help="finish an App that already exists (skips creation)")
-    args = parser.parse_args()
-
-    key_path = Path(args.key_file).expanduser()
-    owner = args.repo.split("/")[0] if "/" in args.repo else None
-
-    if args.app_id:
-        # Resume path: the App exists and its key is on disk, only the installation is
-        # missing. This is what a timeout or a closed browser tab leaves behind, and
-        # creating a second App would be the wrong repair.
-        if not key_path.is_file():
-            fail(f"--app-id given but no private key at {key_path}")
-        pem = key_path.read_text()
-        app_id = args.app_id
-    else:
-        base_url = resolve_base_url(args.base_url)
-        state = secrets.token_urlsafe(24)
-        # The name has to be unique across GitHub, so make it unguessable rather than
-        # asking every attendee in the room to invent one.
-        name = f"AgentCore GitHub MCP {secrets.token_hex(3)}"
-        Handler.manifest = build_manifest(base_url, args.port, name)
-        Handler.state = state
-        server = HTTPServer(("127.0.0.1", args.port), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-
-        print("\nOpen this URL in the SAME browser you are using for VS Code:\n")
-        print(f"    {base_url}/proxy/{args.port}/\n")
-        print("On GitHub, confirm the App name and choose 'Create GitHub App'.")
-        print("Then review its permissions and install it on your workshop repository.")
-        print("This terminal finishes on its own.\n")
-
-        if not Handler.done.wait(timeout=INSTALL_WAIT_S):
-            fail("timed out waiting for GitHub to redirect back. Check that the URL "
-                 "above opened, then run this script again.")
-        server.shutdown()
-        created = Handler.result
-        if "error" in created or not created.get("pem"):
-            fail(created.get("error", "GitHub returned no private key"))
-        app_id = str(created["id"])
-        pem = created["pem"]
-        key_path.write_text(pem)
-        key_path.chmod(0o600)
-        print(f"App id {app_id} created; private key written to {key_path}")
-
-    installation_id = wait_for_installation(app_id, pem, owner)
-    write_env(app_id, key_path, installation_id)
+    parser.add_argument("--key-file", help="private key file (defaults to the workshop checkout)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--app-id", help="finish an App whose private key is already on disk")
+    mode.add_argument("--resume", action="store_true",
+                      help="resume the saved App setup, without creating another App")
+    args = parser.parse_args(argv)
+    try:
+        repo = args.repo if args.repo is not None else os.environ.get("GITHUB_REPO")
+        port = args.port if args.port is not None else (
+            int(os.environ["MANIFEST_PORT"]) if "MANIFEST_PORT" in os.environ else None)
+        key_override = Path(args.key_file).expanduser().absolute() if args.key_file else None
+        if port is not None and not 1 <= port <= 65535:
+            raise SetupError("The callback port must be between 1 and 65535.")
+        if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            raise SetupError("Pass the workshop repository as owner/repository.")
+        with setup_lock():
+            session = None
+            if args.app_id:
+                if not re.fullmatch(r"[1-9][0-9]*", args.app_id):
+                    raise SetupError("The App id must be a positive integer.")
+                key_path = key_override or DEFAULT_KEY_PATH
+                pem = private_bytes(key_path).decode()
+                app_id = args.app_id
+            else:
+                base_url = normalized_base_url(resolve_base_url(args.base_url))
+                if args.resume:
+                    session = SetupSession.load()
+                    session.check_context(base_url, repo, port, key_override)
+                else:
+                    if not repo:
+                        raise SetupError("Set GITHUB_REPO or pass --repo owner/repository before starting App setup.")
+                    session = SetupSession.create(
+                        base_url, port or 8765, repo, key_override or DEFAULT_KEY_PATH)
+                key_path, repo = Path(session.data["key_file"]), session.data["repo"]
+                if session.data["phase"] in {"converted", "complete"}:
+                    created = session.credentials()
+                else:
+                    created = wait_for_callback(session, resuming=args.resume)
+                app_id, pem = created["id"], created["pem"]
+                print(f"App id {app_id}; private key saved at {key_path}")
+                print(f'Install this App: https://github.com/apps/{created["slug"]}/installations/new')
+            owner = repo.split("/")[0] if repo and "/" in repo else None
+            installation_id = wait_for_installation(app_id, pem, owner)
+            write_env(app_id, key_path, installation_id)
+            if session is not None:
+                session.complete(installation_id)
+    except SetupError as exc:
+        fail(str(exc))
+    except (OSError, ValueError):
+        # urllib errors may include a one-time code or credential-bearing URL.
+        fail("Setup could not finish safely. Preserve its checkpoint and key; use --resume "
+             "or recover the existing App with --app-id and --key-file.")
     print(f"Installation id {installation_id} discovered from the App itself.")
     print(f"Wrote {ENV_FILE}\n")
     print("Next:")
