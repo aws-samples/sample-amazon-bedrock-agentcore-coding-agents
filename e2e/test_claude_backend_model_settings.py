@@ -89,14 +89,14 @@ def launcher(tmp_path):
 
 @pytest.mark.parametrize("path", ["run.sh", "run-as-user.sh"])
 @pytest.mark.parametrize("overrides,expected", [
-    ({}, "us.anthropic.claude-opus-5"),
+    ({}, "us.anthropic.claude-opus-4-6-v1"),
     ({"ANTHROPIC_MODEL": "native-model"}, "native-model"),
     ({"ANTHROPIC_MODEL": "native-model", "WORKSHOP_CLAUDE_MODEL": "stack-model"}, "stack-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "stack-model", "WORKSHOP_MODEL": "generic-model"}, "generic-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "stack-model", "WORKSHOP_MODEL": "generic-model",
       "WORKSHOP_MODEL_CLAUDE_CODE": "role-model"}, "role-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "", "WORKSHOP_MODEL": "",
-      "WORKSHOP_MODEL_CLAUDE_CODE": ""}, "us.anthropic.claude-opus-5"),
+      "WORKSHOP_MODEL_CLAUDE_CODE": ""}, "us.anthropic.claude-opus-4-6-v1"),
 ])
 def test_model_environment_precedence_reaches_the_cli(launcher, path, overrides, expected):
     result, record = launcher(path, overrides)
@@ -150,7 +150,7 @@ def test_interactive_launcher_honors_settings_without_switching_to_print_mode(la
     arguments = record["argv"]
     assert "--print" not in arguments
     assert arguments[arguments.index("--model") + 1] == (
-        "explicit-model" if args else "us.anthropic.claude-opus-5")
+        "explicit-model" if args else "us.anthropic.claude-opus-4-6-v1")
     assert arguments[arguments.index("--effort") + 1] == ("max" if args else "high")
 
 

@@ -201,7 +201,7 @@ _CLAUDE_CLI = _claude_cli(_CLAUDE_EFFORT)
 # These are the same names the Stage 1 harness configurators read, so the shelf, the
 # deployed image, and the dispatch all name one model.
 _CLAUDE_MODEL = (os.environ.get("WORKSHOP_CLAUDE_MODEL", "").strip()
-                or "us.anthropic.claude-opus-5")
+                or "us.anthropic.claude-opus-4-6-v1")
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
 _CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "us.openai.gpt-5.6-sol")

@@ -190,7 +190,7 @@ Console renders these on the Stage 1 shelf.
 ```json
 {
   "agents": [
-    {"id": "claude-code",           "label": "Claude Code", "default_role": "backend-builder",   "model": "us.anthropic.claude-opus-5",               "credential": "bedrock-native"},
+    {"id": "claude-code",           "label": "Claude Code", "default_role": "backend-builder",   "model": "us.anthropic.claude-opus-4-6-v1",               "credential": "bedrock-native"},
     {"id": "codex",                 "label": "Codex",       "default_role": "frontend-builder",  "model": "us.openai.gpt-5.6-sol",                       "credential": "runtime-iam"},
     {"id": "kiro",                  "label": "Kiro",        "default_role": "validator",         "model": "claude-opus-5",                              "credential": "api-key"}
   ]
@@ -260,7 +260,7 @@ Append-only audit trail of phase transitions and role activity (embedded event a
   sidebar can never advertise an agent this deployment does not run:
   `{ "roster": [ {"role":"claude-code","label":"Claude Code","kind":"builder",
   "capability":"backend","role_name":"backend-builder","description":"…",
-  "steering_file":"CLAUDE.md","model":"us.anthropic.claude-opus-5",
+  "steering_file":"CLAUDE.md","model":"us.anthropic.claude-opus-4-6-v1",
   "credential":"bedrock-native"}, … ] }`.
 - **`GET /api/runs/{id}/terminals`**: per-role shell transcripts (every line a real
   `/bin/sh` command the role ran in its container, with output + exit code):

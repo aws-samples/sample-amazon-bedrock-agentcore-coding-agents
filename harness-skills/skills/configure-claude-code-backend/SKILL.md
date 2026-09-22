@@ -8,7 +8,7 @@ description: >-
   "build the backend", "deploy claude-code", "point Claude Code at the task",
   or asks which agent owns the server/tools side.
   Claude Code runs Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM bedrock:InvokeModel,
-  NO API key) on default model us.anthropic.claude-opus-5 with high effort. Opus suits the
+  NO API key) on default model us.anthropic.claude-opus-4-6-v1 with high effort. Opus suits the
   multi-file backend work. Do NOT use this for Kiro (the validator) or Codex
   (frontend builder); those have their own configure skills.
 ---
@@ -36,7 +36,7 @@ validator's authored check can exit 0.
 Why Claude Code is the backend: this role is multi-file, contract-driven server work.
 Per per-task model routing, the most capable model is the right call for complex/critical
 work; Opus recognizes rabbit holes and self-corrects, where mid-tier models persist in
-unproductive loops. That is why the default model here is `us.anthropic.claude-opus-5`
+unproductive loops. That is why the default model here is `us.anthropic.claude-opus-4-6-v1`
 and why this role owns the server side.
 
 ---
@@ -48,7 +48,7 @@ they say "use defaults":
 
 1. **AWS region**: use the existing `AWS_REGION` / `AWS_DEFAULT_REGION` or AWS
    CLI configuration. Ask only when the deployment region is unresolved.
-2. **Model id**: default `us.anthropic.claude-opus-5` with `high` effort.
+2. **Model id**: default `us.anthropic.claude-opus-4-6-v1` with `high` effort.
    Export `WORKSHOP_CLAUDE_MODEL` and `WORKSHOP_CLAUDE_EFFORT` before deploying
    the backend and configuring the coordinator to use an explicit override.
    Do NOT downgrade to Sonnet/Haiku for this role; backend work is the Opus opt-in case.
@@ -101,7 +101,7 @@ What `deploy.py` wires up (do not re-create it by hand):
 - The runtime IAM role gets `bedrock:InvokeModel`; this is the credential path.
 - `run.sh` inside the microVM generates `~/.mcp.json` (pointing at the Gateway MCP
   endpoint), sets `CLAUDE_CODE_USE_BEDROCK=1`, and launches
-  `claude --dangerously-skip-permissions --effort high --model us.anthropic.claude-opus-5`.
+  `claude --dangerously-skip-permissions --effort high --model us.anthropic.claude-opus-4-6-v1`.
 - Persistent `/mnt/s3files` is the S3 Files / managed session storage mount.
 
 Sanity-check the Bedrock-native config that makes this the no-key path:
@@ -170,7 +170,7 @@ completion to the orchestrator.
 - **Why Opus for this role.** Model routing is per-task: `pr_review` -> Haiku (cheap,
   read-only), `new_task`/`pr_iteration` -> Sonnet (balanced), complex/critical ->
   **Opus**. Backend server work is the complex/critical case, so the default stays
-  `us.anthropic.claude-opus-5`. Routing is about quality, not just cost: Opus
+  `us.anthropic.claude-opus-4-6-v1`. Routing is about quality, not just cost: Opus
   self-corrects out of rabbit holes that trap mid-tier models on multi-file work.
 - **Swap behind the interface.** New backend strategies plug in behind the same MCP tool
   contract (the Gateway target) without touching the orchestrator: the extensibility

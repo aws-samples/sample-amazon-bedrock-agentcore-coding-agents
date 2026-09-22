@@ -3971,9 +3971,11 @@ _NEXT_ACTION = {
         "against is gone, so nothing could be executed. This is an engine-side "
         "failure, not a failed agent turn: retry the same request once.",
     "REVIEW_UNAVAILABLE":
-        "The executable check passed, but the required review did not run for the "
-        "named pull request(s). Keep them open and retry after model access is "
-        "restored; do not ask builders to change code for this outage.",
+        "The executable check passed, but the required review did not produce a "
+        "valid decision for the named pull request(s). Keep them open and inspect "
+        "the recorded review reason. Resolve the access, response, or context "
+        "problem, then retry review of the same pull request; do not rebuild the "
+        "application for a review failure.",
     "ENGINE_STALL":
         "The run ended without reaching a verdict. Resubmit; if it stalls again, the "
         "engine log for this run id is the place to look.",
