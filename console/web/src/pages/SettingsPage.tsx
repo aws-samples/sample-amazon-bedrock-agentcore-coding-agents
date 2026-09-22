@@ -29,11 +29,27 @@ import { agentInstanceLabel, onAgentRoles } from './agents/environments';
 import { authSession } from '../lib/authSession';
 import { connectionStatus } from '../lib/connectionStatus';
 import { SessionRecoveryActions } from '../components/SessionRecoveryActions';
+import { recordSettingsError, settingsErrorMessage, type SettingsError, type SettingsErrorOrigin } from '../lib/settingsErrors';
 
 const roleName = (role: string) => role === 'orchestrator' ? 'Coordinator' : agentInstanceLabel(role);
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The request failed. Try again.';
 type Connection = { role: string; arn: string; source: RuntimeSource; description?: string };
 const sourceName = (source: RuntimeSource) => ({ settings: 'Console settings', environment: 'Environment', deployed: 'Deployment' })[source] || source;
+
+function SettingsModalFooter({ busy, expired, disabled, cancel, action, text }: {
+  busy: boolean; expired: boolean; disabled: boolean;
+  cancel: () => void; action: () => void; text: string;
+}) {
+  const actions = useRef<HTMLDivElement>(null);
+  // Recovery removes its focused button. Move focus before that update to a
+  // stable, non-actionable target inside this modal; never activate Save/Cancel.
+  return <Box float="right"><div ref={actions} tabIndex={-1} role="group" aria-label="Dialog actions">
+    <SpaceBetween direction="horizontal" size="xs">
+      <Button variant="link" disabled={busy} onClick={cancel}>Cancel</Button>
+      {expired && <SessionRecoveryActions beforeCheck={() => actions.current?.focus({ preventScroll: true })} />}
+      <Button variant="primary" loading={busy} disabled={disabled || expired} onClick={action}>{text}</Button>
+    </SpaceBetween>
+  </div></Box>;
+}
 
 export function SettingsPage() {
   const auth = useSyncExternalStore(authSession.subscribe, authSession.getSnapshot);
@@ -42,7 +58,9 @@ export function SettingsPage() {
   const [github, setGithub] = useState<GithubStatus | null>(null);
   const [runtimes, setRuntimes] = useState<RuntimeStatus | null>(null);
   const [kiro, setKiro] = useState<KiroStatus | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [reportedErrors, setReportedErrors] = useState<Record<string, SettingsError>>({});
+  const errors = Object.fromEntries(Object.entries(reportedErrors).map(([key, error]) =>
+    [key, settingsErrorMessage(error, auth.revision)]));
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [repositoryReadFailed, setRepositoryReadFailed] = useState(false);
@@ -62,19 +80,22 @@ export function SettingsPage() {
   const [edit, setEdit] = useState<Connection | null>(null);
   const [remove, setRemove] = useState<Connection | null>(null);
   const [, setRosterVersion] = useState(0);
-  const report = (key: string, value = '') => setErrors(prev => ({ ...prev, [key]: value }));
+  // This render's revision belongs to the request being started, even if its
+  // rejection arrives after a later sign-in has already restored access.
+  const report = (key: string, value: unknown = '', origin: SettingsErrorOrigin = 'action') =>
+    setReportedErrors(prev => ({ ...prev, [key]: recordSettingsError(prev[key], value, auth.revision, origin) }));
   useEffect(() => onAgentRoles(() => setRosterVersion(n => n + 1)), []);
   useEffect(() => {
     let live = true;
     setLoading(true);
     void Promise.allSettled([
       getGithubStatus().then(next => { if (live) {
-        setGithub(next); setRepositoryReadFailed(false); report('repository'); report('policy');
+        setGithub(next); setRepositoryReadFailed(false); report('repository', '', 'read'); report('policy', '', 'read');
         if (!repoEdited.current) setRepo(next.repo || '');
         if (!policyEdited.current) setPolicy(next.merge_policy || null);
-      } }).catch(e => { if (live) { setRepositoryReadFailed(true); report('repository', errorMessage(e)); } }),
-      getRuntimes().then(next => { if (live) { setRuntimes(next); setRole(current => current || next.roles[0]?.role || ''); report('connections'); } }).catch(e => { if (live) report('connections', errorMessage(e)); }),
-      getKiroStatus().then(next => { if (live) { setKiro(next); setKiroReadFailed(false); report('kiro'); } }).catch(e => { if (live) { setKiroReadFailed(true); report('kiro', errorMessage(e)); } }),
+      } }).catch(e => { if (live) { setRepositoryReadFailed(true); report('repository', e, 'read'); } }),
+      getRuntimes().then(next => { if (live) { setRuntimes(next); setRole(current => current || next.roles[0]?.role || ''); report('connections', '', 'read'); } }).catch(e => { if (live) report('connections', e, 'read'); }),
+      getKiroStatus().then(next => { if (live) { setKiro(next); setKiroReadFailed(false); report('kiro', '', 'read'); } }).catch(e => { if (live) { setKiroReadFailed(true); report('kiro', e, 'read'); } }),
     ]).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [auth.revision, refresh]);
@@ -87,7 +108,7 @@ export function SettingsPage() {
       const next = await saveGithubCredential({ repo: value });
       if (next.error) throw new Error(next.error);
       setGithub(next); setRepositoryReadFailed(false); setRepo(next.repo || ''); repoEdited.current = false; toast.success('Repository saved');
-    } catch (e) { report('repository', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('repository', e); } finally { setBusy(''); }
   }
   async function savePolicy(next: MergePolicy) {
     setBusy('policy'); report('policy');
@@ -95,7 +116,7 @@ export function SettingsPage() {
       const result = await setMergePolicy(next);
       if (result.error) throw new Error(result.error);
       setGithub(result); setPolicy(result.merge_policy || next); policyEdited.current = false; setConfirm(null); toast.success('Merge policy saved');
-    } catch (e) { report('policy', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('policy', e); } finally { setBusy(''); }
   }
   async function disconnectRepo() {
     setBusy('repository'); report('repository');
@@ -103,7 +124,7 @@ export function SettingsPage() {
       const next = await clearGithubCredential();
       if (next.error) throw new Error(next.error);
       setGithub(next); setRepositoryReadFailed(false); setRepo(next.repo || ''); repoEdited.current = false; setConfirm(null); toast.success('Repository disconnected');
-    } catch (e) { report('repository', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('repository', e); } finally { setBusy(''); }
   }
   async function connect() {
     if (!role || !arn.trim()) return;
@@ -114,9 +135,9 @@ export function SettingsPage() {
       const next = runtimes?.roles.find(r => r.role === role)?.wired ? await addRuntime(role, input) : await wireRuntime(role, input);
       if (next.error) throw new Error(next.error);
       setRuntimes(next); setConnectOpen(false); setArn(''); setDescription(''); setApiKey('');
-      if (role === 'kiro' && input.apiKey) void getKiroStatus().then(setKiro).catch(e => report('kiro', errorMessage(e)));
+      if (role === 'kiro' && input.apiKey) void getKiroStatus().then(setKiro).catch(e => report('kiro', e, 'read'));
       toast.success('Runtime connection saved');
-    } catch (e) { report('connect', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('connect', e); } finally { setBusy(''); }
   }
   async function saveDescription() {
     if (!edit) return;
@@ -125,7 +146,7 @@ export function SettingsPage() {
       const next = await describeRuntime(edit.role, edit.arn, description);
       if (next.error) throw new Error(next.error);
       setRuntimes(next); setEdit(null); toast.success('Description saved');
-    } catch (e) { report('description', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('description', e); } finally { setBusy(''); }
   }
   async function removeConnection() {
     if (!remove) return;
@@ -134,7 +155,7 @@ export function SettingsPage() {
       const next = await removeRuntime(remove.role, remove.arn);
       if (next.error) throw new Error(next.error);
       setRuntimes(next); setRemove(null); toast.success('Runtime connection removed');
-    } catch (e) { report('remove', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('remove', e); } finally { setBusy(''); }
   }
   async function saveKey(clear = false) {
     setBusy('kiro'); report('kiro');
@@ -142,12 +163,12 @@ export function SettingsPage() {
       const next = clear ? await clearKiroKey() : await saveKiroKey(kiroDraft.trim());
       if (next.error) throw new Error(next.error);
       setKiro(next); setKiroReadFailed(false); setKiroDraft(''); setConfirm(null); toast.success(clear ? 'Kiro key removed' : 'Kiro key saved');
-    } catch (e) { report('kiro', errorMessage(e)); } finally { setBusy(''); }
+    } catch (e) { report('kiro', e); } finally { setBusy(''); }
   }
   async function refreshKiro() {
-    setBusy('kiro-refresh'); report('kiro');
+    setBusy('kiro-refresh'); report('kiro', '', 'read');
     try { setKiro(await getKiroStatus(true)); setKiroReadFailed(false); }
-    catch (e) { setKiroReadFailed(true); report('kiro', errorMessage(e)); }
+    catch (e) { setKiroReadFailed(true); report('kiro', e, 'read'); }
     finally { setBusy(''); }
   }
   const connections: Connection[] = runtimes?.roles.flatMap(r =>
@@ -155,11 +176,8 @@ export function SettingsPage() {
       .map(instance => ({ ...instance, role: r.role }))) ?? [];
   const repositoryStatus = connectionStatus(loading, auth.expired, github, repositoryReadFailed);
   const kiroStatus = connectionStatus(loading, auth.expired, kiro, kiroReadFailed);
-  const footer = (cancel: () => void, action: () => void, text: string, disabled = false) => <Box float="right"><SpaceBetween direction="horizontal" size="xs">
-    <Button variant="link" disabled={!!busy} onClick={cancel}>Cancel</Button>
-    {auth.expired && <SessionRecoveryActions />}
-    <Button variant="primary" loading={!!busy} disabled={disabled || auth.expired} onClick={action}>{text}</Button>
-  </SpaceBetween></Box>;
+  const footer = (cancel: () => void, action: () => void, text: string, disabled = false) =>
+    <SettingsModalFooter busy={!!busy} expired={auth.expired} disabled={disabled} cancel={cancel} action={action} text={text} />;
 
   return <ContentLayout header={<Header variant="h1" description="Manage the repository, Runtime connections, and credentials used by this host."
     actions={<Button iconName="refresh" loading={loading} disabled={auth.expired || !!busy} onClick={() => setRefresh(n => n + 1)}>Refresh settings</Button>}>Settings</Header>}>

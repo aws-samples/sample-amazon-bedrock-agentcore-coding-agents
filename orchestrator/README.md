@@ -42,9 +42,12 @@ the read-only review preset.
 For a preset with a participant's creative direction, `run_build` combines the
 preset's request with the exact `creative_direction` text. Its `task` argument
 must be empty in this form, so an unrelated custom request cannot silently be
-replaced. A plain custom `task` remains unchanged. The game preset shares only
-its external score protocol with other teams; `integration_plan.py` must leave
-mechanics, visual style, controls, and internal design to the builder.
+replaced. A plain custom `task` remains unchanged. The game preset asks for one
+short, complete round around one core mechanic, with clear controls, an earned
+score, an end state, and restart. Additional stages, modes, and audio are reserved
+for optional Lab 3 changes. It shares only its external score protocol with other
+teams; `integration_plan.py` must leave mechanics, visual style, controls, and
+internal design to the builder.
 With one builder, there is no integration-planning model turn: the original
 request goes directly to its owner without a generated second specification.
 With multiple builders, the planner agrees on their shared interfaces.
