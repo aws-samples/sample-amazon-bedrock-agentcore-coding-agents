@@ -1,7 +1,7 @@
-"""The room scoreboard's wire format, not a game implementation or acceptance test.
+"""Legacy scoreboard wire constants retained for reporter compatibility.
 
-Each builder chooses the game and how earned progress maps onto this scale.
-The reporter transfers the stored score unchanged. Nothing here grades gameplay.
+The game preset and event gallery do not use this shared scale or route.
+New games define their own scoring and persistence. Nothing here grades gameplay.
 """
 
 MAX_SCORE = 1000

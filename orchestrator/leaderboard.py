@@ -9,6 +9,8 @@ box, and the wow moment is a single leaderboard on the projector that every team
 scores land on. The game itself knows nothing about that board: the request asks it
 only for a local `GET /api/scores`. This bridge reads that table every few seconds and,
 whenever the team's best improves, posts it to the central account's leaderboard.
+The endpoint comes from --leaderboard, WORKSHOP_LEADERBOARD_URL, or the team's own
+SSM /workshop/event-config parameter, in that order.
 
 Identity comes for free. The post is SigV4-signed with the box's own instance role,
 and the leaderboard authorizes it with IAM, so the central account learns which AWS
@@ -16,8 +18,8 @@ account (which team) scored without any token being minted, pushed, or pasted. A
 can only ever post as itself.
 
 Reporting only: this never writes to the game, and a broken bridge cannot change a
-score anywhere but on the board. Stdlib plus botocore, which every workshop box has
-(the AWS CLI depends on it).
+score anywhere but on the board. Uses botocore for signing and boto3 for optional
+SSM discovery; both are installed on the workshop box.
 """
 from __future__ import annotations
 
@@ -26,10 +28,10 @@ import json
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any
 
+from event_config import EventConfigError, endpoint_region, resolve_leaderboard_url, validate_endpoint_url
 from score_protocol import MAX_SCORE, SCORES_PATH
 
 POLL_INTERVAL_S = 5.0
@@ -121,11 +123,10 @@ def find_scores_url(game_url: str, explicit: str = "",
 
 def _region_of(url: str) -> str:
     """`https://abc.execute-api.us-west-2.amazonaws.com/live/` -> us-west-2."""
-    host = urllib.parse.urlparse(url).hostname or ""
-    parts = host.split(".")
-    if len(parts) >= 4 and parts[1] == "execute-api":
-        return parts[2]
-    raise SystemExit(f"not an API Gateway URL (cannot derive its region): {url}")
+    try:
+        return endpoint_region(url)
+    except EventConfigError as exc:
+        raise SystemExit(str(exc)) from None
 
 
 def signed_post(leaderboard_url: str, body: dict[str, Any],
@@ -134,11 +135,12 @@ def signed_post(leaderboard_url: str, body: dict[str, Any],
     score = body.get("score")
     if type(score) is not int or not 0 <= score <= MAX_SCORE:
         raise ScoreScaleError(f"score must be an integer from 0 to {MAX_SCORE}")
+    region = _region_of(leaderboard_url)  # Reject unsafe destinations before credentials/signing.
+    url = validate_endpoint_url(leaderboard_url) + "scores"
     from botocore.auth import SigV4Auth  # noqa: PLC0415 (only the post path needs it)
     from botocore.awsrequest import AWSRequest  # noqa: PLC0415
     from botocore.session import Session  # noqa: PLC0415
 
-    url = leaderboard_url.rstrip("/") + "/scores"
     creds = Session().get_credentials()
     if creds is None:
         raise SystemExit("no AWS credentials: run this on the workshop box, whose "
@@ -146,8 +148,7 @@ def signed_post(leaderboard_url: str, body: dict[str, Any],
     data = json.dumps(body, separators=(",", ":")).encode("utf-8")
     request = AWSRequest(method="POST", url=url, data=data,
                          headers={"Content-Type": "application/json"})
-    SigV4Auth(creds.get_frozen_credentials(), "execute-api",
-              _region_of(leaderboard_url)).add_auth(request)
+    SigV4Auth(creds.get_frozen_credentials(), "execute-api", region).add_auth(request)
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers=dict(request.headers.items()))
     try:
@@ -204,8 +205,9 @@ def main(argv: list[str] | None = None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--game", default="http://127.0.0.1:8000",
                     help="where your team's game is listening (default %(default)s)")
-    ap.add_argument("--leaderboard", required=True,
-                    help="the LeaderboardUrl from Event Outputs")
+    ap.add_argument("--leaderboard",
+                    help="explicit API Gateway endpoint (own-account option); otherwise "
+                         "use WORKSHOP_LEADERBOARD_URL or the team's SSM /workshop/event-config")
     ap.add_argument("--name", default="arcade", help="how the board labels your game")
     ap.add_argument("--scores-path", default="",
                     help="your game's score path, if it is not one of the usual names")
@@ -213,7 +215,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--once", action="store_true", help="report the current best and exit")
     args = ap.parse_args(argv)
     try:
-        return run(args.game, args.leaderboard, args.name, args.once, args.interval,
+        leaderboard_url = resolve_leaderboard_url(args.leaderboard)
+    except EventConfigError as exc:
+        ap.error(f"{exc} You can also pass --leaderboard URL.")
+    try:
+        return run(args.game, leaderboard_url, args.name, args.once, args.interval,
                    scores_path=args.scores_path)
     except KeyboardInterrupt:
         print("\nstopped reporting. Your game is unaffected; your scores stay on the board.")

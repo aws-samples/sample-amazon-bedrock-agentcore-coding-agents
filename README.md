@@ -37,13 +37,55 @@ The game preset asks for one short, complete round around one core mechanic, wit
 clear controls, an earned score, an end state, and restart. The builder chooses
 the concept and visual identity within that scope. Additional stages, modes,
 and audio are optional Lab 3 follow-ups.
-Teams share a small score interface: `GET /api/scores` returns saved
-`player`/`score` entries, `POST /api/scores` saves an earned result, and workshop
-scores run from 0 to 1000. Each game explains its own mapping to that scale.
+Each game defines its scoring rules and persistence interface. Displayed and
+saved results must agree and survive a restart. Games do not share a score
+scale or required API route.
 To add a creative direction in Chat, send
 `Use preset=game-from-scratch. Creative direction: <your own idea>`.
-The reporter sends the saved score unchanged; the shared board does not make
-different games equally difficult.
+After checking and playing the merged game, publish a separate copy to the
+event gallery. Its Play links open games without the code-server password;
+the gallery does not compare scores or rank teams.
+
+From the workshop checkout, use the game's foreground README command after `--`,
+with project-relative paths. Omit any `PORT=...` prefix because `--port` sets it.
+For a README command of `PORT=3000 npm start`:
+
+```bash
+python3 orchestrator/gallery.py publish --project ~/game --port 8000 -- npm start
+python3 orchestrator/gallery.py status
+```
+
+The helper discovers the central gallery through `/workshop/event-config`
+and reads the title from the game's HTML. Optional `--title` and `--description`
+arguments override the card text. It publishes a copy with prepared dependencies;
+the original game remains on the IDE's `/proxy/8000/` route with its files and
+scores intact. Visitors use `GameUrl`, the public `/play/` path on the existing
+workshop CloudFront distribution. That copy keeps its own
+saved results, which do not sync back to `~/game`. Republishing copies the
+project again without importing visitors' results; earlier copies remain on the host.
+
+`/play/` is a trusted wrapper with no scripts. It embeds the game at `/play/app/`
+under an enforced opaque-origin CSP sandbox. The copied service runs as an
+isolated `DynamicUser` on the same host. Publishing uses the preconfigured path
+and starts the copy; it creates no additional CloudFront distribution.
+
+Published games use relative API URLs and local assets. Store durable scores
+on the server; cookies, localStorage, sessionStorage, and service workers are
+unavailable. The host strips `Cookie` and `Authorization` from requests and
+`Set-Cookie` from responses. Scripts and pointer lock are allowed. Normal form
+`submit` handlers can call `preventDefault()` and send data with relative
+JavaScript `fetch`; APIs support CORS preflight. The sandbox includes
+`allow-forms`, while CSP `form-action 'none'` blocks native form navigation.
+Popups, new tabs, and browser dialogs are unavailable. Existing games need a
+compatibility check and real play/save/reload verification through the public link.
+
+After the Lab 3 change is checked, reviewed, merged, and played, publish from
+`~/game-lab3` with `--port 8001` and that version's README command. The public
+GameUrl stays the same. `python3 orchestrator/gallery.py unpublish` stops the
+copy and removes the listing. If an own-account deployment has no central event
+configuration, supply `--gallery` or skip the room-sharing step. The legacy
+score endpoint and reporter remain available for compatibility; the new preset
+and gallery do not use their score range or route.
 
 Each builder works in a named linked Git worktree and separate pull request. The
 worktree is local to the coordinator or Runtime; only one normalized source archive
