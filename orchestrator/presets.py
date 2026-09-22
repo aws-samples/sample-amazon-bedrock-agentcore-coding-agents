@@ -96,10 +96,9 @@ class RouteError(ValueError):
 # route gets it structurally in `_resolve_needs`, because a build nobody can verify
 # is not a valid route.
 PRESETS: dict[str, dict[str, Any]] = {
-    # THE ROOM'S BUILD. One service, so one pull request and the same ~11-minute clock
-    # as the library API, but the deliverable is something the whole room can PLAY at
-    # the end of Lab 2, each team its own game on its own box through code-server's
-    # /proxy/<port>/ path.
+    # THE ROOM'S BUILD. One service, so one pull request. The deliverable is something
+    # the whole room can PLAY at the end of Lab 2, each team its own game on its own
+    # box through code-server's /proxy/<port>/ path.
     #
     # The request leaves the game open while stating the shared score protocol.
     # Everything that makes the result
@@ -115,15 +114,18 @@ PRESETS: dict[str, dict[str, Any]] = {
         "needs": ["backend"],
         "task": (
             "Invent a compact browser game with a persistent high-score table. "
-            "Choose its concept, visual identity, controls, pacing, and progression; "
-            "give this team's game its own character. "
+            "Build one short, complete round around one core mechanic, with clear "
+            "controls, feedback, a meaningful earned score, a clear end state, and "
+            "restart. Choose its concept and visual identity within that scope; "
+            "give this team's game its own character. Reserve additional stages, "
+            "modes, and audio for a later optional Lab 3 change. "
             f"The shared room interface is GET /{SCORES_PATH}, returning a JSON "
             "array of saved entries with player and score, and POST to the same path "
             "to save an earned round result. "
             f"Use integer workshop scores from 0 to {MAX_SCORE}, higher is better. "
             "Explain how actual play earns that score and what the top of the scale "
             "means; keep the displayed, stored, and reported values consistent. "
-            "Everything about the game beyond this interface is yours to design."),
+            "Within this baseline, choose the gameplay and presentation."),
     },
     "service-from-scratch": {
         "title": "Build an HTTP API (backend only)",

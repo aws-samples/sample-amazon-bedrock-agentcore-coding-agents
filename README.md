@@ -33,8 +33,11 @@ is separate from the numbered configuration revisions. The coordinator keeps its
 generated CLI/CDK project, verifies the current deployment, and uses the shared
 SDK helper to verify or update the selected platform.
 
-The game preset leaves its concept, appearance, controls, and progression to the
-builder. Teams share a small score interface: `GET /api/scores` returns saved
+The game preset asks for one short, complete round around one core mechanic, with
+clear controls, an earned score, an end state, and restart. The builder chooses
+the concept and visual identity within that scope. Additional stages, modes,
+and audio are optional Lab 3 follow-ups.
+Teams share a small score interface: `GET /api/scores` returns saved
 `player`/`score` entries, `POST /api/scores` saves an earned result, and workshop
 scores run from 0 to 1000. Each game explains its own mapping to that scale.
 To add a creative direction in Chat, send
