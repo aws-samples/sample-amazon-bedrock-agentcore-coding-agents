@@ -37,6 +37,7 @@ def launcher(tmp_path):
         "from pathlib import Path\n"
         "Path(os.environ['CLAUDE_TEST_RECORD']).write_text(json.dumps({"
         "'argv': sys.argv[1:], 'cwd': os.getcwd(), "
+        "'disable_autoupdater': os.environ.get('DISABLE_AUTOUPDATER'), "
         "'bedrock': os.environ.get('CLAUDE_CODE_USE_BEDROCK')}))\n"
         "sys.exit(int(os.environ.get('CLAUDE_TEST_EXIT', '0')))\n"
     )
@@ -58,7 +59,7 @@ def launcher(tmp_path):
         key: value for key, value in os.environ.items()
         if key not in MODEL_VARIABLES
         and not key.startswith(("AWS_", "AGENTCORE_RUNTIME_"))
-        and key not in ("GATEWAY_URL", "GITHUB_TOKEN", "KIRO_API_KEY")
+        and key not in ("GATEWAY_URL", "GITHUB_TOKEN", "KIRO_API_KEY", "DISABLE_AUTOUPDATER")
     }
     clean_env.update({
         "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
@@ -152,6 +153,17 @@ def test_interactive_launcher_honors_settings_without_switching_to_print_mode(la
     assert arguments[arguments.index("--model") + 1] == (
         "explicit-model" if args else "us.anthropic.claude-opus-4-6-v1")
     assert arguments[arguments.index("--effort") + 1] == ("max" if args else "high")
+
+
+@pytest.mark.parametrize("prompt", [None, "Inspect the task"], ids=["interactive", "headless"])
+@pytest.mark.parametrize("updater", [None, "0"], ids=["missing", "enabled"])
+def test_direct_launcher_enforces_pinned_update_policy(launcher, prompt, updater):
+    # Neither the caller nor PID 1 supplies the image's update policy. An explicit
+    # attempt to enable updates must also leave the pinned installation protected.
+    overrides = {} if updater is None else {"DISABLE_AUTOUPDATER": updater}
+    result, record = launcher(overrides=overrides, prompt=prompt)
+    assert result.returncode == 0, result.stderr
+    assert record["disable_autoupdater"] == "1"
 
 
 @pytest.mark.parametrize("path", ["run.sh", "run-as-user.sh"])
