@@ -240,6 +240,7 @@ export interface GateRecord {
   stage: string;
   passed: boolean;
   summary?: string;
+  failure_lines?: string[];
   checks?: Array<{ check?: string; passed?: boolean; detail?: string }>;
 }
 

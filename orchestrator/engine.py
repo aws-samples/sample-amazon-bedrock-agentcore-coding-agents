@@ -156,6 +156,12 @@ import role_graph  # noqa: E402  (the agent-execution phase as a Strands graph)
 import run_store  # noqa: E402  (durable run state: a verdict outlives its session)
 import roles  # noqa: E402  (the ONE declarative roster)
 import work_items as _work_items  # noqa: E402  (isolated role checkouts + candidate)
+from gate_diagnostics import (  # noqa: E402
+    MAX_FAILURE_LINES as _MAX_FAIL_LINES,
+    MAX_FAILURE_LINE_CHARS,
+    extract_failure_lines as _gate_fail_lines,
+    gate_failure_lines,
+)
 
 # Frozen contract enums (API_CONTRACT.md): the engine's public vocabulary.
 PHASES = ["admission", "context_hydration", "pre_flight", "agent_execution", "finalization"]
@@ -325,35 +331,17 @@ _NO_PRODUCER_ERROR = (
 # still a schema we invented. One subprocess, no conventions.
 _ACCEPTANCE_CHECK = "acceptance_check"
 
-# How many of the check's own failing lines a repair round is given. The check writes
-# whatever it likes, so this reads the lines rather than parsing a format: a line that
-# announces a failure is one starting with FAIL, or one that says "failed"/"error"
-# without being a PASS line. Capped because the output is already truncated to 4000
-# characters upstream and a builder prompt is not the place for a full test log.
-_MAX_FAIL_LINES = 25
-
-
-def _gate_fail_lines(output: str) -> list[str]:
-    """Pull the failing lines out of a validator-authored check's own output.
-
-    No format is assumed or required. The validator picks its own language and its own
-    reporting style, so this looks for the words a failure is announced with and keeps
-    the order they appeared in. Returning nothing is fine and normal: some checks say
-    only "VERDICT: REJECT", and the caller simply has less to pass on."""
-    hits: list[str] = []
-    for raw in (output or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        upper = line.upper()
-        if upper.startswith(("PASS", "OK", "INFO", "SKIP")):
-            continue
-        if upper.startswith(("FAIL", "ASSERT", "ERROR", "NOT OK", "✗", "×")) or (
-                "FAILED" in upper and "0 FAILED" not in upper):
-            hits.append(line[:300])
-        if len(hits) >= _MAX_FAIL_LINES:
-            break
-    return hits
+def _gate_failure_feedback(gate: dict) -> str:
+    """Give either builder the check's bounded diagnostics, including early failures."""
+    lines = gate_failure_lines(gate)
+    if not lines:
+        return ""
+    return (
+        "\n\nThe check's own failure diagnostics "
+        f"(first up to {_MAX_FAIL_LINES} matching lines, "
+        f"up to {MAX_FAILURE_LINE_CHARS} characters per line):\n"
+        + "\n".join(f"  {line}" for line in lines)
+    )
 
 # What compose must NOT publish. Two kinds, and both were observed on a live run:
 #   * the HARNESS we installed into the role's working directory (its steering file
@@ -1558,21 +1546,7 @@ class Engine:
                 feedback = ("\n\nPrevious round's review REQUESTED CHANGES on the "
                             "pull request. Address each point:\n"
                             + "\n".join(f"- {d}" for d in failed))
-            # ...and the check's OWN FAIL lines, which are the only thing that says
-            # WHICH assertion broke. Measured on a live run: the check reported
-            # "141 checks run, 1 failed" and the builder received only that one-line
-            # summary, so its repair round spent 11 minutes rediscovering the failure
-            # by re-reading its own code. The evidence already existed in
-            # gate["output"] and already reached the pull request; it just never
-            # reached the role that had to act on it.
-            #
-            # This does NOT tell the builder what to build. It reports what the
-            # checker OBSERVED, exactly as a CI log does, and the check still decides.
-            fail_lines = _gate_fail_lines((run.review.get("gate") or {}).get("output", ""))
-            if fail_lines:
-                feedback += ("\n\nThe check's own failing lines (it decides the gate, "
-                             "so treat these as the specification of what to fix):\n"
-                             + "\n".join(f"  {line}" for line in fail_lines))
+            feedback += _gate_failure_feedback(run.review.get("gate") or {})
         if run._refresh_context:
             feedback += "\n\n" + run._refresh_context
         # The dispatched role, not a fixed id: role.agent is whichever role the
@@ -1667,6 +1641,8 @@ class Engine:
                 "the shared brief; do not invent a service unless that assignment "
                 "requires one.\n")
         conflict_feedback = ""
+        if run.iterations > 1 and run.review:
+            conflict_feedback += _gate_failure_feedback(run.review.get("gate") or {})
         if run._refresh_context:
             conflict_feedback += "\n\n" + run._refresh_context
         prompt = (
@@ -2920,6 +2896,9 @@ class Engine:
             "summary": gate.get("summary") or "",
             "checks": list(gate.get("checks") or []),
         }
+        failures = gate_failure_lines(gate)
+        if failures:
+            row["failure_lines"] = failures
         if gate.get("check_evidence"):
             row["check_evidence"] = dict(gate["check_evidence"])
         run.gate_history.append(row)

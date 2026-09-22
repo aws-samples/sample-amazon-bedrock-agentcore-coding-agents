@@ -66,7 +66,7 @@ function PullRequests({ run }: { run: RunDetail }) {
     ]} />;
 }
 
-function Checks({ gates }: { gates: GateRecord[] }) {
+export function Checks({ gates }: { gates: GateRecord[] }) {
   return <ResourceTable title="Executable checks" variant="embedded" items={gates}
     trackBy={gate => `${gate.sequence}-${gate.stage}`} sortingField="sequence"
     description="The engine runs the validator's executable and records its exit result. Failed checks remain in the history after a repair."
@@ -78,6 +78,9 @@ function Checks({ gates }: { gates: GateRecord[] }) {
       { id: 'result', header: 'Result', minWidth: 130, cell: gate => <StatusIndicator type={gate.passed ? 'success' : 'error'}>{gate.passed ? 'Passed' : 'Failed'}</StatusIndicator> },
       { id: 'evidence', header: 'Recorded evidence', minWidth: 360, cell: gate => <SpaceBetween size="xs">
         <Box>{gate.summary || 'No summary recorded'}</Box>
+        {!gate.passed && !!gate.failure_lines?.length && <ExpandableSection headerText="Failure diagnostics">
+          <pre className="console-record">{gate.failure_lines.join('\n')}</pre>
+        </ExpandableSection>}
         {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded assertions`}>
           <SpaceBetween size="s">{gate.checks.map((check, i) => <div key={i}>
             <StatusIndicator type={check.passed === true ? 'success' : check.passed === false ? 'error' : 'pending'}>

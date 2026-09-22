@@ -41,6 +41,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from gate_diagnostics import extract_failure_lines
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
@@ -312,6 +314,9 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
                                f"the validator's authored check FAILED (exit {code}): "
                                f"{summary}")}],
         "summary": summary,
+        # Extract before shortening output: later PASS lines can hide an early
+        # failure from both the repair prompt and the pull request.
+        "failure_lines": extract_failure_lines(out) if code != 0 else [],
         "output": (out or "")[-4000:]}
 
 
