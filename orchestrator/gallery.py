@@ -194,6 +194,9 @@ def signed_request(base: str, method: str, body: dict[str, str] | None = None) -
             message = str(error.get("error", ""))[:500] if isinstance(error, dict) else ""
         except (ValueError, OSError):
             pass
+        if exc.code == 403 and not message:
+            message = ("The event did not authorize this host. Ask the facilitator "
+                       "to check the team and central gallery permissions.")
         raise GalleryError(f"Gallery registration returned HTTP {exc.code}. {message}".strip()) from None
     except (BotoCoreError, urllib.error.URLError, TimeoutError, OSError):
         raise GalleryError("Could not contact the event gallery. Check the host's AWS session and connection.") from None

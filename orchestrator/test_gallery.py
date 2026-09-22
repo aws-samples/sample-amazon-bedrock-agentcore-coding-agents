@@ -354,6 +354,52 @@ def test_publish_http_registration_failure_cleans_up_without_a_second_write(args
     assert [r["method"] for r in https.requests] == ["GET", "POST"]
 
 
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+@pytest.mark.parametrize("body", [b"", b"{}", b'{"message":"Forbidden"}', b'{"error":""}', b"not-json"])
+def test_api_gateway_403_without_error_has_actionable_permissions_hint(https, method, body):
+    https.respond(GALLERY + "games", code=403, body=body,
+                  headers={"Content-Type": "application/json"})
+    with pytest.raises(gallery.GalleryError) as error:
+        gallery.signed_request(GALLERY, method, {"title": "Moon"})
+    message = str(error.value).lower()
+    assert "http 403" in message
+    assert "facilitator" in message and "team" in message and "central" in message
+    assert "permission" in message
+    assert len(https.requests) == 1, "A permission failure must not trigger an automatic retry"
+    assert https.bodies[0].read_sizes == [4096]
+
+
+def test_api_gateway_403_publish_stops_copy_and_does_not_advertise_success(args, host, https):
+    https.respond(GAME)
+    https.json(GALLERY + "games", {"message": "Forbidden"}, code=403)
+    output = io.StringIO()
+    with pytest.raises(gallery.GalleryError, match="facilitator"):
+        gallery.publish(args, out=output)
+    assert [operation for operation, _ in host.calls] == ["publish", "unpublish"]
+    assert [r["method"] for r in https.requests] == ["GET", "POST"]
+    assert "Shared Moon" not in output.getvalue() and "Play:" not in output.getvalue()
+    assert "Stopped the new shared copy" in output.getvalue()
+
+
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+def test_403_with_specific_error_preserves_server_reason_without_generic_hint(https, method):
+    reason = "This team is not registered for the event."
+    https.json(GALLERY + "games", {"error": reason}, code=403)
+    with pytest.raises(gallery.GalleryError) as error:
+        gallery.signed_request(GALLERY, method)
+    assert str(error.value) == "Gallery registration returned HTTP 403. " + reason
+    assert len(https.requests) == 1
+
+
+@pytest.mark.parametrize("code", [401, 500])
+def test_non_403_without_error_does_not_invent_gallery_permission_diagnosis(https, code):
+    https.json(GALLERY + "games", {"message": "Request failed"}, code=code)
+    with pytest.raises(gallery.GalleryError) as error:
+        gallery.signed_request(GALLERY, "POST")
+    assert str(error.value) == f"Gallery registration returned HTTP {code}."
+    assert len(https.requests) == 1
+
+
 def test_publish_bad_public_page_cleans_up_before_any_registration(args, host, https):
     https.respond(GAME, body=b"service warming up", headers={"Content-Type": "text/plain"})
     with pytest.raises(gallery.GalleryError, match="browser page"):
