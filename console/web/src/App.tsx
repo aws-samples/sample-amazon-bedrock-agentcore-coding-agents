@@ -1,7 +1,8 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Navigate, Outlet, Route, Routes, useHref, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTheme } from 'next-themes';
 import AppLayout, { type AppLayoutProps } from '@cloudscape-design/components/app-layout';
+import Alert from '@cloudscape-design/components/alert';
 import Autosuggest from '@cloudscape-design/components/autosuggest';
 import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group';
 import Button from '@cloudscape-design/components/button';
@@ -16,8 +17,10 @@ import Spinner from '@cloudscape-design/components/spinner';
 import TextContent from '@cloudscape-design/components/text-content';
 import TopNavigation from '@cloudscape-design/components/top-navigation';
 import { applyDensity, applyMode, Density, Mode } from '@cloudscape-design/global-styles';
-import { getAuthMe, getAttributionConfiguration, type AuthUser } from './api';
+import { getAttributionConfiguration } from './api';
+import { authSession } from './lib/authSession';
 import { ConsoleNotifications } from './components/ConsoleNotifications';
+import { SessionRecoveryActions } from './components/SessionRecoveryActions';
 
 const DevelopmentPage = lazy(() => import('./pages/DevelopmentPage').then(m => ({ default: m.DevelopmentPage })));
 const AgentsPage = lazy(() => import('./pages/AgentsPage').then(m => ({ default: m.AgentsPage })));
@@ -44,8 +47,8 @@ function Shell() {
   const [toolsOpen, setToolsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [region, setRegion] = useState<string | null>(null);
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [authError, setAuthError] = useState(false);
+  const auth = useSyncExternalStore(authSession.subscribe, authSession.getSnapshot);
+  const { user } = auth;
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const { resolvedTheme, setTheme } = useTheme();
   const [density, setDensity] = useState(() => {
@@ -64,14 +67,7 @@ function Shell() {
   useEffect(() => {
     let live = true;
     getAttributionConfiguration().then(s => { if (live) setRegion(s.region || null); }).catch(() => {});
-    getAuthMe().then(s => {
-      if (!live) return;
-      if (s.login_url) {
-        window.location.replace(s.login_url);
-        return;
-      }
-      setUser(s);
-    }).catch(() => { if (live) setAuthError(true); });
+    void authSession.check();
     return () => { live = false; };
   }, []);
   useEffect(() => { applyMode(resolvedTheme === 'dark' ? Mode.Dark : Mode.Light); }, [resolvedTheme]);
@@ -128,9 +124,10 @@ function Shell() {
               onClick: () => setToolsOpen(v => !v) },
             { type: 'button', text: 'Settings', iconName: 'settings', href: href('/settings'),
               onFollow: e => { e.preventDefault(); follow(href('/settings')); } },
-            { type: 'menu-dropdown', text: authError ? 'Session unavailable' : !user ? 'Checking session…'
+            { type: 'menu-dropdown', text: auth.expired ? 'Session expired' : auth.error ? 'Session unavailable' : !user ? 'Checking session…'
                 : user.authenticated ? user.email || user.name || 'Signed in' : 'Local session',
-              iconName: 'user-profile', description: authError ? 'Reload to check your sign-in.'
+              iconName: 'user-profile', description: auth.expired ? 'Sign in again to continue.'
+                : auth.error ? 'Choose Check sign-in to try again.'
                 : user?.authenticated ? 'Workshop console identity' : !user ? 'Checking the current sign-in.' : 'No Cognito session on this host',
               items: [{ id: 'preferences', text: 'Preferences' },
                 ...(user?.authenticated ? [{ id: 'sign-out', text: 'Sign out', href: '/auth/logout' }] : [])],
@@ -165,7 +162,16 @@ function Shell() {
         />}
         breadcrumbs={<BreadcrumbGroup ariaLabel="Breadcrumbs" items={breadcrumbs}
           onFollow={e => { e.preventDefault(); follow(e.detail.href); }} />}
-        notifications={<ConsoleNotifications />}
+        notifications={<SpaceBetween size="s">
+          {(auth.expired || auth.error) && <Alert type="error" header={auth.expired ? 'Session expired' : 'Could not check your sign-in'}
+            action={<SessionRecoveryActions />}>
+            {auth.expired && <p>Keep this tab open to preserve your edits. {auth.loginUrl
+              ? 'Sign in in the new tab, then return here and choose Check sign-in.'
+              : 'Choose Check sign-in to verify your session.'} Failed requests will not be submitted again automatically.</p>}
+            {auth.error && <p>{auth.error}</p>}
+          </Alert>}
+          <ConsoleNotifications />
+        </SpaceBetween>}
         toolsOpen={toolsOpen} onToolsChange={({ detail }) => setToolsOpen(detail.open)}
         tools={<HelpPanel header={<h2>{page.title}</h2>}
           footer={<TextContent><h3>Learn more</h3><ul>

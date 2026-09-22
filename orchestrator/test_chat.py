@@ -13,6 +13,8 @@ import base64
 import json
 import os
 import sys
+import threading
+import time
 
 import pytest
 
@@ -32,10 +34,29 @@ chat.use_engine(chat._engine.Engine(executor_obj=FixtureExecutor()))
 
 
 @pytest.fixture(autouse=True)
-def _pin_fixture_engine():
+def _pin_fixture_engine(monkeypatch):
     """Guarantee chat.ENGINE is the fixture-backed engine for every test here,
     regardless of what another test module's import-time use_engine() left behind."""
-    chat.use_engine(chat._engine.Engine(executor_obj=FixtureExecutor()))
+    fixture_engine = chat._engine.Engine(executor_obj=FixtureExecutor())
+    monkeypatch.setattr(chat, "ENGINE", fixture_engine)
+    # Keep the real heartbeat, with a short poll for bounded test teardown.
+    monkeypatch.setattr(chat._engine, "_PERSIST_HEARTBEAT_S", 1.0)
+    try:
+        yield
+    finally:
+        # submit() starts _drive and _heartbeat; shutdown() is a no-op. Drain
+        # this engine's workers before monkeypatch restores config/_RUNS_DIR,
+        # otherwise their final checkpoints can enter a later test's history.
+        workers = [
+            thread for thread in threading.enumerate()
+            if getattr(getattr(thread, "_target", None), "__self__", None)
+            is fixture_engine
+        ]
+        deadline = time.monotonic() + 30
+        for worker in workers:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        alive = [worker.name for worker in workers if worker.is_alive()]
+        assert not alive, f"Fixture engine workers did not finish: {alive}"
 
 
 @pytest.fixture(autouse=True)

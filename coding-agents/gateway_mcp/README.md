@@ -23,7 +23,7 @@ Caller (SigV4) ──▶ AgentCore Gateway (IAM inbound)
 - `awscurl` for testing SigV4-signed requests: `pip install awscurl`. Only the
   VERIFY step needs it: without it `verify-gateway.sh` reports `SKIP` and leaves the
   deploy's own verdict alone, because "I could not check it" is not "it did not work".
-- A **GitHub App** installed on your target repo/org (see Step 1 below)
+- A **GitHub App** installed on your target repo/org (see Step 2 below)
 
 ## Quick Start
 
@@ -42,6 +42,44 @@ git push -u origin main
 ```
 
 ### Step 2: Create a GitHub App and install it on the repo
+
+On a Workshop Studio host, run the helper from this checkout's
+`coding-agents/gateway_mcp` directory in the VS Code terminal:
+
+```bash
+export GITHUB_REPO="YOUR_GITHUB_USER/my-task-manager"
+python3 create-github-app.py && source github-app.env
+```
+
+Open the printed URL in the same browser as VS Code. On GitHub, choose **Create
+GitHub App**, review the permissions, then install it using **Only select
+repositories** and select your workshop repo. The helper saves the App id and
+private key before acknowledging the callback, discovers the installation id,
+and writes `github-app.env`.
+
+If the callback receiver times out after ten minutes, keep the original browser
+tab and run this in the **same checkout**, with the same repository and host:
+
+```bash
+python3 create-github-app.py --resume
+```
+
+Refresh the original failed callback tab while the receiver is running. Resume
+keeps the saved App name and CSRF state; it does not open another registration.
+If conversion already completed, it uses the saved key and waits for installation
+instead. Each wait is bounded to ten minutes; the unfinished callback expires one
+hour after setup first began, even across restarts.
+
+If the helper reports an uncertain exchange, or no result was saved and you lost
+the callback tab, recover the **existing App** and its key from GitHub settings.
+An older helper without a checkpoint needs this same recovery path. Keep the key
+owner-only (`chmod 600 /path/to/private-key.pem`), then finish with
+`python3 create-github-app.py --app-id APP_ID --key-file /path/to/private-key.pem`.
+Do not register a replacement or edit the saved state to make a callback match.
+The ignored `.github-app-setup.json` and key files are private; keep them out of
+commits and shared logs.
+
+For manual setup outside the workshop host:
 
 1. Go to https://github.com/settings/apps
 2. Click **"New GitHub App"**

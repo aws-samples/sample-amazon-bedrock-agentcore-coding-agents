@@ -434,7 +434,7 @@ files. A focused dispatch starts another build with its own budget; it is not a
 repair of the existing pull request. The engine already schedules that pull
 request's checker. Follow the recorded next_action instead of starting another loop.
 
-The three cases, because they have different recoveries:
+These cases have different recoveries:
 
 * A role produced nothing (`ROLE_EXECUTION_ERROR`, `ROLE_TOTAL_FAILURE`,
   `ARTIFACT_TRANSFER_ERROR`), or the coordinator Runtime was recycled mid-build
@@ -445,6 +445,10 @@ The three cases, because they have different recoveries:
   shell or another immediate build cannot restore that allowance. Report the limit
   and stop. Resume after it resets, or after the operator selects a model with
   available capacity.
+* A role reached its configured CLI turn limit (`ROLE_TURN_LIMIT`). Report the
+  recorded limit and stop. Do not resubmit or dispatch another role to finish it.
+  Partial work is unverified; a checker marked blocked did not run that turn.
+  A person must inspect the evidence and decide how to narrow or continue the work.
 * Validation stayed blocked on real work (`ITERATION_CAP`). This can be a RED
   validator-authored executable OR a finding under either required lens of the
   integrated review, even when the executable is green. The bounded re-implement
