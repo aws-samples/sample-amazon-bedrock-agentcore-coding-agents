@@ -33,6 +33,36 @@ def assert_game_owned_scoring(text):
     assert "`PORT`" in normalized
 
 
+def assert_published_browser_contract(text):
+    normalized = " ".join(text.split())
+    for requirement in (
+        "scripts and pointer lock",
+        "opaque origin",
+        "Persist durable game scores on the server",
+        "localStorage",
+        "sessionStorage",
+        "service workers",
+        "JavaScript `fetch`",
+        "`submit` event",
+        "`event.preventDefault()`",
+        "`allow-forms`",
+        "`form-action 'none'`",
+        "blocks native form navigation",
+        "popups",
+        "new tabs",
+        "browser dialogs",
+        "Cookie",
+        "Authorization",
+        "/play/app/",
+        "relative",
+        "CORS",
+        "README",
+    ):
+        assert requirement in normalized
+    assert "native form submission is unavailable" not in normalized
+    assert "separately published copy at a public game origin" not in normalized
+
+
 def test_actual_backend_image_context_contains_game_owned_scoring(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "backend_game_cli_versions", ROOT / "coding-agents/cli_versions.py",
@@ -54,6 +84,7 @@ def test_actual_backend_image_context_contains_game_owned_scoring(tmp_path):
         ROOT / "orchestrator/harness/claude-code/CLAUDE.md"
     ).read_bytes()
     assert_game_owned_scoring(staged.read_text())
+    assert_published_browser_contract(staged.read_text())
 
 
 def test_actual_runtime_archive_contains_game_owned_scoring(tmp_path, monkeypatch):
@@ -83,3 +114,4 @@ def test_actual_runtime_archive_contains_game_owned_scoring(tmp_path, monkeypatc
         delivered = archive.extractfile("skills/backend-engineering/SKILL.md").read()
     assert delivered == SKILL.read_bytes()
     assert_game_owned_scoring(delivered.decode())
+    assert_published_browser_contract(delivered.decode())

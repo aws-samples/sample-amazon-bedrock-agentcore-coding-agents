@@ -30,7 +30,8 @@ _ENDPOINT = re.compile(
     re.IGNORECASE | re.ASCII,
 )
 _GAME_URL = re.compile(
-    r"https://(?P<host>[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudfront\.net)/?",
+    r"https://(?P<host>[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudfront\.net)"
+    r"(?P<path>(?-i:/play/)|/?)",
     re.IGNORECASE | re.ASCII,
 )
 _EXPLICIT_HINT = (
@@ -103,8 +104,10 @@ def _validate_config(raw: str) -> dict[str, Any]:
         game_url = data.get("game_url")
         match = _GAME_URL.fullmatch(game_url) if isinstance(game_url, str) else None
         if match is None:
-            raise ValueError("game_url must be a separate HTTPS CloudFront root URL")
-        data["game_url"] = f"https://{match['host'].lower()}/"
+            raise ValueError("game_url must be an HTTPS CloudFront root or /play/ URL")
+        # Keep schema-1 root URLs readable for legacy score reporting. New
+        # galleries use /play/; dropping that prefix would point visitors at IDE.
+        data["game_url"] = f"https://{match['host'].lower()}{match['path'] or '/'}"
         return data
     except (TypeError, ValueError) as exc:
         # Do not include the parameter contents or JSON parser's input excerpt.

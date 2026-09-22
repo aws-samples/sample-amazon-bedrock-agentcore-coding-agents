@@ -47,6 +47,18 @@ def config():
 
 
 @pytest.fixture
+def play_config(config):
+    """Current central producer schema with synthetic team/event identities."""
+    return {
+        **config,
+        "game_url": "https://d123game.cloudfront.net/play/",
+        "hosting_mode": "isolated-path-v1",
+        "team_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "event_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    }
+
+
+@pytest.fixture
 def ssm(monkeypatch):
     """A real SDK serializer with only its SSM transport replaced by Stubber."""
     aws_session = boto3.Session(
@@ -173,6 +185,46 @@ def test_loads_complete_config_through_only_the_team_ssm_parameter(ssm, config):
     assert 0 < sdk_config.connect_timeout <= 3
     assert 0 < sdk_config.read_timeout <= 5
     assert sdk_config.retries == {"mode": "standard", "total_max_attempts": 2}
+
+
+@pytest.mark.parametrize("kind", ["gallery", "leaderboard"])
+def test_current_producer_config_resolves_without_url_or_environment_override(ssm, play_config, kind):
+    stub, calls, _session = ssm
+    _parameter(stub, json.dumps(play_config))
+    assert getattr(event_config, f"resolve_{kind}_url")() == EVENT_URL
+    assert len(calls) == 1
+    assert calls[0][0] == "ssm"
+
+
+def test_current_config_normalizes_host_without_losing_play_prefix(ssm, play_config):
+    stub, calls, _session = ssm
+    expected = dict(play_config)
+    play_config["game_url"] = "HTTPS://D123GAME.CLOUDFRONT.NET/play/"
+    _parameter(stub, json.dumps(play_config))
+    assert event_config.load_event_config() == expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("path", [
+    "/play",
+    "/Play/",
+    "/play/app/",
+    "/play/?key=fixture",
+    "/play/#fragment",
+    "/%70lay/",
+    "/play%2F",
+    "/proxy/8000/",
+])
+def test_current_config_rejects_noncanonical_game_paths_before_resolving_endpoint(
+        ssm, play_config, path):
+    stub, calls, _session = ssm
+    play_config["game_url"] = "https://d123game.cloudfront.net" + path
+    _parameter(stub, json.dumps(play_config))
+    with pytest.raises(event_config.EventConfigError) as error:
+        event_config.resolve_gallery_url()
+    assert error.value.code == "EVENT_CONFIG_MALFORMED"
+    assert play_config["game_url"] not in str(error.value)
+    assert len(calls) == 1
 
 
 def test_reporter_cli_without_endpoint_uses_the_team_parameter(ssm, config, monkeypatch):

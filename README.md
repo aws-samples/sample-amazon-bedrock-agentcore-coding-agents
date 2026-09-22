@@ -59,9 +59,25 @@ The helper discovers the central gallery through `/workshop/event-config`
 and reads the title from the game's HTML. Optional `--title` and `--description`
 arguments override the card text. It publishes a copy with prepared dependencies;
 the original game remains on the IDE's `/proxy/8000/` route with its files and
-scores intact. Visitors use a separate public `GameUrl`. That copy keeps its own
+scores intact. Visitors use `GameUrl`, the public `/play/` path on the existing
+workshop CloudFront distribution. That copy keeps its own
 saved results, which do not sync back to `~/game`. Republishing copies the
 project again without importing visitors' results; earlier copies remain on the host.
+
+`/play/` is a trusted wrapper with no scripts. It embeds the game at `/play/app/`
+under an enforced opaque-origin CSP sandbox. The copied service runs as an
+isolated `DynamicUser` on the same host. Publishing uses the preconfigured path
+and starts the copy; it creates no additional CloudFront distribution.
+
+Published games use relative API URLs and local assets. Store durable scores
+on the server; cookies, localStorage, sessionStorage, and service workers are
+unavailable. The host strips `Cookie` and `Authorization` from requests and
+`Set-Cookie` from responses. Scripts and pointer lock are allowed. Normal form
+`submit` handlers can call `preventDefault()` and send data with relative
+JavaScript `fetch`; APIs support CORS preflight. The sandbox includes
+`allow-forms`, while CSP `form-action 'none'` blocks native form navigation.
+Popups, new tabs, and browser dialogs are unavailable. Existing games need a
+compatibility check and real play/save/reload verification through the public link.
 
 After the Lab 3 change is checked, reviewed, merged, and played, publish from
 `~/game-lab3` with `--port 8001` and that version's README command. The public

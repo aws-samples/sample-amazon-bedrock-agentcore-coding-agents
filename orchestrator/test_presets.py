@@ -22,12 +22,15 @@ def test_public_game_preset_keeps_play_and_persistence_without_a_shared_score_ap
         "meaningful earned score",
         "clear end state",
         "restart",
+        "Store scores durably in the game service",
     ):
         assert outcome in task
     assert "/api/scores" not in task
     assert "1000" not in task
     assert "shared room interface" not in task
     assert "reported values" not in task
+    for hosting_detail in ("CloudFront", "/play/", "sandbox", "localStorage", "SQLite"):
+        assert hosting_detail not in task
 
 
 def test_game_preset_keeps_its_builder_and_independent_checker():
@@ -60,6 +63,7 @@ def test_chat_delivers_game_goal_and_creative_direction_without_room_scoring(adm
     assert submitted.agents == presets.resolve(preset="game-from-scratch").agents
     assert "/api/scores" not in submitted.task
     assert "1000" not in submitted.task
+    assert "Store scores durably in the game service" in submitted.task
 
 
 def test_custom_game_request_can_keep_its_own_range_and_route(admitted):

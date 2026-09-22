@@ -130,15 +130,30 @@ own, and ignoring them means the call fails before your code ever runs.
 When you are the only builder and the request is something a person plays or clicks in
 a browser, the page is yours too, and ONE service serves both the page and its API.
 These standards cover the original game behind a reverse proxy at a path prefix
-(`https://<host>/proxy/<port>/`) and a separately published copy at a public game
-origin. Both must work with local assets and prepared dependencies, without
-assuming an external network connection.
+(`https://<host>/proxy/<port>/`) and a published copy on the same workshop
+CloudFront distribution. Its public `/play/` page is a trusted wrapper with no
+scripts. It embeds the game at `/play/app/` under an enforced Content Security
+Policy sandbox with an opaque origin. The sandbox allows scripts and pointer lock.
+Both copies must work with local assets and prepared dependencies.
 
 - **Every URL the page uses is relative.** Scripts, assets, and API calls resolve
   against the page's own location (a path like `scores` or `./assets/...`), never a
   root-absolute `/scores` and never a hardcoded host or port. The proxy strips the
   prefix on the way in, so a root-absolute URL leaves the proxy entirely: under a
   prefix, a page with one absolute URL loads and then silently does nothing.
+- **Build for the published browser's capabilities.** Persist durable game scores on
+  the server. Keep temporary play state in memory. Do not depend on cookies,
+  localStorage, sessionStorage, other origin-based browser storage, or service workers.
+  The host strips `Cookie` and `Authorization` from requests and `Set-Cookie`
+  from responses. Public game APIs must work without those credentials and support
+  CORS, including JSON preflight, for the sandboxed page.
+  Handle a form's `submit` event, call `event.preventDefault()`, and send its
+  data with JavaScript `fetch` to a relative API URL. The sandbox includes
+  `allow-forms`; CSP `form-action 'none'` blocks native form navigation.
+  Render confirmations and errors in the page. Do not require popups, new tabs,
+  or browser dialogs. Preserve pointer, touch, and keyboard controls within the game.
+  Document these hosting capabilities in the game's README so later changes
+  preserve them. A local browser run outside the sandbox does not verify publishing.
 - **Serve everything yourself.** No CDN, web font, or third-party script. The host may
   not reach them, and a page that depends on one fails as a blank canvas.
 - **Design the game for this request.** Choose its world, mechanics, visual language,

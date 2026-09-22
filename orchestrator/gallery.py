@@ -11,6 +11,8 @@ The event URL comes from the team's SSM configuration. --gallery is an explicit
 override for a configured own-account event. The root-owned host helper copies
 the application and prepared dependencies, then runs that copy without the
 workshop user's files, credentials, or network. The original game stays intact.
+The existing workshop distribution serves /play/ through a browser sandbox;
+the game does not receive the IDE's cookies or browser storage.
 """
 from __future__ import annotations
 
@@ -31,7 +33,8 @@ from event_config import EventConfigError, endpoint_region, resolve_gallery_url,
 
 HOST_HELPER = "/usr/local/bin/workshop-game-host"
 MAX_RESPONSE_BYTES = 256 * 1024
-_GAME_URL = re.compile(r"https://[a-z0-9]+[.]cloudfront[.]net/")
+_GAME_URL = re.compile(r"https://d[a-z0-9]+[.]cloudfront[.]net/play/")
+HOSTING_MODE = "isolated-path-v1"
 
 
 class GalleryError(ValueError):
@@ -65,8 +68,17 @@ class _Title(HTMLParser):
 
 def game_url(value: str) -> str:
     if not isinstance(value, str) or not _GAME_URL.fullmatch(value):
-        raise GalleryError("The host has no valid separate GameUrl. Ask the facilitator to check game hosting.")
+        raise GalleryError("The host has no valid /play/ GameUrl. Ask the facilitator to check game hosting.")
     return value
+
+
+def hosted_application(state: dict[str, Any]) -> tuple[str, str]:
+    public = game_url(state.get("public_url"))
+    application = public + "app/"
+    if (state.get("hosting_mode") != HOSTING_MODE
+            or state.get("application_url") != application):
+        raise GalleryError("The host needs the isolated /play/ game-host update. Ask the facilitator to update its installation.")
+    return public, application
 
 
 def _metadata(title: str, description: str) -> dict[str, str]:
@@ -115,34 +127,105 @@ def host_command(operation: str, *arguments: str) -> dict[str, Any]:
     return state
 
 
-def read_public_game(base: str) -> str:
-    """Read the real public page, following only redirects inside its game origin."""
-    base = game_url(base)
+def _csp_policies(headers) -> list[dict[str, set[str]]]:
+    """Multiple enforced policies intersect; report-only headers do not count."""
+    get_all = getattr(headers, "get_all", None)
+    values = get_all("Content-Security-Policy", []) if get_all else [
+        headers.get("Content-Security-Policy", "")
+    ]
+    policies = []
+    for value in values:
+        for serialized in value.split(","):
+            directives: dict[str, set[str]] = {}
+            for item in serialized.split(";"):
+                tokens = item.strip().split()
+                if tokens:
+                    # Browsers use the first occurrence of a directive.
+                    directives.setdefault(tokens[0].lower(), set(tokens[1:]))
+            policies.append(directives)
+    return policies
+
+
+def _public_boundary(headers, application: str, *, wrapper: bool = False) -> None:
+    """Refuse to advertise an old, unconfined server on the IDE's hostname."""
+    policies = _csp_policies(headers)
+    if wrapper:
+        safe = any(
+            p.get("default-src") == {"'none'"}
+            and p.get("script-src", p.get("default-src")) == {"'none'"}
+            and all(p.get(key, p.get("script-src", p.get("default-src"))) == {"'none'"}
+                    for key in ("script-src-elem", "script-src-attr"))
+            and all(p.get(key, {"'none'"}) == {"'none'"} for key in
+                    ("connect-src", "img-src", "font-src", "media-src", "object-src",
+                     "worker-src", "manifest-src"))
+            and all(p.get(key, {"'none'"}) <= {"'none'", "'unsafe-inline'"} for key in
+                    ("style-src", "style-src-elem", "style-src-attr"))
+            and p.get("frame-src") == {application}
+            and p.get("base-uri") == {"'none'"}
+            and p.get("form-action") == {"'none'"}
+            for p in policies
+        )
+    else:
+        allowed_connections = {application, application.replace("https://", "wss://", 1)}
+        allowed_resources = {
+            "script-src": {application, "'unsafe-inline'", "'unsafe-eval'"},
+            "script-src-elem": {application, "'unsafe-inline'"},
+            "script-src-attr": {"'unsafe-inline'"},
+            "style-src": {application, "'unsafe-inline'"},
+            "style-src-elem": {application, "'unsafe-inline'"},
+            "style-src-attr": {"'unsafe-inline'"},
+            "img-src": {application, "data:", "blob:"},
+            "font-src": {application, "data:"},
+            "media-src": {application, "data:", "blob:"},
+        }
+        safe = any(
+            "sandbox" in p
+            and "allow-scripts" in p["sandbox"]
+            and p["sandbox"] <= {"allow-scripts", "allow-forms", "allow-pointer-lock"}
+            and p.get("default-src") == {"'none'"}
+            and bool(p.get("connect-src"))
+            and p["connect-src"] <= allowed_connections
+            and all(p.get(key) == {"'none'"} for key in
+                    ("base-uri", "form-action", "frame-src", "object-src", "worker-src"))
+            and all(p.get(key, {"'none'"}) <= values | {"'none'"}
+                    for key, values in allowed_resources.items())
+            for p in policies
+        )
+        safe = (safe and headers.get("Access-Control-Allow-Origin") == "*"
+                and not headers.get("Access-Control-Allow-Credentials"))
+    if not safe or headers.get("Set-Cookie"):
+        raise GalleryError("GameUrl is missing the required browser isolation headers. Sharing was not registered; ask the facilitator to check the game-host update.")
+
+
+def _read_game_page(start: str, application: str, *, wrapper: bool = False) -> str:
     opener = urllib.request.build_opener(_NoRedirect)
-    url = base
+    url = start
     for _ in range(4):
         request = urllib.request.Request(url, headers={"Accept": "text/html"})
         try:
             with opener.open(request, timeout=10) as response:
+                _public_boundary(response.headers, application, wrapper=wrapper)
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_RESPONSE_BYTES:
                     raise GalleryError("The game's opening page is too large to inspect. Check its root page.")
                 if "text/html" not in response.headers.get("Content-Type", "").lower():
                     raise GalleryError("GameUrl did not return a browser page. Check the game's README start command.")
-                parser = _Title()
-                parser.feed(raw.decode("utf-8", errors="replace"))
-                return " ".join(" ".join(parser.parts).split())[:100]
+                return raw.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             if exc.code in (301, 302, 303, 307, 308):
                 try:
                     target = urllib.parse.urljoin(url, exc.headers.get("Location", ""))
                     parsed = urllib.parse.urlsplit(target)
-                    original = urllib.parse.urlsplit(base)
+                    original = urllib.parse.urlsplit(application)
+                    path = urllib.parse.unquote(parsed.path)
                 except ValueError:
                     raise GalleryError("GameUrl returned an invalid redirect. Check the game's root page.") from None
-                if (parsed.scheme != "https" or parsed.netloc != original.netloc
-                        or parsed.username or parsed.password or parsed.fragment):
-                    raise GalleryError("GameUrl redirected outside the game origin. Sharing was not registered.") from None
+                if (wrapper or parsed.scheme != "https" or parsed.netloc != original.netloc
+                        or parsed.username or parsed.password or parsed.fragment
+                        or not path.startswith(original.path)
+                        or any(part in (".", "..") for part in path.split("/"))
+                        or "\\" in path or "%" in path):
+                    raise GalleryError("GameUrl redirected outside the isolated game path. Sharing was not registered.") from None
                 url = target
                 continue
             raise GalleryError(f"GameUrl returned HTTP {exc.code}. Check the shared game with gallery.py status.") from None
@@ -153,6 +236,16 @@ def read_public_game(base: str) -> str:
         except ValueError:
             raise GalleryError("GameUrl returned an invalid redirect or page. Check the game's root page.") from None
     raise GalleryError("GameUrl redirects repeatedly. Check the game's root page before sharing.")
+
+
+def read_public_game(base: str) -> str:
+    """Verify the wrapper and read metadata only from its isolated application."""
+    public = game_url(base)
+    application = public + "app/"
+    _read_game_page(public, application, wrapper=True)
+    parser = _Title()
+    parser.feed(_read_game_page(application, application))
+    return " ".join(" ".join(parser.parts).split())[:100]
 
 
 def signed_request(base: str, method: str, body: dict[str, str] | None = None) -> dict[str, Any]:
@@ -222,6 +315,8 @@ def publish(args: argparse.Namespace, out=sys.stdout) -> int:
         _metadata(args.title, args.description)
     elif len(args.description.strip()) > 280 or any(ord(c) < 32 or ord(c) == 127 for c in args.description):
         raise GalleryError("Use a description of up to 280 characters without control characters.")
+    # An old helper must not expose a game without the browser boundary.
+    hosted_application(host_command("status"))
     print("Preparing an isolated copy of your game...", file=out, flush=True)
     state = host_command(
         "publish", "--project", str(args.project.resolve()), "--port", str(args.port), "--", *command,
@@ -229,12 +324,12 @@ def publish(args: argparse.Namespace, out=sys.stdout) -> int:
     if state.get("active") is not True:
         raise GalleryError("The shared game did not become ready. Run gallery.py status.")
     try:
-        public_url = game_url(state.get("public_url"))
+        public_url, _application = hosted_application(state)
         detected_title = read_public_game(public_url)
         metadata = _metadata(args.title or detected_title or args.project.name, args.description)
         result = signed_request(endpoint, "POST", metadata)
         if result.get("published") is not True or result.get("url") != public_url:
-            raise GalleryError("The event returned a different game origin or did not confirm registration.")
+            raise GalleryError("The event returned a different game URL or did not confirm registration.")
     except (GalleryError, EventConfigError):
         # A failed registration must not be advertised as a completed share.
         try:

@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Publish one copied workshop game behind its separate public origin.
+"""Publish one copied workshop game behind an isolated browser sandbox.
 
 Installed, hash-verified code: /usr/local/bin/workshop-game-host
 
@@ -17,6 +17,12 @@ The game then runs as a DynamicUser with only loopback networking. A separate
 socket-proxyd inherits a host loopback listener and joins the game's network.
 Old archives, working copies, and copied score data survive replacement and
 unpublish. This helper does not build dependencies or infer a start command.
+
+The existing workshop CloudFront distribution routes /play/ to this listener,
+never through code-server. A trusted, script-free page embeds /play/app/ with
+an opaque origin. The proxy also enforces the sandbox on direct app responses.
+Game code can use relative HTTP APIs and server-side persistence; browser
+cookies, storage, service workers and external dependencies are not supported.
 """
 from __future__ import annotations
 
@@ -48,6 +54,9 @@ import uuid
 
 
 SCHEMA_VERSION = 1
+HOSTING_MODE = "isolated-path-v1"
+PUBLIC_PATH = "/play/"
+APPLICATION_PATH = PUBLIC_PATH + "app/"
 HELPER = Path("/usr/local/bin/workshop-game-host")
 CONFIG_DIR = Path("/etc/workshop-game-host")
 ROOT = Path("/var/lib/workshop-game-host")
@@ -75,6 +84,7 @@ BASE_ENV = {
 }
 SNAPSHOT_RE = re.compile(r"^[0-9a-f]{32}$")
 SECRET_RE = re.compile(r"^[A-Za-z0-9]{48}$")
+PUBLIC_URL_RE = re.compile(r"https://d[a-z0-9]+\.cloudfront\.net/play/", re.ASCII)
 EXCLUDED_NAMES = {
     ".git", ".hg", ".svn", ".aws", ".ssh", ".gnupg", ".docker", ".kube",
     ".claude", ".codex", ".kiro", ".runs", ".netrc", ".npmrc", ".pypirc",
@@ -515,28 +525,171 @@ Service={PROXY}
     }
 
 
-def render_nginx(secret: str, enabled: bool) -> bytes:
+def validate_public_url(value: str) -> str:
+    if not isinstance(value, str) or not PUBLIC_URL_RE.fullmatch(value):
+        raise HostError("INVALID_CONFIG", "The public game URL must be this team's HTTPS CloudFront /play/ URL.")
+    return value
+
+
+def browser_policy(public_url: str, *, wrapper: bool = False) -> str:
+    """Only the installed canonical origin can supply game resources.
+
+    An opaque origin alone is not a network boundary: cross-origin requests can
+    still carry cookies. Keep every resource type inside the public app prefix,
+    and reject upstream redirects (CSP path matching relaxes after a redirect).
+    """
+    application_url = validate_public_url(public_url) + "app/"
+    origin = "https://" + urlsplit(public_url).netloc
+    if wrapper:
+        return (
+            "default-src 'none'; "
+            f"frame-src {application_url}; "
+            "style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
+            "object-src 'none'; frame-ancestors 'none'"
+        )
+    # Allow JS submit listeners to run; form-action still forbids native form
+    # navigation. Without allow-forms browsers suppress the submit event itself.
+    return (
+        "sandbox allow-scripts allow-forms allow-pointer-lock; default-src 'none'; "
+        f"script-src 'unsafe-inline' {application_url}; "
+        f"style-src 'unsafe-inline' {application_url}; "
+        f"img-src {application_url} data: blob:; "
+        f"font-src {application_url} data:; "
+        f"media-src {application_url} data: blob:; "
+        f"connect-src {application_url} {application_url.replace('https:', 'wss:', 1)}; "
+        "base-uri 'none'; object-src 'none'; frame-src 'none'; "
+        "worker-src 'none'; manifest-src 'none'; form-action 'none'; "
+        f"frame-ancestors {origin}"
+    )
+
+
+def render_wrapper() -> str:
+    # No game-provided title, markup, script, URL, or asset enters this page.
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Workshop game</title><style>'
+        'html,body,main{margin:0;width:100%;height:100%;overflow:hidden}'
+        'iframe{display:block;border:0;width:100%;height:100%;height:100dvh}'
+        '</style></head><body><main>'
+        '<iframe src="app/" title="Published workshop game" '
+        'sandbox="allow-scripts allow-forms allow-pointer-lock" referrerpolicy="no-referrer">'
+        '</iframe></main></body></html>'
+    )
+
+
+def nginx_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace(
+        "$", "\\$"
+    ).replace("\r", "\\r").replace("\n", "\\n") + '"'
+
+
+def browser_headers(public_url: str, *, wrapper: bool = False) -> str:
+    # nginx inherits add_header only if the child has no add_header directives.
+    # Render the complete set for the wrapper, which overrides the app policy.
+    headers = {
+        "Content-Security-Policy": browser_policy(public_url, wrapper=wrapper),
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+    }
+    if not wrapper:
+        headers.update({
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE",
+            "Access-Control-Allow-Headers": "Content-Type, X-Requested-With",
+        })
+    return "\n    ".join(
+        f"add_header {name} {nginx_quote(value)} always;" for name, value in headers.items()
+    )
+
+
+def render_nginx(secret: str, enabled: bool, public_url: str) -> bytes:
     if not SECRET_RE.fullmatch(secret):
         raise HostError("INVALID_CONFIG", "The game origin secret has an invalid format.")
-    route = f"""proxy_pass http://127.0.0.1:{HOST_PORT};
+    validate_public_url(public_url)
+    hostname = urlsplit(public_url).netloc
+    route = f"""if ($request_method = OPTIONS) {{ return 204; }}
+        proxy_pass http://127.0.0.1:{HOST_PORT}/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Host $host;
+        proxy_pass_request_headers off;
+        proxy_set_header Host {hostname};
+        proxy_set_header X-Forwarded-Host {hostname};
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Prefix {APPLICATION_PATH};
         proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Accept $http_accept;
+        proxy_set_header Accept-Language $http_accept_language;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header X-Requested-With $http_x_requested_with;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Range $http_range;
+        proxy_set_header If-Range $http_if_range;
+        proxy_set_header If-None-Match $http_if_none_match;
+        proxy_set_header If-Modified-Since $http_if_modified_since;
+        proxy_set_header Cookie "";
         proxy_set_header Authorization "";
         proxy_set_header Proxy-Authorization "";
         proxy_set_header {ORIGIN_HEADER} "";
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $workshop_game_connection;
-        proxy_ignore_headers X-Accel-Redirect;
+        proxy_set_header Sec-WebSocket-Key $http_sec_websocket_key;
+        proxy_set_header Sec-WebSocket-Version $http_sec_websocket_version;
+        proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
+        proxy_set_header Sec-WebSocket-Extensions $http_sec_websocket_extensions;
+        proxy_ignore_headers X-Accel-Redirect Expires Cache-Control Set-Cookie Vary;
+        proxy_hide_header Set-Cookie;
+        proxy_hide_header Set-Cookie2;
+        proxy_hide_header Cookie;
+        proxy_hide_header Authorization;
+        proxy_hide_header Proxy-Authorization;
+        proxy_hide_header {ORIGIN_HEADER};
+        proxy_hide_header WWW-Authenticate;
+        proxy_hide_header Proxy-Authenticate;
+        proxy_hide_header Authentication-Info;
+        proxy_hide_header Proxy-Authentication-Info;
+        proxy_hide_header Clear-Site-Data;
+        proxy_hide_header NEL;
+        proxy_hide_header Report-To;
+        proxy_hide_header Reporting-Endpoints;
+        proxy_hide_header Accept-CH;
+        proxy_hide_header Critical-CH;
+        proxy_hide_header Origin-Trial;
+        proxy_hide_header Alt-Svc;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header Service-Worker-Allowed;
+        proxy_hide_header Refresh;
+        proxy_hide_header Location;
+        proxy_hide_header Link;
+        proxy_hide_header X-Accel-Redirect;
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Content-Security-Policy-Report-Only;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Cross-Origin-Resource-Policy;
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Credentials;
+        proxy_hide_header Access-Control-Allow-Methods;
+        proxy_hide_header Access-Control-Allow-Headers;
+        proxy_hide_header Access-Control-Expose-Headers;
+        proxy_hide_header Access-Control-Max-Age;
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Expires;
+        proxy_hide_header Vary;
+        proxy_redirect off;
         proxy_buffering off;
         proxy_read_timeout 60s;
         proxy_send_timeout 60s;
         proxy_intercept_errors on;
+        error_page 300 301 302 303 305 306 307 308 =502 @game_redirect_rejected;
         error_page 502 503 504 =503 @game_unavailable;""" if enabled else "return 503;"
-    # Game cookies and Set-Cookie stay intact on this separate browser origin.
-    # No aliases, filesystem roots, IDE locations, or viewer-selected upstreams.
+    wrapper = (
+        "default_type text/html;\n        return 200 " + nginx_quote(render_wrapper()) + ";"
+        if enabled else "return 503;"
+    )
+    # Only this fixed prefix reaches the copied app. Unknown/normalized-away
+    # paths stop here; no filesystem aliases, IDE routes or caller-chosen ports.
     return f"""# Owned by workshop-game-host. This listener serves only a copied game.
 map $http_upgrade $workshop_game_connection {{
     default upgrade;
@@ -547,9 +700,24 @@ server {{
     server_name _;
     access_log off;
     if ($http_x_workshop_game_origin != "{secret}") {{ return 403; }}
+    {browser_headers(public_url)}
     client_max_body_size 2m;
-    location / {{
+    location = /play {{
+        return 308 {public_url};
+    }}
+    location = {PUBLIC_PATH} {{
+        {browser_headers(public_url, wrapper=True)}
+        {wrapper}
+    }}
+    location ^~ {APPLICATION_PATH} {{
         {route}
+    }}
+    location / {{
+        return 404;
+    }}
+    location @game_redirect_rejected {{
+        default_type text/plain;
+        return 502 "Game redirects are disabled in isolated-path hosting. Use relative game routes.\\n";
     }}
     location @game_unavailable {{
         default_type text/plain;
@@ -707,6 +875,9 @@ class Host:
         value = read_json(self.config_dir / "config.json")
         if not isinstance(value, dict) or not SECRET_RE.fullmatch(value.get("origin_secret", "")):
             raise HostError("NOT_INSTALLED", "Run the workshop's game-host installer first.")
+        if value.get("hosting_mode") != HOSTING_MODE:
+            raise HostError("INVALID_CONFIG", "The installed game hosting mode does not match this helper.")
+        validate_public_url(value.get("public_url"))
         return value
 
     @contextlib.contextmanager
@@ -737,11 +908,17 @@ class Host:
             "current_project": current.get("project"), "snapshot": current.get("snapshot"),
             "origin": f"http://127.0.0.1:{ORIGIN_PORT}" if config else None,
             "public_url": config.get("public_url"),
+            "hosting_mode": config.get("hosting_mode"),
+            "application_url": (
+                config["public_url"] + "app/" if config.get("hosting_mode") == HOSTING_MODE
+                and PUBLIC_URL_RE.fullmatch(str(config.get("public_url", ""))) else None
+            ),
         }
 
     def nginx_route(self, enabled: bool) -> None:
         before = self.nginx.read_bytes() if self.nginx.exists() else None
-        atomic_write(self.nginx, render_nginx(self.config()["origin_secret"], enabled))
+        config = self.config()
+        atomic_write(self.nginx, render_nginx(config["origin_secret"], enabled, config["public_url"]))
         if run(["/usr/sbin/nginx", "-t"], check=False).returncode:
             if before is not None:
                 atomic_write(self.nginx, before)
@@ -772,7 +949,7 @@ class Host:
                 headers = {"Host": urlsplit(config["public_url"]).netloc, "X-Forwarded-Proto": "https"}
                 if origin:
                     headers[ORIGIN_HEADER] = config["origin_secret"]
-                connection.request("GET", "/", headers=headers)
+                connection.request("GET", APPLICATION_PATH if origin else "/", headers=headers)
                 response = connection.getresponse()
                 if 200 <= response.status < 400:
                     return
@@ -991,11 +1168,9 @@ def _install(region: str, host: Host | None = None) -> dict:
             time.sleep(5)
     if config.get("account_id") != identity.get("Account") or config.get("region") != region:
         raise HostError("ACCOUNT_REGION_MISMATCH", "Hosting configuration must belong to this instance account and region.")
-    public_url = config.get("public_url", "")
-    url = urlsplit(public_url)
-    if (url.scheme != "https" or not re.fullmatch(r"d[a-z0-9]+\.cloudfront\.net", url.netloc)
-            or url.path not in ("", "/") or url.query or url.fragment):
-        raise HostError("INVALID_CONFIG", "The public game URL must be its separate CloudFront origin.")
+    public_url = validate_public_url(config.get("public_url", ""))
+    if config.get("hosting_mode") != HOSTING_MODE:
+        raise HostError("INVALID_CONFIG", "The hosting configuration must select isolated-path-v1.")
     secret_arn = config.get("origin_secret_arn", "")
     if not re.fullmatch(
         rf"arn:aws:secretsmanager:{re.escape(region)}:{re.escape(identity['Account'])}:secret:[A-Za-z0-9/_+=.@-]+",
@@ -1021,7 +1196,7 @@ def _install(region: str, host: Host | None = None) -> dict:
             raise HostError("PUBLICATION_ACTIVE", "Unpublish the copied game before updating its hosting installation.")
         local = {
             "schema_version": SCHEMA_VERSION, "account_id": identity["Account"],
-            "region": region, "public_url": public_url.rstrip("/") + "/",
+            "region": region, "public_url": public_url, "hosting_mode": HOSTING_MODE,
             "distribution_id": config.get("distribution_id"), "origin_secret": secret,
             "attendee_uid": attendee.pw_uid, "attendee_gid": attendee.pw_gid,
             "attendee_home": attendee.pw_dir, "proxy_binary": proxy,

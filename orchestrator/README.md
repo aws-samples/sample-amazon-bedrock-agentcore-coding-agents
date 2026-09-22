@@ -64,7 +64,11 @@ and reads the title from the HTML. `--title` and `--description` can override
 card text. An own-account user without that configuration can supply
 `--gallery` or skip room sharing.
 
-The gallery links to a separate public `GameUrl`, without code-server login.
+The gallery links to `GameUrl` at `/play/` on the existing workshop CloudFront
+distribution, without code-server login. This trusted wrapper has no scripts
+and embeds `/play/app/` under an enforced opaque-origin CSP sandbox. The
+isolated game copy still runs as a `DynamicUser` on the same host. No additional
+CloudFront distribution is created for publishing.
 Lab 3 republishes `~/game-lab3` on port 8001 at the same public URL.
 Each copy keeps its own saved results; visitors' scores do not sync back to
 the original project. Republishing copies the project again without importing
@@ -76,6 +80,19 @@ leaving original game files and scores alone.
 Gallery availability does not change a check or review verdict. The legacy
 reporter and `score_protocol.py` constants remain for compatibility; the new
 game request and gallery do not depend on them.
+
+The backend harness carries the published browser's capabilities: relative
+API URLs, local assets, durable scores in the game service, and CORS for
+anonymous reads and JSON writes. Cookies, localStorage, sessionStorage, and
+service workers are unavailable. The host strips request `Cookie` and
+`Authorization` headers and response `Set-Cookie` headers. Scripts and pointer
+lock are enabled. Handle a form's `submit` event with `event.preventDefault()`
+and send data through relative JavaScript `fetch`. The sandbox includes
+`allow-forms`; CSP `form-action 'none'` blocks native form navigation.
+Popups, new tabs, and browser dialogs are unavailable. These requirements
+belong in the game's README so later builders preserve them. Verify existing
+applications through the actual embedded page; ordinary local play does not
+exercise the published browser's restrictions.
 
 A repair preserves its authored executable. The kept record includes the base
 source digest and the executable's SHA-256; repair prompt text cannot invalidate

@@ -99,10 +99,11 @@ PRESETS: dict[str, dict[str, Any]] = {
     # the whole room can PLAY at the end of Lab 2. The host's gallery helper
     # publishes a separate copy after the team has checked and played its game.
     #
-    # The request leaves the game and its local score storage interface open.
+    # The game service owns durable scores; its storage and API remain open.
     # Everything that makes the result
     # runnable where the room runs it (one service serving page and API, relative URLs
-    # behind a path prefix, no CDN, PORT, persistence, validation, documentation) is the
+    # behind a path prefix, sandbox browser capabilities, no CDN, PORT, persistence,
+    # validation, documentation) is the
     # HARNESS's job -- `harness-skills/skills/backend-engineering/SKILL.md` and the
     # validator steering -- not the prompt's. That is the point the workshop makes: a
     # person states the goal once, and the loop carries the standards. A prompt that
@@ -119,7 +120,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "give this team's game its own character. Reserve additional stages, "
             "modes, and audio for a later optional Lab 3 change. "
             "Explain how actual play earns this game's score. Keep displayed and "
-            "saved results consistent, with saved scores surviving a restart. "
+            "saved results consistent. Store scores durably in the game service "
+            "so they survive a restart. "
             "Within this baseline, choose the gameplay and presentation."),
     },
     "service-from-scratch": {
