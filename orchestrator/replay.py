@@ -38,6 +38,12 @@ import json
 import os
 from typing import Any
 
+from gate_diagnostics import (
+    MAX_FAILURE_LINES,
+    MAX_FAILURE_LINE_CHARS,
+    gate_failure_lines,
+)
+
 # Cap the check excerpt. The whole point is to show a reviewer WHAT was asserted
 # without pasting a file that already ships in the diff beside it.
 _CHECK_HEAD_LINES = 22
@@ -317,6 +323,19 @@ def gate_evidence_comment(
         "The validator wrote this check for this pull request. The orchestrator ran "
         "it and used its exit code.",
     ]
+    failures = gate_failure_lines(gate)
+    if failures:
+        lines += [
+            "",
+            "<details><summary>Failure diagnostics "
+            f"(first up to {MAX_FAILURE_LINES} matching lines, "
+            f"up to {MAX_FAILURE_LINE_CHARS} characters per line)</summary>",
+            "",
+            # Indented code preserves the wording even if it contains backticks.
+            *("    " + line for line in failures),
+            "",
+            "</details>",
+        ]
     reported = _gate_output_excerpt(gate)
     if reported:
         body, shown, total = reported
@@ -337,19 +356,20 @@ def gate_evidence_comment(
         ]
     if assessment:
         lines += ["", assessment.strip()]
-    return "\n".join(lines).rstrip() + "\n"
+    body = "\n".join(lines).rstrip() + "\n"
+    if len(body) > _GATE_COMMENT_MAX_CHARS:
+        marker = (
+            f"\n\n[Comment truncated at {_GATE_COMMENT_MAX_CHARS:,} characters.]\n"
+        )
+        return body[:_GATE_COMMENT_MAX_CHARS - len(marker)] + marker
+    return body
 
 
-# A red gate has to say WHY on the pull request itself. The engine keeps the check's
-# real stdout in gate["output"], and a reviewer arriving from a GitHub notification
-# can reach neither the engine log nor the coordinator session, so a comment that
-# shows only the check's SOURCE and "see the failing checks" names evidence the reader
-# cannot see. A live run made exactly that comment: 43 of 45 assertions passed and the
-# two that failed were nowhere on the PR. The tail is the useful end (per-check lines,
-# then the RESULT and the failed-check list), and it stays bounded because the source
-# excerpt is already in the same comment.
+# The output tail supplies context alongside the separately saved failure lines.
+# A tail alone can contain only PASS lines even when the executable exited nonzero.
 _GATE_OUTPUT_TAIL_LINES = 40
 _GATE_OUTPUT_MAX_CHARS = 3000
+_GATE_COMMENT_MAX_CHARS = 20_000
 
 
 def _gate_output_excerpt(gate: dict[str, Any]) -> tuple[str, int, int] | None:
