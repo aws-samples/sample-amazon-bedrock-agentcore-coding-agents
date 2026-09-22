@@ -129,9 +129,10 @@ own, and ignoring them means the call fails before your code ever runs.
 
 When you are the only builder and the request is something a person plays or clicks in
 a browser, the page is yours too, and ONE service serves both the page and its API.
-These standards come from where the result actually runs: the workshop opens it through
-a reverse proxy at a path prefix (`https://<host>/proxy/<port>/`), on a host with no
-guaranteed route to the public internet.
+These standards cover the original game behind a reverse proxy at a path prefix
+(`https://<host>/proxy/<port>/`) and a separately published copy at a public game
+origin. Both must work with local assets and prepared dependencies, without
+assuming an external network connection.
 
 - **Every URL the page uses is relative.** Scripts, assets, and API calls resolve
   against the page's own location (a path like `scores` or `./assets/...`), never a
@@ -152,30 +153,24 @@ guaranteed route to the public internet.
   clicks or Enter presses while saving must not create duplicate records; a failed
   save must allow a deliberate retry. Verify the event handlers and state transitions,
   not only the HTTP endpoint they eventually call.
-- **The score interface is the shared boundary.** When the request uses the
-  workshop's room score protocol,
-  `GET /api/scores` returns saved rows, best first, with `player` and integer `score`.
-  `POST /api/scores` accepts those fields for a completed round. The browser resolves
-  `api/scores` relative to its page; the host reporter signs the central-account
-  request, so the game needs no AWS credential or central endpoint.
-  Persist scores across service restarts. Use the room's 0 to 1000 scale, with
-  higher meaning better play. Choose and document a meaningful mapping from your
-  game's progress to that scale and the achievement represented by 1000; simply
-  clipping an unbounded raw counter does not explain it. Show, save, and report the
-  same workshop score. Raw game-specific counters may also be shown with distinct
-  labels. This interface does not prescribe the game's genre or layout.
-  Other games follow their requested interfaces; do not add this protocol to an
-  unrelated task or silently replace an existing score system.
-  Defend the API: an empty or missing name, a name longer than any person would
-  type, and a missing, non-integer,
-  negative, or out-of-range score are refused with a clear error and a correct status code.
+- **Keep scores local to the game.** Explain how actual play earns a score and
+  keep displayed and saved results consistent. Persist scores across service restarts.
+  Choose the scoring rules, valid range, API routes and payloads to suit the game
+  and the request. Preserve existing interfaces and saved data when extending a game.
+  The event gallery shares playable copies without comparing scores or ranking teams.
+  The host helper handles publishing; the game needs no AWS credential or central
+  endpoint. Validate names and results against this game's contract, including
+  missing fields, invalid types and values outside its allowed range. Refuse invalid
+  submissions with a clear error and the correct status code.
 - **Start it the documented way, on the port you are given.** `PORT` (or your
   documented default) chooses the port, and the start command and how to play are in
   the documentation, not only in your head. Write that documentation as a file in the
   tree (a README is the obvious choice), because the next reader is a person or another
   agent who has your code and nothing else: the checker has to work out how to start
   this from what you wrote, and at the end of the workshop a human clones the merged
-  branch and asks an agent to run it. A deliverable nobody can start is not done.
+  branch and asks an agent to run it. Use project-relative paths so the same
+  foreground command works from a checkout or a published copy after dependency
+  setup. A deliverable nobody can start is not done.
 
 ## Prove it runs (self-verification)
 

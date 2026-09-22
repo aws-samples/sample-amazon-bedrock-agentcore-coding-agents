@@ -193,6 +193,74 @@ def test_a_non_api_gateway_url_is_refused_before_signing():
         leaderboard._region_of("https://example.com/scores")
 
 
+@pytest.mark.parametrize("url", [
+    "https://abc.execute-api.eu-west-1.amazonaws.com.evil.example/live/",
+    "https://user:password@abc.execute-api.eu-west-1.amazonaws.com/live/",
+    "https://abc.execute-api.eu-west-1.amazonaws.com/live/?token=private",
+    "https://abc.execute-api.eu-west-1.amazonaws.com/live/#private",
+    "https://abc.execute-api.eu-west-1.amazonaws.com/",
+    "https://abc.execute-api.eu-west-1.amazonaws.com/live/scores",
+])
+def test_unsafe_post_url_is_refused_before_credential_resolution_or_network(monkeypatch, url):
+    from botocore.session import Session
+    monkeypatch.setattr(Session, "get_credentials",
+                        lambda *_a: pytest.fail("Must reject the destination before credentials"))
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *_a, **_k: pytest.fail("Must reject the destination before HTTP"))
+    with pytest.raises(SystemExit, match="EVENT_ENDPOINT_INVALID"):
+        leaderboard.signed_post(url, {"score": 42, "player": "ann", "game": "snake"})
+
+
+def test_cli_endpoint_bypasses_ssm_and_preserves_reporter_arguments(monkeypatch):
+    import boto3
+    captured = []
+    monkeypatch.setattr(boto3, "Session", lambda: pytest.fail("Explicit endpoint needs no discovery"))
+    monkeypatch.setenv("WORKSHOP_LEADERBOARD_URL", "invalid lower-priority endpoint")
+
+    def run(*args, **kwargs):
+        captured.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(leaderboard, "run", run)
+    url = "https://own123.execute-api.eu-west-1.amazonaws.com/live/"
+    assert leaderboard.main([
+        "--leaderboard", url.rstrip("/"), "--game", "http://127.0.0.1:8001",
+        "--name", "moonlight", "--scores-path", "/custom/scores", "--interval", "7", "--once",
+    ]) == 0
+    assert captured == [(("http://127.0.0.1:8001", url, "moonlight", True, 7.0),
+                         {"scores_path": "/custom/scores"})]
+
+
+def test_cli_without_flag_uses_environment_without_discovery(monkeypatch):
+    import boto3
+    captured = []
+    monkeypatch.setattr(boto3, "Session", lambda: pytest.fail("Environment endpoint needs no discovery"))
+    url = "https://own123.execute-api.eu-west-1.amazonaws.com/live/"
+    monkeypatch.setenv("WORKSHOP_LEADERBOARD_URL", url)
+    monkeypatch.setattr(leaderboard, "run",
+                        lambda *args, **kwargs: captured.append(args[1]) or 0)
+    assert leaderboard.main(["--once"]) == 0
+    assert captured == [url]
+
+
+def test_missing_event_config_is_a_cli_error_before_the_game_is_read(monkeypatch, capsys):
+    from event_config import EventConfigError
+
+    def missing(_explicit):
+        raise EventConfigError("EVENT_CONFIG_MISSING", "The team's parameter is missing.")
+
+    monkeypatch.setattr(leaderboard, "resolve_leaderboard_url", missing)
+    monkeypatch.setattr(leaderboard, "run",
+                        lambda *_a, **_k: pytest.fail("Do not poll the game without a destination"))
+    with pytest.raises(SystemExit) as error:
+        leaderboard.main(["--once"])
+    assert error.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "EVENT_CONFIG_MISSING" in stderr
+    assert "own-account" in stderr
+    assert "--leaderboard URL" in stderr
+
+
 # ------------------------------------------------------------------- discovery
 
 def test_it_finds_whatever_the_agent_named_the_score_endpoint(monkeypatch):

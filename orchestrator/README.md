@@ -45,14 +45,37 @@ must be empty in this form, so an unrelated custom request cannot silently be
 replaced. A plain custom `task` remains unchanged. The game preset asks for one
 short, complete round around one core mechanic, with clear controls, an earned
 score, an end state, and restart. Additional stages, modes, and audio are reserved
-for optional Lab 3 changes. It shares only its external score protocol with other
-teams; `integration_plan.py` must leave mechanics, visual style, controls, and
+for optional Lab 3 changes. Each game defines its own scoring and persistence
+interface; it has no required score range or route shared with other teams.
+`integration_plan.py` must leave mechanics, visual style, controls, and
 internal design to the builder.
 With one builder, there is no integration-planning model turn: the original
 request goes directly to its owner without a generated second specification.
 With multiple builders, the planner agrees on their shared interfaces.
-`score_protocol.py` declares the 0–1000 scale and `api/scores` path used by the
-preset and reporter. It contains no game, scoring formula, or acceptance check.
+
+`gallery.py` publishes an isolated copy after the participant has reviewed and
+played the game. From the workshop checkout, use
+`python3 orchestrator/gallery.py publish --project ~/game --port 8000 -- npm start`
+when the README says `PORT=3000 npm start`: omit the assignment because `--port`
+sets `PORT`. Other games use their own project-relative foreground command
+after `--`. The helper copies the project with prepared
+dependencies, discovers the central gallery from `/workshop/event-config`,
+and reads the title from the HTML. `--title` and `--description` can override
+card text. An own-account user without that configuration can supply
+`--gallery` or skip room sharing.
+
+The gallery links to a separate public `GameUrl`, without code-server login.
+Lab 3 republishes `~/game-lab3` on port 8001 at the same public URL.
+Each copy keeps its own saved results; visitors' scores do not sync back to
+the original project. Republishing copies the project again without importing
+visitors' results. Earlier published copies remain on the host.
+`python3 orchestrator/gallery.py status` reports the shared process state and
+URLs; open the gallery to check its listing.
+`python3 orchestrator/gallery.py unpublish` stops the copy and removes its entry,
+leaving original game files and scores alone.
+Gallery availability does not change a check or review verdict. The legacy
+reporter and `score_protocol.py` constants remain for compatibility; the new
+game request and gallery do not depend on them.
 
 A repair preserves its authored executable. The kept record includes the base
 source digest and the executable's SHA-256; repair prompt text cannot invalidate
@@ -77,7 +100,8 @@ and treating an attendee's Lab 3 edit as a deliverable change.
 |---|---|
 | `roles.py` | The role roster, declared ONCE: kind, capability, steering, CLI, env |
 | `presets.py` | Routing: which capabilities a request needs |
-| `score_protocol.py` | Shared room score range and endpoint, independent of game design |
+| `gallery.py` | Discover the event gallery and publish, inspect, or unpublish an isolated game copy |
+| `score_protocol.py` | Legacy reporter constants; not the game preset or gallery contract |
 | `chat.py` | Strands conversation and tool selection |
 | `role_graph.py` | The agent-execution schedule as a Strands graph |
 | `integration_plan.py` | Flexible shared contract and bounded repair routing |

@@ -37,13 +37,39 @@ The game preset asks for one short, complete round around one core mechanic, wit
 clear controls, an earned score, an end state, and restart. The builder chooses
 the concept and visual identity within that scope. Additional stages, modes,
 and audio are optional Lab 3 follow-ups.
-Teams share a small score interface: `GET /api/scores` returns saved
-`player`/`score` entries, `POST /api/scores` saves an earned result, and workshop
-scores run from 0 to 1000. Each game explains its own mapping to that scale.
+Each game defines its scoring rules and persistence interface. Displayed and
+saved results must agree and survive a restart. Games do not share a score
+scale or required API route.
 To add a creative direction in Chat, send
 `Use preset=game-from-scratch. Creative direction: <your own idea>`.
-The reporter sends the saved score unchanged; the shared board does not make
-different games equally difficult.
+After checking and playing the merged game, publish a separate copy to the
+event gallery. Its Play links open games without the code-server password;
+the gallery does not compare scores or rank teams.
+
+From the workshop checkout, use the game's foreground README command after `--`,
+with project-relative paths. Omit any `PORT=...` prefix because `--port` sets it.
+For a README command of `PORT=3000 npm start`:
+
+```bash
+python3 orchestrator/gallery.py publish --project ~/game --port 8000 -- npm start
+python3 orchestrator/gallery.py status
+```
+
+The helper discovers the central gallery through `/workshop/event-config`
+and reads the title from the game's HTML. Optional `--title` and `--description`
+arguments override the card text. It publishes a copy with prepared dependencies;
+the original game remains on the IDE's `/proxy/8000/` route with its files and
+scores intact. Visitors use a separate public `GameUrl`. That copy keeps its own
+saved results, which do not sync back to `~/game`. Republishing copies the
+project again without importing visitors' results; earlier copies remain on the host.
+
+After the Lab 3 change is checked, reviewed, merged, and played, publish from
+`~/game-lab3` with `--port 8001` and that version's README command. The public
+GameUrl stays the same. `python3 orchestrator/gallery.py unpublish` stops the
+copy and removes the listing. If an own-account deployment has no central event
+configuration, supply `--gallery` or skip the room-sharing step. The legacy
+score endpoint and reporter remain available for compatibility; the new preset
+and gallery do not use their score range or route.
 
 Each builder works in a named linked Git worktree and separate pull request. The
 worktree is local to the coordinator or Runtime; only one normalized source archive

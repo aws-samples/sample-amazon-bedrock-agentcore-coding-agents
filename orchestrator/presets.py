@@ -39,7 +39,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import roles as _roles
-from score_protocol import MAX_SCORE, SCORES_PATH
 
 # The roles this harness can dispatch come from the registry (``roles.py``), which
 # is the ONE place the roster is declared and is configurable at runtime
@@ -87,8 +86,8 @@ class RouteError(ValueError):
 #   * one starts from a failure (so the reproduction itself is the bar)
 #
 # `task` is the attendee's starting request, never an implementation or answer key.
-# The room's game has a small external score protocol so unlike games can report
-# to the same board. Its mechanics, look, controls, and files remain agent choices.
+# Each game owns its scoring rules. The event gallery shares playable games,
+# without requiring a common score scale or game API.
 #
 # `needs` lists CAPABILITIES, not agent ids. "backend" means "whichever role this
 # deployment serves for the service side", so a roster swap (opencode -> Codex, or
@@ -97,10 +96,10 @@ class RouteError(ValueError):
 # is not a valid route.
 PRESETS: dict[str, dict[str, Any]] = {
     # THE ROOM'S BUILD. One service, so one pull request. The deliverable is something
-    # the whole room can PLAY at the end of Lab 2, each team its own game on its own
-    # box through code-server's /proxy/<port>/ path.
+    # the whole room can PLAY at the end of Lab 2. The host's gallery helper
+    # publishes a separate copy after the team has checked and played its game.
     #
-    # The request leaves the game open while stating the shared score protocol.
+    # The request leaves the game and its local score storage interface open.
     # Everything that makes the result
     # runnable where the room runs it (one service serving page and API, relative URLs
     # behind a path prefix, no CDN, PORT, persistence, validation, documentation) is the
@@ -119,12 +118,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "restart. Choose its concept and visual identity within that scope; "
             "give this team's game its own character. Reserve additional stages, "
             "modes, and audio for a later optional Lab 3 change. "
-            f"The shared room interface is GET /{SCORES_PATH}, returning a JSON "
-            "array of saved entries with player and score, and POST to the same path "
-            "to save an earned round result. "
-            f"Use integer workshop scores from 0 to {MAX_SCORE}, higher is better. "
-            "Explain how actual play earns that score and what the top of the scale "
-            "means; keep the displayed, stored, and reported values consistent. "
+            "Explain how actual play earns this game's score. Keep displayed and "
+            "saved results consistent, with saved scores surviving a restart. "
             "Within this baseline, choose the gameplay and presentation."),
     },
     "service-from-scratch": {
