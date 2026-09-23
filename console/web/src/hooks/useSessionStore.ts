@@ -55,6 +55,7 @@ function _persist(): void {
   try {
     const rows = [..._sessions.values()].map((s) => ({
       id: s.id, agentId: s.agentId, runtimeArn: s.runtimeArn, label: s.label,
+      openedBy: s.openedBy,
     }));
     const seq = [..._seq.entries()];
     sessionStorage.setItem(_PERSIST_KEY, JSON.stringify({ rows, seq }));
@@ -69,7 +70,7 @@ function _hydrate(): void {
     const raw = sessionStorage.getItem(_PERSIST_KEY);
     if (!raw) return;
     const { rows, seq } = JSON.parse(raw) as {
-      rows: { id: string; agentId: string; runtimeArn: string; label: number }[];
+      rows: Omit<SessionEntry, 'alive'>[];
       seq: [string, number][];
     };
     for (const r of rows ?? []) {
@@ -234,15 +235,22 @@ export async function syncServerSessions(agentId: string): Promise<boolean> {
   const seen = new Set<string>();
   for (const s of rows) {
     seen.add(s.session_id);
-    if (!s.alive) continue;
     const current = _sessions.get(s.session_id);
-    if (!current) {
+    const openedBy = s.opened_by === 'orchestrator' ? 'orchestrator' : 'user';
+    if (current) {
+      // Server metadata also repairs older stored tabs without changing their
+      // identity, stable number or terminal lifecycle.
+      if (current.openedBy !== openedBy) {
+        current.openedBy = openedBy;
+        changed = true;
+      }
+    } else if (s.alive) {
       const nextLabel = (_seq.get(agentId) ?? 0) + 1;
       _seq.set(agentId, nextLabel);
       _sessions.set(s.session_id, {
         id: s.session_id, agentId, runtimeArn: s.runtime_arn,
         alive: true, label: nextLabel,
-        openedBy: s.opened_by === 'orchestrator' ? 'orchestrator' : 'user',
+        openedBy,
       });
       changed = true;
     }
