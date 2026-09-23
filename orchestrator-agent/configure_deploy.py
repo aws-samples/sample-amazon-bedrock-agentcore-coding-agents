@@ -137,9 +137,10 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
     # The deployed process imports roles.py afresh; without these values it
     # silently returns to the package defaults instead of the stack's models.
     # Forward only named model settings, never the host's whole environment.
+    # Preserve the independent reviewer selection when the backend model changes.
     for var in (
         "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_CODEX_MODEL", "WORKSHOP_OPENCODE_MODEL",
-        "WORKSHOP_SMALL_MODEL", "ORCHESTRATOR_MODEL_ID",
+        "WORKSHOP_SMALL_MODEL", "WORKSHOP_REVIEW_MODEL", "ORCHESTRATOR_MODEL_ID",
     ):
         value = os.environ.get(var, "").strip()
         if value:

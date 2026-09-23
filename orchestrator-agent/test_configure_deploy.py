@@ -158,6 +158,37 @@ def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp
     }
 
 
+def test_explicit_review_model_survives_a_backend_model_change(monkeypatch, tmp_path):
+    """The deployed reviewer must keep its own selection after backend promotion."""
+    settings = {
+        "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-opus-5",
+        "WORKSHOP_REVIEW_MODEL": "  us.anthropic.claude-opus-4-6-v1  ",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    env = _configure(monkeypatch, tmp_path)
+
+    # A fresh process must see only the generated model settings. Inheriting the
+    # deployment shell's review override would conceal a missing envVars entry.
+    child_env = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith("WORKSHOP_")
+    }
+    child_env.update(env)
+    child_env["PYTHONPATH"] = str(HERE.parent / "orchestrator")
+    result = subprocess.check_output(
+        [sys.executable, "-c",
+         "import json, roles, reviewer; print(json.dumps({"
+         "'backend': roles.get('claude-code').default_model, "
+         "'reviewer': reviewer.INTEGRATED_REVIEW_MODEL}))"],
+        env=child_env, text=True,
+    )
+    assert json.loads(result) == {
+        "backend": "us.anthropic.claude-opus-5",
+        "reviewer": "us.anthropic.claude-opus-4-6-v1",
+    }
+
+
 @pytest.mark.parametrize("effort", ["high", "max", ""])
 def test_backend_model_and_effort_survive_a_fresh_coordinator_process(
         monkeypatch, tmp_path, effort):
@@ -274,7 +305,7 @@ print(json.dumps({"roster": roles.roster_ids(), "roles": records}))
 def test_absent_model_settings_keep_coordinator_defaults(monkeypatch, tmp_path, value):
     names = (
         "WORKSHOP_CLAUDE_MODEL", "WORKSHOP_CODEX_MODEL", "WORKSHOP_OPENCODE_MODEL",
-        "WORKSHOP_SMALL_MODEL", "ORCHESTRATOR_MODEL_ID",
+        "WORKSHOP_SMALL_MODEL", "WORKSHOP_REVIEW_MODEL", "ORCHESTRATOR_MODEL_ID",
     )
     for name in names:
         if value is None:

@@ -167,6 +167,10 @@ Other important settings:
   without that file retain the `coding-agents-<account>-<region>` convention.
 - `WORKSHOP_BEDROCK_REGION` selects coordinator inference region.
 - `WORKSHOP_REVIEW_MODEL` selects the model for the integrated read-only review.
+  Set it before starting the console or deploying the coordinator to keep review
+  selection independent from the backend. When unset, the reviewer uses
+  `WORKSHOP_CLAUDE_MODEL`, then Sonnet 4.6. Builder-specific model overrides and
+  the coordinator's chat model picker do not select the reviewer.
 - `WORKSHOP_FINAL_MERGE_POLICY` is `human_review` (default) or `auto`.
   `WORKSHOP_MERGE_POLICY` remains a compatibility alias.
 

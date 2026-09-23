@@ -52,6 +52,12 @@ Open `http://localhost:5174` or `http://localhost:8080`. For production, run
 `npm --prefix console/web run build`, then `python3 console/server.py`.
 The event's `stage2-console` service uses the built frontend.
 
+Set `WORKSHOP_REVIEW_MODEL` before starting the console to select the integrated
+PR reviewer independently from the backend's `WORKSHOP_CLAUDE_MODEL`.
+For the event service, supply both values in the `stage2-console` unit environment;
+terminal exports do not update a running service. The console's chat model picker
+selects the coordinator's conversation model and does not change the reviewer.
+
 ```bash
 npm --prefix console/web run typecheck
 npm --prefix console/web test
