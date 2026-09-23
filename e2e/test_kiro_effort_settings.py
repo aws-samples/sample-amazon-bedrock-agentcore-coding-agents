@@ -12,6 +12,26 @@ from e2e.test_kiro_launcher_context import launch
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("arguments,model,effort", [
+    ([], "claude-opus-5", ""),
+    (["--model", "claude-opus-4.6"], "claude-opus-4.6", ""),
+    (["--effort", "medium"], "claude-opus-5", "medium"),
+    (["--model", "claude-opus-4.6", "--effort", "low"],
+     "claude-opus-4.6", "low"),
+])
+def test_bare_and_option_only_launches_open_interactive_chat(
+        tmp_path, arguments, model, effort):
+    child, private_home, _, _ = launch(tmp_path, arguments=arguments)
+    expected = ["chat", "--trust-all-tools"]
+    if effort:
+        expected += ["--effort", effort]
+    assert child["args"] == expected
+    settings = json.loads((private_home / ".kiro/settings/cli.json").read_text())
+    assert settings["chat.defaultModel"] == model
+    assert child["cwd"] == str(private_home)
+    assert not child["frontend_in_project"]
+
+
 @pytest.mark.parametrize("mode", ["chat", "interactive"])
 @pytest.mark.parametrize("environment,arguments,inherited,expected", [
     ({}, [], {"WORKSHOP_KIRO_EFFORT": "medium"}, "medium"),

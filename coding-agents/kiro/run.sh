@@ -161,7 +161,9 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-set -- "${REMAINING_ARGS[@]}"
+# Bash 3 treats an empty array as unset under nounset. A bare launcher (or
+# model/effort options alone) still needs to open the interactive chat.
+set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 KIRO_CHAT_ARGS=(--trust-all-tools)
 case "$EFFORT" in
   "") ;;

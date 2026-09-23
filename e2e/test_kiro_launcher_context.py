@@ -69,7 +69,8 @@ pathlib.Path(os.environ["WORKSHOP_TEST_REPORT"]).write_text(json.dumps(record))
         env["WORKSHOP_AGENT_WORKDIR"] = str(worktree)
     env.update(environment or {})
     result = subprocess.run(
-        ["bash", str(launcher), *(arguments or ["chat", "Describe your role"])],
+        ["bash", str(launcher), *(arguments if arguments is not None
+                                 else ["chat", "Describe your role"])],
         cwd=shared, env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert (shared / "AGENTS.md").read_text() == "You are the FRONTEND BUILDER\n"
