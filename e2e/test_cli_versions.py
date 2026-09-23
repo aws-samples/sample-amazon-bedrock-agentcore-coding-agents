@@ -199,6 +199,39 @@ def test_config_merges_preserve_user_values_permissions_and_symlinks(tmp_path):
     assert codex.read_text() == before.replace("= true # owned", "= false # owned")
 
 
+def test_claude_image_keeps_manifest_policy_after_settings_copy(tmp_path):
+    """Replay the image's settings COPY/configure order without building an image."""
+    backend = ROOT / "coding-agents/claude-code"
+    home = tmp_path / "agent home"
+    settings = home / ".claude/settings.json"
+    # install_cli configures this home before Docker copies the role's settings.
+    cli.configure_home("claude-code", home)
+    dockerfile = (backend / "Dockerfile").read_text().replace("\\\n", " ")
+    user = "root"
+    for line in dockerfile.splitlines():
+        instruction, _, body = line.strip().partition(" ")
+        if instruction == "USER":
+            user = body.strip()
+        elif instruction == "COPY" and body.endswith("/home/agent/.claude/settings.json"):
+            source = shlex.split(body)[-2]
+            settings.write_bytes((backend / source).read_bytes())
+        elif instruction == "RUN" and "/opt/workshop-cli/cli_versions.py configure" in body:
+            assert user == "agent", "The final home policy must be configured as agent"
+            command = shlex.split(body)
+            home_index = command.index("--home") + 1
+            assert command[home_index] == "/home/agent"
+            # Execute the shipped configure arguments against a temporary home;
+            # only the image's interpreter/helper/home paths are substituted.
+            command[:2] = [sys.executable, str(HELPER)]
+            command[home_index] = str(home)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, result.stderr
+
+    base = json.loads((backend / "settings.json").read_text())
+    policy = cli.load_manifest()["clis"]["claude-code"]["update_env"]
+    assert json.loads(settings.read_text()) == dict(base, env={**base.get("env", {}), **policy})
+
+
 def test_codex_does_not_rewrite_a_setting_inside_multiline_text():
     before = 'note = """\ncheck_for_update_on_startup = true\n[not_a_table]\n"""\n'
     assert cli._disable_codex_updates(before) == "check_for_update_on_startup = false\n" + before

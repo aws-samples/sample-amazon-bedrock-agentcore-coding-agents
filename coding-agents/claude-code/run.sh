@@ -43,6 +43,8 @@ done
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}"
 export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
 export CLAUDE_CODE_USE_BEDROCK=1
+# Command shells may omit Docker ENV; the pinned CLI must never self-update.
+export DISABLE_AUTOUPDATER=1
 export HOME="/home/agent"
 
 # An orchestrated interactive PTY hydrates one run-local linked worktree and

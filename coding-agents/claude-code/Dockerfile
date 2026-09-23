@@ -56,14 +56,18 @@ ENV CLAUDE_CODE_USE_BEDROCK=1
 # `✘ Auto-update failed: no write permission to npm prefix · Run claude doctor`
 # in the TUI footer. Seen on a live event box (2026-09-01, CLI 2.1.257). That is the
 # first thing an attendee sees inside the backend agent, at exactly the point the page
-# says "confirm it is alive", and it reads as a broken environment. Setting it here
-# covers every process in the image, so the interactive and dispatched paths agree.
+# says "confirm it is alive", and it reads as a broken environment. Keep the image
+# default; run.sh also exports it for command shells that omit the image environment.
 ENV DISABLE_AUTOUPDATER=1
 # Log stream name the collector writes to in /workshop/coding-agents/telemetry.
 ENV WORKSHOP_AGENT_NAME=claude_code
 WORKDIR /app
 EXPOSE 8080
 USER agent
+
+# Reapply the manifest policy after the role's settings COPY, preserving its values.
+RUN python3 /opt/workshop-cli/cli_versions.py configure --cli claude-code \
+      --home /home/agent
 
 # entrypoint.sh starts the OTel collector at boot, then exec's the CMD.
 ENTRYPOINT ["/app/entrypoint.sh"]
