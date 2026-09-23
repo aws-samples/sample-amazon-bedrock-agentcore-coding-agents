@@ -1,4 +1,5 @@
 """Exercise the actual prompt builders with single and multiple owners."""
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -55,6 +56,18 @@ def test_routed_ownership_reaches_the_prompt_even_during_one_owners_repair(
     finally:
         worker.shutdown()
     assert prompts
+    source = Path(__file__).resolve().parent.parent
+    for agent in builders:
+        definition = roles.get(agent)
+        steering = (source / "orchestrator" / definition.local_steering_path).read_text()
+        baked = (source / definition.steering_path).read_text()
+        assert steering == baked
+        # The CLI reads this alongside the dispatch prompt. A correct prompt
+        # alone cannot fix contrary always-on guidance in the image.
+        steering = " ".join(steering.split())
+        assert "intentionally incomplete until integration" not in steering
+        assert "only builder" in steering
+        assert "exclusive ownership" in steering
     for prompt in prompts:
         assert run.task in prompt
         if len(builders) == 1:
