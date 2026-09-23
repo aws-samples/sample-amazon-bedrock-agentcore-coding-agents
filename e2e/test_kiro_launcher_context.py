@@ -8,7 +8,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def launch(tmp_path, *, staged=True, explicit_worktree=False):
+def launch(tmp_path, *, staged=True, explicit_worktree=False,
+           environment=None, arguments=None, inherited=None):
     private_home = tmp_path / "private home"
     shared = tmp_path / "shared workspace"
     private_steering = private_home / ".kiro/steering/validator.md"
@@ -48,6 +49,10 @@ pathlib.Path(os.environ["WORKSHOP_TEST_REPORT"]).write_text(json.dumps(record))
                             "export HOME=" + shlex.quote(str(private_home)))
     source = source.replace("/mnt/s3files/.kiro/steering/validator.md",
                             shlex.quote(str(staged_steering)))
+    pid1 = tmp_path / "pid1-environ"
+    pid1.write_bytes(b"".join(
+        f"{key}={value}\0".encode() for key, value in (inherited or {}).items()))
+    source = source.replace("/proc/1/environ", shlex.quote(str(pid1)))
     launcher = tmp_path / "run.sh"
     launcher.write_text(source)
     report = tmp_path / "child.json"
@@ -62,8 +67,9 @@ pathlib.Path(os.environ["WORKSHOP_TEST_REPORT"]).write_text(json.dumps(record))
     }
     if explicit_worktree:
         env["WORKSHOP_AGENT_WORKDIR"] = str(worktree)
+    env.update(environment or {})
     result = subprocess.run(
-        ["bash", str(launcher), "chat", "Describe your role"],
+        ["bash", str(launcher), *(arguments or ["chat", "Describe your role"])],
         cwd=shared, env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert (shared / "AGENTS.md").read_text() == "You are the FRONTEND BUILDER\n"

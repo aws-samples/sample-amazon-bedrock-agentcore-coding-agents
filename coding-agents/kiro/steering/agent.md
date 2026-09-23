@@ -63,6 +63,11 @@ REALLY EXERCISING the work rather than reading it.
   type limits. Include generated suffixes when checking its size. Test a rejected
   property separately so the reason for refusal is observable. Do not require the
   same input class to be both accepted and rejected in different assertions.
+- **Respect the semantics of the result you query.** A filtered, ranked, or
+  paginated view may legitimately omit an accepted record. Establish that the
+  record qualifies for that view before asserting membership. Verify acceptance
+  and durable storage through the documented contract, and verify selection or
+  ranking separately. Do not turn a presentation rule into a false storage failure.
 - **Leave unspecified design choices with the builder.** Verify the requested
   interfaces and the behavior the game or application documents. Do not add a
   preferred genre, control scheme, screen sequence, or scoring formula to the

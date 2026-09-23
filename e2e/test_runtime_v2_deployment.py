@@ -563,6 +563,22 @@ def role_namespace(role, tmp_path, control):
     return return_namespace
 
 
+@pytest.mark.parametrize("effort", [None, "medium", ""])
+def test_kiro_runtime_forwards_named_controls_without_key(monkeypatch, tmp_path, effort):
+    monkeypatch.delenv("WORKSHOP_KIRO_EFFORT", raising=False)
+    if effort is not None:
+        monkeypatch.setenv("WORKSHOP_KIRO_EFFORT", effort)
+    monkeypatch.setenv("WORKSHOP_KIRO_MODEL", "claude-opus-5")
+    monkeypatch.setenv("KIRO_API_KEY", "must-not-be-deployed")
+    namespace = role_namespace("kiro", tmp_path, Control(runtime()))
+    env = namespace["_runtime_environment"]()
+    assert env["WORKSHOP_KIRO_MODEL"] == "claude-opus-5"
+    assert "KIRO_API_KEY" not in env
+    if effort is None:
+        assert "WORKSHOP_KIRO_EFFORT" not in env
+    else:
+        assert env["WORKSHOP_KIRO_EFFORT"] == effort
+
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("path", ["create", "existing", "recover-name"])
 @pytest.mark.parametrize("platform", [None, "V1", "V2"], ids=["default", "V1", "V2"])

@@ -211,6 +211,14 @@ _CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "us.openai.gpt-5.6-sol")
 # auto / ... . Kept wirable like every other role's model, and read by BOTH halves of
 # the flow (this registry for the Lab 2 dispatch, run.sh for the Lab 1 session).
 _KIRO_MODEL = os.environ.get("WORKSHOP_KIRO_MODEL", "claude-opus-5")
+_KIRO_EFFORT = os.environ.get("WORKSHOP_KIRO_EFFORT", "").strip()
+if _KIRO_EFFORT not in ("", "low", "medium", "high", "xhigh", "max"):
+    raise ValueError("WORKSHOP_KIRO_EFFORT must be low, medium, high, xhigh, max, or empty")
+_KIRO_CLI = (
+    "kiro-cli chat --no-interactive --trust-all-tools "
+    + (f"--effort {_KIRO_EFFORT} " if _KIRO_EFFORT else "")
+    + "--model {model} {prompt}"
+)
 
 
 # --------------------------------------------------------------------- registry
@@ -309,8 +317,9 @@ REGISTRY: tuple[Role, ...] = (
         # `claude-opus-5` (2.20x credits, 1M context). `--model`/`--effort` were
         # verified in `kiro-cli chat --help` there too; an earlier comment here
         # claimed this CLI had no model flag, which was wrong.
-        cli="kiro-cli chat --no-interactive --trust-all-tools --model {model} {prompt}",
+        cli=_KIRO_CLI,
         default_model=_KIRO_MODEL,
+        env={"WORKSHOP_KIRO_EFFORT": _KIRO_EFFORT},
         skills=("configure-kiro-validator",),
         credential="api-key",
         # Kiro is the one served role whose CLI authenticates with a VENDOR key

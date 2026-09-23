@@ -204,6 +204,11 @@ Kiro's model is selected in its vendor namespace by `WORKSHOP_KIRO_MODEL` and
 passed with `--model`, separately from Bedrock model ids. Its `credential` is
 `api-key`: the attendee's own `ksk_`, fetched at session start
 from the AgentCore Identity Token Vault and never injected as a runtime environment variable.
+`WORKSHOP_KIRO_EFFORT` optionally selects `low`, `medium`, `high`, `xhigh`, or
+`max` on the pinned CLI. The Runtime deployer and coordinator both forward it;
+manual and dispatched sessions use the same setting. An absent or empty value
+omits `--effort`, retaining Kiro's own default. `/app/run.sh --effort VALUE`
+overrides the environment for that session.
 
 ### `POST /api/runs`: submit one task (fire-and-forget)
 Request:

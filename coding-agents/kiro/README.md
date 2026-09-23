@@ -32,6 +32,13 @@ python deploy.py
 `deploy.py` writes the Runtime ARN to `runtime_config.json` and mounts the shared
 workspace at `/mnt/s3files`.
 
+Set `WORKSHOP_KIRO_MODEL` and, optionally, `WORKSHOP_KIRO_EFFORT` before deploying
+the Runtime and coordinator to use the same controls in manual and dispatched
+sessions. Effort accepts `low`, `medium`, `high`, `xhigh`, or `max`; an absent or
+empty value uses Kiro's own default. A session's `/app/run.sh --effort VALUE`
+overrides that environment setting. These controls do not change the independent
+executable gate or the repair budget.
+
 ## Open a shell
 
 Use the AgentCore CLI from this directory:

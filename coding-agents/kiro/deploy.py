@@ -400,6 +400,11 @@ def _runtime_environment() -> dict:
     gateway_url = resolve_gateway_url()
     if gateway_url:
         env_vars["GATEWAY_URL"] = gateway_url
+    model = os.environ.get("WORKSHOP_KIRO_MODEL", "").strip()
+    if model:
+        env_vars["WORKSHOP_KIRO_MODEL"] = model
+    if "WORKSHOP_KIRO_EFFORT" in os.environ:
+        env_vars["WORKSHOP_KIRO_EFFORT"] = os.environ["WORKSHOP_KIRO_EFFORT"].strip()
     # The Kiro API key is NEVER injected as a runtime environment variable: a
     # plaintext env var is readable by anyone who can GetAgentRuntime (the
     # participant can), which would leak the key. The key lives only in the

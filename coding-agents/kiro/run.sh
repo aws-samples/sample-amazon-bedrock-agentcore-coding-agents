@@ -30,6 +30,19 @@ if [ ! -x "$KIRO_PYTHON" ]; then
   KIRO_PYTHON=python3
 fi
 
+# Command shells can omit Runtime environment variables. Recover only Kiro's
+# named model controls, preserving explicit values, including an empty effort.
+for setting in WORKSHOP_KIRO_MODEL WORKSHOP_KIRO_EFFORT; do
+  if [ "${!setting+x}" != x ] && [ -r /proc/1/environ ]; then
+    while IFS= read -r -d '' entry; do
+      if [[ "$entry" == "$setting="* ]]; then
+        export "$entry"
+        break
+      fi
+    done < /proc/1/environ
+  fi
+done
+
 # Inherit env vars from PID 1 (container entrypoint) if not already set
 if [ -z "${GATEWAY_URL:-}" ] && [ -r /proc/1/environ ]; then
   GATEWAY_URL=$(cat /proc/1/environ | tr '\0' '\n' | grep ^GATEWAY_URL= | cut -d= -f2- || true)
@@ -126,11 +139,20 @@ fi
 # (2.20x credits, 1M context) alongside `auto`, `claude-sonnet-5`, `claude-opus-4.8`
 # and the rest. A Bedrock model id here would be silently rejected by the CLI.
 MODEL="${WORKSHOP_KIRO_MODEL:-claude-opus-5}"
+EFFORT="${WORKSHOP_KIRO_EFFORT-}"
 REMAINING_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --model)
       MODEL="$2"
+      shift 2
+      ;;
+    --effort)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --effort requires a value" >&2
+        exit 2
+      fi
+      EFFORT="$2"
       shift 2
       ;;
     *)
@@ -140,6 +162,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 set -- "${REMAINING_ARGS[@]}"
+KIRO_CHAT_ARGS=(--trust-all-tools)
+case "$EFFORT" in
+  "") ;;
+  low|medium|high|xhigh|max) KIRO_CHAT_ARGS+=(--effort "$EFFORT") ;;
+  *)
+    echo "Error: WORKSHOP_KIRO_EFFORT must be low, medium, high, xhigh, max, or empty" >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$HOME/.kiro/settings"
 # chat.disableTrustAllConfirmation suppresses the one-time interactive "Kiro is
@@ -200,10 +231,10 @@ fi
 # trusted INTERACTIVE TUI, so the validator runs straight through without prompts.
 case "$ACTION" in
   interactive)
-    exec kiro-cli chat --trust-all-tools
+    exec kiro-cli chat "${KIRO_CHAT_ARGS[@]}"
     ;;
   chat)
-    exec kiro-cli chat --no-interactive --trust-all-tools "$PROMPT"
+    exec kiro-cli chat --no-interactive "${KIRO_CHAT_ARGS[@]}" "$PROMPT"
     ;;
   *)
     exec kiro-cli "$ACTION" "$PROMPT"

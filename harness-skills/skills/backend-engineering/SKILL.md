@@ -80,6 +80,10 @@ Judge that structure by how clearly it supports the task and its verification.
   task. Deliver the requested visual identity and interactions with a complete,
   focused implementation. Additional polish and abstractions need a requirement
   or an observed problem to justify them.
+- **Keep the public contract proportional too.** Carry the data the requested
+  behavior needs. Additional endpoints, metadata, and configuration each create
+  more implementation and verification work; add them only to satisfy the request
+  or a demonstrated boundary condition.
 - **Group independent work.** Inspect related files together and batch independent
   tool calls when possible. Reuse the checks you have already written; expand or
   repeat them when a change or failure gives you something new to verify.
@@ -197,19 +201,26 @@ Both copies must work with local assets and prepared dependencies.
 
 ## Prove it runs (self-verification)
 
-Do not hand off a server you have only read. Before you are done, exercise it the
-way a caller will: start it, hit its discovery and one real call over the wire,
-and confirm it answers the contract, not just that the process launched. The
-separate validator will verify independently; your own check is so you do not
-hand off something obviously broken. When you can, leave that proof behind in a
-form a reviewer can re-run, but let the task shape what that proof looks like,
-do not force a fixed filename or harness.
+Do not hand off a server you have only read. Start it the documented way from a
+clean checkout on a chosen port, drive a representative request over the wire,
+and assert the result and relevant input refusals. If the task wraps existing
+logic, prove that it calls that source live; check discovery when its protocol
+requires discovery. The separate validator will verify independently. Leave
+reproducible evidence, using the project's existing test tools where possible.
+You do not need a second general-purpose verification framework.
 
 Once the requested behavior and relevant failure cases are verified, record the
 commands and results, stop any service you started for verification, and finish
 your turn. Broaden or repeat checks only for a new change, failure, or unresolved
 requirement. If work remains incomplete or a check fails, preserve the evidence
 and name what remains; your own checks never replace the independent validator.
+
+On a repair, reproduce the reported failure against the documented contract
+before changing code. Keep previously working behavior and input refusals intact.
+Fix the demonstrated cause without widening the change into an interface redesign.
+If the check assumes behavior the request and contract do not require, record a
+concrete counterexample and explain the mismatch. Do not weaken validation or
+change unrelated behavior merely to satisfy that assumption; do not edit the check.
 
 ## Do only your side
 
@@ -218,18 +229,6 @@ when you are the only builder and the request includes a page, that page is your
 (see above). Either way you do not decide the final pass/fail verdict, a separate
 validator owns acceptance. Keep the seam clean: a stable contract is what lets the
 frontend and the validator work in parallel with you.
-
-## Verify your own work before you hand it off
-
-- The server starts from a clean checkout and serves on a chosen port. Prove it the
-  way a checker will: run your start command, and from ANOTHER shell call the
-  service. If your command returned control before you could make that call, it
-  backgrounded itself and it will read as a dead service.
-- It imports the source of truth live; grep your own output for a copied constant
-  or a duplicated formula and remove it.
-- Discovery lists exactly the intended capabilities; one real call returns the
-  source's value unchanged.
-- Bad input is rejected with the right typed error, not a wrong answer.
 
 The measure of the deliverable is not that a specific file exists; it is that the
 service starts, answers its contract over the wire, and never contradicts the

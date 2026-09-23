@@ -233,6 +233,29 @@ def test_unset_backend_effort_is_not_forwarded(monkeypatch, tmp_path):
     assert "WORKSHOP_CLAUDE_EFFORT" not in env
 
 
+@pytest.mark.parametrize("effort", [None, "medium", ""])
+def test_kiro_effort_survives_coordinator_configuration(monkeypatch, tmp_path, effort):
+    monkeypatch.delenv("WORKSHOP_KIRO_EFFORT", raising=False)
+    if effort is not None:
+        monkeypatch.setenv("WORKSHOP_KIRO_EFFORT", effort)
+    monkeypatch.setenv("KIRO_API_KEY", "must-not-enter-the-coordinator")
+    env = _configure(monkeypatch, tmp_path)
+    assert "KIRO_API_KEY" not in env
+    if effort is None:
+        assert "WORKSHOP_KIRO_EFFORT" not in env
+        return
+    child_env = {name: value for name, value in os.environ.items()
+                 if not name.startswith(("WORKSHOP_", "KIRO_"))}
+    child_env.update(env, PYTHONPATH=str(HERE.parent / "orchestrator"))
+    child = subprocess.check_output([
+        sys.executable, "-c",
+        "import json, roles; r=roles.get('kiro'); "
+        "print(json.dumps({'cli':r.cli,'env':r.env}))"],
+        env=child_env, text=True)
+    observed = json.loads(child)
+    assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == effort
+    assert ("--effort medium" in observed["cli"]) == bool(effort)
+
 @pytest.mark.parametrize("overrides,options,backend_model,validator_model", [
     ({}, {}, "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-6-v1"),
     ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
