@@ -75,6 +75,14 @@ Judge that structure by how clearly it supports the task and its verification.
 - **Let the task justify the structure.** Separate concerns where it makes the
   code easier to understand, change, or verify. Choose the files and abstractions
   needed for the requested scope; keep all requested features and design requirements.
+- **Keep implementation work proportional to the result.** Prefer the capabilities
+  of your chosen tools to building a general-purpose engine or framework for one
+  task. Deliver the requested visual identity and interactions with a complete,
+  focused implementation. Additional polish and abstractions need a requirement
+  or an observed problem to justify them.
+- **Group independent work.** Inspect related files together and batch independent
+  tool calls when possible. Reuse the checks you have already written; expand or
+  repeat them when a change or failure gives you something new to verify.
 - **Use a real framework when the task is a real service.** A production HTTP
   service in Python is FastAPI or Flask, not a hand-rolled
   `BaseHTTPRequestHandler`; in Node it is Express or Fastify, not raw `http`.

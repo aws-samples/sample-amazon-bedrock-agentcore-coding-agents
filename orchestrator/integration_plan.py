@@ -302,6 +302,28 @@ def create(task: str, items: Iterable[WorkItem],
     return normalized
 
 
+def ownership_guidance(items: Iterable[WorkItem]) -> str:
+    """Describe the routed ownership without inventing an absent teammate."""
+    builders = [item for item in items if item.kind == "builder"]
+    if len(builders) == 1:
+        return (
+            "You are the only builder assigned to this request. Own the complete "
+            "requested behavior, including any interface and persistence it needs. "
+            "There is no other builder's implementation to wait for. Complete and "
+            "verify a runnable result in your checkout; the separate validator "
+            "decides acceptance."
+        )
+    return (
+        "Ownership is exclusive. Implement the outcome assigned to your role. "
+        "Your isolated checkout does not contain the other builders' work; do not "
+        "ship a stand-in or second implementation of a sibling role's capability. "
+        "If you need a local substitute while developing, keep it out of your "
+        "submitted tree. Shared manifests and entrypoints are allowed when the "
+        "integration needs them; the later role in the merge order reconciles those "
+        "files against the earlier role's actual patch."
+    )
+
+
 def markdown(task: str, plan: dict[str, Any], items: Iterable[WorkItem]) -> str:
     """Human- and agent-readable copy staged beside each independent checkout."""
     by_agent = {item.agent: item for item in items}
@@ -350,14 +372,7 @@ def markdown(task: str, plan: dict[str, Any], items: Iterable[WorkItem]) -> str:
         "are ready at once, and it decides who refreshes if a merge moves a path "
         "someone else also changed.",
         "",
-        "Ownership is exclusive. Implement the outcome assigned to your role, not "
-        "the entire request in isolation. Your checkout is intentionally incomplete "
-        "until the coordinator combines it with the other role checkouts. Do not "
-        "ship a stand-in or second implementation of a sibling role's capability. "
-        "If you need a local substitute while developing, keep it out of your "
-        "submitted tree. Shared manifests and entrypoints are allowed when the "
-        "integration needs them; the later role in the merge order reconciles those "
-        "files against the earlier role's actual patch.",
+        ownership_guidance(by_agent.values()),
     ]
     questions = plan.get("open_questions") or []
     if questions:

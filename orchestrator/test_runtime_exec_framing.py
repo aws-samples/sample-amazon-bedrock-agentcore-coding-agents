@@ -273,7 +273,7 @@ def test_generated_shell_preserves_output_and_exit(dispatch, name, stdout, stder
     assert result["session_id"] != shell.bindings["shell_id"]
     argv = json.loads(dispatch.argv.read_text())
     assert argv.count("--print") == 1
-    assert argv[argv.index("--max-turns") + 1] == "50"
+    assert "--max-turns" not in argv
     assert "--output-format" not in argv
     assert dispatch.result_archive.exists()  # Nonzero CLI exits still upload.
     assert runtime_exec.run_window_marker(shell.end) == "end"

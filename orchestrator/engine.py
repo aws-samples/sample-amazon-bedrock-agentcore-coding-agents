@@ -444,8 +444,8 @@ _SCOPE_RULE = (
     "Choose files and abstractions to support the requested scope.\n"
     "- Cover EVERY feature the shared brief assigns to YOUR role, and honour its "
     "non-functional asks literally (if data must survive a restart, an in-memory "
-    "dict is a failure even when the checks pass in one process). The combined team "
-    "owns the full request; do not duplicate a sibling's assignment in your patch.\n"
+    "dict is a failure even when the checks pass in one process). Preserve the "
+    "ownership assigned in the brief.\n"
     "You still choose the language, the framework, the files, and the structure. "
     "This constrains the standard of the work, not its shape.\n")
 
@@ -1570,20 +1570,18 @@ class Engine:
         # backend is Claude Code today (CLAUDE.md), but WORKSHOP_ROLES can serve a role
         # whose native steering file has another name.
         builder_steering = roles.get(agent_id).steering_file.replace("\\", "/")
+        ownership = integration_plan.ownership_guidance(self._builder_items(run))
         prompt = (
             "You are the backend implementer role in a multi-agent build. Read "
             f"{builder_steering} in this directory for your role, and read the "
             "shared `.workshop/integration-brief.md` before changing code. It "
-            "defines the boundary you share with the other builders, not an "
-            "implementation you must copy. Read the "
+            "defines your assignment and any shared boundaries. Read the "
             f"`{staged}/skills/backend-engineering/SKILL.md` harness staged for this "
             "run (also baked at ~/skills/backend-engineering/SKILL.md) and apply it.\n\n"
             f"THE REQUEST: {run.task}\n\n"
             "YOUR EXCLUSIVE ASSIGNMENT:\n"
             f"{json.dumps(assignment, indent=2)}\n\n"
-            "Implement that assignment and its side of the shared contract. Your "
-            "isolated checkout is not supposed to contain the other builders' work; "
-            "do not make it standalone by adding their capability.\n\n"
+            f"{ownership}\n\n"
             "Decide everything else yourself: the language, the framework, the files, "
             "the structure, the protocol. Nobody has prescribed a shape. Read the "
             f"request carefully; any material it refers to is staged read-only under "
@@ -1645,17 +1643,18 @@ class Engine:
             conflict_feedback += _gate_failure_feedback(run.review.get("gate") or {})
         if run._refresh_context:
             conflict_feedback += "\n\n" + run._refresh_context
+        ownership = integration_plan.ownership_guidance(self._builder_items(run))
         prompt = (
             "You are the frontend builder role in a multi-agent build. Read "
             "AGENTS.md in this directory for your role, and read the "
             "shared `.workshop/integration-brief.md` before changing code. It "
-            "defines the boundary you share with the other builders, not an "
-            "implementation you must copy. Read the "
+            "defines your assignment and any shared boundaries. Read the "
             f"`{staged}/skills/frontend-design/SKILL.md` harness staged for this run "
             "and apply it.\n\n"
             f"THE REQUEST: {run.task}\n\n"
             "YOUR EXCLUSIVE ASSIGNMENT:\n"
             f"{json.dumps(assignment, indent=2)}\n\n"
+            f"{ownership}\n\n"
             + backend +
             "Decide everything yourself: the files, the structure, the framework, the "
             "styling, the interactions. Nobody has prescribed a shape or a filename. "

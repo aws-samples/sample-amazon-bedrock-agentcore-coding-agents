@@ -216,7 +216,7 @@ def test_whole_engine_stops_after_one_cap_and_never_dispatches_checker(
     assert result.published == []
     assert len(result.calls) == 1
     assert result.calls[0]["timeout_s"] == engine.HARNESS_ROLE_TIMEOUT_S
-    assert "--max-turns 50 " in roles.get("claude-code").cli
+    assert "--max-turns" not in roles.get("claude-code").cli
     assert "--print " in roles.get("claude-code").cli
     assert run.iterations == 1
     assert run.progress["claude-code"].state == "error"

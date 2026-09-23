@@ -30,11 +30,19 @@ sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
 
 
 def _wait(run, timeout_s: float = 90.0):
+    engine = importlib.import_module("engine")
+    run_store = importlib.import_module("run_store")
     deadline = time.monotonic() + timeout_s
-    while run.status not in ("passed", "failed", "needs_human"):
-        assert time.monotonic() < deadline, f"stuck in {run.status}"
+    while True:
+        if run.status in ("passed", "failed", "needs_human"):
+            # The worker sets its verdict before its finally block persists it.
+            # A new session can only recover the completed durable checkpoint.
+            saved = run_store.load(engine._RUNS_DIR, run.run_id)
+            if saved and saved.get("status") == run.status:
+                return run
+        assert time.monotonic() < deadline, (
+            f"run did not reach a durable terminal state: {run.run_id} {run.status}")
         time.sleep(0.2)
-    return run
 
 
 def test_a_finished_run_is_readable_from_a_different_engine():

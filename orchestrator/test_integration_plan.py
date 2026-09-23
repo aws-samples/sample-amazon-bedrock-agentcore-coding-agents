@@ -95,7 +95,12 @@ def test_one_builder_owns_the_original_request_without_a_generated_spec(monkeypa
         assert list(plan["role_assignments"]) == ["custom-maker"]
         assert plan["merge_order"] == ["custom-maker"]
         assert item.depends_on == []
-        assert task in integration_plan.markdown(task, plan, [item])
+        rendered = integration_plan.markdown(task, plan, [item])
+        assert task in rendered
+        assert "only builder assigned" in rendered
+        assert "complete requested behavior" in rendered
+        assert "intentionally incomplete" not in rendered
+        assert "not the entire request in isolation" not in rendered
 
 
 def test_repair_router_selects_an_owner_and_falls_back_to_all_builders(

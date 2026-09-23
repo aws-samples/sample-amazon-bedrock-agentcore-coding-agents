@@ -131,7 +131,7 @@ if [ $# -gt 0 ]; then
   # --effort: reasoning budget, high by default and wirable. `claude --effort`
   # accepts low|medium|high|xhigh|max and WARNS-and-ignores anything else, so a
   # bad value degrades to the default rather than failing the run.
-  exec claude --dangerously-skip-permissions --print --max-turns 50 \
+  exec claude --dangerously-skip-permissions --print \
     ${CLAUDE_EFFORT:+--effort "$CLAUDE_EFFORT"} --model "$MODEL" "$@"
 else
   exec claude --dangerously-skip-permissions \

@@ -35,17 +35,18 @@ keep working.
 
 Your job ends when the requested files are in your working directory. Do not initialize
 Git, create a branch or commit, call GitHub, open a pull request, or add labels. The
-coordinator publishes each builder's role PR, validates the combined candidate, merges
-green role PRs through a private queue, and only then opens the final integration PR.
+coordinator publishes each builder's pull request, runs its independent executable
+gate and review, and applies the configured merge policy.
 
 Do not inspect or print credential-bearing environment variables. The Runtime's temporary
 AWS credentials are infrastructure used by the CLI, not task input and not build output.
 
 ## Rules
 
-- Treat the ownership in `.workshop/integration-brief.md` as exclusive. Your
-  checkout is intentionally incomplete until integration; do not ship a stand-in
-  or second implementation of a sibling role's capability.
+- Read the routed ownership in `.workshop/integration-brief.md`. As the only
+  builder, own the complete request, including its UI when required. With other
+  builders, implement your assignment and preserve their exclusive ownership;
+  do not ship a stand-in or second implementation of their capability.
 - Leave your work in your working directory. Do not edit another role's tree, and do not
   edit the validator's check: the maker never grades itself.
 - If you cannot do what was asked, say so plainly in your output. A stub that looks

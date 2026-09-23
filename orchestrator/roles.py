@@ -189,7 +189,7 @@ _OPENCODE_VARIANT = os.environ.get("WORKSHOP_OPENCODE_VARIANT", "high").strip()
 
 def _claude_cli(effort: str) -> str:
     """The headless command; Role.command supplies the model and prompt."""
-    return ("claude --dangerously-skip-permissions --print --max-turns 50 "
+    return ("claude --dangerously-skip-permissions --print "
             + (f"--effort {effort} " if effort else "")
             + "--model {model} {prompt}")
 

@@ -55,6 +55,8 @@ def launcher(tmp_path):
     for name in ("run.sh", "run-as-user.sh"):
         (tmp_path / name).write_text((HARNESS / name).read_text().replace(
             "/proc/1/environ", str(proc_environment)))
+    (tmp_path / "validator.sh").write_text(
+        (ROOT / "coding-agents" / "claude-code-validator" / "run.sh").read_text())
     clean_env = {
         key: value for key, value in os.environ.items()
         if key not in MODEL_VARIABLES
@@ -86,6 +88,18 @@ def launcher(tmp_path):
         return result, json.loads(record.read_text()) if record.exists() else None
 
     return run
+
+
+@pytest.mark.parametrize("path", ["run.sh", "validator.sh"])
+def test_headless_launchers_do_not_impose_a_turn_count_or_hide_cli_failure(launcher, path):
+    prompt = "Complete the requested work and report its verification"
+    result, record = launcher(
+        path, overrides={"CLAUDE_TEST_EXIT": "23"}, prompt=prompt)
+    assert result.returncode == 23
+    arguments = record["argv"]
+    assert arguments.count("--print") == 1
+    assert "--max-turns" not in arguments
+    assert arguments[-1] == prompt
 
 
 @pytest.mark.parametrize("path", ["run.sh", "run-as-user.sh"])

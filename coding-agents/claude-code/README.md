@@ -33,6 +33,11 @@ environment precedence. An explicit launcher `--effort` overrides
 `WORKSHOP_CLAUDE_EFFORT`; setting that variable to an empty string omits the
 CLI flag.
 
+Headless runs do not impose a CLI turn-count limit. Orchestrated work keeps
+the `HARNESS_ROLE_TIMEOUT_S` wall-clock deadline and the existing per-pull-request
+repair bound. A recorded failure remains a failure and is never automatically
+resubmitted merely because a CLI limit was reached.
+
 ## Open a shell
 
 Use the AgentCore CLI from this directory:
