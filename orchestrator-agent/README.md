@@ -80,9 +80,20 @@ otherwise return exit code zero. An error, empty answer, or 180-second timeout
 stops the script before it prints the build-submission instructions.
 
 Export model settings before running the script. It forwards the stack's
-`WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_CODEX_MODEL`, and `WORKSHOP_SMALL_MODEL`
-values into the coordinator process. `ORCHESTRATOR_MODEL_ID` independently
-selects the coordinator's chat model. Existing `WORKSHOP_MODEL` and
+`WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_CODEX_MODEL`, `WORKSHOP_SMALL_MODEL`, and
+`WORKSHOP_REVIEW_MODEL` values into the coordinator process.
+`WORKSHOP_REVIEW_MODEL` selects the integrated PR reviewer independently from
+the backend. For example, an event can select these models separately:
+
+```bash
+export WORKSHOP_CLAUDE_MODEL=us.anthropic.claude-opus-5
+export WORKSHOP_REVIEW_MODEL=us.anthropic.claude-opus-4-6-v1
+```
+
+Set both before `deploy-coordinator.sh`. Without an explicit review model,
+the reviewer uses `WORKSHOP_CLAUDE_MODEL`, then Sonnet 4.6 as its fallback.
+`ORCHESTRATOR_MODEL_ID` independently selects the coordinator's chat model.
+Existing `WORKSHOP_MODEL` and
 `WORKSHOP_MODEL_<ROLE>` overrides still take precedence for role dispatch;
 per-request model choices take precedence over those. Blank named defaults
 are omitted. Credentials are not copied from the host environment.
