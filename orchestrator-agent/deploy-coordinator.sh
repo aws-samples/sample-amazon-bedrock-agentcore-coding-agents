@@ -15,7 +15,8 @@
 # unset is the failure this script exists to prevent.
 #
 # Usage (from anywhere):
-#   export GITHUB_GATEWAY_URL=... GITHUB_REPO=owner/repo [WORKSHOP_MERGE_POLICY=...]
+#   # Saved GitHub settings work in a new terminal; explicit exports take priority.
+#   export AWS_REGION=... [GITHUB_GATEWAY_URL=... GITHUB_REPO=owner/repo]
 #   ./deploy-coordinator.sh
 set -euo pipefail
 
@@ -28,9 +29,18 @@ PROJECT_JSON="$PROJECT_DIR/agentcore/agentcore.json"
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # ── 1. Refuse to start without what the deploy needs ─────────────────────────
-[ -n "${GITHUB_GATEWAY_URL:-}" ] || die "GITHUB_GATEWAY_URL is not set. Deploy the GitHub MCP Gateway first (Connect GitHub, step 3), then export it (step 4)."
-[ -n "${GITHUB_REPO:-}" ] || die "GITHUB_REPO is not set. Export it as owner/repository (Connect GitHub, step 1)."
+# Match github.py doctor: env, saved Settings, then the Gateway deployment state.
+# Fill missing exports only. Resolve as data, never evaluate saved shell text.
+if [ -z "${GITHUB_GATEWAY_URL:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
+  gateway_config=$(PYTHONPATH="$REPO_ROOT/orchestrator${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -c 'import json; from github import _gateway_config; print(json.dumps(_gateway_config() or {}))')
+  GITHUB_GATEWAY_URL="${GITHUB_GATEWAY_URL:-$(printf '%s' "$gateway_config" | jq -r '.gateway_url // empty')}"
+  GITHUB_REPO="${GITHUB_REPO:-$(printf '%s' "$gateway_config" | jq -r '.repo // empty')}"
+fi
+[ -n "${GITHUB_GATEWAY_URL:-}" ] || die "GITHUB_GATEWAY_URL is not configured. Complete Connect GitHub and run python3 orchestrator/github.py doctor from the repository root."
+[ -n "${GITHUB_REPO:-}" ] || die "GITHUB_REPO is not configured. Save owner/repository in GitHub Settings or export GITHUB_REPO."
 case "$GITHUB_REPO" in */*) ;; *) die "GITHUB_REPO must look like owner/repository, not '$GITHUB_REPO'." ;; esac
+export GITHUB_GATEWAY_URL GITHUB_REPO
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
 [ -n "$AWS_REGION" ] || die "No AWS region. Export AWS_REGION."
 command -v agentcore >/dev/null || die "The agentcore CLI is missing. Install the workshop's pinned @aws/agentcore version."

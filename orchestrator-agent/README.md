@@ -36,8 +36,10 @@ actually idle session can still expire; terminal results remain in the run store
 
 ## Deploy the coordinator
 
-Complete Lab 1 and the GitHub Gateway setup first. In the terminal where
-`GITHUB_GATEWAY_URL`, `GITHUB_REPO`, and `AWS_REGION` are set, deploy with:
+Complete Lab 1 and the GitHub Gateway setup first. The wrapper reads the same
+saved Gateway and repository settings as `github.py doctor`, so a new terminal
+works too. Explicit `GITHUB_GATEWAY_URL` and `GITHUB_REPO` exports take priority.
+With your AWS region configured, deploy with:
 
 ```bash
 cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent
