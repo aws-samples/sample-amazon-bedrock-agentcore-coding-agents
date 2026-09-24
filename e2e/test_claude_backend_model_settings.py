@@ -133,7 +133,7 @@ def test_effort_default_override_and_omission_reach_the_cli(launcher, path, effo
         assert "--effort" not in arguments
     else:
         assert arguments.count("--effort") == 1
-        assert arguments[arguments.index("--effort") + 1] == (effort or "high")
+        assert arguments[arguments.index("--effort") + 1] == (effort or "medium")
 
 
 @pytest.mark.parametrize("args", [
@@ -166,7 +166,7 @@ def test_interactive_launcher_honors_settings_without_switching_to_print_mode(la
     assert "--print" not in arguments
     assert arguments[arguments.index("--model") + 1] == (
         "explicit-model" if args else "us.anthropic.claude-opus-4-6-v1")
-    assert arguments[arguments.index("--effort") + 1] == ("max" if args else "high")
+    assert arguments[arguments.index("--effort") + 1] == ("max" if args else "medium")
 
 
 @pytest.mark.parametrize("prompt", [None, "Inspect the task"], ids=["interactive", "headless"])

@@ -243,7 +243,6 @@ def test_kiro_effort_survives_coordinator_configuration(monkeypatch, tmp_path, e
     assert "KIRO_API_KEY" not in env
     if effort is None:
         assert "WORKSHOP_KIRO_EFFORT" not in env
-        return
     child_env = {name: value for name, value in os.environ.items()
                  if not name.startswith(("WORKSHOP_", "KIRO_"))}
     child_env.update(env, PYTHONPATH=str(HERE.parent / "orchestrator"))
@@ -253,8 +252,9 @@ def test_kiro_effort_survives_coordinator_configuration(monkeypatch, tmp_path, e
         "print(json.dumps({'cli':r.cli,'env':r.env}))"],
         env=child_env, text=True)
     observed = json.loads(child)
-    assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == effort
-    assert ("--effort medium" in observed["cli"]) == bool(effort)
+    expected = "medium" if effort is None else effort
+    assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == expected
+    assert ("--effort medium" in observed["cli"]) == bool(expected)
 
 @pytest.mark.parametrize("overrides,options,backend_model,validator_model", [
     ({}, {}, "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-6-v1"),
@@ -316,7 +316,7 @@ print(json.dumps({"roster": roles.roster_ids(), "roles": records}))
     assert backend["default"] == "us.anthropic.claude-opus-5"
     assert validator["default"] == "us.anthropic.claude-opus-4-6-v1"
     for role, expected, effort in (
-            (backend, backend_model, "high"), (validator, validator_model, "xhigh")):
+            (backend, backend_model, "medium"), (validator, validator_model, "xhigh")):
         argv = role["argv"]
         assert argv[argv.index("--model") + 1] == expected
         assert argv[argv.index("--effort") + 1] == role["effort"] == effort

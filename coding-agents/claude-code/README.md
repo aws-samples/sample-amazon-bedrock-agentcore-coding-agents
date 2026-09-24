@@ -21,7 +21,7 @@ python deploy.py
 
 `deploy.py` writes the Runtime ARN to `runtime_config.json`.
 
-The backend defaults to `us.anthropic.claude-opus-4-6-v1` with `high` effort. To
+The backend defaults to `us.anthropic.claude-opus-4-6-v1` with `medium` effort. To
 change either setting, export `WORKSHOP_CLAUDE_MODEL` or
 `WORKSHOP_CLAUDE_EFFORT` before running `deploy.py`; the settings are forwarded
 to the Runtime. Use the same exports when configuring the coordinator.

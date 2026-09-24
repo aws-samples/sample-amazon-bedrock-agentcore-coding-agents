@@ -27,7 +27,7 @@ done
 # Use the same role/generic/stack precedence as the Runtime launcher. Keep the
 # native Claude variable as a fallback for callers outside the workshop.
 MODEL="${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_MODEL:-${WORKSHOP_CLAUDE_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-4-6-v1}}}}"
-CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT-high}"
+CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT-medium}"
 
 # Become the user: a short-lived STS session named for the user. The session name
 # is what lands in the invocation log as assumed-role/<role>/<user>.

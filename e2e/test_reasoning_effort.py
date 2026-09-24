@@ -1,8 +1,7 @@
 """Claude Code and the opencode restore path keep their effort settings wirable.
 
-These roles are handed real projects (several features, real persistence, real input
-rejection) and their work is graded by an executable another agent wrote. Thinking less
-does not buy a cheaper run: it buys a red gate and a wasted re-implement round.
+The backend defaults to medium effort. The restored validator keeps its own
+default, and explicit settings can raise effort or omit the flag.
 
 The flag names were verified against the INSTALLED CLIs, not assumed:
   * `claude --effort` accepts low|medium|high|xhigh|max, and WARNS-and-ignores anything
@@ -50,14 +49,14 @@ def _read(path: str) -> str:
         return fh.read()
 
 
-def test_dispatch_defaults_to_high_effort():
+def test_dispatch_keeps_separate_backend_and_validator_effort_defaults():
     """The ORCHESTRATOR path (roles.py -> the headless CLI line)."""
     try:
         roles = _roles_with({})
         for role in roles.REGISTRY:
             cli = role.cli
             if cli.startswith("claude"):
-                expected = "high" if role.id == "claude-code" else "xhigh"
+                expected = "medium" if role.id == "claude-code" else "xhigh"
                 assert f"--effort {expected}" in cli, cli
             elif cli.startswith("opencode"):
                 assert "--variant high" in cli, cli
@@ -78,7 +77,8 @@ def test_effort_is_wirable_both_up_and_off():
         roles = _roles_with({"WORKSHOP_CLAUDE_EFFORT": "",
                              "WORKSHOP_OPENCODE_VARIANT": ""})
         for c in (r.cli for r in roles.REGISTRY):
-            assert "--effort" not in c and "--variant" not in c, c
+            if c.startswith(("claude", "opencode")):
+                assert "--effort" not in c and "--variant" not in c, c
     finally:
         _roles_with({})
 

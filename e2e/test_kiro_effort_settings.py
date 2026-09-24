@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("arguments,model,effort", [
-    ([], "claude-opus-5", ""),
-    (["--model", "claude-opus-4.6"], "claude-opus-4.6", ""),
+    ([], "claude-opus-5", "medium"),
+    (["--model", "claude-opus-4.6"], "claude-opus-4.6", "medium"),
     (["--effort", "medium"], "claude-opus-5", "medium"),
     (["--model", "claude-opus-4.6", "--effort", "low"],
      "claude-opus-4.6", "low"),
@@ -61,19 +61,21 @@ def test_named_effort_reaches_manual_and_dispatched_launchers(
     assert not (tmp_path / "must-not-run").exists()
 
 
-@pytest.mark.parametrize("effort", ["medium", "", "invalid; touch must-not-run"])
+@pytest.mark.parametrize("effort", [None, "medium", "", "invalid; touch must-not-run"])
 def test_effort_reaches_fresh_registry_or_is_rejected_before_dispatch(effort, tmp_path):
     env = {name: value for name, value in os.environ.items()
            if not name.startswith("WORKSHOP_")}
-    env.update(WORKSHOP_KIRO_EFFORT=effort, WORKSHOP_CLAUDE_EFFORT="high",
+    env.update(WORKSHOP_CLAUDE_EFFORT="high",
                PYTHONPATH=str(ROOT / "orchestrator"))
+    if effort is not None:
+        env["WORKSHOP_KIRO_EFFORT"] = effort
     result = subprocess.run([
         sys.executable, "-c",
         "import json, roles; r=roles.get('kiro'); print(json.dumps({"
         "'command':r.command('PROMPT','','/tmp/work'), 'env':r.env,"
         "'backend':roles.get('claude-code').cli}))"],
         cwd=tmp_path, env=env, text=True, capture_output=True)
-    if effort.startswith("invalid"):
+    if effort is not None and effort.startswith("invalid"):
         assert result.returncode != 0
         assert "WORKSHOP_KIRO_EFFORT must be" in result.stderr
         assert not result.stdout
@@ -81,9 +83,10 @@ def test_effort_reaches_fresh_registry_or_is_rejected_before_dispatch(effort, tm
         return
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
-    assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == effort
+    expected = "medium" if effort is None else effort
+    assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == expected
     assert "--effort high" in observed["backend"]
-    if effort:
+    if expected:
         assert "--effort medium" in observed["command"]
     else:
         assert "--effort" not in observed["command"]

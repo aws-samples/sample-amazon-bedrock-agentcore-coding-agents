@@ -56,6 +56,8 @@ Before running anything, confirm with the user (ask only for what is missing):
 - **Model**: default `claude-opus-5` in Kiro's vendor namespace.
   `WORKSHOP_KIRO_MODEL` overrides it. The launcher and dispatch both pass
   `--model`; this is separate from a Bedrock model id.
+- **Effort**: default `medium`. `WORKSHOP_KIRO_EFFORT` overrides it; an explicitly
+  empty value omits the effort flag.
 - **Prerequisites already met?**: confirm shared infra is deployed
   (`coding-agents/infra/setup.sh us-west-2` runs ONCE for all agents) and the
   GitHub MCP Gateway is up (`coding-agents/gateway_mcp/deploy-all.sh`). If not,

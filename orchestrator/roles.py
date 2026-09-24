@@ -173,14 +173,10 @@ _CLAUDE_TELEMETRY = {
     "OTEL_METRIC_EXPORT_INTERVAL": "5000",
     "OTEL_LOGS_EXPORT_INTERVAL": "2000",
 }
-# Reasoning EFFORT, high by default. These agents are given real projects (several
-# features, real persistence, real input rejection) and their work is graded by an
-# executable another agent wrote, so the cost of thinking less is a red gate and a
-# wasted re-implement round, not a cheaper run. Verified against the installed CLIs
-# rather than assumed: `claude --effort` accepts low|medium|high|xhigh|max and warns
-# and IGNORES anything else, so a bad value degrades to the default instead of failing
-# the run. Wirable for an operator who wants to trade quality for latency or spend.
-_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "high").strip()
+# The backend uses medium effort, as exercised in the timed workshop build.
+# Keep the restored validator's separate default and explicit operator overrides.
+# `claude --effort` accepts low|medium|high|xhigh|max; an empty setting omits the flag.
+_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "medium").strip()
 _CLAUDE_VALIDATOR_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
 # opencode calls the same idea a model VARIANT and its accepted values are
 # provider-specific (its help names high, max, minimal), so it gets its own variable.
@@ -211,7 +207,7 @@ _CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "us.openai.gpt-5.6-sol")
 # auto / ... . Kept wirable like every other role's model, and read by BOTH halves of
 # the flow (this registry for the Lab 2 dispatch, run.sh for the Lab 1 session).
 _KIRO_MODEL = os.environ.get("WORKSHOP_KIRO_MODEL", "claude-opus-5")
-_KIRO_EFFORT = os.environ.get("WORKSHOP_KIRO_EFFORT", "").strip()
+_KIRO_EFFORT = os.environ.get("WORKSHOP_KIRO_EFFORT", "medium").strip()
 if _KIRO_EFFORT not in ("", "low", "medium", "high", "xhigh", "max"):
     raise ValueError("WORKSHOP_KIRO_EFFORT must be low, medium, high, xhigh, max, or empty")
 _KIRO_CLI = (

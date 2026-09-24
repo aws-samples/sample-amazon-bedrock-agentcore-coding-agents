@@ -371,7 +371,7 @@ def _runtime_environment() -> dict:
         if value:
             env_vars[name] = value
     # An explicitly empty effort means "use the CLI's own default"; omitting it
-    # would restore the launcher's high setting after deployment.
+    # would restore the launcher's medium setting after deployment.
     if "WORKSHOP_CLAUDE_EFFORT" in os.environ:
         env_vars["WORKSHOP_CLAUDE_EFFORT"] = os.environ["WORKSHOP_CLAUDE_EFFORT"].strip()
 

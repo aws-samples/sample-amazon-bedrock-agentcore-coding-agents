@@ -139,7 +139,7 @@ fi
 # (2.20x credits, 1M context) alongside `auto`, `claude-sonnet-5`, `claude-opus-4.8`
 # and the rest. A Bedrock model id here would be silently rejected by the CLI.
 MODEL="${WORKSHOP_KIRO_MODEL:-claude-opus-5}"
-EFFORT="${WORKSHOP_KIRO_EFFORT-}"
+EFFORT="${WORKSHOP_KIRO_EFFORT-medium}"
 REMAINING_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
