@@ -2145,9 +2145,11 @@ class Engine:
                 "\n\nThe base branch advanced because another pull request merged. "
                 "Inspect this checkout as it exists now; do not assume the prior "
                 "check is still correct.")
-        live = (f"The deliverable is running at {endpoint} .\n"
+        live = (f"Reference URL: {endpoint}. Your check runs against an isolated "
+                "checkout and must start any service it needs.\n"
                 if endpoint else
-                "The deliverable does not expose a running service this round.\n")
+                "No reference URL is available. Your check must start any "
+                "service it needs.\n")
         integration_context = integration_plan.review_context(
             run.integration_brief or {},
             self._builder_items(run),
@@ -2179,14 +2181,22 @@ class Engine:
             "(JavaScript/TypeScript). Git metadata is local: the execution "
             "checkout's workshop-base ref contains the current default-branch "
             "snapshot and HEAD contains this pull request's tree. These local "
-            "snapshot commit IDs are not GitHub commit IDs. Your check is staged "
-            "as an untracked file beside the committed source.\n\n"
+            "snapshot commit IDs are not GitHub commit IDs. The engine keeps "
+            "your executable outside the application tree. Resolve application "
+            "files from WORKSHOP_WORK_DIR or the process working directory, "
+            "never from the executable's own path.\n\n"
             "YOU decide what 'acceptable' means for this request. Nobody has given "
             "you a checklist, a contract, or a list of required checks, because only "
             "you have seen this particular task. Read the request, inspect the "
             "pull request tree cloned into this checkout, and encode the checks "
             "that would "
-            "convince a skeptical engineer that the request was met. Prefer evidence "
+            "convince a skeptical engineer that the request was met. Keep the "
+            "scope proportional: a new product needs its complete core flow; a "
+            "focused change needs the changed behavior, its failure boundary, and "
+            "the adjacent behavior it could break. Inspect the diff and reuse "
+            "available runtime tools before building checking infrastructure. "
+            "Judge observable outcomes, not internal helper names or call counts "
+            "unless the request makes those part of its interface. Prefer evidence "
             "over assumption: probe the running deliverable over the wire where it "
             "can prove something, and inspect the files where it cannot. This is a "
             "gate on ONE pull request: verify that what it contributes works, and "

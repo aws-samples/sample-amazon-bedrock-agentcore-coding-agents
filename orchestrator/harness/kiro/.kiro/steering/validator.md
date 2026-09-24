@@ -122,27 +122,28 @@ request, then a human.
 
 ## Interactive pages
 
-Use a real browser when the execution environment provides one. If it does not,
-exercise the reachable behavior and name the remaining interaction gap:
+Use a real browser when the execution environment provides one. Write the browser
+steps inside your executable; the engine runs them. Otherwise, choose the smallest
+fixture that can exercise the actual application code relevant to the request.
+Do not build a general DOM/Canvas emulator or infer playable objects from drawing
+decorations. A simulated DOM is not evidence of browser rendering or hit testing.
 
-- Start the service and fetch the page the documented way. Assert that it is served,
-  that the scripts it references are served too, and that they parse (a parse-only
-  check on the fetched source is allowed, as above).
-- When the request or the harness says the page runs behind a path prefix, a
-  root-absolute URL or a hardcoded host in the served page or its scripts is a defect
-  you can find by reading what the server returned. No browser is needed for that.
-- Drive the parts a browser would drive: the score API end to end (submit, read back,
-  ordering), its refusals (an empty name, a bad or absurd score), and persistence
-  across a restart of the process you started.
-- Follow the actual client event path as well as its API helper. Keyboard focus,
-  editable controls, pending requests, repeated activation, failure recovery, and
-  the next operation are distinct states. Testing a fetch helper does not exercise
-  the form or handler that calls it. If you can execute those handlers, use the
-  event and DOM semantics they actually depend on; a simplified stand-in can hide
-  the defect you meant to find.
-- Say plainly in the check's output which behaviours you could not exercise (the actual
-  play or DOM wiring), rather than implying you did. Keep this gap visible for the
-  independent reviewer and human who must inspect it.
+For a new application, exercise its complete core flow and durable state where the
+request requires it. For a focused change, inspect the diff and exercise the changed
+event path, its failure boundary, and the next operation. Add adjacent regression
+checks where that change could affect existing behavior. Unchanged backend behavior
+does not need a new exhaustive suite for every frontend pull request.
+
+Assert user-visible outcomes. A helper's name, exported shape, or observed call count
+does not establish correctness; real state transitions and values do. Testing a fetch
+helper alone does not exercise the form or event handler that calls it.
+
+Inside the executable, prepare documented dependencies, start any required service,
+and exercise its actual interfaces. Check path-prefix compatibility
+when the request or harness requires it. Print precisely which behavior ran and
+which browser interaction remains unverified. If a missing capability prevents
+verification of the requested change, report that limitation and fail; do not
+invent a substitute pass or attribute an unproven failure to the application.
 
 ## Behavior
 
