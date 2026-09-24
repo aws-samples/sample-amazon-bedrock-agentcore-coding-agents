@@ -129,7 +129,7 @@ def session_cli(tmp_path):
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 @pytest.mark.parametrize("role,model,effort,kind,hidden", [
-    ("claude-code", "us.anthropic.claude-opus-4-6-v1", "high", "builder", False),
+    ("claude-code", "us.anthropic.claude-opus-4-6-v1", "medium", "builder", False),
     ("claude-code-validator", "us.anthropic.claude-opus-4-6-v1", "xhigh", "checker", True),
 ])
 def test_session_uses_its_own_registry_defaults(
@@ -162,10 +162,10 @@ def test_backend_stack_model_is_isolated_from_validator_with_shared_effort(
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 @pytest.mark.parametrize("role,model,effort", [
-    ("claude-code", "us.anthropic.claude-opus-5", "high"),
+    ("claude-code", "us.anthropic.claude-opus-5", "medium"),
     ("claude-code-validator", "us.anthropic.claude-opus-4-6-v1", "xhigh"),
 ])
-def test_cfn_backend_default_keeps_restored_shelf_and_session_models_separate(
+def test_configured_backend_keeps_restored_shelf_and_session_models_separate(
         session_cli, mode, role, model, effort):
     record = session_cli(role, mode, {
         "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-opus-5",

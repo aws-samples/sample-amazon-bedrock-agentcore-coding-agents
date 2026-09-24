@@ -143,7 +143,8 @@ pathlib.Path(os.environ["KIRO_TEST_CHILD"]).write_text(json.dumps({
     )
     child_result = json.loads(report.read_text())
     assert child_result == {
-        "args": ["chat", "--no-interactive", "--trust-all-tools", "Describe your role"],
+        "args": ["chat", "--no-interactive", "--trust-all-tools", "--effort",
+                 "medium", "Describe your role"],
         "cwd": str(home),
         "key_matches": True,
         "unrelated_pid1_value": None,
