@@ -692,3 +692,69 @@ def test_env_preserves_literal_key_path_with_shell_metacharacters(module):
     assert "export GITHUB_APP_INSTALLATION_ID=99" in lines
     assert shlex.split(lines[2]) == ["export", f"GITHUB_APP_PRIVATE_KEY_FILE={key_path}"]
     assert stat.S_IMODE(module.ENV_FILE.stat().st_mode) == 0o600
+
+
+# --- September 25 event: the attendee mistakes that stopped setup -------------------
+
+@pytest.mark.parametrize("raw", [
+    "example/workshop", " example/workshop ", "https://github.com/example/workshop",
+    "https://github.com/example/workshop.git", "example/workshop.git", "example/workshop/",
+    "git@github.com:example/workshop.git",
+])
+def test_pasted_repository_forms_normalize_to_owner_and_name(module, raw):
+    assert module.normalize_repo(raw) == "example/workshop"
+
+
+@pytest.mark.parametrize("raw, hint", [
+    ("my-coding-agent-project", "your-username/my-coding-agent-project"),
+    ("someone@gmail.com/my-coding-agent-project", "not an email address"),
+])
+def test_repository_mistakes_name_the_fix(module, monkeypatch, capsys, raw, hint):
+    monkeypatch.setenv("GITHUB_REPO", raw)
+    with pytest.raises(SystemExit):
+        module.main([])
+    assert hint in capsys.readouterr().err
+    assert not module.STATE_FILE.exists()
+
+
+def test_restart_sets_aside_a_setup_that_never_reached_github(module, session, monkeypatch, capsys):
+    old_name = session.data["name"]
+    monkeypatch.setattr(module, "wait_for_callback",
+                        lambda new, resuming: pytest.fail("stop after the new checkpoint"))
+    with pytest.raises(BaseException):
+        module.main(["--restart", "--repo", "example/other"])
+    fresh = json.loads(module.STATE_FILE.read_bytes())
+    assert fresh["repo"] == "example/other" and fresh["name"] != old_name
+    abandoned = list(module.STATE_FILE.parent.glob(".github-app-setup.json.abandoned-*"))
+    assert len(abandoned) == 1 and json.loads(abandoned[0].read_bytes())["name"] == old_name
+
+
+def test_restart_refuses_once_an_app_and_key_exist(module, session, capsys):
+    session.data.update(phase="converted", app={"id": "42", "slug": "fixture-app"},
+                        key_sha256="0" * 64, pem="x", code_sha256="0" * 64)
+    session.save()
+    before = module.STATE_FILE.read_bytes()
+    with pytest.raises(SystemExit):
+        module.main(["--restart", "--repo", REPO])
+    assert "already created App" in capsys.readouterr().err
+    assert module.STATE_FILE.read_bytes() == before
+
+
+def test_public_manifest_is_opt_in_and_survives_resume(module):
+    assert module.build_manifest(BASE, 8765, "n")["public"] is False
+    created = module.SetupSession.create(BASE, 8765, REPO, module.DEFAULT_KEY_PATH, public=True)
+    assert created.data["manifest"]["public"] is True
+    assert module.SetupSession.load().data["public"] is True
+
+
+def test_key_file_is_discovered_and_a_shared_key_names_chmod(module, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    with pytest.raises(module.SetupError, match="Generate a private key"):
+        module.discover_key_file()
+    key = module.REPO_ROOT / "my-app.2026-09-25.private-key.pem"
+    key.write_text("fixture")
+    key.chmod(0o644)
+    assert module.discover_key_file() == key.resolve()
+    with pytest.raises(module.SetupError, match="chmod 600"):
+        module.read_key(key)

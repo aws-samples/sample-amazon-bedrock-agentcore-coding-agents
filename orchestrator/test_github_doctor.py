@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("WORKSHOP_GITHUB_SETTINGS",
                       os.path.join(tempfile.mkdtemp(), "gh.json"))
 
+import pytest
+
 import github  # noqa: E402
 
 _CFG = {"gateway_url": "https://gw.example/mcp", "repo": "me/my-repo",
@@ -81,7 +83,22 @@ def test_the_app_on_the_wrong_repo_is_named_as_such(monkeypatch):
     assert r["ok"] is False
     detail = _failed(r)["app_can_reach_repo"]
     assert "cannot see" in detail and "me/my-repo" in detail, detail
-    assert "installed on a different repository" in detail, detail
+    # An empty repository (no README) produced this same 404 on a live event.
+    assert "README" in detail and "Repository access" in detail, detail
+
+
+@pytest.mark.parametrize("raw", ["me/my-repo", "https://github.com/me/my-repo",
+                                 "me/my-repo.git", "me/my-repo/"])
+def test_pasted_repository_forms_resolve_to_owner_and_name(monkeypatch, raw):
+    _wire(monkeypatch, tool_fn=lambda *a, **k: [])
+    monkeypatch.setenv("GITHUB_REPO", raw)
+    assert github.configured_repository() == "me/my-repo"
+
+
+@pytest.mark.parametrize("raw, hint", [("my-repo", "your-username/my-repo"),
+                                       ("me@example.com/my-repo", "not an email")])
+def test_repository_mistakes_name_the_fix(raw, hint):
+    assert hint in github.repo_problem(github.normalize_repo(raw))
 
 
 def test_a_rejected_credential_points_at_the_credential_deploy(monkeypatch):

@@ -167,3 +167,45 @@ def test_region_uses_aws_default_region_without_a_hardcoded_fallback(monkeypatch
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
     assert kiro_config.status()["region"] == "eu-west-1"
+
+
+# --- September 25 event: keys that only failed inside a Runtime session -------------
+
+def _fake_kiro(tmp_path, monkeypatch, output):
+    chat = tmp_path / "bin" / "kiro-cli-chat"
+    chat.parent.mkdir(exist_ok=True)
+    chat.write_text(f"#!/bin/sh\necho '{output}'\n")
+    chat.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{chat.parent}:{os.environ['PATH']}")
+    monkeypatch.delenv("WORKSHOP_KIRO_DISABLE_VAULT")
+    monkeypatch.setattr(kiro_config, "_provision_vault", lambda key: None)
+
+
+def test_a_key_kiro_rejects_is_not_saved(tmp_path, monkeypatch):
+    _fake_kiro(tmp_path, monkeypatch, "The bearer token included in the request is invalid.")
+    out = kiro_config.save_api_key("ksk_secret_value_1234")
+    assert "Kiro rejected this key" in out["error"]
+    assert not (tmp_path / "kiro.local.json").exists()
+
+
+def test_a_key_kiro_answers_is_saved_as_verified(tmp_path, monkeypatch):
+    _fake_kiro(tmp_path, monkeypatch, "KIRO_KEY_OK")
+    monkeypatch.setattr(kiro_config, "_control_client", lambda: pytest.fail("cached status expected"))
+    monkeypatch.setenv("WORKSHOP_KIRO_DISABLE_VAULT", "1")  # status() reads the sidecar
+    monkeypatch.setattr(kiro_config, "_check_with_kiro", lambda key: "verified")
+    out = kiro_config.save_api_key("ksk_secret_value_1234")
+    assert out["connected"] is True and out.get("key_check") == "verified"
+
+
+def test_an_unclear_answer_never_blocks_a_save(tmp_path, monkeypatch):
+    _fake_kiro(tmp_path, monkeypatch, "network unreachable")
+    assert kiro_config._check_with_kiro("ksk_secret_value_1234") is None
+
+
+def test_a_pasted_key_with_quotes_or_a_wrapped_line_is_cleaned():
+    out = kiro_config.save_api_key(' "ksk_secret_\nvalue_1234" ')
+    assert out["connected"] is True and out["key_tail"].endswith("1234")
+
+
+def test_an_empty_paste_explains_the_hidden_prompt():
+    assert "hidden prompt" in kiro_config.save_api_key("")["error"]

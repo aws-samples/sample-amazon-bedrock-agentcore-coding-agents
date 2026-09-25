@@ -39,7 +39,13 @@ if [ -z "${GITHUB_GATEWAY_URL:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
 fi
 [ -n "${GITHUB_GATEWAY_URL:-}" ] || die "GITHUB_GATEWAY_URL is not configured. Complete Connect GitHub and run python3 orchestrator/github.py doctor from the repository root."
 [ -n "${GITHUB_REPO:-}" ] || die "GITHUB_REPO is not configured. Save owner/repository in GitHub Settings or export GITHUB_REPO."
-case "$GITHUB_REPO" in */*) ;; *) die "GITHUB_REPO must look like owner/repository, not '$GITHUB_REPO'." ;; esac
+# Accept what attendees paste: a github.com URL, a trailing slash, or a .git suffix.
+GITHUB_REPO="${GITHUB_REPO#https://github.com/}"; GITHUB_REPO="${GITHUB_REPO%/}"; GITHUB_REPO="${GITHUB_REPO%.git}"
+case "$GITHUB_REPO" in
+  *@*/*) die "GITHUB_REPO must start with your GitHub username, not an email address: '$GITHUB_REPO'." ;;
+  */*) ;;
+  *) die "GITHUB_REPO needs your GitHub username too: 'your-username/$GITHUB_REPO', not '$GITHUB_REPO'." ;;
+esac
 export GITHUB_GATEWAY_URL GITHUB_REPO
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
 [ -n "$AWS_REGION" ] || die "No AWS region. Export AWS_REGION."
@@ -88,7 +94,7 @@ echo "==> Injecting the role ARNs, GitHub configuration, and deploy target"
 ( cd "$PROJECT_DIR" && agentcore validate )
 
 # ── 5. Deploy, then prove the deployed thing answers ────────────────────────
-echo "==> Deploying (container build + push + CreateAgentRuntime; 3 to 6 minutes)"
+echo "==> Deploying (container build + push + CreateAgentRuntime; usually 5 to 10 minutes, up to 15)"
 ( cd "$PROJECT_DIR" && agentcore deploy --yes --json )
 echo "==> Verifying platform $WORKSHOP_RUNTIME_PLATFORM_VERSION READY (preparation, if needed, can take several minutes)"
 python3 "$HERE/promote_runtime.py" --project "$PROJECT_DIR"

@@ -60,6 +60,31 @@ _COMPOSED = os.path.join(_RUNS_DIR, "composed")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
+
+def normalize_repo(value: str | None) -> str:
+    """owner/name from what attendees actually paste: a URL, a trailing .git or slash.
+
+    A live event produced every one of these: a clone URL ending in .git made the
+    Gateway ask GitHub for ``repos/owner/name.git`` and answer 404."""
+    repo = (value or "").strip()
+    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:", "github.com/"):
+        if repo.lower().startswith(prefix):
+            repo = repo[len(prefix):]
+            break
+    repo = repo.rstrip("/")
+    return repo[:-4] if repo.lower().endswith(".git") else repo
+
+
+def repo_problem(value: str) -> str:
+    """Which part of owner/name is wrong, with the fix."""
+    example = 'for example: export GITHUB_REPO="octocat/my-agent-project"'
+    if "@" in value.split("/")[0]:
+        return f"'{value}' is not owner/name: use your GitHub username, not an email address ({example})"
+    if "/" not in value:
+        return (f"'{value}' is not owner/name: add your GitHub username, as "
+                f"'your-username/{value}' ({example})")
+    return f"'{value}' is not owner/name ({example})"
+
 # The Gateway target name the deploy script creates (deploy-gateway.sh:
 # TARGET_NAME="GitHubMCP"). Gateway namespaces every tool as ``<target>___<tool>``.
 _DEFAULT_TARGET = "GitHubMCP"
@@ -164,7 +189,7 @@ def _gateway_config() -> dict | None:
     gateway_url = (os.environ.get("GITHUB_GATEWAY_URL")
                    or file.get("gateway_url")
                    or _discover_gateway_url() or "").strip()
-    repo = (os.environ.get("GITHUB_REPO") or file.get("repo") or "").strip()
+    repo = normalize_repo(os.environ.get("GITHUB_REPO") or file.get("repo"))
     if not gateway_url or not _REPO_RE.match(repo):
         return None
     target = (os.environ.get("GITHUB_GATEWAY_TARGET")
@@ -389,9 +414,9 @@ def save_settings(repo: str, gateway_url: str | None = None,
     the PR lands). ``gateway_url`` is normally wired by the workshop (env), so the
     console may omit it; when present it is saved too.
     """
-    repo = (repo or "").strip()
+    repo = normalize_repo(repo)
     if not _REPO_RE.match(repo):
-        return {"error": "repo must be owner/name"}
+        return {"error": f"repo {repo_problem(repo)}"}
     file = _load_config_file()
     file["repo"] = repo
     gateway_url = (gateway_url or "").strip()
@@ -547,9 +572,10 @@ def doctor() -> dict[str, Any]:
         reason = str(exc)
         lowered = reason.lower()
         if "not found" in lowered or "404" in lowered:
-            detail = (f"the App installation cannot see {cfg['repo']} (404). Either "
-                      "the App is installed on a different repository, or "
-                      "GITHUB_REPO names the wrong owner/repo.")
+            detail = (f"the App installation cannot see {cfg['repo']} (404). Check, in "
+                      "order: the repository has at least one commit (create it with "
+                      "Add README, or add a README.md now); GITHUB_REPO matches the "
+                      "repository URL exactly; the App's Repository access includes it.")
         elif "401" in lowered or "credential" in lowered or "auth" in lowered:
             detail = ("the App credential was rejected. Re-run deploy-credential.sh "
                       "with the App ID, installation ID, and .pem that belong "
@@ -650,7 +676,7 @@ def _repo_parts(cfg: dict) -> tuple[str, str]:
 
 def configured_repository() -> str:
     """The selected target, without probing its Gateway or substituting this repo."""
-    return (os.environ.get("GITHUB_REPO") or _load_config_file().get("repo") or "").strip()
+    return normalize_repo(os.environ.get("GITHUB_REPO") or _load_config_file().get("repo"))
 
 
 def _extract_repository_archive(encoded: str, destination: str) -> int:
@@ -772,13 +798,13 @@ def _missing_gateway_config_hint() -> str:
     have_url = bool((os.environ.get("GITHUB_GATEWAY_URL")
                      or file.get("gateway_url")
                      or _discover_gateway_url() or "").strip())
-    repo = (os.environ.get("GITHUB_REPO") or file.get("repo") or "").strip()
+    repo = normalize_repo(os.environ.get("GITHUB_REPO") or file.get("repo"))
     have_repo = bool(_REPO_RE.match(repo))
     tail = ("This workflow opens role pull requests before validation, so both must "
             "be known before any agent runs.")
     if have_url and not have_repo:
         return ("the GitHub Gateway is wired, but no target repository is set. Put "
-                f"your owner/name in the console Settings pane{'' if not repo else f' (got {repo!r}, which is not owner/name)'}, "
+                f"your owner/name in the console Settings pane{'' if not repo else f' ({repo_problem(repo)})'}, "
                 f"or export GITHUB_REPO. {tail}")
     if have_repo and not have_url:
         return ("the target repository is set, but no GitHub MCP Gateway URL "

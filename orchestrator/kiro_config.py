@@ -25,6 +25,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -140,14 +145,25 @@ def save_api_key(api_key: str) -> dict[str, Any]:
     sidecar records the provider/region/tail (never the key). Returns status() on
     success or {"error": ...} on a bad key / vault failure (fail loud, never a
     silent half-write)."""
-    api_key = (api_key or "").strip()
+    # A copied key can pick up surrounding quotes or a wrapped line break.
+    api_key = "".join((api_key or "").split()).strip("'\"")
     if not api_key:
         # Empty on save = a status-only re-save; keep the stored provider untouched.
         if _load_sidecar().get("stored"):
             return status()
-        return {"error": "API key is empty"}
+        return {"error": "API key is empty: the hidden prompt received nothing. Paste the "
+                         f"key (it starts with {_KEY_PREFIX}) and press Enter; the prompt "
+                         "shows no characters while you paste."}
     if not api_key.startswith(_KEY_PREFIX) or len(api_key) < _MIN_KEY_LEN:
-        return {"error": f"not a Kiro API key (expected a '{_KEY_PREFIX}...' value)"}
+        return {"error": f"not a Kiro API key (expected a '{_KEY_PREFIX}...' value; copy the "
+                         "key itself, not a username or password)"}
+    key_check = _check_with_kiro(api_key)
+    if key_check == "rejected":
+        # The live event's "bearer token is invalid" surfaced only inside a Runtime
+        # session; saving the key is the cheapest moment to catch it.
+        return {"error": "Kiro rejected this key (invalid bearer token). Copy the whole key "
+                         "again and rerun this step; if it still fails, ask a facilitator "
+                         "for a new key. Nothing was saved."}
 
     if os.environ.get("WORKSHOP_KIRO_DISABLE_VAULT") != "1":
         try:
@@ -161,8 +177,38 @@ def save_api_key(api_key: str) -> dict[str, Any]:
         "workload": _workload_name(),
         "region": _region(),
         "key_tail": _tail(api_key),
+        "key_check": key_check or "unavailable",
     })
     return status()
+
+
+def _check_with_kiro(api_key: str) -> str | None:
+    """One tiny Kiro request with this key: 'verified', 'rejected', or None if unknown.
+
+    Uses the host's pinned kiro-cli-chat in a throwaway HOME, so no login state, key,
+    or history is left behind. Only an explicit authorization failure blocks a save;
+    a missing CLI, a timeout, or any other answer never turns into a rejection."""
+    if (os.environ.get("WORKSHOP_KIRO_DISABLE_VAULT") == "1"
+            or os.environ.get("WORKSHOP_KIRO_VERIFY") == "0"):
+        return None
+    chat = shutil.which("kiro-cli-chat") or str(Path.home() / ".local/bin/kiro-cli-chat")
+    if not Path(chat).is_file():
+        return None
+    with tempfile.TemporaryDirectory(prefix="kiro-key-check-") as home:
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "KIRO_API_KEY": api_key,
+               "LANG": os.environ.get("LANG", "C.UTF-8")}
+        try:
+            done = subprocess.run([chat, "chat", "--no-interactive",
+                                   "Reply with exactly: KIRO_KEY_OK"],
+                                  env=env, capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.SubprocessError):
+            return None
+    answer = f"{done.stdout}\n{done.stderr}"
+    if "KIRO_KEY_OK" in answer:
+        return "verified"
+    if re.search(r"bearer token|unauthori[sz]ed|invalid (api )?key|\b40[13]\b", answer, re.I):
+        return "rejected"
+    return None
 
 
 def status(*, refresh: bool = False) -> dict[str, Any]:
@@ -181,7 +227,8 @@ def status(*, refresh: bool = False) -> dict[str, Any]:
                          and s.get("provider", out["provider"]) == out["provider"])
         if s.get("stored") and cache_matches and (not refresh or offline):
             return {**out, "connected": True, "source": "settings",
-                    "key_tail": s.get("key_tail", "")}
+                    "key_tail": s.get("key_tail", ""),
+                    **({"key_check": s["key_check"]} if s.get("key_check") else {})}
         if offline:
             return {**out, "connected": False}
         client = _control_client()

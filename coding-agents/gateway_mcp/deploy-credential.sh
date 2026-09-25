@@ -11,6 +11,12 @@ echo "==> Deploying GitHub App Secret to Secrets Manager: ${SECRET_NAME}"
 # Validate required env vars
 if [[ -z "${GITHUB_APP_ID:-}" ]]; then
   echo "ERROR: Set GITHUB_APP_ID (the numeric ID of your GitHub App)."
+  if [[ ! -f "$(dirname "$0")/github-app.env" ]]; then
+    echo "       github-app.env does not exist yet: the App setup (create-github-app.py) has not"
+    echo "       finished. Run it again, or with --resume, until it prints 'Wrote .../github-app.env'."
+  else
+    echo "       Load the saved settings first: source $(dirname "$0")/github-app.env"
+  fi
   exit 1
 fi
 
