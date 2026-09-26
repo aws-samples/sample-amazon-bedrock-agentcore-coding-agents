@@ -232,7 +232,8 @@ class SetupSession:
         atomic_private_write(self.path, (json.dumps(self.data, indent=2) + "\n").encode())
 
     @classmethod
-    def create(cls, base_url: str, port: int, repo: str, key_path: Path, public: bool = False):
+    def create(cls, base_url: str, port: int, repo: str, key_path: Path, public: bool = False,
+               organization: str | None = None):
         if STATE_FILE.exists() or STATE_FILE.is_symlink():
             saved = saved_summary()
             raise SetupError(
@@ -251,7 +252,7 @@ class SetupSession:
             "key_file": str(key_path), "checkout": str(REPO_ROOT.resolve()),
             "created_at": now, "expires_at": now + MANIFEST_LIFETIME_S,
             "manifest": manifest, "manifest_sha256": manifest_digest(manifest),
-            "public": public,
+            "public": public, "organization": organization,
         })
         session.save()
         return session
@@ -270,6 +271,9 @@ class SetupSession:
                 and bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", data["repo"]))
                 and Path(data["key_file"]).is_absolute()
                 and type(data.get("public", False)) is bool
+                and (data.get("organization") is None or bool(
+                    isinstance(data["organization"], str)
+                    and re.fullmatch(r"[A-Za-z0-9-]+", data["organization"])))
                 and data["manifest"] == build_manifest(data["base_url"], data["port"], data["name"],
                                                        data.get("public", False))
                 and manifest_digest(data["manifest"]) == data["manifest_sha256"]
@@ -536,7 +540,7 @@ _PAGE_CSS = (
 )
 
 
-def start_page(manifest: dict, state: str) -> bytes:
+def start_page(manifest: dict, state: str, organization: str | None = None) -> bytes:
     """A page whose only job is to POST the manifest to GitHub.
 
     It has to be a POST (the manifest travels in a form field, not a query string), so
@@ -544,13 +548,16 @@ def start_page(manifest: dict, state: str) -> bytes:
     a browser that blocks the scripted submit.
     """
     body = html.escape(json.dumps(manifest), quote=True)
+    # An organization repository needs an organization-owned App: a private App
+    # owned by a person can only be installed on that person's own account.
+    owner_path = f"organizations/{quote(organization, safe='')}/" if organization else ""
     return (
         "<!doctype html><meta charset=utf-8><title>Create the workshop GitHub App</title>"
         f"<style>{_PAGE_CSS}</style>"
         "<h1>Creating your GitHub App</h1>"
         "<p>On GitHub, confirm the App name and choose <strong>Create GitHub App</strong>. "
         "Then review its permissions and select your workshop repository when you install it.</p>"
-        f'<form id="f" method="post" action="https://github.com/settings/apps/new?state={quote(state, safe="")}">'
+        f'<form id="f" method="post" action="https://github.com/{owner_path}settings/apps/new?state={quote(state, safe="")}">'
         f'<input type="hidden" name="manifest" value=\'{body}\'>'
         '<button type="submit">Continue to GitHub</button></form>'
         "<script>document.getElementById('f').submit()</script>"
@@ -594,7 +601,8 @@ class Handler(BaseHTTPRequestHandler):
                     "<code>--key-file</code>. If you never chose Create GitHub App, stop the "
                     "terminal helper and run it with <code>--restart</code>.</p>"))
             else:
-                self._send(200, start_page(session.data["manifest"], session.data["state"]))
+                self._send(200, start_page(session.data["manifest"], session.data["state"],
+                                           session.data.get("organization")))
             return
         # Accept code-server's stripped and unstripped paths, not arbitrary paths
         # whose final component happens to be "callback".
@@ -728,6 +736,31 @@ def wait_for_installation(app_id: str, pem: str, expect_owner: str | None) -> st
     raise AssertionError("unreachable")
 
 
+def github_owner_type(owner: str) -> str | None:
+    """'Organization' or 'User' from GitHub's public profile; None when GitHub cannot say."""
+    try:
+        request = urllib.request.Request(
+            f"{GITHUB_API}/users/{quote(owner, safe='')}",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "agentcore-workshop"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            kind = json.loads(response.read(65536)).get("type")
+    except Exception:  # noqa: BLE001 (offline or rate-limited: fall back to a personal App)
+        return None
+    return kind if kind in ("Organization", "User") else None
+
+
+def organization_for(repo: str) -> str | None:
+    """The organization that must own the App, after telling the attendee what that needs."""
+    owner = repo.split("/")[0]
+    if github_owner_type(owner) != "Organization":
+        return None
+    print(f"\n{owner} is a GitHub organization, so the App will be registered by that")
+    print("organization. That needs an organization owner or GitHub App manager. If you")
+    print("are not one, press Ctrl+C and create the workshop repository under your")
+    print("personal account instead (recommended for the workshop).")
+    return owner
+
+
 def saved_summary() -> str:
     """A best-effort ' for owner/repo (App 'name')' for a checkpoint that may be foreign."""
     try:
@@ -849,7 +882,8 @@ def main(argv: list[str] | None = None) -> int:
                     if args.restart:
                         abandon_unfinished_setup()
                     session = SetupSession.create(
-                        base_url, port or 8765, repo, key_override or DEFAULT_KEY_PATH, args.public)
+                        base_url, port or 8765, repo, key_override or DEFAULT_KEY_PATH, args.public,
+                        organization_for(repo))
                 key_path, repo = Path(session.data["key_file"]), session.data["repo"]
                 if session.data["phase"] in {"converted", "complete"}:
                     created = session.credentials()

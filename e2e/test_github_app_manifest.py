@@ -51,6 +51,7 @@ def _isolate(module, root, monkeypatch):
         pytest.fail("Unexpected GitHub request in an offline test")
 
     monkeypatch.setattr(module, "github", forbidden)
+    monkeypatch.setattr(module, "github_owner_type", lambda owner: None)
     return module
 
 
@@ -758,3 +759,22 @@ def test_key_file_is_discovered_and_a_shared_key_names_chmod(module, tmp_path, m
     assert module.discover_key_file() == key.resolve()
     with pytest.raises(module.SetupError, match="chmod 600"):
         module.read_key(key)
+
+
+def test_an_organization_repository_registers_an_organization_app(module, monkeypatch, capsys):
+    monkeypatch.setattr(module, "github_owner_type", lambda owner: "Organization")
+    monkeypatch.setattr(module, "wait_for_callback",
+                        lambda new, resuming: pytest.fail("stop after the checkpoint"))
+    with pytest.raises(BaseException):
+        module.main(["--repo", "acme/workshop"])
+    saved = module.SetupSession.load().data
+    assert saved["organization"] == "acme"
+    assert b"github.com/organizations/acme/settings/apps/new" in module.start_page(
+        saved["manifest"], saved["state"], saved["organization"])
+    assert "organization owner" in capsys.readouterr().out
+
+
+def test_a_personal_or_unknown_owner_keeps_the_personal_registration_page(module):
+    assert module.organization_for("octocat/workshop") is None
+    page = module.start_page(module.build_manifest(BASE, 8765, "n"), "s" * 24)
+    assert b"https://github.com/settings/apps/new?state=" in page
