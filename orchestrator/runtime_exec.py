@@ -37,6 +37,7 @@ import uuid
 from typing import Any, Callable
 
 import roles as _roles
+from pty_typing import typeable
 
 # Strip the VT/ANSI noise the PTY interleaves with output so sentinel lines
 # compare cleanly. In order: OSC (ESC ] … BEL/ST, set-title etc.); CSI (ESC [,
@@ -589,7 +590,7 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
         # both with zero output) until killed by hand. A run that hangs reports no
         # verdict at all, which is worse than any red gate, so the wall clock -- not
         # the peer -- has to decide when to give up.
-        await asyncio.wait_for(shell.send(command),
+        await asyncio.wait_for(shell.send(typeable(command)),
                                timeout=max(1.0, deadline - time.monotonic()))
         frames = shell.__aiter__()
         pending = ""   # the half line a frame boundary cut in two

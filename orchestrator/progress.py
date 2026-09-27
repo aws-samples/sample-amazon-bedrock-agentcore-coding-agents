@@ -103,7 +103,7 @@ CMD_KIRO_KEY = [
     "import kiro_config",
     "",
     "result = kiro_config.save_api_key(getpass.getpass(\"Kiro API key (hidden): \"))",
-    "print(json.dumps(result, indent=2))",
+    "print(json.dumps(result, indent=2, ensure_ascii=False))",
     "raise SystemExit(1 if result.get(\"error\") else 0)",
     "PY",
 ]

@@ -30,6 +30,7 @@ from typing import Any
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO, "orchestrator"))
+from pty_typing import typeable  # noqa: E402
 
 REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
 
@@ -192,7 +193,7 @@ class RuntimeShellSession:
             # a manually opened terminal uses the ordinary image launcher.
             launch = (self._launch_command
                       or _AGENT_LAUNCH.get(self.agent_id, "/bin/bash\n"))
-            await shell.send(launch.rstrip("\n") + "\n")
+            await shell.send(typeable(launch))
 
             async for frame in shell:
                 if frame.channel == ShellChannel.STDOUT:
