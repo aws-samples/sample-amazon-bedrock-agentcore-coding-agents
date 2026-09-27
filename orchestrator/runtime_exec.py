@@ -27,6 +27,7 @@ keeping the engine's threading model unchanged.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -153,9 +154,14 @@ class RoleTurnLimitError(RoleExecutionError):
 _CLAUDE_TURN_LIMIT_RE = re.compile(r"Error: Reached max turns \(([1-9][0-9]*)\)")
 
 
+# Only the CLI's own API error line counts. The transcript also carries the prompt
+# and, in the console's PTY, whatever the TUI showed (edit diffs included): a
+# generic "daily limit ... exceeded" pattern matched a participant's feature
+# ("once the daily limit is exceeded the API returns 429") and discarded a
+# successful build as MODEL_QUOTA_EXHAUSTED.
 _DAILY_MODEL_QUOTA_RE = re.compile(
-    r"too many tokens per day|daily (?:token )?(?:allowance|limit|quota).*(?:exceed|spent)",
-    re.IGNORECASE,
+    r"^\W*API Error:[^\n]*\b429\b[^\n]*too many tokens per day",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -192,26 +198,37 @@ def _client(region: str):
     return AgentCoreRuntimeClient(region=region)
 
 
-def dispatch_env(agent_id: str, run_subdir: str) -> dict[str, str]:
-    """The telemetry + identity + correlation env for a dispatched build.
+def _dispatch_env(role: "_roles.Role", region: str, run_subdir: str, agent_id: str,
+                  model: str, extra: dict[str, str] | None = None) -> tuple[dict[str, str], Any]:
+    """The environment every dispatched turn starts with, and the caller's identity.
 
-    The bounded headless shell receives it at launch so every build emits
-    attributed telemetry through the collector sidecar.
+    One copy for both the headless and the console-muxed dispatch (they had drifted):
+    the Runtime's own region, the role's registry env and telemetry env, the model
+    override for a CLI that reads it from the environment (``model_env``), the
+    authenticated submitter's attribution and telemetry labels, and the run.id /
+    agent.id correlation, merged (never overwritten) so the identity stamp survives.
+    Every role of one run carries the same run.id, so one Logs Insights query can
+    group a task's cost across the fleet although the CLIs share no trace tree.
     """
-    env = dict(_role(agent_id).telemetry_env)
+    env = {"AWS_REGION": region, "AWS_DEFAULT_REGION": region,
+           **(extra or {}), **role.env, **role.telemetry_env}
+    if role.model_env and model:
+        env[role.model_env] = model
+    identity = None
     try:
         from identity_baggage import get_current_identity
         identity = get_current_identity()
         if identity is not None and not identity.is_anonymous():
+            env.update(identity.to_env())
+            # Carry the known submitter into exported request events.
             env.update(identity.to_otel_env())
     except Exception:
-        pass
+        identity = None
     run_id = run_subdir.split("/", 1)[0]
-    _corr = f"run.id={run_id},agent.id={agent_id}"
-    _existing_res = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
-    env["OTEL_RESOURCE_ATTRIBUTES"] = (
-        f"{_existing_res},{_corr}" if _existing_res else _corr)
-    return env
+    corr = f"run.id={run_id},agent.id={agent_id}"
+    existing = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    env["OTEL_RESOURCE_ATTRIBUTES"] = f"{existing},{corr}" if existing else corr
+    return env, identity
 
 
 def _vault_key_prelude(role: "_roles.Role", region: str) -> str:
@@ -277,7 +294,7 @@ def _vault_key_prelude(role: "_roles.Role", region: str) -> str:
         f'{key_env}="$({fetch_command})"; '
         f"export {key_env}; "
         f"if [ -z \"${key_env}\" ]; then "
-        f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Store the key with kiro_config.save_api_key(...) (console Settings > AgentCore runtimes > + Add API key) and re-run.')} >&2; "
+        f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Save it with the hidden key prompt in Lab 1, Put All Three Agents on Runtime, step 2 (Agent Studio: Settings > Kiro access); no redeploy is needed, then submit again.')} >&2; "
         "exit 1; fi; "
     )
 
@@ -321,32 +338,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     # Responses provider. There is no Mantle-region override.
     cli_region = region
     role = _role(agent_id)
-    env = {"AWS_REGION": cli_region, "AWS_DEFAULT_REGION": cli_region,
-           **role.env, **role.telemetry_env}
-    # A CLI that reads its model from the environment says so in the registry
-    # (model_env), so an override reaches it without this file knowing which CLI.
-    if role.model_env and model:
-        env[role.model_env] = model
-    # Propagate authenticated run attribution metadata into the runtime.
-    identity = None
-    try:
-        from identity_baggage import get_current_identity
-        identity = get_current_identity()
-        if identity is not None and not identity.is_anonymous():
-            env.update(identity.to_env())
-            # Carry the known submitter into exported request events.
-            env.update(identity.to_otel_env())
-    except Exception:
-        identity = None
-    # Task correlation: every role of one run carries the same run.id (and its
-    # own agent.id), so one Logs Insights query can group a single task's cost
-    # across the fleet even though the CLIs cannot join a shared trace tree.
-    # Merged (never overwritten) so the identity stamp above survives intact.
-    run_id = run_subdir.split("/", 1)[0]
-    _corr = f"run.id={run_id},agent.id={agent_id}"
-    _existing_res = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
-    env["OTEL_RESOURCE_ATTRIBUTES"] = (
-        f"{_existing_res},{_corr}" if _existing_res else _corr)
+    env, identity = _dispatch_env(role, cli_region, run_subdir, agent_id, model)
     env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
     cli = _cli_invocation(agent_id, "P", model, workdir)
 
@@ -407,10 +399,15 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
             "fi; "
         )
 
+    # The command is TYPED into an interactive Runtime shell, so the prompt crosses
+    # readline as keystrokes: a tab in the participant's text was completed against
+    # /app filenames, CRLF doubled, and a Ctrl-C byte ran the rest as shell. base64
+    # has none of those bytes, so the CLI receives the participant's words exactly.
+    encoded = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
     # CLI and hydration errors may end stdout or stderr without a newline.
     # Start the end marker on a new line so _slice can recognize it after merging.
     return (
-        f"P={shlex.quote(prompt)}; "
+        f'P="$(printf %s {encoded} | base64 -d)"; '
         f"B1={_RUN_BEGIN}-{nonce}; E1={_RUN_END}-{nonce}; "
         f'echo "$B1"; '
         f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)} "
@@ -482,28 +479,10 @@ def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
     branch = worktree_branch(run_subdir)
     role = _role(agent_id)
 
-    env = {"AWS_REGION": region, "AWS_DEFAULT_REGION": region,
-           "WORKSHOP_AGENT_WORKDIR": workdir,
-           **role.env, **role.telemetry_env}
-    if role.model_env and model:
-        env[role.model_env] = model
-
-    identity = None
-    user_id = "unknown"
-    try:
-        from identity_baggage import get_current_identity
-        identity = get_current_identity()
-        if identity is not None and not identity.is_anonymous():
-            user_id = identity.user_id
-            env.update(identity.to_env())
-            env.update(identity.to_otel_env())
-    except Exception:
-        identity = None
-
-    run_id = run_subdir.split("/", 1)[0]
-    corr = f"run.id={run_id},agent.id={agent_id}"
-    existing = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
-    env["OTEL_RESOURCE_ATTRIBUTES"] = f"{existing},{corr}" if existing else corr
+    env, identity = _dispatch_env(role, region, run_subdir, agent_id, model,
+                                  extra={"WORKSHOP_AGENT_WORKDIR": workdir})
+    user_id = (identity.user_id if identity is not None and not identity.is_anonymous()
+               else "unknown")
     env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
     # Fetch a vendor key under the Runtime role BEFORE the optional per-user role

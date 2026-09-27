@@ -60,6 +60,8 @@ if name == os.environ["PLATFORM_FAIL_AT"]:
     raise SystemExit(37)
 if name == "runtime_deploy.py":
     os.execv(sys.executable, [sys.executable, "-B", *args])
+elif name == "-c" and "normalize_repo" in args[1]:
+    print("OK " + os.environ["GITHUB_REPO_RAW"])
 elif name == "-c":
     assert "from roles import roster_ids" in args[1]
     print("claude-code")
@@ -94,7 +96,10 @@ elif name not in ("setup.sh", "deploy.py", "stage_engine.py", "configure_deploy.
         env["WORKSHOP_RUNTIME_PLATFORM_VERSION"] = platform
     result = subprocess.run(["bash", str(script), *arguments], cwd=checkout,
                             env=env, capture_output=True, text=True, timeout=20)
-    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    # Read-only configuration checks (`python3 -c ...`, such as the repository
+    # normalization) are not deployment children; the order below is about those.
+    commands = [row for row in (json.loads(line) for line in log.read_text().splitlines())
+                if row["name"] != "-c" or "roster_ids" in " ".join(row["args"])]
     return result, commands
 
 

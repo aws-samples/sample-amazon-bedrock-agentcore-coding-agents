@@ -626,3 +626,31 @@ def test_the_provisioning_side_and_the_dispatch_name_one_provider(monkeypatch):
     assert "renamed-kiro-workload" in cmd
     assert roles.get("kiro").vault_names() == (
         "renamed-kiro-workload", "renamed-kiro-key")
+
+
+def test_the_prompt_crosses_the_typed_shell_as_base64_so_every_byte_survives(monkeypatch):
+    """The command is typed into an interactive Runtime shell. Quoted text there went
+    through readline: tabs completed filenames, CRLF doubled, and a Ctrl-C byte ran
+    the rest of the request as shell."""
+    import base64
+    import identity_baggage
+    identity_baggage.set_current_identity(identity_baggage.ANONYMOUS)
+    monkeypatch.delenv("PERUSER_ROLE_ARN", raising=False)
+    prompt = "keep\ttabs\r\nand 한글 🐌 and \x03 then `ls` $(rm -rf /)"
+    cmd = runtime_exec._build_command(
+        "claude-code", prompt, "run_test_001", "deliverable/out.md",
+        "", "us-west-2", "cafe12345678")
+    encoded = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
+    assert f'P="$(printf %s {encoded} | base64 -d)";' in cmd
+    assert "\t" not in cmd and "\x03" not in cmd and "한글" not in cmd
+
+
+@pytest.mark.parametrize("text,quota", [
+    ("API Error: Request rejected (429) - Too many tokens per day, please wait", True),
+    ("  ⎿  API Error: 429 Too many tokens per day", True),
+    ("Summary: once the daily limit is exceeded the API returns 429", False),
+    ("+    error: 'Daily limit exceeded'", False),
+    ("Add a banner that says too many tokens per day", False),
+])
+def test_only_the_clis_own_429_line_means_the_quota_is_spent(text, quota):
+    assert runtime_exec.model_quota_exhausted(text) is quota

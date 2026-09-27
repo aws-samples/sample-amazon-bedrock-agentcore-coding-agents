@@ -358,6 +358,7 @@ def test_stack_bucket_reaches_coordinator_archives_and_state_reader(
     import runtime_stage
 
     monkeypatch.delenv("WORKSHOP_RUNTIME_BUCKET", raising=False)
+    monkeypatch.delenv("WORKSHOP_RUN_MIRROR_DISCOVERY", raising=False)
     monkeypatch.setenv("WORKSHOP_BEDROCK_REGION", "us-west-2")
     monkeypatch.setattr(runtime_stage, "_SOURCE_ROOT", tmp_path)
     monkeypatch.setattr(runtime_stage, "_account_id", lambda region: "123456789012")

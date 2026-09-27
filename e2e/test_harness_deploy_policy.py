@@ -307,16 +307,46 @@ def test_every_harness_cleanup_deletes_its_ecr_repository():
     Assert it for EVERY role with a cleanup.py, hidden ones included, so a future
     roster swap cannot re-expose the same gap.
     """
+    shared = (_CODING_AGENTS / "role_cleanup.py").read_text(encoding="utf-8")
+    assert 'client("ecr")' in shared and "delete_repository(" in shared, (
+        "coding-agents/role_cleanup.py must delete the role's ECR repository; the "
+        "image keeps billing after teardown otherwise.")
     for role in _HARNESS_ROLES:
         cleanup = _CODING_AGENTS / role / "cleanup.py"
         if not cleanup.exists():
             continue
         body = cleanup.read_text(encoding="utf-8")
-        assert 'client("ecr")' in body, (
-            f"coding-agents/{role}/cleanup.py never creates an ECR client, so it "
-            f"cannot delete coding-agents-{role}; the image keeps billing after "
-            f"teardown.")
-        assert "delete_repository(" in body, (
-            f"coding-agents/{role}/cleanup.py does not call ecr.delete_repository, so "
-            f"the coding-agents-{role} repo (an arm64 image) survives the documented "
-            f"cleanup and keeps billing.")
+        assert "role_cleanup.cleanup(SCRIPT_DIR" in body, (
+            f"coding-agents/{role}/cleanup.py does not run the shared teardown, so "
+            f"its Runtime, IAM role, or coding-agents-{role} repo can survive cleanup.")
+
+
+def test_cleanup_deletes_a_prebuilt_image_that_never_got_a_runtime(tmp_path, monkeypatch):
+    """The stack pre-builds claude-code-validator's image as a restore path but never
+    deploys its Runtime. The old copies exited at "no runtime_config.json" and left the
+    repository billing; the shared teardown finds it from agent.config."""
+    import sys
+    sys.path.insert(0, str(_CODING_AGENTS))
+    import role_cleanup
+
+    calls = []
+
+    class Client:
+        exceptions = type("E", (), {"NoSuchEntityException": KeyError,
+                                    "RepositoryNotFoundException": LookupError})
+
+        def __getattr__(self, name):
+            return lambda **kw: calls.append((name, kw)) or {"PolicyNames": []}
+
+    monkeypatch.setattr(role_cleanup.boto3, "Session",
+                        lambda region_name: type("S", (), {"client": lambda self, n: Client()})())
+    role = tmp_path / "claude-code-validator"
+    role.mkdir()
+    (role / "agent.config").write_text(
+        "AGENT_NAME=claude_code_validator\nECR_REPO=coding-agents-claude-code-validator\n")
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    assert role_cleanup.cleanup(str(role)) == 0
+    assert ("delete_repository", {"repositoryName": "coding-agents-claude-code-validator",
+                                  "force": True}) in calls
+    assert not any(name == "delete_agent_runtime" for name, _ in calls)
+    assert not (role / "agent.config").exists()

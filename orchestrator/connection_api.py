@@ -28,6 +28,8 @@ HTTP layer does not change.
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 import os
 import re
@@ -67,12 +69,49 @@ ENGINE = Engine()
 # engine would create runs the console could never see.
 _chat.use_engine(ENGINE)
 
-# Per-conversation Strands message history, so the chatbot has multi-turn memory
-# (question → answer → question) across stateless HTTP calls. Keyed by the
-# conversation id the console sends; trimmed to a sane cap per conversation.
-_CONVERSATIONS: dict[str, list] = {}
+# Per-conversation state across stateless HTTP calls: the Strands message history
+# (the model's multi-turn memory) and the request ledger (the participant's unbuilt
+# turns and the builds this conversation started, which the model's trimmed window
+# cannot lose). Keyed by the signed-in user AND the conversation id, so a teammate
+# signing in on the same browser cannot continue someone else's conversation.
+_CONVERSATIONS: dict[Any, list] = {}
+_LEDGERS: dict[Any, "_chat.RequestLedger"] = {}
+_BUSY: dict[Any, Any] = {}
 _CONV_LOCK = __import__("threading").Lock()
 _MAX_TURNS = 40  # messages retained per conversation (user+assistant entries)
+
+
+def _conversation_key(conversation_id: str, user_identity: dict | None) -> Any:
+    who = ""
+    if isinstance(user_identity, dict):
+        who = str(user_identity.get("user_id") or user_identity.get("user_email") or "")
+    return (who, conversation_id) if who else conversation_id
+
+
+def _starts_a_turn(message: Any) -> bool:
+    blocks = message.get("content") if isinstance(message, dict) else None
+    return (isinstance(message, dict) and message.get("role") == "user"
+            and isinstance(blocks, list)
+            and not any(isinstance(b, dict) and "toolResult" in b for b in blocks))
+
+
+def _trim_history(messages: list, limit: int = _MAX_TURNS) -> list:
+    """The newest window that still starts with a participant message.
+
+    A plain ``[-40:]`` slice of a tool-heavy turn could start with an assistant tool
+    call or a tool result, which Bedrock rejects for every later turn.
+    """
+    messages = list(messages)
+    window = messages[-limit:]
+    while window and not _starts_a_turn(window[0]):
+        window.pop(0)
+    if window or not messages:
+        return window
+    # One tool-heavy turn longer than the limit: keep that whole turn (bounded)
+    # rather than saving nothing, which wiped the model's memory and showed a
+    # false "Agent Studio restarted" notice on the next message.
+    starts = [i for i, message in enumerate(messages) if _starts_a_turn(message)]
+    return messages[starts[-1]:][-limit * 4:] if starts else []
 
 # Only public evidence crosses the HTTP boundary. The durable snapshot also
 # contains private dispatch options and identity fields. History exposes only
@@ -103,9 +142,11 @@ def _history_view(saved: dict) -> dict:
         view.update(
             status="needs_human", fail_reason=reason,
             next_action=next_action("needs_human", reason, saved.get("pr"),
-                                    saved.get("pr_url"), saved.get("role_prs")),
+                                    saved.get("pr_url"), saved.get("role_prs"),
+                                    work_items=saved.get("work_items")),
             resubmission_allowed=resubmission_allowed(
-                "needs_human", reason, saved.get("role_prs")),
+                "needs_human", reason, saved.get("role_prs"),
+                work_items=saved.get("work_items")),
         )
     return view
 
@@ -137,7 +178,8 @@ def _history_response(run_id: str, resource: str) -> tuple[int, dict]:
 
 
 def chat_stream(conversation_id: str, prompt: str, model_id: str | None = None,
-                attachments: list | None = None, user_identity: dict | None = None):
+                attachments: list | None = None, user_identity: dict | None = None,
+                cancel=None):
     """Drive one chat turn of the orchestrator agent and yield JSON-able
     events for the console to stream as SSE:
 
@@ -157,19 +199,47 @@ def chat_stream(conversation_id: str, prompt: str, model_id: str | None = None,
         from identity_baggage import UserIdentity, set_current_identity
         set_current_identity(UserIdentity.from_dict(user_identity))
 
+    key = _conversation_key(conversation_id, user_identity)
     with _CONV_LOCK:
-        history = list(_CONVERSATIONS.get(conversation_id, []))
+        history = list(_CONVERSATIONS.get(key, []))
+        ledger = _LEDGERS.setdefault(key, _chat.RequestLedger())
+        busy = _BUSY.setdefault(key, __import__("threading").Lock())
+    if not busy.acquire(blocking=False):
+        # Two tabs (or a double submit) on one conversation would each read the same
+        # history and overwrite the other's turn, and both could dispatch.
+        yield {"type": "error", "error": "This conversation is still answering an "
+               "earlier message (perhaps in another tab). Wait for it to finish."}
+        yield {"type": "done"}
+        return
+    runs_before = set(ledger.runs)
     last_messages = None
-    for ev in _chat.stream_chat(prompt, model_id=model_id, messages=history,
-                                attachments=attachments):
-        if ev.get("type") == "done":
-            last_messages = ev.get("messages")
-            continue
-        yield ev
-    if last_messages is not None:
+    try:
+        for ev in _chat.stream_chat(prompt, model_id=model_id, messages=history,
+                                    attachments=attachments, ledger=ledger, cancel=cancel):
+            if ev.get("type") == "done":
+                last_messages = ev.get("messages")
+                continue
+            yield ev
+    finally:
+        # Save the turn even when the browser disconnected or the model failed. A
+        # half-finished turn is recorded as the participant's message plus a short
+        # note (keeping the roles alternating), including any build it started, so
+        # the next "go" cannot start the same build again.
+        started = [run for run in ledger.runs if run not in runs_before]
+        if last_messages is None or not last_messages or not isinstance(last_messages[-1], dict) \
+                or last_messages[-1].get("role") != "assistant":
+            note = "(This turn was interrupted before it finished"
+            note += (f"; it started run {', '.join(started)}." if started else ".")
+            note += ")"
+            last_messages = history + [
+                {"role": "user", "content": [{"text": prompt or "(attachment only)"}]},
+                {"role": "assistant", "content": [{"text": note}]}]
         with _CONV_LOCK:
-            _CONVERSATIONS[conversation_id] = last_messages[-_MAX_TURNS:]
-    yield {"type": "done"}
+            _CONVERSATIONS[key] = _trim_history(last_messages)
+        busy.release()
+    # False after a console restart (memory is per process): the UI tells the
+    # participant their earlier messages are not remembered.
+    yield {"type": "done", "server_history": bool(history)}
 
 
 def _reconcile_loop() -> None:
@@ -339,9 +409,10 @@ def dispatch(method: str, path: str, body: dict | None,
                 "merge_state": run.merge_state,
                 "next_action": next_action(
                     run.status, run.fail_reason, run.pr, run.pr_url,
-                    run.role_prs),
+                    run.role_prs, work_items=run.work_items),
                 "resubmission_allowed": resubmission_allowed(
-                    run.status, run.fail_reason, run.role_prs),
+                    run.status, run.fail_reason, run.role_prs,
+                    work_items=run.work_items),
             })
             return 200, out
         return 404, {"error": "not found", "path": path}
@@ -350,6 +421,11 @@ def dispatch(method: str, path: str, body: dict | None,
         if path == "/api/runs":
             if body is None:
                 return 400, {"error": "invalid JSON body"}
+            task_text = body.get("task") or ""
+            if len(task_text.encode("utf-8")) > _chat._request.MAX_EFFECTIVE_TASK_BYTES:
+                # Same bound as Chat: the task reaches the CLI as one argument and the
+                # check as one environment variable, both under a 128 KiB kernel limit.
+                return 413, {"error": "REQUEST_TOO_LARGE_TO_BUILD"}
             run = ENGINE.submit(
                 task=body.get("task") or "",
                 # agents omitted -> the ROUTER decides which roles dispatch;
@@ -386,7 +462,7 @@ def dispatch(method: str, path: str, body: dict | None,
                 return 400, {"error": "invalid JSON body"}
             if body.get("clear"):
                 return 200, kiro_config.clear_api_key()
-            out = kiro_config.save_api_key(body.get("api_key", ""))
+            out = kiro_config.save_api_key(body.get("api_key", ""), allow_empty=True)
             return (400, out) if "error" in out else (200, out)
         if path == "/api/runtimes":
             # Wire (or unwire) a role's deployed AgentCore runtime ARN. The same

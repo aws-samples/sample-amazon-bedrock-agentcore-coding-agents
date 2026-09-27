@@ -9,6 +9,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = ROOT / "coding-agents" / "gateway_mcp"
@@ -101,11 +103,29 @@ def test_opencode_config_writer_preserves_session_telemetry(tmp_path):
 
 
 def test_served_role_connectors_do_not_block_on_stdin_on_exit():
-    """Closing a Runtime TUI must not leave an executor thread blocking process exit."""
+    """Closing a Runtime TUI must not leave an executor thread blocking process exit.
+
+    The shell plumbing is shared (coding-agents/runtime_connect.py); every role's
+    connector must go through it rather than carry its own stdin loop."""
+    shared = (ROOT / "coding-agents" / "runtime_connect.py").read_text()
+    assert "loop.add_reader(stdin_fd, on_stdin_ready)" in shared
+    assert "run_in_executor(None, os.read" not in shared
     for role in ("claude-code", "codex", "kiro", "opencode", "claude-code-validator"):
         connector = (ROOT / "coding-agents" / role / "connect.py").read_text()
-        assert "loop.add_reader(stdin_fd, on_stdin_ready)" in connector
+        assert "import runtime_connect" in connector and "runtime_connect.main(" in connector
         assert "run_in_executor(None, os.read" not in connector
+        # The region comes from the Runtime ARN, never a literal default.
+        assert "us-west-2" not in connector and "AWS_REGION" not in connector
+
+
+def test_connectors_take_the_region_from_the_runtime_arn():
+    import sys
+    sys.path.insert(0, str(ROOT / "coding-agents"))
+    runtime_connect = pytest.importorskip("runtime_connect")
+    assert runtime_connect.runtime_region(
+        "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/rt") == "us-east-1"
+    with pytest.raises(SystemExit):
+        runtime_connect.runtime_region("rt-not-an-arn")
 
 
 def test_runtime_mcp_endpoint_uses_encoded_full_arn(tmp_path):

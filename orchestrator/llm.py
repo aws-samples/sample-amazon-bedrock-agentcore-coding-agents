@@ -247,22 +247,3 @@ def _invoke_openai(model_id: str, prompt: str, system: str | None,
     return {"text": "".join(pieces), "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
             "model_id": resp.get("model", model_id), "api": "responses"}
-
-
-def extract_code_block(text: str, language: str = "") -> str:
-    """Pull the first fenced code block out of a model reply (or the raw text).
-
-    Models wrap files in ```lang fences; the engine wants the file body. If no
-    fence is present the reply IS the file (system prompts ask for raw output).
-    """
-    fence = "```"
-    start = text.find(fence)
-    if start == -1:
-        return text.strip()
-    nl = text.find("\n", start)
-    if nl == -1:
-        return text.strip()
-    end = text.find(fence, nl)
-    if end == -1:
-        return text[nl + 1:].strip()
-    return text[nl + 1:end].strip()

@@ -211,6 +211,9 @@ def test_checkout_brings_the_merged_default_branch_to_a_box_that_holds_no_token(
         raise AssertionError(f"unexpected {tool}")
 
     _fake_gateway(monkeypatch, handler)
+    import workshop_urls
+    monkeypatch.setattr(workshop_urls, "public_base_url",
+                        lambda timeout=10: "https://d1234abcd.cloudfront.net")
     destination = tmp_path / "play"
     rc = github._main(["checkout", str(destination)])
     out = capsys.readouterr().out
@@ -223,6 +226,72 @@ def test_checkout_brings_the_merged_default_branch_to_a_box_that_holds_no_token(
     calls.clear()
     assert github._main(["checkout"]) == 2
     assert calls == []
+
+
+def _checkout_fixture(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
+
+    def handler(method, tool, args):
+        if tool == "get_repository":
+            return {"default_branch": "main"}
+        if tool == "get_branch_head":
+            return "def456"
+        if tool == "get_repository_archive":
+            return {"archive_base64": _archive({"README.md": b"# game\n"})}
+        raise AssertionError(f"unexpected {tool}")
+
+    _fake_gateway(monkeypatch, handler)
+    import workshop_urls
+    monkeypatch.setattr(workshop_urls, "public_base_url",
+                        lambda timeout=10: "https://d1234abcd.cloudfront.net")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return workshop_urls
+
+
+def test_checkout_prints_the_finished_play_url_for_the_page_port(
+        monkeypatch, tmp_path, capsys):
+    """September 25: attendees assembled `<VS Code origin>/proxy/8000/` by hand and got a
+    login page, a missing slash, or nothing listening. The stack publishes the origin,
+    so the checkout names the URL. ~/game plays on 8000 (Lab 2); ~/game-lab3 on 8001
+    (Lab 3), beside the original."""
+    _checkout_fixture(monkeypatch, tmp_path)
+    assert github._main(["checkout", str(tmp_path / "game")]) == 0
+    out = capsys.readouterr().out
+    assert "cd ~/game && claude" in out, out
+    assert "PORT=8000" in out
+    assert "https://d1234abcd.cloudfront.net/proxy/8000/" in out, out
+
+    assert github._main(["checkout", str(tmp_path / "game-lab3")]) == 0
+    out = capsys.readouterr().out
+    assert "cd ~/game-lab3 && claude" in out and "PORT=8001" in out
+    assert "https://d1234abcd.cloudfront.net/proxy/8001/" in out, out
+    assert "/proxy/8000/" not in out
+
+    # Any other name is a separate copy. 8000 and 8001 already serve the pages' games,
+    # so naming either would open the old game or fail to bind: no URL, a free port.
+    assert github._main(["checkout", str(tmp_path / "game-updated")]) == 0
+    out = capsys.readouterr().out
+    assert "/proxy/" not in out and "PORT=" not in out
+    assert "not 8000 or 8001" in out and "workshop_urls.py <port>" in out
+
+
+def test_the_play_hint_never_changes_the_checkout_result(monkeypatch, tmp_path, capsys):
+    """Advisory only: an unresolvable origin still names the path, and a hint that
+    raises is swallowed. The checkout itself and its exit code are unchanged."""
+    workshop_urls = _checkout_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(workshop_urls, "public_base_url", lambda timeout=10: None)
+    assert github._main(["checkout", str(tmp_path / "game")]) == 0
+    out = capsys.readouterr().out
+    assert "/proxy/8000/" in out and "public-base-url" in out, out
+    assert (tmp_path / "game" / "README.md").exists()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("ssm exploded")
+
+    monkeypatch.setattr(workshop_urls, "play_hint", boom)
+    assert github._main(["checkout", str(tmp_path / "game")]) == 0
+    out = capsys.readouterr().out
+    assert "1 file(s)" in out and "ssm exploded" not in out
 
 
 def test_prepare_run_base_fails_before_any_agent_work_without_a_gateway(
@@ -528,3 +597,38 @@ def test_a_refused_merge_blocks_only_its_own_pull_request(monkeypatch, tmp_path)
             "a refused merge restarted the build loop instead of reporting")
     finally:
         instance.shutdown()
+
+
+def test_checkout_never_replaces_the_workshop_clone_or_a_folder_it_did_not_create(
+        monkeypatch, tmp_path, capsys):
+    """`checkout .` from the clone deleted the whole clone, private key included, and
+    reported success. Checkout replaces its destination, so it now refuses anything
+    but a new folder, an earlier checkout, or a folder of starter files."""
+    _checkout_fixture(monkeypatch, tmp_path)
+    clone = os.path.dirname(os.path.dirname(os.path.abspath(github.__file__)))
+    for target in (clone, os.path.dirname(clone), os.path.join(clone, "orchestrator"),
+                   os.path.expanduser("~"), os.sep):
+        assert github._main(["checkout", target]) == 1
+        assert "nothing was changed" in capsys.readouterr().out
+    assert os.path.isdir(os.path.join(clone, "orchestrator"))
+
+    mine = tmp_path / "my-notes"
+    mine.mkdir()
+    (mine / "notes.md").write_text("keep me")
+    assert github._main(["checkout", str(mine)]) == 1
+    assert (mine / "notes.md").read_text() == "keep me"
+
+    starter = tmp_path / "game"
+    starter.mkdir()
+    (starter / "README.md").write_text("# new repository")
+    assert github._main(["checkout", str(starter)]) == 0, "a README-only folder is replaceable"
+    assert (starter / ".workshop-checkout").is_file()
+    assert github._main(["checkout", str(starter)]) == 0, "an earlier checkout is replaceable"
+
+
+def test_checkout_expands_a_quoted_home_path(monkeypatch, tmp_path):
+    _checkout_fixture(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert github._main(["checkout", "~/game"]) == 0
+    assert (tmp_path / "game").is_dir() and not (tmp_path / "~").exists()

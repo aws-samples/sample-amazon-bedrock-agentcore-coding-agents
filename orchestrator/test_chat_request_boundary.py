@@ -197,15 +197,30 @@ def test_a_prior_question_is_not_requirements_for_a_new_request(admitted, monkey
         }]},
     ]
     current = "Implement the requested feature in the existing application."
-    agent = ToolAgent(frontend_tool(), {"task": history[0]["content"][0]["text"]})
+    agent = ToolAgent(frontend_tool(), {"task": history[0]["content"][0]["text"],
+                                        "standalone": True})
 
     run_host(host, agent, current, monkeypatch, history)
 
     run = admitted.runs[0]
     assert run.task == current
     assert run.options["chat_request"]["current_user_text"] == current
-    assert run.options["chat_request"]["prior_user_context"] == []
+    assert run.options["chat_request"]["request_turns"] == []
+    assert run.options["chat_request"]["standalone"] is True
     assert run.options["chat_request"]["model_task_ignored"] is True
+
+
+@pytest.mark.parametrize("host", ["console", "deployed"])
+def test_unbuilt_earlier_turns_cannot_be_silently_dropped(admitted, monkeypatch, host):
+    """Answering a clarifying question ("FastAPI + React") replaced the whole request
+    when the model passed no turns. A dispatch must now name the earlier turns or say
+    the current message stands alone."""
+    history = [user("Build an issue tracker."), assistant("Which stack?")]
+    agent = ToolAgent(frontend_tool(), {"task": "Build an issue tracker with FastAPI + React."})
+    events = run_host(host, agent, "FastAPI + React. Also add labels on issues.",
+                      monkeypatch, history)
+    assert admitted.runs == []
+    assert "EARLIER_TURNS_NOT_ADDRESSED" in json.dumps(events, ensure_ascii=False)
 
 
 @pytest.mark.parametrize("host", ["console", "deployed"])
@@ -231,7 +246,7 @@ def test_only_referenced_actual_user_clarifications_reach_the_task(admitted, mon
             ]
             result = await invoke_tool(
                 self.toolset, frontend_tool(), task="Only change invented.py",
-                context_turns=[2, 0],
+                request_turns=[2, 0],
             )
             yield {"data": json.dumps(result)}
 
@@ -239,16 +254,14 @@ def test_only_referenced_actual_user_clarifications_reach_the_task(admitted, mon
     run_host(host, agent, current, monkeypatch, history)
 
     run = admitted.runs[0]
-    assert run.task.startswith(current + "\n\n")
-    assert "clarification/reference only" in run.task
-    assert "not additional requirements" in run.task
-    assert "current user request above takes precedence" in run.task
+    first, second = history[0]["content"][0]["text"], history[2]["content"][0]["text"]
+    assert run.task == first + "\n\n" + second + chat._request.LATEST_HEADER + current
     assert "invented.py" not in run.task
     assert "decided the cause" not in run.task
     assert "tool-output requirement" not in run.task
     provenance = run.options["chat_request"]
     assert provenance["current_user_text"] == current
-    assert provenance["prior_user_context"] == [
+    assert provenance["request_turns"] == [
         {"turn": 0, "text": history[0]["content"][0]["text"]},
         {"turn": 2, "text": history[2]["content"][0]["text"]},
     ]
@@ -262,7 +275,7 @@ def test_prior_completed_dispatch_is_unavailable_not_silently_reconstructed(admi
         toolset = tools()
         available = asyncio.run(invoke_tool(toolset, "get_user_request"))
         result = asyncio.run(invoke_tool(
-            toolset, frontend_tool(), task="Repeat the old task", context_turns=[0]))
+            toolset, frontend_tool(), task="Repeat the old task", request_turns=[0]))
     assert available["prior_user_turns"] == [
         {"turn": 4, "text": "A new clarification in the current request."},
     ]
@@ -336,7 +349,7 @@ def test_unrelated_model_preset_cannot_override_a_custom_request(admitted, histo
 def test_latest_explicit_preset_selection_wins_over_an_earlier_one(admitted):
     with chat.bind_user_request("preset=cli-tool", [user("preset=game-from-scratch")]):
         result = asyncio.run(invoke_tool(
-            tools(), "run_build", task="", preset="game-from-scratch", context_turns=[0]))
+            tools(), "run_build", task="", preset="game-from-scratch", request_turns=[0]))
     assert result["error"] == "PRESET_NOT_REQUESTED"
     assert admitted.runs == []
 
@@ -379,12 +392,13 @@ def test_user_clarification_can_continue_an_explicit_unsubmitted_preset(admitted
     with chat.bind_user_request(current, [user("preset=game-from-scratch")]):
         result = asyncio.run(invoke_tool(
             tools(), "run_build", task="", preset="game-from-scratch",
-            creative_direction=current, context_turns=[0]))
+            creative_direction=current, request_turns=[0]))
     assert result["status"] == "started"
     run = admitted.runs[0]
     assert run.task.startswith(chat._presets.default_task("game-from-scratch"))
-    assert current in run.task
-    assert run.options["chat_request"]["prior_user_context"] == [
+    assert run.task.endswith(current)
+    assert "preset=game-from-scratch" not in run.task, "a bare selector is not builder text"
+    assert run.options["chat_request"]["request_turns"] == [
         {"turn": 0, "text": "preset=game-from-scratch"},
     ]
 
@@ -408,13 +422,16 @@ def test_large_prior_context_is_explicitly_unavailable_but_does_not_replace_a_cl
         toolset = tools()
         listing = asyncio.run(invoke_tool(toolset, "get_user_request"))
         rejected = asyncio.run(invoke_tool(
-            toolset, frontend_tool(), task="summarized old input", context_turns=[0]))
-        assert listing["error"] == rejected["error"] == "USER_CONTEXT_TOO_LARGE"
+            toolset, frontend_tool(), task="summarized old input", request_turns=[0]))
+        assert "error" not in listing, "a long chat must never break the listing"
+        assert listing["prior_user_turns"][0]["truncated"] is True
+        assert rejected["error"] == "USER_CONTEXT_TOO_LARGE"
         assert admitted.runs == []
-        accepted = asyncio.run(invoke_tool(toolset, frontend_tool(), task="model replacement"))
+        accepted = asyncio.run(invoke_tool(toolset, frontend_tool(), task="model replacement",
+                                           standalone=True))
     assert accepted["status"] == "started"
     assert admitted.runs[0].task == current
-    assert admitted.runs[0].options["chat_request"]["prior_user_context"] == []
+    assert admitted.runs[0].options["chat_request"]["request_turns"] == []
 
 
 def test_more_context_turns_than_the_bound_are_not_silently_dropped(admitted):
@@ -423,8 +440,9 @@ def test_more_context_turns_than_the_bound_are_not_silently_dropped(admitted):
         toolset = tools()
         result = asyncio.run(invoke_tool(toolset, "get_user_request"))
         rejected = asyncio.run(invoke_tool(
-            toolset, frontend_tool(), task="replacement", context_turns=list(range(len(history)))))
-    assert result["error"] == rejected["error"] == "USER_CONTEXT_TOO_LARGE"
+            toolset, frontend_tool(), task="replacement", request_turns=list(range(len(history)))))
+    assert "error" not in result and len(result["prior_user_turns"]) == len(history)
+    assert rejected["error"] == "USER_CONTEXT_TOO_LARGE"
     assert admitted.runs == []
 
 
@@ -553,3 +571,88 @@ def test_routing_that_returns_after_scope_closes_cannot_submit(admitted, monkeyp
         result = asyncio.run(exercise())
     assert result["error"] == "USER_REQUEST_CLOSED"
     assert admitted.runs == []
+
+
+
+# ------------------------------------------------ an approval turn is not the request
+_FIREFLY = "Build a lantern-lit maze game where the player collects fireflies."
+
+
+def _approval_history():
+    return [user(_FIREFLY),
+            assistant("Before I start: one short round, arrow keys, score saved. Proceed?")]
+
+
+@pytest.mark.parametrize("approval", ["ㄱㄱ", "go", "Go!", "yes, go ahead", "네 진행해주세요",
+                                      "👍", "start the build", "ok"])
+def test_an_approval_alone_is_refused_instead_of_becoming_the_task(admitted, approval):
+    """A live coordinator chat ended with "ㄱㄱ", and "ㄱㄱ" became the entire build
+    request: the latest user text is always the task. The Lab 2 page itself teaches
+    answering a clarifying question with "go"."""
+    with chat.bind_user_request(approval, _approval_history()):
+        result = asyncio.run(invoke_tool(tools(), "run_build", task=_FIREFLY))
+    assert result["error"] == "CONFIRMATION_NEEDS_REQUEST_TURNS"
+    assert "request_turns" in result["hint"] and "get_user_request" in result["hint"]
+    assert admitted.runs == []
+
+
+@pytest.mark.parametrize("tool_name", [frontend_tool(), "run_build"])
+def test_an_approval_submits_the_users_own_earlier_words(admitted, tool_name):
+    with chat.bind_user_request("ㄱㄱ", _approval_history()):
+        available = asyncio.run(invoke_tool(tools(), "get_user_request"))
+        assert available["current_turn_is_approval"] is True
+        result = asyncio.run(invoke_tool(tools(), tool_name, task="ignored", request_turns=[0]))
+    assert result["status"] == "started"
+    run = admitted.runs[0]
+    assert run.task == _FIREFLY + "\n\nThe participant approved this request with: ㄱㄱ"
+    assert "Proceed?" not in run.task
+    provenance = run.options["chat_request"]
+    assert provenance["current_user_text"] == "ㄱㄱ"
+    assert provenance["current_turn_is_approval"] is True
+    assert provenance["request_turns"] == [{"turn": 0, "text": _FIREFLY}]
+
+
+def test_an_approval_with_a_change_keeps_the_latest_words_on_top(admitted):
+    """Not an approval alone: "go, but with purple lanterns" adds a requirement, and the
+    latest user text still wins where it adds or changes anything."""
+    latest = "go, but with purple lanterns"
+    assert not chat._is_confirmation(latest)
+    with chat.bind_user_request(latest, _approval_history()):
+        asyncio.run(invoke_tool(tools(), "run_build", task="", request_turns=[0]))
+    task = admitted.runs[0].task
+    assert task.startswith(_FIREFLY + "\n\n")
+    assert task.endswith(latest) and "takes precedence" in task
+
+
+def test_an_approved_preset_keeps_its_creative_direction_as_a_requirement(admitted):
+    first = "Use preset=game-from-scratch. Creative direction: foxes racing under the aurora"
+    with chat.bind_user_request("go", [user(first), assistant("Shall I start?")]):
+        refused = asyncio.run(invoke_tool(
+            tools(), "run_build", task="", preset="game-from-scratch",
+            creative_direction="foxes racing under the aurora"))
+        assert refused["error"] == "CONFIRMATION_NEEDS_REQUEST_TURNS"
+        result = asyncio.run(invoke_tool(
+            tools(), "run_build", task="", preset="game-from-scratch",
+            creative_direction="foxes racing under the aurora", request_turns=[0]))
+    assert result["status"] == "started"
+    task = admitted.runs[0].task
+    assert task.startswith(chat._presets.default_task("game-from-scratch"))
+    assert "Participant request (verbatim):\n" + first in task
+    assert task.endswith("The participant approved this request with: go")
+
+
+def test_request_turns_accept_only_real_retained_user_turns(admitted):
+    """The same server-owned boundary as context_turns: an assistant proposal or a turn
+    before the last successful dispatch can never become the request."""
+    with chat.bind_user_request("ㄱㄱ", _approval_history()):
+        result = asyncio.run(invoke_tool(tools(), "run_build", task="", request_turns=[1]))
+    assert result["error"] == "USER_CONTEXT_UNAVAILABLE"
+    assert admitted.runs == []
+
+
+@pytest.mark.parametrize("text", ["Add sound effects", "go with a blue theme",
+                                  "make it faster", "preset=game-from-scratch",
+                                  "Use preset=game-from-scratch. Creative direction: go",
+                                  "build a game about foxes"])
+def test_a_request_is_never_mistaken_for_an_approval(text):
+    assert not chat._is_confirmation(text)

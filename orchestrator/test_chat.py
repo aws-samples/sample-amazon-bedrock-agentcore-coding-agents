@@ -341,7 +341,9 @@ def test_a_direction_cannot_silently_replace_an_unrelated_custom_task(tmp_path, 
     result = json.loads(_call(
         "run_build", task="an existing custom request", preset="game-from-scratch",
         creative_direction="a different direction"))
-    assert result["error"] == "AMBIGUOUS_PRESET_DIRECTION"
+    # Refused either way: the participant never named the preset (the model's task
+    # argument is ignored, so it cannot make the direction "ambiguous" on its own).
+    assert result["error"] in ("AMBIGUOUS_PRESET_DIRECTION", "PRESET_NOT_REQUESTED")
 
 
 def test_run_build_accepts_any_request_at_all(tmp_path, monkeypatch):

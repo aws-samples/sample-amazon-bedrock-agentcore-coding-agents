@@ -138,18 +138,28 @@ def _provision_vault(api_key: str) -> None:
         client.update_api_key_credential_provider(name=name, apiKey=api_key)
 
 
-def save_api_key(api_key: str) -> dict[str, Any]:
+def save_api_key(api_key: str, *, allow_empty: bool = False) -> dict[str, Any]:
     """Store a pasted Kiro API key in the Token Vault and record its status.
 
     The key shape is validated, the vault provider is created/updated, and a 0600
     sidecar records the provider/region/tail (never the key). Returns status() on
     success or {"error": ...} on a bad key / vault failure (fail loud, never a
-    silent half-write)."""
+    silent half-write). ``allow_empty`` is the console's status-only re-save; the
+    Lab 1 prompt must never report success for an empty paste."""
+    raw = api_key or ""
     # A copied key can pick up surrounding quotes or a wrapped line break.
-    api_key = "".join((api_key or "").split()).strip("'\"")
+    api_key = "".join(raw.split()).strip("'\"")
+    if api_key and not api_key.startswith(_KEY_PREFIX):
+        # People paste "Bearer ksk_...", a whole Event Outputs row
+        # ("KiroApiKey<TAB>ksk_...") or "KIRO_API_KEY=ksk_...": take the one key in it.
+        found = set(re.findall(rf"{re.escape(_KEY_PREFIX)}[A-Za-z0-9_\-]+", raw))
+        if len(found) == 1:
+            api_key = found.pop()
     if not api_key:
         # Empty on save = a status-only re-save; keep the stored provider untouched.
-        if _load_sidecar().get("stored"):
+        # Only the console asks for that: at the hidden prompt, an empty paste after
+        # an earlier save printed "connected": true with the OLD key's tail.
+        if allow_empty and _load_sidecar().get("stored"):
             return status()
         return {"error": "API key is empty: the hidden prompt received nothing. Paste the "
                          f"key (it starts with {_KEY_PREFIX}) and press Enter; the prompt "

@@ -21,6 +21,7 @@ import { getAttributionConfiguration } from './api';
 import { authSession } from './lib/authSession';
 import { ConsoleNotifications } from './components/ConsoleNotifications';
 import { SessionRecoveryActions } from './components/SessionRecoveryActions';
+import { clearAllChats } from './hooks/useChats';
 
 const DevelopmentPage = lazy(() => import('./pages/DevelopmentPage').then(m => ({ default: m.DevelopmentPage })));
 const AgentsPage = lazy(() => import('./pages/AgentsPage').then(m => ({ default: m.AgentsPage })));
@@ -131,7 +132,10 @@ function Shell() {
                 : user?.authenticated ? 'Workshop console identity' : !user ? 'Checking the current sign-in.' : 'No Cognito session on this host',
               items: [{ id: 'preferences', text: 'Preferences' },
                 ...(user?.authenticated ? [{ id: 'sign-out', text: 'Sign out', href: '/auth/logout' }] : [])],
-              onItemClick: ({ detail }) => { if (detail.id === 'preferences') openPreferences(); } },
+              onItemClick: ({ detail }) => {
+                if (detail.id === 'preferences') openPreferences();
+                if (detail.id === 'sign-out') clearAllChats();
+              } },
           ]}
           i18nStrings={{ searchIconAriaLabel: 'Search this console', searchDismissIconAriaLabel: 'Close search',
             overflowMenuTriggerText: 'More', overflowMenuTitleText: 'Console utilities',

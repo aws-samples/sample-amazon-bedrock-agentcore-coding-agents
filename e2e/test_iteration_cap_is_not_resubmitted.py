@@ -82,7 +82,11 @@ def test_role_failures_are_still_resubmitted() -> None:
     """The honest retry case must survive: nothing was judged, so retry is right."""
     prompt = _prompt()
     assert "ROLE_EXECUTION_ERROR" in prompt or "ROLE_TOTAL_FAILURE" in prompt
-    assert "SAME task text" in prompt
+    # The retry repeats the RECORDED request through resubmit_run. run_build would
+    # build the participant's current message instead ("how is it going?" became a
+    # build), so the steering must name the tool that cannot do that.
+    assert "resubmit_run(run_id) ONCE" in prompt and "recorded request" in prompt
+    assert "Never use run_build for this" in prompt
 
 
 def test_engine_and_steering_agree_on_the_two_cases() -> None:
@@ -103,6 +107,6 @@ def test_engine_and_steering_agree_on_the_two_cases() -> None:
     assert "same request again" in role or "resubmit" in role
     assert engine.resubmission_allowed(
         "needs_human", "ROLE_EXECUTION_ERROR") is True
-    # Role PRs retain evidence, but blocked validation cannot publish the final PR.
-    assert "no final integration pull request" in cap
-    assert "existing role pull requests" in cap
+    # The PR keeps its evidence; there is no final integration PR in this design.
+    assert "one bounded repair" in cap and "that pull request" in cap
+    assert "integration pull request" not in cap

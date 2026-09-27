@@ -4,7 +4,7 @@
 # Normally the workshop stack already built this agent's arm64 image at bootstrap
 # (the slow, mount-independent work), so this script just runs the agent's
 # deploy.py: CreateAgentRuntime attaching the S3 Files access point the attendee
-# created on Stage 1 page 1. Fast, image in ECR.
+# prepared by the workshop stack. Fast, image in ECR.
 #
 # But the pre-build is best-effort and NOT guaranteed on every account. To keep ONE
 # command working everywhere (the governing test), this script self-heals: if the
@@ -28,13 +28,24 @@
 #   ./deploy-prebuilt.sh kiro                        # the served validator; builds --skip-identity if keyless
 #   ./deploy-prebuilt.sh claude-code-validator       # restore path (Bedrock-native, no key)
 #   ./deploy-prebuilt.sh opencode                   # alternate frontend
+#   ./deploy-prebuilt.sh claude-code --explain       # print the exact request; create nothing
+#
+# --explain reads only: it prints the IAM execution role the deploy would create or
+# reuse, the CreateAgentRuntime (or UpdateAgentRuntime) request field by field, and the
+# AWS CLI command that sends the same request by hand. It never builds an image, writes
+# IAM, or creates/updates a Runtime, so it is safe to run before the real command.
 set -euo pipefail
 
 AGENT="${1:-}"
+MODE="${2:-}"
 case "$AGENT" in
   # All registered harnesses remain valid explicit targets, including restores.
   claude-code|opencode|kiro|claude-code-validator|codex) ;;
-  *) echo "Usage: $0 <claude-code|opencode|kiro|claude-code-validator|codex>" >&2; exit 2 ;;
+  *) echo "Usage: $0 <claude-code|opencode|kiro|claude-code-validator|codex> [--explain]" >&2; exit 2 ;;
+esac
+case "$MODE" in
+  ""|--explain) ;;
+  *) echo "Usage: $0 $AGENT [--explain]" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -44,8 +55,19 @@ INFRA_CONFIG="${SCRIPT_DIR}/infra.config"
 
 if [ ! -f "$INFRA_CONFIG" ]; then
   echo "Error: infra.config not found at ${INFRA_CONFIG}." >&2
-  echo "  Create the S3 Files access point first (Stage 1 page 1), which writes it." >&2
+  echo "  The workshop stack writes it when it creates the shared storage; ask a facilitator." >&2
   exit 1
+fi
+
+if [ "$MODE" = "--explain" ]; then
+  # A preview never builds: without the pre-built image there is no real request to show.
+  if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; then
+    echo "No pre-built ${AGENT} image yet (agent.config has no ECR_URI)." >&2
+    echo "  The real command builds it first with setup.sh; --explain never builds." >&2
+    exit 1
+  fi
+  ( cd "${SCRIPT_DIR}/${AGENT}" && python3 deploy.py --explain )
+  exit 0
 fi
 
 # Self-heal: if the agent was NOT pre-built (no agent.config with an ECR_URI), build
@@ -57,19 +79,19 @@ if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; t
   # Kiro subscription, and the attendee then mints their OWN ksk_ at app.kiro.dev
   # afterwards. So build the image WITHOUT identity via --skip-identity, exactly like
   # the bootstrap does; deploy.py still creates the Runtime + ARN, and the attendee
-  # adds their key on the wired instance in console Settings later (run.sh reads it
-  # from Token Vault at session start). This keeps the ONE command working keyless.
+  # saves their key with Lab 1's hidden key prompt later (run.sh reads it from the
+  # Token Vault at session start). This keeps the ONE command working keyless.
   if [ "$AGENT" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
     echo "  No KIRO_API_KEY set; building kiro without its Token Vault identity"
-    echo "  (--skip-identity). Add your ksk_ key on the wired Kiro instance in"
-    echo "  console Settings after it deploys."
+    echo "  (--skip-identity). Save your ksk_ key afterwards with Lab 1's hidden key"
+    echo "  prompt (Put All Three Agents on Runtime, step 2); no redeploy is needed."
     ( cd "${SCRIPT_DIR}/${AGENT}" && bash ./setup.sh --skip-identity )
   else
     ( cd "${SCRIPT_DIR}/${AGENT}" && bash ./setup.sh )
   fi
 fi
 
-# The access point ARN is the piece the attendee adds on Stage 1 page 1. It is
+# The access point ARN comes from the stack's shared storage. It is
 # OPTIONAL here: with it, deploy.py attaches the /mnt/s3files mount; without it,
 # the runtime deploys MOUNTLESS and the attendee attaches the mount later by
 # re-running deploy.py once the access point exists. Just note which path we are on.
@@ -77,7 +99,7 @@ if grep -q '^INFRA_S3FILES_AP_ARN=.\+' "$INFRA_CONFIG"; then
   echo "Deploying pre-built ${AGENT} with the shared S3 Files mount attached..."
 else
   echo "Deploying pre-built ${AGENT} MOUNTLESS (no S3 Files access point in infra.config yet);" >&2
-  echo "  re-run after 'Set up shared storage' on Stage 1 page 1 to attach /mnt/s3files." >&2
+  echo "  The stack normally writes the access point; ask a facilitator, then re-run to attach /mnt/s3files." >&2
 fi
 ( cd "${SCRIPT_DIR}/${AGENT}" && python3 deploy.py )
 echo "Done. ${AGENT} runtime_config.json written; the console shelf will reconcile it to ready."

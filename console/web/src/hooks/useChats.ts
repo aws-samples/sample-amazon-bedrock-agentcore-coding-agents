@@ -56,6 +56,17 @@ export function touchChat(id: string, title: string): void {
   write(list);
 }
 
+/** Forget every chat in this browser: on sign-out, so a teammate who signs in
+ * next does not see (or continue) the previous person's conversations. */
+export function clearAllChats(): void {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key === KEY || key.startsWith(`${KEY}.t.`)) localStorage.removeItem(key);
+    }
+  } catch { /* private mode */ }
+  window.dispatchEvent(new Event(EVENT));
+}
+
 export function removeChat(id: string): void {
   write(read().filter((c) => c.id !== id));
   try { localStorage.removeItem(`${KEY}.t.${id}`); } catch { /* ignore */ }

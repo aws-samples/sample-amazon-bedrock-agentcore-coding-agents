@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import tempfile
 import time
@@ -43,7 +42,6 @@ from typing import Any
 
 from gate_diagnostics import extract_failure_lines
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
 
 LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
 # One bounded re-implement pass, then a human. THE SINGLE SOURCE OF TRUTH for
@@ -51,33 +49,11 @@ LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
 # so editing this number actually changes behavior.
 MAX_REVIEW_ROUNDS = 1
 
-# New runs use a random 48-bit suffix so two coordinator sessions started in the
-# same second cannot share a branch or workspace. Keep the old form readable so
-# existing pull requests remain reviewable.
-_RUN_BRANCH = re.compile(
-    r"^run/(run_[0-9]{6}_(?:[0-9]{3}|[0-9a-f]{12}))$"
-)
-
-
-def branch_run_id(branch: str | None) -> str | None:
-    """Map a branch name back to the exact run that produced it, or None.
-
-    A strict branch-suffix guard: the engine always branches as
-    ``run/<run_id>`` and run ids match a strict pattern, so anything else,
-    including SQL-LIKE-wildcard or lookalike branches, refuses to match rather
-    than falling back to a most-recent heuristic.
-    """
-    if not branch:
-        return None
-    m = _RUN_BRANCH.match(branch)
-    return m.group(1) if m else None
-
-
 @dataclass
 class Verdict:
     """The judge's structured output for one round."""
 
-    state: str = "in_review"        # in_review | approved | changes_requested
+    state: str = "in_review"        # in_review | approved | changes_requested | unavailable
     gate: dict | None = None        # the acceptance-gate result (real execution)
     assessment: str = ""            # the Assessment markdown posted on the PR
     reasons: list[str] = field(default_factory=list)  # feedback for the loop
@@ -642,7 +618,10 @@ def _combine_review(
         f"Model: `{record.get('model') or 'unavailable'}`\n\n"
         "</details>"
     )
-    state = "Approve" if approve else "Request changes"
+    # A review that never produced a decision requests nothing: headlining it
+    # "Request changes" on the PR contradicted the run's own advice not to rebuild.
+    state = ("Approve" if approve else
+             "Review unavailable (no decision)" if unavailable else "Request changes")
     return {
         "approve": approve,
         "reasons": reasons,
@@ -684,7 +663,8 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
             INTEGRATED_REVIEW_MODEL, note="no model credentials available")
         return _combine_review(gate, record, None)
 
-    parts: list[str] = [f"Task: {getattr(run, 'task', '')!r}",
+    # The request as the builders read it, not a Python repr with escaped newlines.
+    parts: list[str] = [f"Task:\n{getattr(run, 'task', '') or ''}",
                         f"acceptance gate passed: {gate.get('passed')}",
                         f"gate: {json.dumps(gate.get('checks', []))[:2000]}"]
     if subject is not None:
@@ -888,7 +868,8 @@ def assess(run: Any, gate: dict, round_no: int,
         verdict.review_unavailable = bool(jv.get("review_unavailable"))
         verdict.assessment = (jv.get("assessment")
                               or _abstained_assessment(gate, verdict.lgtm))
-    verdict.state = "approved" if verdict.lgtm else "changes_requested"
+    verdict.state = ("approved" if verdict.lgtm else
+                     "unavailable" if verdict.review_unavailable else "changes_requested")
     if verdict.lgtm and LGTM_TOKEN not in verdict.assessment:
         # Approval is a literal, checkable token, never a paraphrase.
         verdict.assessment = verdict.assessment.rstrip() + f"\n\n{LGTM_TOKEN}\n"

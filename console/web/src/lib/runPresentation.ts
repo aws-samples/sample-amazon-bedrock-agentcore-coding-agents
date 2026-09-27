@@ -66,6 +66,11 @@ export function presentRunDecision(run: RunEvidence): { title: string; detail: s
   return { title: 'Build in progress', detail: 'The evidence below updates as the team works.', tone: 'neutral' };
 }
 
-export function gateResultLabel(gate: RunDetail['gate'] | RunResult['gate']): string {
-  return gate == null ? 'Not recorded' : gate.passed ? 'Passed' : 'Failed';
+export function gateResultLabel(gate: RunDetail['gate'] | RunResult['gate'], executions?: number): string {
+  // A run that stopped before its checker wrote anything has no verdict: "Failed"
+  // beside "Check executions: 0" told people a check had rejected their work.
+  // Records saved before `executed` existed are read from their execution count.
+  if (gate == null) return 'Not recorded';
+  if (gate.executed === false || (gate.executed === undefined && executions === 0)) return 'Not run';
+  return gate.passed ? 'Passed' : 'Failed';
 }

@@ -131,48 +131,7 @@ export const getGovernanceControls = () => get<GovernanceControls>('/api/metrics
 export const evaluatePolicy = (input: { action: string; target: string; read_only: boolean }) =>
   post<PolicyEvaluation>('/api/metrics/policies/evaluate', input);
 
-/* ---------------- Module 1: Agents ---------------- */
-
-export interface Agent {
-  agent_id: string;
-  label: string;
-  /** Attendee-editable display name (defaults to label). */
-  name?: string;
-  /** Attendee-editable role this subagent plays for the orchestrator. */
-  purpose?: string;
-  model: string;
-  credential: string;
-  status: string;
-  runtime_arn: string | null;
-  endpoint: string | null;
-  deployed_at?: string | null;
-}
-
-export const listAgents = () =>
-  get<{ agents: Agent[] }>('/api/dev/agents').then((r) => r.agents);
-
-export const prepareAgent = (agentId: string) =>
-  post<Agent>('/api/dev/agents/deploy', { agent_id: agentId });
-
-export const getAgent = (agentId: string) =>
-  get<Agent>(`/api/dev/agents/${encodeURIComponent(agentId)}`);
-
-/** Rename a deployed subagent and set its purpose (right-click Edit on the shelf). */
-export const editAgent = (agentId: string, fields: { name?: string; purpose?: string }) =>
-  post<Agent>(`/api/dev/agents/${encodeURIComponent(agentId)}/edit`, fields);
-
 /* ---------------- Module 2: Fleets / runs ---------------- */
-
-// A STARTING POINT the attendee can send as-is, edit, or ignore: an id, a title,
-// the request text it ships, and the roles it routes. Presets are examples, not a
-// catalogue of what the system supports; any request works (see `agents` on submit).
-export interface Preset {
-  preset: string;
-  title: string;
-  roles: string[];
-  task: string;
-  read_only: boolean;
-}
 
 // The routing verdict the engine attached to a run: which roles, and why. Routing
 // picks ROLES and nothing else, so there is no use case, shape, or target here.
@@ -287,7 +246,7 @@ export interface RunDetail extends RunSummary {
   final_base_branch?: string | null;
   role_prs?: RolePrEntry[];
   gate_history?: GateRecord[];
-  gate?: { passed: boolean; summary?: string; checks?: GateRecord['checks'] } | null;
+  gate?: { passed: boolean; executed?: boolean; summary?: string; checks?: GateRecord['checks'] } | null;
   review?: {
     state?: string;
     lgtm?: boolean;
@@ -301,11 +260,6 @@ export interface RunDetail extends RunSummary {
   terminals?: Record<string, Array<{ cmd?: string; output?: string; text?: string }>>;
   roleEvents?: Record<string, AgentEvent[]>;
 }
-
-// The starting points, from the ONE source (`presets.PRESETS`); the console renders
-// these rather than keeping its own copy, so the two cannot drift.
-export const listPresets = () =>
-  get<{ presets: Preset[] }>('/api/orchestrator/presets').then((r) => r.presets);
 
 /* ---------------- The served roster ---------------- */
 
@@ -332,13 +286,6 @@ export const listRoster = () =>
 export const listRuns = () =>
   get<{ runs: RunSummary[] }>('/api/orchestrator/runs').then((r) => r.runs ?? []);
 
-// Paged variant for the sidebar's infinite-scroll history: newest first, with a
-// total so the list knows when it has reached the end.
-export const listRunsPaged = (limit: number, offset: number) =>
-  get<{ runs: RunSummary[]; total: number; offset: number }>(
-    `/api/orchestrator/runs?limit=${limit}&offset=${offset}`,
-  ).then((r) => ({ runs: r.runs ?? [], total: r.total ?? 0, offset: r.offset ?? offset }));
-
 export const getRun = (runId: string) =>
   get<RunDetail>(`/api/orchestrator/runs/${encodeURIComponent(runId)}`);
 
@@ -349,7 +296,7 @@ export const getRun = (runId: string) =>
 export interface RunResult {
   run_id: string;
   status: string;
-  gate?: { passed: boolean; checks?: Array<{ check?: string; passed?: boolean; detail?: string }> };
+  gate?: { passed: boolean; executed?: boolean; checks?: Array<{ check?: string; passed?: boolean; detail?: string }> };
   review?: {
     state?: string;
     lgtm?: boolean;
@@ -421,35 +368,6 @@ export interface RunDiff {
 export const getRunDiff = (runId: string) =>
   get<RunDiff>(`/api/orchestrator/runs/${encodeURIComponent(runId)}/diff`);
 
-export interface SubmitRunInput {
-  task: string;
-  /** A starting point to route from. Its request text fills an empty `task`. */
-  preset?: string;
-  /** Name the roles directly, with any request text at all. This is the real
-   *  surface: the engine validates the set and fails loud on an unknown role. */
-  agents?: string[];
-  /** Optional model override. A single id applies to every dispatched role;
-   *  the per-role map targets one role (engine `_role_model`: options.models). */
-  model?: string;
-  models?: Record<string, string>;
-}
-
-// The engine reads model overrides off `options` (options.model / options.models),
-// so nest them there rather than at the top level (where they were silently
-// dropped). task + preset + agents stay top-level, as the handler expects.
-export const submitRun = (input: SubmitRunInput) => {
-  const { task, preset, agents, model, models } = input;
-  const options: Record<string, unknown> = {};
-  if (model) options.model = model;
-  if (models) options.models = models;
-  return post<RunSummary & { route?: RunRoute }>('/api/orchestrator/runs', {
-    task,
-    ...(preset ? { preset } : {}),
-    ...(agents?.length ? { agents } : {}),
-    ...(Object.keys(options).length ? { options } : {}),
-  });
-};
-
 /* ---------------- Module 2: the orchestrator's selectable models ---------------- */
 
 export interface ModelOption { id: string; label: string; hint?: string }
@@ -473,7 +391,7 @@ export type ChatEvent =
   // Emitted while the model is silent so the transport chain (CloudFront/nginx
   // idle timeouts) never cuts the stream mid-think. Renders nothing.
   | { type: 'keepalive' }
-  | { type: 'done' };
+  | { type: 'done'; server_history?: boolean };
 
 /**
  * Talk to the REAL orchestrator agent and stream its turn. POSTs the prompt and
@@ -665,9 +583,6 @@ export const addRuntime = (role: string, input: string | AgentWireInput) => {
   });
 };
 
-export const clearRuntime = (role?: string) =>
-  post<RuntimeStatus>('/api/orchestrator/runtimes', { clear: true, role });
-
 // Remove ONE instance from a role's fleet (the per-instance x button).
 export const removeRuntime = (role: string, arn: string) =>
   post<RuntimeStatus & { error?: string }>('/api/orchestrator/runtimes', { remove: true, role, arn });
@@ -678,41 +593,6 @@ export const describeRuntime = (role: string, arn: string, description: string) 
   post<RuntimeStatus & { error?: string }>('/api/orchestrator/runtimes', { describe: true, role, arn, description });
 
 /* ---------------- Module 3: Governance / metrics ---------------- */
-
-export interface Dashboard {
-  active_sessions: number;
-  runs_total: number;
-  p95_latency_ms: number;
-  cost_by_agent: Record<string, number>;
-}
-
-export const getDashboard = () => get<Dashboard>('/api/metrics/dashboard');
-
-export interface UserMetrics {
-  user_id?: string;
-  range?: string;
-  runs?: number;
-  total_cost_usd?: number;
-  total_tokens?: number;
-  p95_latency_ms?: number;
-  cost_by_agent?: Record<string, number>;
-  [k: string]: unknown;
-}
-
-export const getUserMetrics = (user: string, range = '24h') =>
-  get<UserMetrics>(
-    `/api/metrics/users/${encodeURIComponent(user)}/metrics?time_range=${encodeURIComponent(range)}`,
-  );
-
-export interface CostBreakdown {
-  by: string;
-  breakdown: Record<string, number>;
-  currency: string;
-  source?: 'ledger' | 'bedrock-invocation-log' | string;
-}
-
-export const getCostBreakdown = (by: 'agent' | 'user' = 'agent') =>
-  get<CostBreakdown>(`/api/metrics/cost-breakdown?by=${by}`);
 
 export interface SessionRow {
   session_id: string;
@@ -748,21 +628,6 @@ export const stopSession = (sessionId: string) =>
   post<{ session_id: string; stopped: boolean; error?: string; audit_recorded?: boolean; audit_error?: string; event_id?: string } | null>(
     `/api/metrics/sessions/${encodeURIComponent(sessionId)}/stop`,
   );
-
-// p95 latency, optionally scoped to one agent or one user. The response echoes
-// back the scope it applied so the caller can confirm what it measured.
-export interface LatencyP95 {
-  p95_latency_ms: number;
-  scope: { assistant_type?: string; user_id?: string };
-}
-
-export const getLatencyP95 = (scope?: { assistant_type?: string; user_id?: string }) => {
-  const qs = new URLSearchParams();
-  if (scope?.assistant_type) qs.set('assistant_type', scope.assistant_type);
-  if (scope?.user_id) qs.set('user_id', scope.user_id);
-  const q = qs.toString();
-  return get<LatencyP95>(`/api/metrics/latency/p95${q ? `?${q}` : ''}`);
-};
 
 // User attribution recorded for one session. GitHub authorship is deliberately
 // separate because it depends on the credential selected for finalization.
@@ -818,45 +683,3 @@ export interface AuditTrail {
 
 export const getAudit = (limit = 200) =>
   get<AuditTrail>(`/api/metrics/audit?limit=${limit}`);
-
-/* ---------------- Module 3: real AgentCore runtime status + dispatch ---------------- */
-
-// The deployed-runtime wiring, as Governance sees it (the metrics mount reads the
-// SAME runtime_config the orchestrator dispatches against). Distinct from the
-// Stage-2 /api/orchestrator/runtimes surface used by Settings; this one is the
-// read view under Governance.
-export interface GovRuntimeRole {
-  role: string;
-  wired: boolean;
-  source?: 'environment' | 'settings' | null;
-  arn?: string | null;
-  count?: number;
-  instances?: { arn: string; source: string }[];
-}
-
-export interface GovRuntimeStatus {
-  executor: string;
-  remote_dispatch: boolean;
-  roles: GovRuntimeRole[];
-  note?: string;
-}
-
-export const getGovRuntimes = () => get<GovRuntimeStatus>('/api/metrics/runtimes');
-
-// A real, billable health dispatch: runs a tiny job inside the role's deployed
-// runtime and reads its echoed marker back. `ok` is true only when the runtime
-// genuinely executed and wrote the marker; an unwired role returns wired:false.
-export interface ProbeResult {
-  role: string;
-  ok: boolean;
-  wired?: boolean;
-  arn?: string;
-  source?: string;
-  marker_echoed?: boolean;
-  artifact_preview?: string;
-  session_id?: string;
-  error?: string;
-}
-
-export const probeRuntime = (role: string) =>
-  post<ProbeResult>(`/api/metrics/runtimes/${encodeURIComponent(role)}/probe`);

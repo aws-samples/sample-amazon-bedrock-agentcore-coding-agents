@@ -379,11 +379,22 @@ def test_pty_stream_replays_the_retained_scrollback_from_offset_zero():
     ia.dispatch("POST", f"/api/sessions/{sid}/pty",
                 {"input": "echo REATTACH_HISTORY_MARKER\n", "offset": 0})
     time.sleep(1.0)
-    frames: list[bytes] = []
-    for f in ia.pty_stream(sid, offset=0, should_stop=lambda: len(frames) > 3):
-        frames.append(f)
-        if len(frames) > 3:
-            break
+    import asyncio
+
+    async def first_frames() -> list[bytes]:
+        # The shipped route's own generator, closed after the replay frames.
+        stream = ia.pty_stream_async(sid, 0)
+        got: list[bytes] = []
+        try:
+            async for f in stream:
+                got.append(f)
+                if len(got) > 3:
+                    break
+        finally:
+            await stream.aclose()
+        return got
+
+    frames = asyncio.run(first_frames())
     blob = b"".join(frames).decode("utf-8", "replace")
     assert "REATTACH_HISTORY_MARKER" in blob, "offset-0 replay lost the scrollback"
     import json
@@ -513,10 +524,10 @@ def test_dev_session_roots_at_the_empty_s3files_mount(tmp_path, monkeypatch):
     mount = str(tmp_path / "s3files")
     monkeypatch.setenv("WORKSHOP_S3FILES_DIR", mount)
 
-    # _dev_root returns (cwd=mount, home=real login home), NOT the same dir.
-    cwd, home = ia._dev_root()
+    # The workspace is the mount, while HOME stays the real login home.
+    cwd, _label = ia._default_dev_root()
     assert cwd == os.path.abspath(mount)
-    assert home == os.path.expanduser("~")
+    assert os.path.expanduser("~") != cwd
 
     code, sess = ia.dispatch("POST", "/api/sessions", {"agent_id": "dev"})
     assert code == 201

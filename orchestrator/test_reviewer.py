@@ -33,7 +33,6 @@ import reviewer  # noqa: E402
 from reviewer import (  # noqa: E402
     LGTM_TOKEN,
     Verdict,
-    branch_run_id,
 )
 from work_items import WorkItem  # noqa: E402
 
@@ -65,21 +64,6 @@ class _FakeRun:
 
     def item_tree_dir(self, work_id: str) -> str:
         return self._item_trees.get(work_id, "")
-
-
-# ----------------------------------------------------- the strict branch-suffix guard
-def test_branch_run_id_maps_a_run_branch_back_to_its_run():
-    assert branch_run_id("run/run_103512_004") == "run_103512_004"
-    assert (
-        branch_run_id("run/run_103512_a1b2c3d4e5f6")
-        == "run_103512_a1b2c3d4e5f6"
-    )
-
-
-def test_branch_run_id_refuses_lookalikes():
-    for bad in ("run/run_103512_004-extra", "feature/run_103512_004",
-                "run/run_1035_004", "run/%", "run/run_abcdef_004", "", None):
-        assert branch_run_id(bad) is None
 
 
 # --------------------------------------------------------- constants the engine reads
@@ -210,7 +194,7 @@ def test_judge_outage_blocks_merge_without_inventing_a_finding():
     ):
         verdict = reviewer.assess(_FakeRun(), _GREEN_GATE, 1, judge=judge)
         assert verdict.lgtm is False
-        assert verdict.state == "changes_requested"
+        assert verdict.state == "unavailable", "an outage requests no changes"
         assert verdict.review_unavailable is True
         assert len(verdict.panels) == 1
         assert verdict.panels[0]["name"] == "integrated"

@@ -514,3 +514,37 @@ def test_disconnected_terminal_does_not_acknowledge_input():
             "error": "Runtime terminal is not connected."}
     finally:
         runtime_shell._sessions.pop(session.session_id, None)
+
+
+def test_chat_never_types_into_a_build_terminal_or_a_teammates(monkeypatch):
+    """The newest terminal of ANY user was picked, so a teammate's Chat turn could be
+    typed into someone else's shell, or into a running build's terminal."""
+    import identity_baggage
+    mine = _FakeShellSession("opencode", "console-mine0000000000000000000000000000000000")
+    mine.user_id, mine.opened_by = "me@workshop.aws", "user"
+    theirs = _FakeShellSession("opencode", "console-them0000000000000000000000000000000000")
+    theirs.user_id, theirs.opened_by = "them@workshop.aws", "user"
+    build = _FakeShellSession("opencode", "console-build000000000000000000000000000000000")
+    build.user_id, build.opened_by, build.busy = "me@workshop.aws", "orchestrator", True
+    for s in (mine, theirs, build):
+        _register(s)
+    try:
+        identity_baggage.set_current_identity(identity_baggage.UserIdentity(
+            user_id="sub-me", email="me@workshop.aws"))
+        assert runtime_shell.find_session_for_agent("opencode", for_caller=True) is mine
+        assert runtime_shell.find_session_for_agent("opencode") is build, "the unscoped lookup is unchanged"
+    finally:
+        identity_baggage.set_current_identity(identity_baggage.ANONYMOUS)
+        for s in (mine, theirs, build):
+            runtime_shell._sessions.pop(s.session_id, None)
+
+
+def test_a_teammate_cannot_type_into_someone_elses_terminal():
+    theirs = _FakeShellSession("opencode", "console-own10000000000000000000000000000000000")
+    theirs.user_id = "a@workshop.aws"
+    _register(theirs)
+    try:
+        refused = runtime_shell.send_input(theirs.session_id, "ls\r", {"b@workshop.aws"})
+        assert "another signed-in user" in refused["error"]
+    finally:
+        runtime_shell._sessions.pop(theirs.session_id, None)

@@ -44,7 +44,7 @@ def test_default_frontend_wires_codex_and_hides_the_restore_roster(monkeypatch):
     monkeypatch.delenv("WORKSHOP_ROLES")
     arn = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/codex-test"
     assert "error" not in runtime_config.save_runtime("codex", arn)
-    assert runtime_config.resolve_map() == {"codex": arn}
+    assert runtime_config.fleet_map() == {"codex": [arn]}
     assert "opencode" not in runtime_config.roles()
 
 
@@ -81,10 +81,10 @@ def test_unknown_role_is_rejected():
     assert "error" in out and "unknown role" in out["error"]
 
 
-def test_resolve_map_collects_wired_roles():
+def test_fleet_map_collects_wired_roles():
     runtime_config.save_runtime("claude-code", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/cc")
     runtime_config.save_runtime("opencode", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/cx")
-    m = runtime_config.resolve_map()
+    m = runtime_config.fleet_map()
     assert set(m) == {"claude-code", "opencode"}
 
 
@@ -99,7 +99,7 @@ def test_clear_one_role():
 def test_clear_all():
     runtime_config.save_runtime("claude-code", "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/cc")
     runtime_config.clear_runtime()
-    assert runtime_config.resolve_map() == {}
+    assert runtime_config.fleet_map() == {}
 
 
 def test_status_shape_and_executor(monkeypatch):
@@ -192,13 +192,10 @@ def test_env_carries_a_comma_separated_fleet(monkeypatch):
     assert srcs == {"environment"}  # file fleet ignored while env is set
 
 
-def test_fleet_map_and_resolve_map():
+def test_fleet_map_lists_every_instance():
     runtime_config.save_runtime("claude-code", _arn("cc"))
     for tag in ("cx-1", "cx-2"):
         runtime_config.add_runtime("opencode", _arn(tag))
-    # resolve_map is the back-compat single-ARN map (first instance per role).
-    rm = runtime_config.resolve_map()
-    assert rm["opencode"] == _arn("cx-1") and rm["claude-code"] == _arn("cc")
     # fleet_map is the full per-role list.
     fm = runtime_config.fleet_map()
     assert fm["opencode"] == [_arn("cx-1"), _arn("cx-2")]
@@ -235,10 +232,15 @@ def test_fleet_round_trips_through_the_file():
 
 # --- per-role descriptions (U17): what each agent does, read by the chatbot ---
 # Descriptions are PER INSTANCE (keyed by ARN), set only on a wired instance.
+def _instance_description(role: str, arn: str) -> str:
+    """The description stored for one instance ARN ('' when cleared or unset)."""
+    return runtime_config._load_descriptions().get(arn, "")
+
+
 def test_save_and_read_instance_description():
     runtime_config.save_runtime("claude-code", "claude_code-ID01")
     runtime_config.save_description("claude-code", "claude_code-ID01", "Builds the backend MCP server")
-    assert runtime_config.describe_arn("claude_code-ID01") == "Builds the backend MCP server"
+    assert _instance_description("claude-code", "claude_code-ID01") == "Builds the backend MCP server"
     # describe(role) surfaces the first instance's description
     assert runtime_config.describe("claude-code") == "Builds the backend MCP server"
     assert runtime_config.describe_map()["claude-code"] == "Builds the backend MCP server"
@@ -249,8 +251,8 @@ def test_each_instance_has_its_own_description():
     runtime_config.add_runtime("opencode", "opencode-ID02")
     runtime_config.save_description("opencode", "opencode-ID01", "Frontend builder A")
     runtime_config.save_description("opencode", "opencode-ID02", "Frontend builder B")
-    assert runtime_config.describe_arn("opencode-ID01") == "Frontend builder A"
-    assert runtime_config.describe_arn("opencode-ID02") == "Frontend builder B"
+    assert _instance_description("opencode", "opencode-ID01") == "Frontend builder A"
+    assert _instance_description("opencode", "opencode-ID02") == "Frontend builder B"
     st = runtime_config.status()
     opencode = next(r for r in st["roles"] if r["role"] == "opencode")
     by_arn = {i["arn"]: i["description"] for i in opencode["instances"]}
@@ -262,14 +264,14 @@ def test_description_survives_other_instance_writes():
     runtime_config.save_runtime("opencode", "opencode-ID01")
     runtime_config.save_description("opencode", "opencode-ID01", "Builds the chatbot UI")
     runtime_config.add_runtime("opencode", "opencode-ID02")  # grow the fleet
-    assert runtime_config.describe_arn("opencode-ID01") == "Builds the chatbot UI"
+    assert _instance_description("opencode", "opencode-ID01") == "Builds the chatbot UI"
 
 
 def test_empty_description_clears_one_instance():
     runtime_config.save_runtime("kiro", "ccv-ID01")
     runtime_config.save_description("kiro", "ccv-ID01", "Writes the gate")
     runtime_config.save_description("kiro", "ccv-ID01", "")
-    assert runtime_config.describe_arn("ccv-ID01") == ""
+    assert _instance_description("kiro", "ccv-ID01") == ""
 
 
 def test_removing_instance_does_not_describe_unwired_arn():

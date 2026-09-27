@@ -2,14 +2,12 @@
 
 The shipped path is real-only: ``from_env`` builds an ``AgentCoreExecutor`` (it
 dispatches a role to its deployed runtime and fails loud on a missing wired ARN),
-with no local/in-process producer to select. Here we exercise AgentCoreExecutor
-with a stubbed client so the ``bedrock-agentcore:InvokeAgentRuntime`` wire shape is
-verified without a deployed runtime, plus the env-driven selection and fail-loud paths.
+with no local/in-process producer to select. Here we exercise AgentCoreExecutor's
+ARN resolution and dispatch without a deployed runtime, plus the env-driven selection
+and fail-loud paths.
 """
 
 from __future__ import annotations
-
-import io
 
 import pytest
 
@@ -49,37 +47,18 @@ def test_from_env_unknown_fails_loud(monkeypatch):
 
 # --------------------------------------------------------------- AgentCoreExecutor
 class _Run:
-    """Minimal stand-in for a Run with the seam hooks the executor uses."""
+    """Minimal stand-in for a Run."""
 
     def __init__(self):
         self.run_id = "run_test_001"
         self.task = "convert the cost analyzer module to an MCP server"
         self.options = {"user_id": "alice"}
-        self.written = {}
-
-    def _role_prompt_for(self, run, agent_id, role):
-        return f"PROMPT for {agent_id}: {self.task}"
-
-    def _write_role_artifact(self, run, agent_id, role, text):
-        self.written[agent_id] = text
 
 
 class _Role:
     def __init__(self):
         self.engine = ""
         self.note = ""
-
-
-class _StubClient:
-    """Records the InvokeAgentRuntime call and returns a streaming-body response."""
-
-    def __init__(self, body=b"# mcp_server.py\nprint('hi')\n"):
-        self.body = body
-        self.calls = []
-
-    def invoke_agent_runtime(self, **kwargs):
-        self.calls.append(kwargs)
-        return {"response": io.BytesIO(self.body)}
 
 
 def test_agentcore_resolves_arn_from_mapping_then_env(monkeypatch, tmp_path):
@@ -119,14 +98,6 @@ def test_agentcore_dispatch_runs_the_engine_closure():
     called = {}
     ex.dispatch(run, "claude-code", role, local_dispatch=lambda r: called.setdefault("role", r))
     assert called["role"] is role
-
-
-def test_agentcore_reads_bytes_and_str_and_streaming_bodies():
-    ex = executor.AgentCoreExecutor()
-    assert ex._read_response_text({"response": b"bytes"}) == "bytes"
-    assert ex._read_response_text({"response": "str"}) == "str"
-    assert ex._read_response_text({"response": io.BytesIO(b"stream")}) == "stream"
-    assert ex._read_response_text({}) == ""
 
 
 if __name__ == "__main__":

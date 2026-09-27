@@ -261,6 +261,14 @@ def validate_command(command: list[str]) -> list[str]:
     if sum(len(x.encode()) for x in command) > 16384:
         raise HostError("INVALID_COMMAND", "The supplied command is too large.")
     executable = command[0]
+    # Reject the two shapes people copy from a README before a 45-second copy and a
+    # 40-second wait end in a generic "the copied game exited".
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", executable):
+        raise HostError("INVALID_COMMAND", f"Drop the leading {executable.split('=', 1)[0]}=... "
+                        "setting: --port sets PORT, and the command after -- runs without a shell.")
+    if len(command) == 1 and " " in executable.strip():
+        raise HostError("INVALID_COMMAND", "Remove the quotes around the command after --, "
+                        "for example: -- npm start")
     if not executable or executable.startswith("-") or Path(executable).is_absolute():
         raise HostError("INVALID_COMMAND", "Use an executable on the system PATH or a project-relative executable.")
     if "/" in executable:
@@ -991,6 +999,16 @@ class Host:
                                         stderr=subprocess.PIPE, env=BASE_ENV, cwd="/",
                                         timeout=COPY_SECONDS + 15)
             if result.returncode:
+                # _pack reports its own HostError as JSON on stderr (authored codes
+                # and messages, never child output). Pass that reason on: every
+                # failure used to become the same generic SNAPSHOT_FAILED.
+                try:
+                    reason = json.loads(result.stderr.decode("utf-8", "replace").strip().splitlines()[-1])["error"]
+                    code, message = str(reason["code"]), str(reason["message"])
+                except (ValueError, KeyError, IndexError, TypeError):
+                    code = message = ""
+                if re.fullmatch(r"[A-Z][A-Z_]{2,63}", code) and message:
+                    raise HostError(code, message)
                 raise HostError("SNAPSHOT_FAILED", "The read-only project snapshot failed. Check private files, symlinks, prepared dependencies, and SQLite backup readiness.")
         except subprocess.TimeoutExpired as exc:
             raise HostError("SNAPSHOT_TIMEOUT", "The read-only snapshot exceeded its deadline.") from exc

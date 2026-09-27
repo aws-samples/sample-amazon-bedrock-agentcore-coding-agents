@@ -197,18 +197,16 @@ def test_validator_check_ships_once_from_the_executed_gate_workspace():
         shutil.rmtree(run.workdir, ignore_errors=True)
 
 
-def test_gate_and_pull_request_exclusions_have_different_jobs():
+def test_the_gate_and_the_pull_request_withhold_the_same_coordinator_paths():
+    """One rule for both (``_work_patch_excluded``): the check runs against exactly
+    the source a role's patch can contain, never the coordinator's own files."""
     engine = importlib.import_module("engine")
-    for rel in ("issues.db", "issues.db-wal", "issues.db-shm", "app.log"):
-        assert engine._compose_excluded(rel)
-        assert not engine._gate_excluded(rel)
-    for rel in (
-        "CLAUDE.md",
-        "AGENTS.md",
-        "skills/frontend-design/SKILL.md",
-        ".workshop/integration-brief.md",
-    ):
-        assert engine._compose_excluded(rel)
+    for rel in ("issues.db", "issues.db-wal", "issues.db-shm", "app.log",
+                "CLAUDE.md", "AGENTS.md", "skills/frontend-design/SKILL.md",
+                ".workshop/integration-brief.md", engine._ACCEPTANCE_CHECK):
+        assert engine._work_patch_excluded(rel), rel
+    for rel in ("server.js", "public/index.html", "README.md"):
+        assert not engine._work_patch_excluded(rel), rel
 
 
 def test_compose_recovers_a_shared_worktree_left_dirty_by_a_previous_run(

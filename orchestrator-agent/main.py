@@ -122,13 +122,23 @@ async def invoke(payload: dict[str, Any], context: Any = None):
     _activity.ensure_started()
     try:
         agent = _get_or_create_agent()
-        # The cached agent owns model history, but each invocation owns a fresh,
-        # immutable user-request binding. Close it even if the caller disconnects.
-        history = list(getattr(agent, "messages", []) or [])
-        async with aclosing(_chat.stream_user_turn(agent, prompt, messages=history)) as events:
-            async for event in events:
-                if "data" in event and isinstance(event["data"], str):
-                    yield event["data"]
+        # The cached agent owns model history; its request ledger (the participant's
+        # unbuilt turns and the builds this session started) lives with it, so the
+        # model's trimmed window can never lose the request. Each invocation owns a
+        # fresh request binding, closed even if the caller disconnects.
+        ledger = _chat.ledger_for(agent)
+        try:
+            async with aclosing(_chat.stream_user_turn(agent, prompt, ledger=ledger)) as events:
+                async for event in events:
+                    if "data" in event and isinstance(event["data"], str):
+                        yield event["data"]
+        except Exception as exc:  # noqa: BLE001 - only the concurrency case is answered
+            if type(exc).__name__ != "ConcurrencyException":
+                raise
+            # Two `agentcore invoke` calls on one session: the cached agent answers
+            # one at a time. Say so instead of dropping the second message.
+            yield ("The coordinator is still answering your previous message in this "
+                   "session. Wait for it to finish, then send this again.")
     finally:
         # A dispatch may outlive a completed, failed, or disconnected chat turn.
         # Register it before this response closes; the observer releases it when

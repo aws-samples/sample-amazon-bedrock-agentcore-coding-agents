@@ -210,11 +210,16 @@ def test_role_deploys_refuse_a_cross_region_access_point() -> None:
     import re as _re
 
     root = os.path.dirname(_HERE)
+    # Four roles share runtime_deploy.assert_same_region; codex keeps its own wording.
+    with open(os.path.join(root, "coding-agents", "runtime_deploy.py"), encoding="utf-8") as fh:
+        shared = fh.read()
+    assert "def assert_same_region(" in shared and "REGION_MISMATCH" in shared
     for role in ("codex", "opencode", "claude-code", "kiro", "claude-code-validator"):
         path = os.path.join(root, "coding-agents", role, "deploy.py")
         with open(path, encoding="utf-8") as fh:
             src = fh.read()
-        assert "REGION_MISMATCH" in src, (
+        uses_shared = "_assert_same_region = runtime_deploy.assert_same_region" in src
+        assert "REGION_MISMATCH" in src or uses_shared, (
             f"{role}/deploy.py has no same-region guard: a mount in one region and a "
             "Runtime in another must fail AT DEPLOY, not later as a phantom empty "
             "workspace.")

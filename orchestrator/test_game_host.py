@@ -998,3 +998,14 @@ def test_real_nginx_unpublished_wrapper_and_app_both_remain_unavailable(nginx_ga
         assert response.status == 503
         assert response.headers["cache-control"] == "no-store"
     assert server.records == []
+
+
+@pytest.mark.parametrize("command,hint", [
+    (["PORT=3000", "npm", "start"], "--port sets PORT"),
+    (["npm start"], "Remove the quotes"),
+])
+def test_publish_rejects_the_readme_shapes_people_paste_before_copying(command, hint):
+    with pytest.raises(host.HostError) as excinfo:
+        host.validate_command(command)
+    assert excinfo.value.code == "INVALID_COMMAND" and hint in excinfo.value.message
+    assert host.validate_command(["npm", "start"]) == ["npm", "start"]

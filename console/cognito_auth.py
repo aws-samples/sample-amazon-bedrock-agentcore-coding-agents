@@ -30,18 +30,12 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
-# JWKS cache (per-process, refreshed every 5 min like the dashboard)
-_jwks_cache: dict[str, Any] = {}
-_jwks_fetched: float = 0.0
-_JWKS_TTL = 300.0
-
 COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
 COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 COGNITO_CLIENT_SECRET = os.environ.get("COGNITO_CLIENT_SECRET", "")
 COGNITO_DOMAIN = os.environ.get("COGNITO_DOMAIN", "")
 COGNITO_REGION = os.environ.get("COGNITO_REGION", "")
 COGNITO_CALLBACK_PATH = os.environ.get("COGNITO_CALLBACK_PATH", "/auth/callback")
-COGNITO_SCOPES = "openid email profile"
 
 COGNITO_ENABLED = bool(COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID and COGNITO_DOMAIN)
 
@@ -80,35 +74,13 @@ def _token_endpoint() -> str:
     return f"https://{COGNITO_DOMAIN}/oauth2/token"
 
 
-def _authorize_endpoint() -> str:
-    return f"https://{COGNITO_DOMAIN}/oauth2/authorize"
-
-
 def _logout_endpoint() -> str:
     return f"https://{COGNITO_DOMAIN}/logout"
-
-
-def _jwks_uri() -> str:
-    return (
-        f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/"
-        f"{COGNITO_USER_POOL_ID}/.well-known/jwks.json"
-    )
 
 
 def _basic_auth_header() -> str:
     cred = f"{COGNITO_CLIENT_ID}:{COGNITO_CLIENT_SECRET}"
     return "Basic " + base64.b64encode(cred.encode()).decode()
-
-
-def get_authorize_url(callback_url: str, state: str) -> str:
-    params = {
-        "client_id": COGNITO_CLIENT_ID,
-        "response_type": "code",
-        "scope": COGNITO_SCOPES,
-        "redirect_uri": callback_url,
-        "state": state,
-    }
-    return _authorize_endpoint() + "?" + urllib.parse.urlencode(params)
 
 
 def get_logout_url(callback_url: str) -> str:
@@ -212,21 +184,6 @@ def refresh_tokens(refresh_token: str) -> dict[str, Any] | None:
             return json.loads(resp.read())
     except Exception:
         return None
-
-
-def _fetch_jwks() -> dict[str, Any]:
-    global _jwks_cache, _jwks_fetched
-    now = time.time()
-    if _jwks_cache and (now - _jwks_fetched) < _JWKS_TTL:
-        return _jwks_cache
-    req = urllib.request.Request(_jwks_uri())
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            _jwks_cache = json.loads(resp.read())
-            _jwks_fetched = now
-    except Exception:
-        pass
-    return _jwks_cache
 
 
 def _b64url_decode(s: str) -> bytes:

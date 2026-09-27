@@ -56,7 +56,7 @@ def main():
     result = deploy(args)
     print(f"Runtime {result['runtime_id']} revision {result['runtime_version']}: "
           f"{result['platform_version']} READY")
-    print(f"Runtime ARN: {result['runtime_arn']}")
+    runtime_deploy.print_receipt(result, region=args.region, saved_to=args.state)
 
 
 if __name__ == "__main__":

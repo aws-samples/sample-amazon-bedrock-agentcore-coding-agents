@@ -41,235 +41,52 @@ import run_store as _run_store    # durable run state (a verdict outlives its se
 # /api/runs endpoints poll; standalone (the deployed runtime) uses this default.
 ENGINE = _engine.Engine()
 
-# Request text is admitted by the host, never reconstructed from a tool argument.
-# Limits reject complete values; they must never hide a clipped request/context.
-MAX_USER_REQUEST_BYTES = 64 * 1024
-MAX_USER_CONTEXT_BYTES = 64 * 1024
-MAX_USER_CONTEXT_TURNS = 16
-MAX_REQUEST_PROVENANCE_BYTES = 160 * 1024
+# The participant's request is owned by the host (orchestrator/chat_request.py): only
+# their own words can become a build request, and a ledger per conversation records
+# which turns are not built yet and which runs it started.
+from chat_request import (  # noqa: E402  (re-exported: tests and hosts import them from chat)
+    MAX_REQUEST_PROVENANCE_BYTES, MAX_USER_CONTEXT_BYTES, MAX_USER_CONTEXT_TURNS,
+    MAX_USER_REQUEST_BYTES, RequestLedger, UserRequest, UserRequestError, ledger_for,
+)
+import chat_request as _request  # noqa: E402
 
-
-class UserRequestError(ValueError):
-    pass
-
-
-@dataclass(frozen=True)
-class UserRequest:
-    current: str
-    prior: tuple[tuple[int, str], ...] = ()
-    closed: threading.Event = field(default_factory=threading.Event, compare=False)
-    admission_lock: Any = field(default_factory=threading.RLock, compare=False)
-
-    def require_active(self) -> None:
-        if self.closed.is_set():
-            raise UserRequestError("USER_REQUEST_CLOSED")
-
-    def require_open(self) -> None:
-        self.require_active()
-        if not isinstance(self.current, str) or not self.current.strip():
-            raise UserRequestError("EMPTY_USER_REQUEST")
-        if len(self.current.encode("utf-8")) > MAX_USER_REQUEST_BYTES:
-            raise UserRequestError("USER_REQUEST_TOO_LARGE")
-
-    def close(self) -> None:
-        # A tool already inside submit is admitted; a later call cannot start work
-        # after a disconnect, even if its synchronous model/routing call returns late.
-        with self.admission_lock:
-            self.closed.set()
-
-
-_USER_REQUEST: ContextVar[UserRequest | None] = ContextVar("chat_user_request", default=None)
-
-
-def _prior_user_turns(messages: list | None) -> tuple[tuple[int, str], ...]:
-    """Read actual user text, stopping the context at a successful dispatch result.
-
-    Strands represents tool results as user messages too. They are not human input.
-    Match their real tool-use IDs before treating one as a dispatch boundary.
-    """
-    turns: list[tuple[int, str]] = []
-    dispatch_ids: set[str] = set()
-    for index, message in enumerate(messages or []):
-        if not isinstance(message, dict):
-            continue
-        blocks = message.get("content") or []
-        if not isinstance(blocks, list):
-            continue
-        if message.get("role") == "assistant":
-            for block in blocks:
-                use = block.get("toolUse") if isinstance(block, dict) else None
-                if (isinstance(use, dict) and use.get("name") in _dispatch_tool_names()
-                        and isinstance(use.get("toolUseId"), str) and use["toolUseId"]):
-                    dispatch_ids.add(use["toolUseId"])
-            continue
-        if message.get("role") != "user":
-            continue
-        results = [block["toolResult"] for block in blocks
-                   if isinstance(block, dict) and "toolResult" in block]
-        if results:
-            for result in results:
-                if not isinstance(result, dict) or result.get("toolUseId") not in dispatch_ids:
-                    continue
-                if result.get("status") == "error":
-                    continue
-                for block in result.get("content") or []:
-                    if not isinstance(block, dict):
-                        continue
-                    try:
-                        data = block.get("json") or json.loads(block.get("text", ""))
-                    except (TypeError, ValueError):
-                        continue
-                    if (isinstance(data, dict) and data.get("status") == "started"
-                            and isinstance(data.get("run_id"), str) and data["run_id"]):
-                        turns.clear()
-            continue
-        # _build_prompt puts the actual prompt first, followed by attachments.
-        # Attachment contents are reference material, not additional user turns.
-        if blocks and isinstance(blocks[0], dict):
-            text = blocks[0].get("text")
-            if isinstance(text, str) and text.strip():
-                turns.append((index, text))
-    return tuple(turns)
+_is_confirmation = _request.is_confirmation
 
 
 @contextmanager
-def _bind_request(request: UserRequest):
-    token = _USER_REQUEST.set(request)
-    try:
-        yield request
-    finally:
-        _USER_REQUEST.reset(token)
-
-
-@contextmanager
-def bind_user_request(prompt: str, messages: list | None = None):
+def bind_user_request(prompt: str, messages: list | None = None, *,
+                      ledger: RequestLedger | None = None):
     """Bind server-owned input for a direct invocation of the decorated tools."""
-    request = UserRequest(prompt, _prior_user_turns(messages))
+    request = (ledger or RequestLedger.from_messages(messages)).begin(prompt)
     try:
-        with _bind_request(request):
+        with _request.bind(request):
             yield request
     finally:
         request.close()
 
 
-def _current_user_request() -> UserRequest:
-    request = _USER_REQUEST.get()
-    if request is None:
-        raise UserRequestError("USER_REQUEST_NOT_BOUND")
-    request.require_open()
-    return request
-
-
-def _user_context(request: UserRequest, turn_ids: list[int] | None) -> list[dict]:
-    if not isinstance(turn_ids, (list, type(None))):
-        raise UserRequestError("INVALID_USER_CONTEXT")
-    ids = turn_ids or []
-    if len(ids) > MAX_USER_CONTEXT_TURNS:
-        raise UserRequestError("USER_CONTEXT_TOO_LARGE")
-    if any(type(i) is not int for i in ids) or len(set(ids)) != len(ids):
-        raise UserRequestError("INVALID_USER_CONTEXT")
-    available = dict(request.prior)
-    if any(i not in available for i in ids):
-        raise UserRequestError("USER_CONTEXT_UNAVAILABLE")
-    # Chronology is server-owned too; tool argument order cannot reverse precedence.
-    selected = [{"turn": i, "text": text} for i, text in request.prior if i in ids]
-    if sum(len(item["text"].encode("utf-8")) for item in selected) > MAX_USER_CONTEXT_BYTES:
-        raise UserRequestError("USER_CONTEXT_TOO_LARGE")
-    return selected
-
-
-def _explicit_preset(text: str, preset: str, canonical: str) -> bool:
-    """Recognize literal registry selectors, not a classifier for arbitrary work."""
-    markers = (preset, f"preset={preset}", _presets.PRESETS[preset]["title"], canonical)
-    value = text.strip()
-    if any(value == marker or value.startswith(marker + "\n")
-           or value.startswith(marker + "\r\n") for marker in markers if marker):
-        return True
-    # The workshop's CLI command is "Use preset=<id>. Creative direction: ...".
-    # Recognize that explicit command at the start, not a mention inside a
-    # question, negation, or a longer identifier.
-    return bool(re.match(
-        re.escape(f"use preset={preset}") + r"(?:\.(?=\s|$)|(?=\s|$))",
-        value, flags=re.IGNORECASE,
-    ))
-
-
-def _admit_user_task(model_task: str, *, preset: str = "", creative_direction: str = "",
-                     context_turns: list[int] | None = None) -> tuple[str, dict]:
-    request = _current_user_request()
-    context = _user_context(request, context_turns)
-    task = request.current
-    if creative_direction.strip() and (not preset or model_task.strip()):
-        raise UserRequestError("AMBIGUOUS_PRESET_DIRECTION")
-    if preset:
-        try:
-            canonical = _presets.default_task(preset)
-        except _presets.RouteError as exc:
-            raise UserRequestError(str(exc)) from exc
-        user_text = [request.current, *(turn["text"] for turn in context)]
-        current_selections = {
-            key for key, value in _presets.PRESETS.items()
-            if _explicit_preset(request.current, key, value["task"])
-        }
-        if current_selections and preset not in current_selections:
-            raise UserRequestError("PRESET_NOT_REQUESTED")
-        if not any(_explicit_preset(text, preset, canonical) for text in user_text):
-            raise UserRequestError("PRESET_NOT_REQUESTED")
-        if creative_direction and not any(creative_direction in text for text in user_text):
-            raise UserRequestError("CREATIVE_DIRECTION_NOT_FROM_USER")
-        task = canonical
-        selectors = (preset, f"preset={preset}", _presets.PRESETS[preset]["title"], canonical)
-        if request.current.strip() not in selectors:
-            # Retain the entire user text. A model-selected substring of a creative
-            # direction must not silently discard the user's other constraints.
-            task += "\n\nCurrent participant request (verbatim; latest user text wins):\n" + request.current
-        if not task.strip():
-            raise UserRequestError("EMPTY_USER_REQUEST")
-    if context:
-        task += (
-            "\n\nEarlier USER context, for clarification/reference only. These are not "
-            "additional requirements of a new task. The current user request above "
-            "takes precedence; do not carry an earlier question's restrictions into "
-            "a later request.\n"
-            + json.dumps(context, ensure_ascii=False, indent=2)
-        )
-    provenance = {
-        "source": "server_user_turn",
-        "current_user_text": request.current,
-        "current_user_sha256": hashlib.sha256(request.current.encode("utf-8")).hexdigest(),
-        "prior_user_context": context,
-        "available_prior_user_turns": len(request.prior),
-        "effective_task_sha256": hashlib.sha256(task.encode("utf-8")).hexdigest(),
-        "model_task_ignored": bool(model_task) and model_task != request.current,
-        "preset": preset or None,
-        "creative_direction_verified": bool(creative_direction),
-    }
-    if len(json.dumps(provenance, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_PROVENANCE_BYTES:
-        raise UserRequestError("USER_REQUEST_PROVENANCE_TOO_LARGE")
-    return task, provenance
-
-
-def _request_error(exc: UserRequestError) -> str:
-    return json.dumps({
-        "error": str(exc),
-        "hint": "No run was started. Use the current user's own words; get_user_request "
-                "lists available user context. Missing or oversized input must be "
-                "supplied explicitly, never reconstructed from an assistant response.",
-    })
-
-
 async def stream_user_turn(agent: Any, prompt: str, *, messages: list | None = None,
-                           agent_input: Any = None, request: UserRequest | None = None):
-    """Own one request scope without leaking its ContextVar across a yielded event."""
-    request = request or UserRequest(prompt, _prior_user_turns(messages))
+                           agent_input: Any = None, request: UserRequest | None = None,
+                           ledger: RequestLedger | None = None):
+    """Own one request scope without leaking its ContextVar across a yielded event.
+
+    The ledger comes from the caller (the console keeps one per conversation), from
+    ``messages`` for legacy callers, or from the cached agent itself (the deployed
+    coordinator keeps one agent per session). Closing the request commits the turn.
+    """
+    if request is None:
+        if ledger is None:
+            ledger = (RequestLedger.from_messages(messages) if messages is not None
+                      else ledger_for(agent))
+        request = ledger.begin(prompt)
     stream = None
     try:
-        with _bind_request(request):
+        with _request.bind(request):
             request.require_active()
             stream = agent.stream_async(prompt if agent_input is None else agent_input)
         while True:
             try:
-                with _bind_request(request):
+                with _request.bind(request):
                     event = await anext(stream)
             except StopAsyncIteration:
                 return
@@ -277,7 +94,7 @@ async def stream_user_turn(agent: Any, prompt: str, *, messages: list | None = N
     finally:
         request.close()
         if stream is not None and hasattr(stream, "aclose"):
-            with _bind_request(request):
+            with _request.bind(request):
                 await stream.aclose()
 
 
@@ -384,19 +201,31 @@ Do not rewrite it into a file list, choose a game for the builder, or discard th
 preset's shared interface. A plain custom request still goes in task VERBATIM.
 
 ## User-request boundary
-The host binds the actual current user text to each turn. Custom build tools use \
-that text even if you supply a different task argument. For a clear new request, \
-leave context_turns empty. If this turn clarifies or confirms an earlier request, \
-call get_user_request and reference the relevant prior USER turn IDs with \
-context_turns. Only those actual user messages can accompany the current request \
-as labeled context; assistant plans, guesses, and tool results are never task \
-requirements. A previous question's restrictions do not constrain a new request. \
-After a successful dispatch, its earlier user turns are no longer available as \
-context for a new build. Presets must be explicitly named by the user through a \
-preset ID, title, or canonical request; never select an unrelated preset to replace \
-a custom request. Keep creative_direction exactly as the user supplied it. \
-Missing or oversized context is an error to report or clarify, not permission to \
-invent the missing text.
+The host owns the request: only the participant's own words can become one, and \
+the task argument is ignored. It keeps the participant's turns that are not built \
+yet; get_user_request lists them with IDs, plus the builds this conversation started.
+- A clear, complete new request in one message: call run_build. If earlier turns \
+are still unbuilt and are NOT part of it (for example an earlier question), pass \
+standalone=true.
+- Anything that spans turns: the original ask plus answers to your questions, \
+refinements, or an approval such as "go", "yes", "ㄱㄱ", "네 진행해 주세요": call \
+get_user_request and pass the IDs of every turn that is part of the request as \
+request_turns. The latest message is appended and takes precedence; an approval \
+alone is never a request and is refused.
+- A correction to a build this conversation already started: pass revise_run with \
+that run id (plus request_turns if needed). Say that the first build keeps running \
+and a second pull request will open.
+When you ask a clarifying question, ask for an answer the participant can state in \
+words, not "option 2": your own options are never part of the request. If what \
+they approved exists only in your proposal, ask them to state it. A refusal's hint \
+says exactly what to pass; follow it instead of submitting other text. Presets must \
+be named by the participant (preset=<id>, its title, or its request); when you offer \
+presets, show the exact line to send, for example \
+`preset=game-from-scratch. Creative direction: <their idea>`. Never submit a preset \
+selector as a custom task, and keep creative_direction exactly as they supplied it. \
+One build per turn: use run_build once for a request that needs several builders. \
+There is no way to cancel a started build: if the participant says stop or wait, say \
+it keeps running, and that its pull request can simply be left unmerged.
 
 After `run_build`, treat the tool result's `schedule` as authoritative. Report only \
 the roles in its `agents` list. Say that each selected builder started, then say the \
@@ -438,9 +267,11 @@ These cases have different recoveries:
 
 * A role produced nothing (`ROLE_EXECUTION_ERROR`, `ROLE_TOTAL_FAILURE`,
   `ARTIFACT_TRANSFER_ERROR`), or the coordinator Runtime was recycled mid-build
-  (`COORDINATOR_SESSION_INTERRUPTED`). Nothing was judged, so the work is unproven
-  rather than rejected. Call run_build ONCE more with the SAME task text, and say
-  you are resubmitting.
+  (`COORDINATOR_SESSION_INTERRUPTED`). If `resubmission_allowed` is true, nothing
+  was judged or published, so call resubmit_run(run_id) ONCE and say you are
+  resubmitting the recorded request. Never use run_build for this: it would build
+  the participant's current message. If it is false, a pull request already
+  exists: follow next_action and continue from that pull request.
 * The account reached its daily model allowance (`MODEL_QUOTA_EXHAUSTED`). A fresh
   shell or another immediate build cannot restore that allowance. Report the limit
   and stop. Resume after it resets, or after the operator selects a model with
@@ -449,7 +280,8 @@ These cases have different recoveries:
   recorded limit and stop. Do not resubmit or dispatch another role to finish it.
   Partial work is unverified; a checker marked blocked did not run that turn.
   A person must inspect the evidence and decide how to narrow or continue the work.
-* Validation stayed blocked on real work (`ITERATION_CAP`). This can be a RED
+* Validation stayed blocked on real work (`ROLE_PR_BLOCKED`, with a row error of
+  `GATE_RED` or `ITERATION_CAP`). This can be a RED
   validator-authored executable OR a finding under either required lens of the
   integrated review, even when the executable is green. The bounded re-implement
   round is already spent.
@@ -486,7 +318,7 @@ def _dispatch_tool_names() -> set[str]:
     silently stopped the UI from ever showing that role's run).
     list_presets/run_status start nothing and are deliberately absent."""
     return {r.dispatch_tool for r in _roles.roster()
-            if r.kind == _roles.BUILDER} | {"run_build"}
+            if r.kind == _roles.BUILDER} | {"run_build", "resubmit_run"}
 
 
 def _wired_roles() -> set[str]:
@@ -518,9 +350,38 @@ def _schedule(agents: list[str]) -> list[dict[str, str]]:
     ]
 
 
+def _active_duplicate(task: str) -> str | None:
+    """A build of the exact same request that is still running, if any.
+
+    Pasting the Lab 2 submit block twice starts two sessions, so two coordinators,
+    so two full builds and two pull requests on one repository. Both coordinators
+    read the same saved run records, so the second one can see the first.
+    Fail-open: a record that cannot be read never blocks a build.
+    """
+    try:
+        # Only the same submitter's build: on a shared console, a teammate who asks
+        # for the same thing must not be refused and shown someone else's run.
+        from identity_baggage import get_current_identity  # noqa: PLC0415
+        me = _engine.public_submitter(get_current_identity().to_dict())
+        live = [r for r in ENGINE.list()
+                if getattr(r, "task", None) == task and r.status in ("queued", "running")
+                and _engine.public_submitter(getattr(r, "user_identity", None)) == me]
+        if live:
+            return live[0].run_id
+        for saved in _run_store.recent(_engine._RUNS_DIR, limit=10):
+            if (saved.get("task") == task and saved.get("status") in ("queued", "running")
+                    and saved.get("submitted_by") == me
+                    and not _run_store.active_snapshot_is_stale(saved)):
+                return saved.get("run_id") or "an earlier run"
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def _kick(agent_id: str | None, task: str, preset: str | None = None,
           *, request_provenance: dict | None = None,
-          resolved_agents: list[str] | None = None) -> str:
+          resolved_agents: list[str] | None = None,
+          resubmission_of: str | None = None) -> str:
     """Submit a run (focused on one builder when agent_id is set, else routed)
     WITHOUT blocking, and return its id immediately. The chat keeps streaming; the
     console polls the run for live status. The 'a run started' UI signal is NOT
@@ -530,8 +391,12 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
     The CHECKER always rides along with a builder. Validation is agentic only, so a
     builder dispatched alone would produce work with no authored acceptance check,
     and with no check the gate is red by design. Focusing a run means choosing which
-    BUILDER works, never dropping the verification."""
-    request = _current_user_request()
+    BUILDER works, never dropping the verification.
+
+    The dispatch is recorded in the conversation's ledger inside the same admission
+    lock, before the tool result exists, so a disconnect cannot erase it and one
+    turn can never start two builds."""
+    request = _request.current()
     agents = resolved_agents
     checkers = list(_roles.checker_ids())
     if agent_id:
@@ -548,8 +413,19 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
         agents = _presets.resolve(task=task).agents
     with request.admission_lock:
         request.require_open()
+        if request.started:
+            raise UserRequestError("ONE_BUILD_PER_TURN")
+        duplicate = _active_duplicate(task)
+        if duplicate:
+            raise UserRequestError(f"DUPLICATE_OF_ACTIVE_BUILD:{duplicate}")
         run = ENGINE.submit(task, agents=agents, preset=preset,
                             options={"chat_request": request_provenance or {}})
+        if request.ledger is not None:
+            request.ledger.record_dispatch(request, run.run_id, {
+                "task": task, "preset": preset, "agent": agent_id,
+                "agents": list(agents or []), "resubmission_of": resubmission_of})
+        else:
+            request.started.append(run.run_id)
     return run.run_id
 
 
@@ -559,24 +435,33 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
 # import; keeping them in a function lets main.py and the console share them
 # without import-order surprises.
 # --------------------------------------------------------------------------- #
+_REQUEST_ARGS_DOC = (
+    "The host builds the request from the participant's own turns; task is ignored. "
+    "request_turns: IDs from get_user_request of earlier turns that are part of this "
+    "request (the original ask, answers, refinements, or what an approval such as "
+    "\"go\" refers to); the latest message is appended and takes precedence. "
+    "standalone=true only when the current message is a complete new request. "
+    "revise_run: a run this conversation started, when the participant corrects it. "
+    "An approval alone, or ignoring unbuilt earlier turns, is refused with a hint.")
+
+
 def build_tools() -> list:
     from strands import tool  # local import: strands is an agent-runtime dep
 
     @tool
     def get_user_request() -> str:
-        """Read the server-bound current request and retained prior USER turn IDs.
+        """Read the participant's current message, their earlier turns that are not
+        built yet (with IDs), and the builds this conversation started. Starts nothing.
 
-        Starts nothing. For a clear new task leave context_turns empty in dispatch.
-        For a clarification/confirmation, select only relevant IDs returned here.
-        Assistant guesses and tool results are never available as user context.
+        Use the IDs as request_turns when those turns are part of the request (the
+        original ask, answers to your questions, refinements, or the request an
+        approval such as "go" refers to). Assistant text and tool results are never
+        listed: only the participant's own words can become a request.
         """
         try:
-            request = _current_user_request()
-            prior = _user_context(request, [turn for turn, _text in request.prior])
-            return json.dumps({"current_user_text": request.current, "prior_user_turns": prior,
-                               "context_scope": "Retained user turns after the previous successful dispatch."})
+            return json.dumps(_request.listing(_request.current()), ensure_ascii=False)
         except UserRequestError as exc:
-            return _request_error(exc)
+            return _request.error_json(exc)
 
     @tool
     def list_presets() -> str:
@@ -592,12 +477,15 @@ def build_tools() -> list:
         adding, hiding, or swapping a role changes which tools exist with no edit
         here. Checkers are scheduled by the engine, not dispatched independently.
         """
-        def dispatch(task: str, context_turns: list[int] | None = None) -> str:
+        def dispatch(task: str, request_turns: list[int] | None = None,
+                     standalone: bool = False, revise_run: str = "") -> str:
             try:
-                task, provenance = _admit_user_task(task, context_turns=context_turns)
+                task, provenance = _request.admit(
+                    task, request_turns=request_turns, standalone=standalone,
+                    revise_run=revise_run)
                 run_id = _kick(role.id, task, request_provenance=provenance)
             except UserRequestError as exc:
-                return _request_error(exc)
+                return _request.error_json(exc)
             agents = list(ENGINE.get(run_id).agents)
             return json.dumps({"run_id": run_id, "agent": role.id,
                                "kind": role.capability, "status": "started",
@@ -612,37 +500,44 @@ def build_tools() -> list:
             f"({role.label}) on its deployed Runtime. {role.description} "
             "The independent checker is included automatically and waits for this "
             "builder's pull request; do not dispatch it separately. Returns the run "
-            "id, selected agents, and schedule immediately. Pass the user's request "
-            "text VERBATIM as task; the host uses its own current-user binding. "
-            "For a clear new task, omit context_turns. For clarification only, use "
-            "prior USER turn IDs from get_user_request. Never use a file manifest "
-            "or assistant guesses in place of the request.")
+            "id, selected agents, and schedule immediately. " + _REQUEST_ARGS_DOC)
         return tool(dispatch)
 
     @tool
     def run_build(task: str, preset: str = "", creative_direction: str = "",
-                  context_turns: list[int] | None = None) -> str:
+                  request_turns: list[int] | None = None, standalone: bool = False,
+                  revise_run: str = "") -> str:
         """Start a FULL build of ANY request. Every selected builder gets an
         isolated pull request against the default branch. The checker authors an
         executable check; the engine runs it and records its exit code. Each pull
         request is reviewed and merged on its own. Returns immediately with a run
         id; the build runs in the background.
 
-        Pass the user's request text VERBATIM as task. It can be anything at all:
-        nothing here classifies it or maps it to a sample, so there is no wording to
-        get right. Optionally pass a `preset` id (see list_presets) to start from one
-        of the example requests instead. To personalize a preset, leave task empty
-        and pass the user's exact creative_direction; the preset's interface stays
-        intact while the builder chooses the implementation. The host uses its
-        actual current-user binding, not a model-authored replacement. For a clear
-        new task omit context_turns. Only for clarification/confirmation, reference
-        prior USER turn IDs returned by get_user_request."""
+        The request can be anything: nothing classifies it or maps it to a sample.
+        For a preset the participant named (preset=<id>, its title, or its request),
+        pass `preset` and leave task empty; pass their exact words as
+        creative_direction if they gave one. The host builds the request from the
+        participant's own turns:
+
+        - request_turns: IDs from get_user_request of earlier turns that are part of
+          this request (the original ask, answers to your questions, refinements,
+          or what an approval such as "go" refers to). The latest message is
+          appended automatically and takes precedence.
+        - standalone=true: only when the current message is a complete new request
+          and the earlier unbuilt turns are not part of it.
+        - revise_run: a run this conversation started, when the participant is
+          correcting it; its recorded request is the base.
+        An approval alone, or a dispatch that ignores unbuilt earlier turns, is
+        refused with a hint. `task` is ignored: pass the participant's words for
+        the record."""
         try:
-            task, provenance = _admit_user_task(
+            task, provenance = _request.admit(
                 task, preset=preset, creative_direction=creative_direction,
-                context_turns=context_turns)
+                request_turns=request_turns, standalone=standalone, revise_run=revise_run)
         except UserRequestError as exc:
-            return _request_error(exc)
+            return _request.error_json(exc)
+        # A revision keeps the revised run's own preset, whatever the model passed.
+        preset = provenance.get("preset") or ""
         # Routing is the MODEL's decision when the attendee typed their own request:
         # `resolve` asks which capabilities the request needs. It used to hand back
         # the whole roster here, which dispatched a frontend builder for a command
@@ -657,7 +552,7 @@ def build_tools() -> list:
                            resolved_agents=(list(route.agents)
                                             if route.preset == "routed" else None))
         except UserRequestError as exc:
-            return _request_error(exc)
+            return _request.error_json(exc)
         # Preset admission happens asynchronously. Before it fills the run,
         # report that preset's declared roster, not an empty schedule.
         agents = list(ENGINE.get(run_id).agents) or list(route.agents)
@@ -670,6 +565,40 @@ def build_tools() -> list:
             "schedule": _schedule(agents),
             "request_source": "server_user_turn",
         })
+
+    @tool
+    def resubmit_run(run_id: str) -> str:
+        """Repeat a failed build's EXACT recorded request, once, when its result
+        says a role produced nothing (resubmission_allowed is true). Use this, not
+        run_build, for that retry: run_build would build the participant's current
+        message instead. Only runs this conversation started can be resubmitted."""
+        def allowed(target: str) -> bool:
+            live = ENGINE.get(target)
+            if live is not None:
+                status, reason, rows = live.status, live.fail_reason, live.role_prs
+                items = {k: v.public() for k, v in (live.work_items or {}).items()}
+            else:
+                saved = _run_store.load(_engine._RUNS_DIR, target) or {}
+                status, reason = saved.get("status"), saved.get("fail_reason")
+                rows, items = saved.get("role_prs"), saved.get("work_items")
+                if saved and _run_store.active_snapshot_is_stale(saved):
+                    status, reason = "needs_human", "COORDINATOR_SESSION_INTERRUPTED"
+            return _engine.resubmission_allowed(status, reason, rows, work_items=items)
+
+        try:
+            recorded, provenance = _request.admit_resubmission(run_id, allowed)
+            new_id = _kick(recorded.get("agent"), recorded["task"],
+                           preset=recorded.get("preset"), request_provenance=provenance,
+                           resolved_agents=(recorded.get("agents") or None)
+                           if not recorded.get("agent") else None,
+                           resubmission_of=run_id)
+        except UserRequestError as exc:
+            return _request.error_json(exc)
+        agents = list(ENGINE.get(new_id).agents)
+        return json.dumps({"run_id": new_id, "kind": "build", "status": "started",
+                           "resubmission_of": run_id, "agents": agents,
+                           "schedule": _schedule(agents),
+                           "request_source": "recorded_request"})
 
     @tool
     def run_status(run_id: str) -> str:
@@ -697,9 +626,10 @@ def build_tools() -> list:
                     "next_action": _engine.next_action(
                         "needs_human", reason, saved.get("pr"),
                         saved.get("pr_url"),
-                        saved.get("role_prs")),
+                        saved.get("role_prs"), work_items=saved.get("work_items")),
                     "resubmission_allowed": _engine.resubmission_allowed(
-                        "needs_human", reason, saved.get("role_prs")),
+                        "needs_human", reason, saved.get("role_prs"),
+                        work_items=saved.get("work_items")),
                     "source": "persisted",
                 })
             return json.dumps({**saved, "source": "persisted"})
@@ -721,12 +651,27 @@ def build_tools() -> list:
         lost, which is otherwise a dead end: run ids are minted per run and the
         only other record is the pull request itself.
         """
-        rows = _run_store.recent(_engine._RUNS_DIR, limit=10)
-        return json.dumps({"runs": [
-            {k: r.get(k) for k in ("run_id", "status", "task", "preset",
-                                   "pr_url", "fail_reason", "next_action",
-                                   "resubmission_allowed", "_saved_at")}
-            for r in rows]})
+        rows = []
+        for saved in _run_store.recent(_engine._RUNS_DIR, limit=10):
+            view = {k: saved.get(k) for k in ("run_id", "status", "task", "preset",
+                                               "fail_reason", "next_action",
+                                               "resubmission_allowed", "_saved_at")}
+            # A dead heartbeat is an interruption, exactly as run_status reports it,
+            # and a pull request recorded only under work_items is still a PR.
+            if _run_store.active_snapshot_is_stale(saved):
+                reason = "COORDINATOR_SESSION_INTERRUPTED"
+                view.update(status="needs_human", fail_reason=reason,
+                            next_action=_engine.next_action(
+                                "needs_human", reason, saved.get("pr"), saved.get("pr_url"),
+                                saved.get("role_prs"), work_items=saved.get("work_items")),
+                            resubmission_allowed=_engine.resubmission_allowed(
+                                "needs_human", reason, saved.get("role_prs"),
+                                work_items=saved.get("work_items")))
+            view["pull_requests"] = [row["pr_url"] for row in _engine._published_rows(
+                saved.get("role_prs"), saved.get("work_items"))] or (
+                [saved["pr_url"]] if saved.get("pr_url") else [])
+            rows.append(view)
+        return json.dumps({"runs": rows})
 
     # --- Interactive control of a LIVE agent terminal (shared PTY, F1) -------
     # These talk to the SAME run.sh TUI the human is watching on the Agents page
@@ -874,7 +819,7 @@ def build_tools() -> list:
     tools += [_make_dispatch(r) for r in dispatchable]
     # A checker-only installation can still use the read-only review preset.
     if wired:
-        tools.append(run_build)
+        tools += [run_build, resubmit_run]
     tools.append(run_status)
     # Always available, even with nothing wired: it reads persisted history, so it
     # is the way back to a run whose session (or run id) was lost.
@@ -1053,7 +998,9 @@ def _build_prompt(prompt: str, attachments: list[dict] | None):
 
 def stream_chat(prompt: str, *, model_id: str | None = None,
                 messages: list | None = None,
-                attachments: list[dict] | None = None) -> Iterator[dict]:
+                attachments: list[dict] | None = None,
+                ledger: RequestLedger | None = None,
+                cancel: threading.Event | None = None) -> Iterator[dict]:
     """Drive one chat turn of the orchestrator agent and yield events AS THEY
     ARRIVE (token-by-token streaming), not collected-then-dumped:
 
@@ -1079,7 +1026,10 @@ def stream_chat(prompt: str, *, model_id: str | None = None,
 
     q: queue.Queue = queue.Queue()
     _DONE = object()
-    request = UserRequest(prompt, _prior_user_turns(messages))
+    # The participant's turn includes the text they attached (play-test notes, a
+    # spec): it is their own material, so it reaches the build with their words.
+    ledger = ledger or RequestLedger.from_messages(messages)
+    request = ledger.begin(_request.request_text(prompt, attachments))
     agent = build_agent(model_id=model_id, messages=messages)
     # A plain string for a text-only turn; a list of content blocks (text + image)
     # when the user attached an image: the Strands multimodal prompt shape.
@@ -1144,6 +1094,25 @@ def stream_chat(prompt: str, *, model_id: str | None = None,
             q.put(_DONE)
 
     threading.Thread(target=lambda: _caller_ctx.run(_run), daemon=True).start()
+
+    # Stop, a reload, or a dropped connection sets `cancel`. Close the request at
+    # once, so a tool call the model is about to make can no longer start a build,
+    # and stop the turn; waiting for the next streamed event let a stopped turn
+    # dispatch a build nobody saw.
+    if cancel is not None:
+        def _watch_cancel() -> None:
+            while not request.closed.is_set():
+                if cancel.wait(0.25):
+                    request.close()
+                    loop, task = worker.get("loop"), worker.get("task")
+                    if loop is not None and task is not None and not task.done():
+                        try:
+                            loop.call_soon_threadsafe(task.cancel)
+                        except RuntimeError:
+                            pass
+                    q.put(_DONE)
+                    return
+        threading.Thread(target=_watch_cancel, daemon=True).start()
 
     # Keepalive: the model can think for well over 30s without emitting a single
     # delta, and an SSE response that sends NO bytes for that long is cut by the

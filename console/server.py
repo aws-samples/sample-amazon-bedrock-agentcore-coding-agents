@@ -28,14 +28,15 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
 import sys
 import time
 from binascii import Error as BinasciiError
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, unquote
 
-from fastapi import FastAPI, Request, Response
-from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
+from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
 )
@@ -145,7 +146,6 @@ def _current_user(request: Request) -> cognito_auth.CognitoUser | None:
 # dispatch() still matches "/api/<resource>" internally, so the mount layer
 # re-adds that "/api" prefix when forwarding; the engines are untouched, only the
 # public URL is clean (e.g. /api/orchestrator/runs -> connection_api "/api/runs").
-_MOUNTS = {"dev": "s1", "orchestrator": "s2", "metrics": "s3"}
 
 
 def _live_runtime_rows(query: str) -> list[dict]:
@@ -498,9 +498,13 @@ async def runtime_session_input(session_id: str, request: Request):
     raw = await request.body()
     body = _json.loads(raw) if raw else {}
     text = body.get("input", "")
+    user = _current_user(request)
+    baggage = user.to_baggage() if user else {}
+    caller_ids = {v for v in (baggage.get("user_id"), baggage.get("user_email")) if v}
     # The Runtime acknowledges the send before the browser advances its input
     # queue. Keep that network wait off the server's SSE/HTTP event loop.
-    return JSONResponse(await run_in_threadpool(runtime_shell.send_input, session_id, text))
+    return JSONResponse(await run_in_threadpool(runtime_shell.send_input, session_id, text,
+                                                caller_ids or None))
 
 
 @app.post("/api/dev/runtime-sessions/{session_id}/resize")
@@ -552,10 +556,13 @@ async def s2_chat(request: Request):
     if cognito_user:
         user_baggage = cognito_user.to_baggage()
 
+    cancel = threading.Event()
+
     def gen():
         try:
             for ev in connection_api.chat_stream(conversation_id, prompt, model_id,
-                                                 attachments, user_identity=user_baggage):
+                                                 attachments, user_identity=user_baggage,
+                                                 cancel=cancel):
                 yield f"data: {_json.dumps(ev)}\n\n"
         except Exception as exc:  # noqa: BLE001 (surface the real error, never hang)
             yield f"data: {_json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
@@ -564,10 +571,30 @@ async def s2_chat(request: Request):
     # chat_stream is a BLOCKING generator: it drives the Strands agent, which makes
     # synchronous Bedrock network calls between yields. A sync generator handed to
     # StreamingResponse is iterated on the event-loop thread, so each blocking yield
-    # would freeze every other page for the whole turn. iterate_in_threadpool pumps
-    # it from a worker thread, keeping the loop free while tokens stream.
+    # would freeze every other page for the whole turn, so each item is pulled on a
+    # worker thread. The generator is CLOSED when the browser leaves (Stop, reload, a
+    # dropped network): the earlier iterate_in_threadpool never closed it, so a stopped turn kept
+    # running and could still start a build nobody saw. The chat stream yields a
+    # keepalive at least every 15s, so a disconnect is noticed within that.
+    async def events():
+        stream = gen()
+        end = object()
+        try:
+            while not await request.is_disconnected():
+                item = await _next_cancellable(stream, end)
+                if item is end:
+                    break
+                yield item
+        finally:
+            # Never await here: a disconnect cancels this task, and an awaited close
+            # raised CancelledError before running, which left the conversation
+            # locked. `cancel` stops the turn at once; the generator is then closed
+            # on a thread as soon as its current step returns.
+            cancel.set()
+            threading.Thread(target=_close_when_idle, args=(stream,), daemon=True).start()
+
     return StreamingResponse(
-        iterate_in_threadpool(gen()),
+        events(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -575,6 +602,31 @@ async def s2_chat(request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def _next_cancellable(stream, end):
+    """The generator's next item on a worker thread, abandoned on disconnect.
+
+    run_in_threadpool is not cancellable: a Stop or reload waited until the model
+    produced its next event (up to the 15-second keepalive), long enough for the
+    stopped turn to dispatch a build.
+    """
+    import anyio.to_thread  # noqa: PLC0415
+    try:
+        return await anyio.to_thread.run_sync(next, stream, end, abandon_on_cancel=True)
+    except TypeError:   # anyio < 4.1 names the flag `cancellable`
+        return await anyio.to_thread.run_sync(next, stream, end, cancellable=True)
+
+
+def _close_when_idle(stream, attempts: int = 150) -> None:
+    """Close a sync generator that may still be inside its current step."""
+    import time as _time
+    for _ in range(attempts):
+        try:
+            stream.close()
+            return
+        except ValueError:          # "generator already executing"
+            _time.sleep(0.2)
 
 
 # ---- Stage API dispatch (s1/s2/s3, all methods) ---------------------------

@@ -440,7 +440,6 @@ def test_replay_reads_the_run_and_writes_nothing():
     before = (run.status, run.iterations, dict(run.gate), list(run.agents))
     replay.narrative(run)
     replay.round_comment(run)
-    replay.as_json(run)
     assert (run.status, run.iterations, dict(run.gate), list(run.agents)) == before
 
 

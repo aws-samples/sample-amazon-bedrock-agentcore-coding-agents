@@ -205,6 +205,74 @@ def promote_project(project: Path, *, target_name: str = "default",
     return result
 
 
+def _engine_default_model() -> str | None:
+    """The coordinator's built-in model, read from the engine source it runs."""
+    source = Path(__file__).resolve().parent.parent / "orchestrator" / "chat.py"
+    try:
+        match = re.search(r'"ORCHESTRATOR_MODEL_ID",\s*"([^"]+)"', source.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return match[1] if match else None
+
+
+def receipt_lines(project: Path, *, target_name: str = "default",
+                  runtime_name: str = "orchestrator") -> list[str]:
+    """What `deploy-coordinator.sh` created, from the files this host already has.
+
+    Reads local project state only: no AWS call, no write. Missing pieces are
+    reported as not recorded instead of failing the deployment that just passed.
+    """
+    config_root = project / "agentcore"
+
+    def load(path: Path):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    record = ((load(config_root / ".cli" / "runtime-platforms.json").get(target_name) or {})
+              .get(runtime_name) or {})
+    resources = (((load(config_root / ".cli" / "deployed-state.json").get("targets") or {})
+                  .get(target_name) or {}).get("resources") or {})
+    entry = (resources.get("runtimes") or {}).get(runtime_name) or {}
+    targets = load(config_root / "aws-targets.json")
+    region = next((t.get("region") for t in targets if isinstance(t, dict)
+                   and t.get("name") == target_name), None) if isinstance(targets, list) else None
+    runtime = next((r for r in load(config_root / "agentcore.json").get("runtimes", [])
+                    if isinstance(r, dict) and r.get("name") == runtime_name), {})
+    env = {item.get("name"): item.get("value") for item in runtime.get("envVars", [])
+           if isinstance(item, dict)}
+    runtime_id = record.get("runtime_id") or entry.get("runtimeId") or "not recorded"
+    region = region or "<region>"
+    if env.get("ORCHESTRATOR_MODEL_ID"):
+        model = f"{env['ORCHESTRATOR_MODEL_ID']} (ORCHESTRATOR_MODEL_ID)"
+    else:
+        default = _engine_default_model()
+        model = f"{default} (the engine default)" if default else "the engine default"
+
+    def row(label: str, value) -> str:
+        return f"  {label + ':':<16} {value}"
+
+    lines = ["What this created: the coordinator, an Amazon Bedrock AgentCore Runtime",
+             row("Runtime ID", runtime_id),
+             row("Runtime ARN", record.get("runtime_arn") or entry.get("runtimeArn") or "not recorded"),
+             row("Revision", f"{record.get('runtime_version', entry.get('runtimeVersion', '?'))}, "
+                             f"platform {record.get('platform_version', '?')}, "
+                             f"{record.get('runtime_status', '?')}"),
+             row("Model", model + "  (a Strands agent that routes, dispatches and reports)"),
+             row("Execution role", entry.get("roleArn") or "not recorded")]
+    stack = resources.get("stackName")
+    if stack:
+        lines.append(row("Built by", f"agentcore deploy, as CloudFormation stack {stack}"))
+    lines += [row("Saved on host", config_root / ".cli" / "deployed-state.json"),
+              "  See it yourself (read-only):",
+              f"    aws {runtime_deploy.CLI_SERVICE} get-agent-runtime --agent-runtime-id "
+              f"{runtime_id} --region {region}"]
+    if stack:
+        lines.append(f"    aws cloudformation describe-stacks --stack-name {stack} --region {region}")
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True,
@@ -212,7 +280,20 @@ def main():
     parser.add_argument("--target", default="default")
     parser.add_argument("--runtime", default="orchestrator")
     parser.add_argument("--timeout", type=float)
+    parser.add_argument("--receipt", action="store_true",
+                        help="Print what the deployment created from local state; no AWS call.")
     args = parser.parse_args()
+    if args.receipt:
+        # Reporting only: an unexpected local file shape must never read as a failed deploy.
+        try:
+            lines = receipt_lines(args.project, target_name=args.target,
+                                  runtime_name=args.runtime)
+        except Exception as exc:  # noqa: BLE001
+            lines = [f"(Receipt unavailable: {type(exc).__name__} reading local state; "
+                     "the deployment itself is unaffected.)"]
+        for line in lines:
+            print(line)
+        return
     result = promote_project(args.project, target_name=args.target,
                              runtime_name=args.runtime, timeout_s=args.timeout)
     print(f"Coordinator {result['runtime_id']} revision {result['runtime_version']}: "

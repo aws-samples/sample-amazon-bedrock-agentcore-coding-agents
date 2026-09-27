@@ -22,34 +22,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import runtime_deploy
 
 
-def load_dotconfig(path):
-    cfg = {}
-    if not os.path.exists(path):
-        return cfg
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and "=" in line and not line.startswith("#"):
-                key, value = line.split("=", 1)
-                cfg[key] = value.strip('"').strip("'")
-    return cfg
+load_dotconfig = runtime_deploy.load_dotconfig
 
 
 def _load_runtime_id(config_path: str):
-    """Read a saved Runtime ID, or recover from a damaged local config."""
-    if not os.path.exists(config_path):
-        return None
-    try:
-        with open(config_path) as f:
-            config = json.load(f)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        print("Warning: runtime_config.json is invalid; recovering from AgentCore.")
-        return None
-    if not isinstance(config, dict):
-        print("Warning: runtime_config.json has an invalid shape; recovering from AgentCore.")
-        return None
-    runtime_id = config.get("runtime_id")
-    return runtime_id if isinstance(runtime_id, str) and runtime_id else None
+    """A saved Runtime ID, or None (see runtime_deploy.load_runtime_id)."""
+    return runtime_deploy.load_runtime_id(config_path)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -95,19 +73,9 @@ _assert_same_region(S3FILES_AP_ARN, REGION)
 
 
 def _s3files_policy_resources() -> list:
-    """IAM Resource list for the S3Files statement.
+    """Resource ARNs for the S3Files IAM statement (runtime_deploy explains the scoping)."""
+    return runtime_deploy.s3files_policy_resources(S3FILES_AP_ARN, REGION, ACCOUNT_ID)
 
-    When the access point is known, scope to that AP + its file system. When it is
-    NOT known yet (the predeploy-mountless boot path: the attendee creates the
-    access point on Stage 1 and a later re-run attaches it), scope to this account's
-    S3Files file systems / access points in-region. Never emit empty-string ARNs,
-    which would make put_role_policy reject the whole policy as malformed."""
-    if S3FILES_AP_ARN:
-        return [S3FILES_AP_ARN, S3FILES_AP_ARN.rsplit("/access-point/", 1)[0]]
-    return [
-        f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:file-system/*",
-        f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:access-point/*",
-    ]
 
 def require_deploy_prereqs():
     """Enforce deploy prerequisites. Called from main(), not at import."""
@@ -121,215 +89,70 @@ def require_deploy_prereqs():
         sys.exit(1)
 
 
+def execution_role_documents() -> tuple[str, dict, dict]:
+    """The role name, trust policy and inline policy, shared by deploy and --explain.
+
+    Identical statements come from runtime_deploy; this role's own least-privilege
+    choices are the inline ones below."""
+    statements = [
+        runtime_deploy.logs_statement(REGION, ACCOUNT_ID),
+        {
+            # Codex's collector writes usage to this one log group; the grant is
+            # scoped to it instead of the broader Telemetry statement other roles use.
+            "Sid": "UsageLogs",
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+                "logs:DescribeLogStreams",
+            ],
+            "Resource": [
+                f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/workshop/coding-agents/telemetry",
+                f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/workshop/coding-agents/telemetry:*",
+            ],
+        },
+        {
+            "Sid": "BedrockOpenAIInference",
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:InvokeModel",
+                "bedrock:InvokeModelWithResponseStream",
+            ],
+            "Resource": [
+                # Cross-region profiles can route to another model region.
+                # Grant only the OpenAI family, not every foundation model.
+                "arn:aws:bedrock:*::foundation-model/openai.*",
+                f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:inference-profile/*.openai.*",
+            ],
+        },
+        {
+            "Sid": "BedrockRuntimeProjectInvoke",
+            "Effect": "Allow",
+            # The OpenAI-compatible API also requires the default project,
+            # in addition to the inference target grants above.
+            "Action": ["bedrock:InvokeModel"],
+            "Resource": [
+                f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:project/default",
+            ],
+        },
+        *runtime_deploy.ecr_statements(ECR_URI, default_repo='coding-agents-codex',
+                                       account_id=ACCOUNT_ID, region=REGION),
+        *runtime_deploy.storage_statements(_s3files_policy_resources(), region=REGION,
+                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET),
+        # No Gateway or SecretsManager grant: the coordinator owns GitHub.
+        # The worker receives source archives and returns source archives.
+        runtime_deploy.eventbridge_statement(),
+    ]
+    return (f"agentcore-{AGENT_NAME}-{REGION}-role",
+            runtime_deploy.trust_policy(REGION, ACCOUNT_ID), runtime_deploy.policy(statements))
+
+
 def create_execution_role() -> str:
-    session = boto3.Session(region_name=REGION)
-    iam = session.client("iam")
-    role_name = f"agentcore-{AGENT_NAME}-{REGION}-role"
-
-    trust_policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Principal": {
-                    "Service": "bedrock-agentcore.amazonaws.com"
-                },
-                "Action": "sts:AssumeRole",
-            },
-            {
-                "Effect": "Allow",
-                "Principal": {"Service": "elasticfilesystem.amazonaws.com"},
-                "Action": "sts:AssumeRole",
-                "Condition": {
-                    "StringEquals": {"aws:SourceAccount": ACCOUNT_ID},
-                    "ArnLike": {
-                        "aws:SourceArn": f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:file-system/*"
-                    },
-                },
-            },
-        ],
-    }
-
-    # Parse the registry account + region FROM the image URI, not the attendee's
-    # infra.config. With a per-account image these equal ACCOUNT_ID/REGION; with a
-    # PREBUILT image pulled from a central workshop ECR they are the central
-    # account/region, so the ECR-pull grant below lands on the repo that actually
-    # holds the image (cross-account pull). URI shape:
-    #   <acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
-    ecr_repo = (
-        ECR_URI.split("/", 1)[1].split("@", 1)[0].split(":", 1)[0]
-        if "/" in ECR_URI else "coding-agents-codex"
-    )
-    _reg = ECR_URI.split(".dkr.ecr.")[0] if ".dkr.ecr." in ECR_URI else ACCOUNT_ID
-    ecr_account = _reg.split("/")[-1] if _reg else ACCOUNT_ID
-    ecr_region = ECR_URI.split(".dkr.ecr.")[1].split(".")[0] if ".dkr.ecr." in ECR_URI else REGION
-
-    inline_policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "Logs",
-                "Effect": "Allow",
-                "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents",
-                    "logs:DescribeLogGroups",
-                    "logs:DescribeLogStreams",
-                ],
-                "Resource": [
-                    f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/*"
-                ],
-            },
-            {
-                "Sid": "UsageLogs",
-                "Effect": "Allow",
-                "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents",
-                    "logs:DescribeLogStreams",
-                ],
-                "Resource": [
-                    f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/workshop/coding-agents/telemetry",
-                    f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:/workshop/coding-agents/telemetry:*",
-                ],
-            },
-            {
-                "Sid": "BedrockOpenAIInference",
-                "Effect": "Allow",
-                "Action": [
-                    "bedrock:InvokeModel",
-                    "bedrock:InvokeModelWithResponseStream",
-                ],
-                "Resource": [
-                    # Cross-region profiles can route to another model region.
-                    # Grant only the OpenAI family, not every foundation model.
-                    "arn:aws:bedrock:*::foundation-model/openai.*",
-                    f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:inference-profile/*.openai.*",
-                ],
-            },
-            {
-                "Sid": "BedrockRuntimeProjectInvoke",
-                "Effect": "Allow",
-                # The OpenAI-compatible API also requires the default project,
-                # in addition to the inference target grants above.
-                "Action": ["bedrock:InvokeModel"],
-                "Resource": [
-                    f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:project/default",
-                ],
-            },
-            {
-                "Sid": "ECRAuth",
-                "Effect": "Allow",
-                "Action": ["ecr:GetAuthorizationToken"],
-                "Resource": ["*"],
-            },
-            {
-                "Sid": "ECRPull",
-                "Effect": "Allow",
-                "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-                # Scoped to the registry that actually holds the image (the central
-                # workshop account for a prebuilt pull, else this account).
-                "Resource": [f"arn:aws:ecr:{ecr_region}:{ecr_account}:repository/{ecr_repo}"],
-            },
-            {
-                "Sid": "S3Files",
-                "Effect": "Allow",
-                "Action": [
-                    "s3files:GetAccessPoint",
-                    "s3files:GetFileSystem",
-                    "s3files:GetMountTarget",
-                    "s3files:DescribeMountTargets",
-                    "s3files:ListMountTargets",
-                    "s3files:ClientMount",
-                    "s3files:ClientWrite",
-                    "s3files:ClientRootAccess",
-                ],
-                "Resource": _s3files_policy_resources(),
-            },
-            {
-                "Sid": "EFS",
-                "Effect": "Allow",
-                "Action": [
-                    "elasticfilesystem:ClientMount",
-                    "elasticfilesystem:ClientWrite",
-                    "elasticfilesystem:DescribeAccessPoints",
-                    "elasticfilesystem:DescribeMountTargets",
-                ],
-                "Resource": [
-                    f"arn:aws:elasticfilesystem:{REGION}:{ACCOUNT_ID}:file-system/*",
-                    f"arn:aws:elasticfilesystem:{REGION}:{ACCOUNT_ID}:access-point/*",
-                ],
-            },
-            {
-                "Sid": "S3Bucket",
-                "Effect": "Allow",
-                "Action": [
-                    "s3:ListBucket",
-                    "s3:ListBucketVersions",
-                    "s3:GetObject*",
-                    "s3:PutObject*",
-                    "s3:DeleteObject*",
-                    "s3:AbortMultipartUpload",
-                ],
-                "Resource": [
-                    f"arn:aws:s3:::{S3FILES_BUCKET}",
-                    f"arn:aws:s3:::{S3FILES_BUCKET}/*",
-                ],
-            },
-            # No Gateway or SecretsManager grant: the coordinator owns GitHub.
-            # The worker receives source archives and returns source archives.
-            {
-                "Sid": "EventBridge",
-                "Effect": "Allow",
-                "Action": [
-                    "events:DeleteRule",
-                    "events:DisableRule",
-                    "events:EnableRule",
-                    "events:PutRule",
-                    "events:PutTargets",
-                    "events:RemoveTargets",
-                    "events:DescribeRule",
-                    "events:ListRules",
-                    "events:ListTargetsByRule",
-                ],
-                "Resource": ["arn:aws:events:*:*:rule/*"],
-            },
-        ],
-    }
-
-    created_now = True
-    try:
-        resp = iam.create_role(
-            RoleName=role_name,
-            AssumeRolePolicyDocument=json.dumps(trust_policy),
-            Description=f"Execution role for {AGENT_NAME} on AgentCore",
-        )
-        role_arn = resp["Role"]["Arn"]
-        print(f"\nCreated IAM role: {role_arn}")
-    except iam.exceptions.EntityAlreadyExistsException:
-        role_arn = f"arn:aws:iam::{ACCOUNT_ID}:role/{role_name}"
-        created_now = False
-        print(f"\nIAM role exists: {role_arn}")
-
-    iam.put_role_policy(
-        RoleName=role_name,
-        PolicyName=f"{AGENT_NAME}-policy",
-        PolicyDocument=json.dumps(inline_policy),
-    )
-
-    if created_now:
-        # A role the service can see is not yet a role the service can ASSUME: the trust
-        # policy replicates to STS on its own clock. Ten seconds was enough on every
-        # earlier event box; on 2026-09-03 a fresh account rejected a 10s-old role and
-        # a 30s-old one alike, so the wait is a floor and deploy_runtime() below also
-        # retries the validation failure itself instead of dying on the first answer.
-        print("Waiting 20s for IAM propagation (new role)...")
-        time.sleep(20)
-    return role_arn
-
-
+    role_name, trust_policy, inline_policy = execution_role_documents()
+    return runtime_deploy.create_execution_role(
+        boto3.Session(region_name=REGION).client("iam"), role_name, trust_policy, inline_policy,
+        agent_name=AGENT_NAME, account_id=ACCOUNT_ID, sleep=time.sleep)
 
 
 def _runtime_environment() -> dict:
@@ -346,45 +169,26 @@ def _runtime_environment() -> dict:
 
 
 def deploy_runtime(role_arn: str) -> dict:
-    session = boto3.Session(region_name=REGION)
-    control = runtime_deploy.control_client(REGION, session)
-
-    artifact = {"containerConfiguration": {"containerUri": ECR_URI}}
-    network = {
-        "networkMode": "VPC",
-        "networkModeConfig": {
-            "subnets": [SUBNET_1, SUBNET_2],
-            "securityGroups": [SECURITY_GROUP],
-        },
-    }
-    # Attach the S3 Files mount only when the access point is known (mountless until
-    # the attendee creates it in Stage 1; re-running deploy.py then attaches it).
-    fs_kwargs = {}
-    if MOUNT_AP_ARN:
-        fs_kwargs["filesystemConfigurations"] = [
-            {
-                "s3FilesAccessPoint": {
-                    "accessPointArn": MOUNT_AP_ARN,
-                    "mountPath": S3FILES_MOUNT_PATH,
-                }
-            }
-        ]
-    return runtime_deploy.deploy(control, dict(
-        agentRuntimeName=AGENT_NAME,
-        agentRuntimeArtifact=artifact,
-        roleArn=role_arn,
-        networkConfiguration=network,
-        protocolConfiguration={"serverProtocol": "HTTP"},
-        environmentVariables=_runtime_environment(),
+    return runtime_deploy.deploy_role_runtime(
+        runtime_deploy.control_client(REGION, boto3.Session(region_name=REGION)), name=AGENT_NAME,
+        image=ECR_URI, role_arn=role_arn, subnets=[SUBNET_1, SUBNET_2],
+        security_groups=[SECURITY_GROUP], mount_ap_arn=MOUNT_AP_ARN,
+        mount_path=S3FILES_MOUNT_PATH, environment=_runtime_environment(),
         description='Codex PTY agent',
-        **fs_kwargs,
-    ), runtime_id=_load_runtime_id(os.path.join(SCRIPT_DIR, "runtime_config.json")))
+        runtime_id=_load_runtime_id(os.path.join(SCRIPT_DIR, "runtime_config.json")))
 
 
 def main():
     runtime_deploy.require_runtime_sdk()
     runtime_deploy.validate_environment(_runtime_environment())
     require_deploy_prereqs()
+
+    if runtime_deploy.EXPLAIN:
+        role_name, trust_policy, inline_policy = execution_role_documents()
+        deploy_runtime(runtime_deploy.explain_role(
+            boto3.Session(region_name=REGION).client("iam"), role_name, trust_policy,
+            inline_policy, account_id=ACCOUNT_ID))
+        return
 
     print("=" * 60)
     print(f"Deploying {AGENT_NAME} to AgentCore Runtime")
@@ -411,14 +215,15 @@ def main():
 
     print("\n" + "=" * 60)
     print("Deployment complete!")
-    print(f"  Runtime ARN: {runtime['runtime_arn']}")
-    print(f"  S3 Files:    {S3FILES_MOUNT_PATH}")
-    print("  Config:      codex/runtime_config.json")
+    runtime_deploy.print_receipt(runtime, region=REGION,
+                                 saved_to="coding-agents/codex/runtime_config.json")
     print("\n  Connect: python codex/connect.py")
     print("=" * 60)
 
 
 if __name__ == "__main__":
+    # --explain: print the exact request (and the role) without any AWS write.
+    runtime_deploy.EXPLAIN = "--explain" in sys.argv[1:]
     try:
         main()
     except runtime_deploy.RuntimeDeploymentError as error:

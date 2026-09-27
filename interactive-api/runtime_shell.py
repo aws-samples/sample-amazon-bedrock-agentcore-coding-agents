@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import shlex
 import sys
@@ -245,7 +246,11 @@ class RuntimeShellSession:
     def send_turn(self, text: str) -> None:
         """Paste a multiline orchestrator turn into the same TUI a human sees."""
         import time as _t
-        body = text.rstrip("\r\n")
+        # A participant's text inside a bracketed paste must stay text: an ESC byte
+        # (or a pasted "\x1b[201~") would end the paste early and turn the rest into
+        # keystrokes, and other control bytes act as editor keys in the TUI.
+        body = text.replace("\r\n", "\n").replace("\r", "\n")
+        body = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", body).rstrip("\n")
         before = len(self.buffer)
         self.send_input("\x1b[200~" + body + "\x1b[201~")
         # Completion of WebSocket.send is not completion of the TUI's paste.
@@ -470,12 +475,34 @@ def close_runtime_session(session_id: str) -> dict:
     return {"ok": True, "closed": s is not None}
 
 
-def find_session_for_agent(agent_id: str) -> RuntimeShellSession | None:
+def _caller_ids() -> set[str]:
+    """The signed-in caller's identifiers (Cognito sub and email), if any."""
+    try:
+        from identity_baggage import get_current_identity  # noqa: PLC0415
+        ident = get_current_identity()
+    except Exception:  # noqa: BLE001
+        return set()
+    return {v for v in (ident.user_id, ident.email) if v}
+
+
+def find_session_for_agent(agent_id: str, *, for_caller: bool = False) -> RuntimeShellSession | None:
     """The newest LIVE session for an agent, so the orchestrator can reach the
     SAME PTY the human is watching (fan-out: one shell, both subscribe). Returns
-    None when no live session is open for that agent."""
+    None when no live session is open for that agent.
+
+    ``for_caller`` is how Chat's terminal tools look one up: never a running
+    build's own terminal, and, when someone is signed in, only a terminal that
+    person opened. Picking the newest terminal of ANY user typed a teammate's
+    Chat turn into someone else's shell, under that other person's usage label.
+    """
     with _sessions_lock:
         live = [s for s in _sessions.values() if s.agent_id == agent_id and s.alive]
+    if for_caller:
+        live = [s for s in live if getattr(s, "opened_by", "user") != "orchestrator"
+                and not getattr(s, "busy", False)]
+        ids = _caller_ids()
+        if ids:
+            live = [s for s in live if getattr(s, "user_id", None) in ids]
     return live[-1] if live else None
 
 
@@ -527,9 +554,10 @@ def agent_send(agent_id: str, text: str) -> dict:
     keystrokes (type, brief pause, submit), so we send the body, wait a beat, then
     send a carriage return; otherwise the line sits unsubmitted in the input box.
     Fails loud if no live session is open for the agent."""
-    s = find_session_for_agent(agent_id)
+    s = find_session_for_agent(agent_id, for_caller=True)
     if not s:
-        return {"error": f"No live session for {agent_id}. Open the agent's terminal first."}
+        return {"error": f"No live session for {agent_id} that you opened. Open the agent's terminal "
+                         "on the Agents page first (a running build's terminal is not typed into)."}
     body = text.rstrip("\r\n")
     s.emit_banner(body)
     try:
@@ -542,7 +570,7 @@ def agent_send(agent_id: str, text: str) -> dict:
 def agent_read(agent_id: str, max_chars: int = 4000) -> dict:
     """Read the current screen (a tail of the shared PTY buffer) for an agent, so
     the orchestrator can see what the agent replied to its last turn."""
-    s = find_session_for_agent(agent_id)
+    s = find_session_for_agent(agent_id, for_caller=True)
     if not s:
         return {"error": f"No live session for {agent_id}."}
     return {"agent_id": agent_id, "session_id": s.session_id,
@@ -551,17 +579,23 @@ def agent_read(agent_id: str, max_chars: int = 4000) -> dict:
 
 def agent_status(agent_id: str) -> dict:
     """Whether the agent has a live PTY the orchestrator can talk to."""
-    s = find_session_for_agent(agent_id)
+    s = find_session_for_agent(agent_id, for_caller=True)
     if not s:
         return {"agent_id": agent_id, "alive": False, "session_id": None}
     return {"agent_id": agent_id, "alive": s.alive, "session_id": s.session_id,
             "buffer_chars": len(s.buffer)}
 
 
-def send_input(session_id: str, text: str) -> dict:
+def send_input(session_id: str, text: str, caller_ids: set[str] | None = None) -> dict:
+    """Type into a terminal, but only its owner's: on a shared console a teammate's
+    keystrokes went into someone else's shell, under that person's usage label."""
     s = get_session(session_id)
     if not s:
         return {"error": "session not found"}
+    owner = getattr(s, "user_id", "") or ""
+    if caller_ids and owner not in ("", "unknown") and owner not in caller_ids:
+        return {"error": "This terminal belongs to another signed-in user. Open your own "
+                         "session from the Agents page."}
     try:
         s.send_input(text)
     except Exception as error:

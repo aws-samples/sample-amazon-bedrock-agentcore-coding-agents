@@ -69,8 +69,23 @@ def test_clear_disconnects():
 
 def test_empty_save_after_set_is_a_noop_keep():
     kiro_config.save_api_key("ksk_secret_value_1234")
-    out = kiro_config.save_api_key("")  # status-only re-save keeps the stored key
+    out = kiro_config.save_api_key("", allow_empty=True)  # the console's status-only re-save
     assert out["connected"] is True
+
+
+def test_an_empty_paste_at_the_prompt_never_reports_the_old_key_as_saved():
+    """Rerunning Lab 1's block after an invalid-bearer error, with a paste that did
+    not arrive, printed "connected": true with the OLD key's tail."""
+    kiro_config.save_api_key("ksk_secret_value_1234")
+    assert "hidden prompt" in kiro_config.save_api_key("")["error"]
+
+
+@pytest.mark.parametrize("pasted", ["Bearer ksk_secret_value_1234",
+                                    "KiroApiKey\tksk_secret_value_1234",
+                                    "KIRO_API_KEY=ksk_secret_value_1234"])
+def test_the_key_is_taken_from_what_people_actually_paste(pasted):
+    out = kiro_config.save_api_key(pasted)
+    assert out["connected"] is True and out["key_tail"].endswith("1234")
 
 
 @pytest.fixture

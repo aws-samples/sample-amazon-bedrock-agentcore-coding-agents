@@ -29,15 +29,37 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
+import textwrap
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import run_advice  # noqa: E402
 import run_store  # noqa: E402
 
-_RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", ".runs")
+# The same default the engine uses (the repository's .runs), not a path relative to
+# wherever the watcher happens to be started.
+_RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runs"))
+_RUN_ID_RE = re.compile(r"run_[0-9]{6}_[0-9a-f]{12}")
+_SESSION_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def _clean_run_id(raw: str) -> str:
+    """A pasted run ID as the store names it; the session ID is refused, not awaited.
+
+    Pages ask people to save both IDs, and a pasted session ID, or a run ID with a
+    trailing period or backticks, waited forever for a record that could not exist.
+    """
+    value = (raw or "").strip().strip("`'\".,;:()[]<>")
+    if _SESSION_ID_RE.fullmatch(value):
+        sys.exit("That is the coordinator SESSION ID, not a run ID. A run ID looks like "
+                 "run_123456_0123456789ab. Run this without an ID to follow the newest build.")
+    found = _RUN_ID_RE.search(value)
+    return found.group(0) if found else value
 
 # One glyph per event kind, so a glance separates thinking from doing.
 _KIND = {"tool_use": "*", "tool_result": "<", "thinking": "~", "text": " ",
@@ -62,24 +84,8 @@ class _Ink:
 
 
 def _attach_to_the_mirror() -> str:
-    """Point this process at the deployed coordinator's run-state mirror.
-
-    The SERVED Lab 2 build runs inside the coordinator's own Runtime, whose
-    filesystem dies with the microVM, so it mirrors every snapshot to S3. Nothing on
-    the workshop host sets ``WORKSHOP_RUNTIME_BUCKET`` (the stack exports the region,
-    the account id and the model ids, not the bucket), and a live run showed the
-    cost: with a build underway, this command answered "no runs found" while its
-    snapshot sat in the mirror. So resolve the same bucket the writer was handed and
-    read from it too. Never fatal: an unresolvable mirror still leaves local runs
-    watchable.
-
-    Returns the bucket in use, or "" when only local disk is readable.
-    """
-    if not os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip():
-        bucket = run_store.reader_mirror_bucket()
-        if bucket:
-            os.environ["WORKSHOP_RUNTIME_BUCKET"] = bucket
-    return os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
+    """Read the deployed coordinator's run-state mirror too (``run_store``)."""
+    return run_store.attach_reader_mirror()
 
 
 def _where_it_looked(bucket: str) -> str:
@@ -90,8 +96,9 @@ def _where_it_looked(bucket: str) -> str:
 def _latest_run_id(bucket: str) -> str:
     recent = run_store.recent(_RUNS_DIR, limit=1)
     if not recent:
-        sys.exit(f"no runs found in {_where_it_looked(bucket)}. Submit a build "
-                 "first, or pass a run id.")
+        sys.exit(f"no runs found in {_where_it_looked(bucket)} yet. A build appears "
+                 "here at its first heartbeat, a minute or two after you submit it: "
+                 "run this again in a moment. Do not resubmit while you wait.")
     return recent[0].get("run_id", "")
 
 
@@ -126,23 +133,166 @@ def _interrupted(rec: dict) -> bool:
     return run_store.active_snapshot_is_stale(rec)
 
 
+_TERMINAL = ("passed", "failed", "needs_human")
+_REPO_DIR = "~/sample-amazon-bedrock-agentcore-coding-agents"
+
+
+def _effective(rec: dict) -> dict:
+    """The record as the reader should see it: an interrupted run is needs_human.
+
+    Reading a record can never CHANGE one: this is the reporting path. It reports the
+    same reason the coordinator would, and says what to do. A recycled coordinator
+    does not un-open the pull requests it already published (they may be recorded
+    only under ``work_items`` if the recycle came before the check finished), so with
+    one open the advice is to continue from that PR, the same rule as
+    ``engine.next_action``, never to resubmit the whole build.
+    """
+    if not _interrupted(rec):
+        return rec
+    if run_advice.pr_urls(rec):
+        advice = ("the coordinator Runtime was recycled, but the pull request(s) it "
+                  "already opened are unaffected. Open each one, read its check and "
+                  "Assessment, and continue as a person; do NOT resubmit the whole build.")
+    else:
+        advice = ("the coordinator Runtime was recycled before this run opened a pull "
+                  "request, so nothing can advance it; submit the request again.")
+    return {**rec, "status": "needs_human",
+            "fail_reason": "COORDINATOR_SESSION_INTERRUPTED", "next_action": advice}
+
+
+def _home() -> str:
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def _start_hint(target: str) -> str:
+    port = run_advice.port_for(target)
+    if target == "~/game":
+        return "Continue with Play Your Game (Lab 2)."
+    if port:
+        return (f"Start it on port {port}, as Lab 3 shows; ~/game keeps its own copy "
+                "and saved scores.")
+    return ("Start it on a free port (not 8000 or 8001, where the earlier games run), "
+            f"then print its URL: python3 {_REPO_DIR}/orchestrator/workshop_urls.py <port>")
+
+
+def _checkout_steps(rec: dict, para, lead: str) -> list[str]:
+    """The checkout command for this run's lab, or why the natural folder is taken."""
+    target, taken = run_advice.checkout_target(rec, _home())
+    natural = "~/game-lab3" if run_advice.is_chat_build(rec) else "~/game"
+    lines: list[str] = []
+    command = f"python3 orchestrator/github.py checkout {target}"
+    if taken:
+        lines += para(f"{natural} already holds a checkout. If it already contains this "
+                      "merge, keep using it. For a separate copy, check out an unused "
+                      "folder instead (checkout replaces its destination):", lead=lead)
+        lines += [f"     {command}"]
+    else:
+        lines += [f"{lead}{command}"]
+    lines += para(_start_hint(target), lead="     ")
+    return lines
+
+
+def _what_now(rec: dict, ink: _Ink, width: int) -> list[str]:
+    """What to DO about a terminal run, as commands, not only as a sentence.
+
+    The September 25 survey: an attendee whose build failed "was unsure how to
+    recover" while the room moved on, and others "never knew if it built". The
+    record already says which case this is; this turns it into the next command.
+    The engine's own ``next_action`` stays authoritative: the generic red-gate
+    choice is offered only when the check or review stayed red after the one
+    repair (``run_advice.red_after_repair``); every other stop prints the engine's
+    advice in full. Reporting only: it reads the record and the local filesystem.
+    """
+    rec = _effective(rec)
+    status = rec.get("status")
+    if status not in _TERMINAL:
+        return []
+    run_id = str(rec.get("run_id") or "")
+    wrap = max(40, min(width, 100) - 7)
+
+    def para(text: str, lead: str = "  ", hang: str = "     ") -> list[str]:
+        return textwrap.wrap(text, wrap, initial_indent=lead, subsequent_indent=hang)
+
+    prs = run_advice.pr_rows(rec)
+    chat = run_advice.is_chat_build(rec)
+    reason = str(rec.get("fail_reason") or "")
+    lines = ["", ink.bold("  what to do now")]
+    if status == "passed" and prs:
+        merged = [p for p in prs if str(p.get("state", "")).lower() == "merged"]
+        waiting = [p for p in prs if p not in merged]
+        if waiting:
+            lines.append("  " + ink.green("BUILD PASSED") +
+                         f": {len(waiting)} pull request(s) open for you to merge.")
+        else:
+            lines.append("  " + ink.green("BUILD PASSED") + ": merged into the default branch.")
+        lines += [f"    {p['url']}" for p in prs]
+        if waiting:
+            lines += para("Open it, read its check and Assessment comments, then choose "
+                          "Merge pull request (skip this if you already merged it).",
+                          lead="  1. ")
+        lines += _checkout_steps(rec, para, lead=f"  {2 if waiting else 1}. ")
+        return lines
+    if prs:
+        lines.append("  " + ink.yellow("BUILD NEEDS YOU") + f": {reason or status}")
+        for p in prs:
+            state = p.get("state") or ""
+            lines.append(f"    {p['url']}" + (f"  ({state})" if state else ""))
+        if reason == "COORDINATOR_SESSION_INTERRUPTED":
+            lines += para("The pull request(s) above are the durable record. Open each "
+                          "one and read its check and Assessment. Do not resubmit the "
+                          "whole build to finish one pull request. This watcher keeps "
+                          "checking in case the record moves again; Ctrl+C stops watching.")
+            return lines
+        if not run_advice.red_after_repair(rec):
+            # A review outage, a quota stop, a stale branch, an execution error: the
+            # engine's advice for each differs, and the generic red-gate choice would
+            # contradict it ("do not rebuild for a review failure", "do not resubmit now").
+            nxt = rec.get("next_action") or ("Open the pull request and read its latest "
+                                             "comments before deciding anything.")
+            lines += para(" ".join(str(nxt).split()))
+            return lines
+        lines += para("The loop stopped as designed: the check or review stayed red "
+                      "after its one repair. Choose one:")
+        lines += para("If you judge the game good enough, open the PR, read the latest "
+                      "check comment and Assessment, and merge it yourself (the engine "
+                      "never merges a red PR; a person can). Then run:", lead="  a. ")
+        lines += _checkout_steps(rec, para, lead="     ")
+        if chat:
+            lines += para("Or leave it open: read Next action in Agent Studio, keep the "
+                          "evidence, and ask your facilitator if the check itself looks "
+                          "wrong.", lead="  b. ")
+        else:
+            lines += para("Or rerun Run a Build step 1 with a simpler direction: one core "
+                          "mechanic, one short round. It creates a NEW session ID; this "
+                          "run stays recorded.", lead="  b. ")
+        lines += para("Do not resubmit the same request to retry a red pull request.")
+        return lines
+    head = "BUILD PASSED, but no pull request opened" if status == "passed" \
+        else "NO PULL REQUEST OPENED"
+    lines.append("  " + ink.red(head) + (f": {reason}" if reason else "."))
+    if rec.get("next_action"):
+        lines += para(" ".join(str(rec["next_action"]).split()))
+    if reason == "COORDINATOR_SESSION_INTERRUPTED" and not chat:
+        lines += para("Submit it again with Run a Build step 1, which creates a new "
+                      "session ID.")
+    lines += para("For help, send this output and the read-only progress check to a "
+                  "helper:")
+    lines += [f"    python3 {_REPO_DIR}/orchestrator/progress.py"]
+    return lines
+
+
 def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
     lines: list[str] = []
+    rec = _effective(rec)
     status = rec.get("status", "?")
-    if _interrupted(rec):
-        # Report the same reason the coordinator would, and say what to do. Reading a
-        # record can never CHANGE one: this is the reporting path.
-        status = "needs_human"
-        rec = {**rec, "fail_reason": "COORDINATOR_SESSION_INTERRUPTED",
-               "next_action": "the coordinator Runtime was recycled before this run "
-                              "finished, so nothing can advance it; resubmit the same "
-                              "request."}
     colour = {"passed": ink.green, "failed": ink.red,
               "needs_human": ink.yellow}.get(status, ink.cyan)
+    # No run-wide "round": it counts every PR's rounds together, so two PRs with one
+    # repair each read as "round=3", the overstatement this watcher exists to avoid.
+    # Each gate line below carries its own PR's round instead.
     lines.append(f"{ink.bold(rec.get('run_id', '?'))}   {colour(status)}"
                  f"   phase={rec.get('phase') or '-'}"
-                 f"   round={rec.get('iterations', 1)}"
-                 f"   source={rec.get('source', 'live')}")
+                 f"   source={rec.get('source', 'saved record')}")
     task = " ".join(str(rec.get("task") or "").split())
     if task:
         lines.append(ink.dim("  " + task[:width - 2]))
@@ -173,7 +323,7 @@ def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
     lines.append("")
 
     # --- the per-pull-request verdicts, which are the actual result
-    prs = rec.get("role_prs") or []
+    prs = rec.get("role_prs") or [{"url": url} for url in run_advice.pr_urls(rec)]
     if prs:
         lines.append(ink.bold("  pull requests"))
         for pr in prs:
@@ -185,8 +335,10 @@ def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
         # A gate entry records `sequence` (the nth check of the run) and puts the round
         # in `stage`; there is no `round` key, so asking for one printed "round ?" on
         # every line. Prefer the sequence, which is the number this row actually has.
-        nth = entry.get("round", entry.get("sequence", "?"))
-        lines.append(f"    gate {entry.get('work_id', '?')} #{nth}: "
+        stage = re.search(r"round (\d+)", str(entry.get("stage") or ""))
+        nth = (f"round {stage.group(1)}" if stage
+               else f"#{entry.get('round', entry.get('sequence', '?'))}")
+        lines.append(f"    gate {entry.get('work_id', '?')} {nth}: "
                      f"{_gate_mark(entry, ink)}"
                      f"  {ink.dim(' '.join(str(entry.get('summary', '')).split())[:70])}")
 
@@ -210,20 +362,26 @@ def main() -> int:
 
     ink = _Ink(not args.plain and sys.stdout.isatty())
     bucket = _attach_to_the_mirror()
-    run_id = args.run_id or _latest_run_id(bucket)
-    terminal = ("passed", "failed", "needs_human")
+    run_id = _clean_run_id(args.run_id) if args.run_id else _latest_run_id(bucket)
     last = ""
+    misses = 0
     while True:
         rec = run_store.load(_RUNS_DIR, run_id)
         if rec is None:
+            misses += 1
             print(f"no durable record for {run_id} yet in {_where_it_looked(bucket)} "
                   f"(a run appears here at its first heartbeat)")
+            if misses == 12:          # about a minute: say which runs DO exist
+                known = [r.get("run_id") for r in run_store.recent(_RUNS_DIR, limit=5)
+                         if r.get("run_id")]
+                print("  recent runs here: " + (", ".join(known) or "none") +
+                      ". Check the ID, or run this without one to follow the newest.")
             if args.once:
                 return 1
             time.sleep(args.interval)
             continue
         width = shutil.get_terminal_size((100, 30)).columns
-        body = "\n".join(_frame(rec, ink, width))
+        body = "\n".join(_frame(rec, ink, width) + _what_now(rec, ink, width))
         if args.once:
             print(body)
             return 0
@@ -234,7 +392,11 @@ def main() -> int:
                 print("-" * min(width, 100))
             print(body, flush=True)
             last = body
-        if rec.get("status") in terminal:
+        # Stop only on the record's own terminal status. An interrupted-looking run is
+        # reported (the frame and "what to do now" say so) but still watched: a
+        # heartbeat write can fail transiently and recover, and a watcher that had
+        # exited would then miss the build finishing.
+        if rec.get("status") in _TERMINAL:
             print()
             print(ink.bold("run is terminal; watching stops here."))
             return 0
@@ -247,5 +409,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # Ctrl-C stops WATCHING, never the build. Say so, because the two are easy to
         # confuse and an attendee who thinks they killed their run will start another.
-        print("\nstopped watching. The build is unaffected and still running.")
+        print("\nstopped watching. That does not stop or change the build; run this "
+              "again to keep following it.")
         raise SystemExit(0) from None

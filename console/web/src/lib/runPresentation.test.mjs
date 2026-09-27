@@ -40,6 +40,10 @@ test('only a complete recorded merge earns the merged headline', () => {
 
 test('a missing check is distinct from a failed check', () => {
   assert.equal(gateResultLabel(undefined), 'Not recorded');
+  assert.equal(gateResultLabel({ passed: false, executed: false }), 'Not run');
+  assert.equal(gateResultLabel({ passed: false, executed: true }), 'Failed');
+  assert.equal(gateResultLabel({ passed: false }), 'Failed');
+  assert.equal(gateResultLabel({ passed: false }, 0), 'Not run');
   assert.equal(gateResultLabel(null), 'Not recorded');
   assert.equal(gateResultLabel({ passed: false }), 'Failed');
   assert.equal(gateResultLabel({ passed: true }), 'Passed');

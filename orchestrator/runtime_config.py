@@ -83,11 +83,6 @@ _ARN_RE = re.compile(
     r"|[\w.-]{3,200})$")
 
 
-def is_local_uri(target: str) -> bool:
-    """True if a wired runtime target is a local dev endpoint (``http(s)://…``)
-    rather than a deployed AgentCore runtime ARN: the testing seam."""
-    return target.startswith("http://") or target.startswith("https://")
-
 # Round-robin dispatch cursor per role, so a fleet of N instances spreads load
 # across concurrent runs. Thread-safe: the engine dispatches roles on worker
 # threads, so a bare int would race.
@@ -220,11 +215,6 @@ def _write_file(runtimes: dict[str, list[str]], descriptions: dict[str, str] | N
     os.chmod(path, 0o600)
 
 
-def describe_arn(arn: str) -> str:
-    """The description set for one instance ARN, or '' if none."""
-    return _load_descriptions().get(arn.strip(), "")
-
-
 def describe(role: str) -> str:
     """A representative description for a ROLE: the first wired instance's
     description, falling back to a legacy role-keyed description. '' if none."""
@@ -309,18 +299,6 @@ def pick(role: str) -> tuple[str, str] | None:
         idx = _RR_CURSOR.get(role, 0) % len(hits)
         _RR_CURSOR[role] = idx + 1
     return hits[idx]
-
-
-def resolve_map() -> dict[str, str]:
-    """Every role with a wired ARN -> its FIRST ARN (env wins over file). The
-    back-compatible single-instance map the AgentCoreExecutor's runtime_arns
-    mapping and older callers use; ``fleet_map`` is the full per-role list."""
-    out: dict[str, str] = {}
-    for role in roles():
-        hit = resolve(role)
-        if hit:
-            out[role] = hit[0]
-    return out
 
 
 def fleet_map() -> dict[str, list[str]]:

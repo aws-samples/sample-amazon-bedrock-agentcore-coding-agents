@@ -31,24 +31,37 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # ── 1. Refuse to start without what the deploy needs ─────────────────────────
 # Match github.py doctor: env, saved Settings, then the Gateway deployment state.
 # Fill missing exports only. Resolve as data, never evaluate saved shell text.
+case "${GITHUB_GATEWAY_URL:-}" in https://*) ;; *) GITHUB_GATEWAY_URL="" ;; esac   # e.g. a saved "null"
 if [ -z "${GITHUB_GATEWAY_URL:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
+  # Resolve the two values independently: _gateway_config() returns nothing when the
+  # repository is malformed, which then blamed the Gateway for a bad GITHUB_REPO.
   gateway_config=$(PYTHONPATH="$REPO_ROOT/orchestrator${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 -c 'import json; from github import _gateway_config; print(json.dumps(_gateway_config() or {}))')
+    python3 -c 'import json, os; import github as g
+f = g._load_config_file()
+url = next((str(v).strip() for v in (os.environ.get("GITHUB_GATEWAY_URL"), f.get("gateway_url"))
+            if v and str(v).strip().startswith("https://")), "") or (g._discover_gateway_url() or "")
+print(json.dumps({"gateway_url": url, "repo": os.environ.get("GITHUB_REPO") or f.get("repo") or ""}))')
   GITHUB_GATEWAY_URL="${GITHUB_GATEWAY_URL:-$(printf '%s' "$gateway_config" | jq -r '.gateway_url // empty')}"
   GITHUB_REPO="${GITHUB_REPO:-$(printf '%s' "$gateway_config" | jq -r '.repo // empty')}"
 fi
 [ -n "${GITHUB_GATEWAY_URL:-}" ] || die "GITHUB_GATEWAY_URL is not configured. Complete Connect GitHub and run python3 orchestrator/github.py doctor from the repository root."
 [ -n "${GITHUB_REPO:-}" ] || die "GITHUB_REPO is not configured. Save owner/repository in GitHub Settings or export GITHUB_REPO."
-# Accept what attendees paste: a github.com URL, a trailing slash, or a .git suffix.
-GITHUB_REPO="${GITHUB_REPO#https://github.com/}"; GITHUB_REPO="${GITHUB_REPO%/}"; GITHUB_REPO="${GITHUB_REPO%.git}"
-case "$GITHUB_REPO" in
-  *@*/*) die "GITHUB_REPO must start with your GitHub username, not an email address: '$GITHUB_REPO'." ;;
-  */*) ;;
-  *) die "GITHUB_REPO needs your GitHub username too: 'your-username/$GITHUB_REPO', not '$GITHUB_REPO'." ;;
+# Accept what attendees paste (a URL, an ssh remote, a trailing slash, .git) with the
+# SAME normalization doctor uses; a second shell copy accepted different shapes.
+repo_check=$(PYTHONPATH="$REPO_ROOT/orchestrator${PYTHONPATH:+:$PYTHONPATH}" GITHUB_REPO_RAW="$GITHUB_REPO" \
+  python3 -c 'import os; from github import normalize_repo, repo_problem, _REPO_RE
+repo = normalize_repo(os.environ["GITHUB_REPO_RAW"])
+print(("OK " + repo) if _REPO_RE.match(repo) else ("BAD GITHUB_REPO " + repo_problem(repo)))')
+case "$repo_check" in
+  "OK "*) GITHUB_REPO="${repo_check#OK }" ;;
+  *) die "${repo_check#BAD }" ;;
 esac
 export GITHUB_GATEWAY_URL GITHUB_REPO
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
 [ -n "$AWS_REGION" ] || die "No AWS region. Export AWS_REGION."
+# Export it: configure_deploy.py and the CDK deploy read it, and a non-interactive
+# shell has no .bashrc exports (it fell back to a literal us-west-2 in us-east-1).
+export AWS_REGION
 command -v agentcore >/dev/null || die "The agentcore CLI is missing. Install the workshop's pinned @aws/agentcore version."
 WORKSHOP_RUNTIME_PLATFORM_VERSION=$(python3 "$REPO_ROOT/coding-agents/runtime_deploy.py" --print-platform)
 export WORKSHOP_RUNTIME_PLATFORM_VERSION
@@ -105,10 +118,17 @@ echo "==> Read-only probe: asking the DEPLOYED coordinator which roles a preset 
 python3 "$HERE/probe_coordinator.py" --project "$PROJECT_DIR"
 
 echo
+# What was created and how to see it without this script (local state only, no AWS call).
+python3 "$HERE/promote_runtime.py" --project "$PROJECT_DIR" --receipt || true
+
+echo
 # The preset here MUST match the one the Run-a-Build page tells the room to submit.
 # It used to say project-from-scratch, which is the take-home version: measured at 82
 # minutes because each pull request is gated in turn, so an attendee who followed the
 # terminal instead of the page started a build the session cannot wait for. The room's
 # build is the one-service browser game the whole room plays at the end of Lab 2.
-echo "Coordinator deployed. Submit your build from $PROJECT_DIR with:"
-echo "    agentcore invoke --session-id \"\$(python3 -c 'import uuid;print(uuid.uuid4())')\" --stream \"preset=game-from-scratch\""
+# Point at the page's own block instead of printing a second, different command: the
+# page's version prints the session ID the attendee needs later (clarifying answers,
+# status, and Clean Up), and a terminal command here invited a second submission.
+echo "Coordinator deployed. Next: submit your build with step 1 of Run a Build and Follow It."
+echo "  It creates and prints the session ID you will reuse; submit only once."

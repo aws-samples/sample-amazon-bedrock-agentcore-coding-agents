@@ -813,12 +813,19 @@ def discover_key_file() -> Path:
 
 
 def read_key(path: Path) -> str:
+    raw = str(path)
+    if raw != raw.strip().strip("'\""):
+        # A drag-and-drop path keeps its quotes through `read -r`.
+        raise SetupError(f"Remove the quotes or spaces around the key path: {raw}")
+    if not path.exists():
+        raise SetupError(f"No private key file at {path}. Check the path; the file GitHub "
+                         "downloaded ends in .private-key.pem.")
     try:
         return private_bytes(path).decode()
     except SetupError:
         if path.exists() and not path.is_symlink() and stat.S_IMODE(path.stat().st_mode) & 0o077:
             raise SetupError(f"The key file is readable by others. Run: chmod 600 {path}") from None
-        raise
+        raise SetupError(f"Could not read the private key at {path}.") from None
 
 
 def write_env(app_id: str, key_path: Path, installation_id: str) -> None:
@@ -863,7 +870,9 @@ def main(argv: list[str] | None = None) -> int:
             raise SetupError("--public applies only to a new setup; combine it with --restart.")
         with setup_lock():
             session = None
-            if args.app_id:
+            # `is not None`: Enter at the page's "Existing App ID" prompt passes an
+            # empty value, which used to start a NEW registration instead of failing.
+            if args.app_id is not None:
                 if not re.fullmatch(r"[1-9][0-9]*", args.app_id):
                     raise SetupError("The App id must be a positive integer.")
                 key_path = key_override or discover_key_file()

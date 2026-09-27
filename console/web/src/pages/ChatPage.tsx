@@ -275,6 +275,7 @@ export function ChatPage() {
     touchChat(conversationId, text || '(attachment)');
     if (chatId !== conversationId) nav(`/chat/c/${conversationId}`, { replace: true });
 
+    const hadEarlierMessages = items.some((it) => it.kind === 'user');
     setItems((prev) => [...prev, { kind: 'user', text: (text || '(attachment)') + attachNote }]);
     setDraft('');
     setAttachments([]);
@@ -335,6 +336,17 @@ export function ChatPage() {
           return [...withRun, { kind: 'assistant' as const, text: '' }];
         });
 
+      } else if (ev.type === 'done') {
+        // The console keeps conversation memory in its process. After a restart the
+        // browser still shows the earlier messages, but the coordinator never saw
+        // them: say so instead of letting a "go" build only this message.
+        if (ev.server_history === false && hadEarlierMessages) {
+          setItems((prev) => [...prev, { kind: 'assistant', text:
+            'Note: Agent Studio restarted since your earlier messages in this chat, so the '
+            + 'coordinator does not remember them. If this message depends on them, restate '
+            + 'the whole request in one message.' }]);
+        }
+
       } else if (ev.type === 'error') {
         setItems((prev) => {
           const next = [...prev];
@@ -369,7 +381,7 @@ export function ChatPage() {
     } finally {
       if (abortRef.current === ac) { setStreaming(false); abortRef.current = null; }
     }
-  }, [draft, attachments, streaming, conversationId, chatId, model, nav, coordinatorAvailable]);
+  }, [draft, attachments, streaming, conversationId, chatId, model, nav, coordinatorAvailable, items]);
 
   const stop = useCallback(() => { abortRef.current?.abort(); setStreaming(false); }, []);
 
@@ -782,7 +794,7 @@ function OrchestratorVerdict({ result }: { result: RunResult }) {
   return <ExpandableSection headerText="Terminal result" variant="container">
     <SpaceBetween size="m">
       <KeyValuePairs columns={3} items={[
-        { label: 'Latest executable check', value: gateResultLabel(result.gate) },
+        { label: 'Latest executable check', value: gateResultLabel(result.gate, result.gate_history?.length) },
         { label: 'Check executions', value: result.gate_history?.length ?? 'Not recorded' },
         { label: 'Review', value: result.review?.state?.replaceAll('_', ' ') || 'Not recorded' },
       ]} />

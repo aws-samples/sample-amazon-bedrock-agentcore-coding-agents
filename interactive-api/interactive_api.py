@@ -38,7 +38,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -46,6 +45,14 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+
+# The workspace file surface (tree, search, read, write, delete, rename, path
+# translation) is its own module; these names stay importable from here.
+from workspace_files import (  # noqa: E402,F401
+    _KEEP_DOTDIRS, _MAX_FILE, _SKIP_DIRS, _SKIP_DIRS_ROOT, _SKIP_FILES_ROOT, _TEXT_EXT,
+    _delete_file, _file_tree, _lang_for, _make_dir, _read_file, _rename_file,
+    _safe_join, _search_files, _to_real, _to_virtual, _write_file,
+)
 
 HOST = "0.0.0.0"
 PORT = 8091
@@ -94,7 +101,27 @@ def _prune_dirs(parent: str, keep: int) -> None:
 # reused for the default Codex frontend or the Claude coordinator.
 _OPENCODE_MODEL = os.environ.get(
     "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
-_OPENCODE_REGION = os.environ.get("WORKSHOP_OPENCODE_REGION", "us-west-2")
+
+
+def _deployment_region(env=None) -> str:
+    """The workshop's deployment region, derived, never a literal.
+
+    Same order as the Codex branch and kiro_config: AWS_REGION, AWS_DEFAULT_REGION,
+    then the SDK's configured region. A literal us-west-2 default mis-configured
+    every local session on a us-east-1 host.
+    """
+    env = os.environ if env is None else env
+    region = env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
+    if not region:
+        import boto3  # noqa: PLC0415
+        region = boto3.session.Session().region_name
+    if not region:
+        raise ValueError("No AWS region. Set AWS_REGION or AWS_DEFAULT_REGION.")
+    return region
+
+
+def _opencode_region() -> str:
+    return os.environ.get("WORKSHOP_OPENCODE_REGION") or _deployment_region()
 # Cheap background model for opencode (titles/summaries). Same wirable seam as
 # the two above; must be an inference profile, never a bare model id.
 _SMALL_MODEL = "amazon-bedrock/" + os.environ.get(
@@ -225,12 +252,6 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 # Where each harness's deploy.py writes its runtime_config.json (the source
 # of truth for "this agent is deployed on AgentCore Runtime"). agent_id == dir name.
 # Independently wirable from WORKSHOP_REPO_ROOT: a test (or an attendee box whose
@@ -333,11 +354,12 @@ def _agent_env(agent_id: str) -> dict[str, str]:
             or env.get("WORKSHOP_MODEL", "").strip()
             or _AGENTS.get(agent_id, {}).get("model")
             or role.default_model)
-        env["AWS_REGION"] = env.get("AWS_REGION", "us-west-2")
+        env["AWS_REGION"] = _deployment_region(env)
         # A host config directory must not bypass this session's own settings.
         env.pop("CLAUDE_CONFIG_DIR", None)
     elif agent_id == "opencode":
-        env.update({"AWS_REGION": env.get("AWS_REGION", _OPENCODE_REGION)})
+        env.update({"AWS_REGION": env.get("AWS_REGION") or env.get("WORKSHOP_OPENCODE_REGION")
+                    or _deployment_region(env)})
     elif agent_id == "codex":
         # A local session uses the same deployment region as a Runtime session.
         # Do not resurrect the old Mantle region or materialize SDK credentials.
@@ -480,7 +502,7 @@ def _stage_agent_config(session: dict) -> None:
         with open(os.path.join(d, "opencode.json"), "w", encoding="utf-8") as f:
             json.dump({
                 "$schema": "https://opencode.ai/config.json",
-                "provider": {"amazon-bedrock": {"options": {"region": _OPENCODE_REGION}}},
+                "provider": {"amazon-bedrock": {"options": {"region": _opencode_region()}}},
                 "model": _OPENCODE_MODEL,
                 "small_model": _SMALL_MODEL,
             }, f, indent=2)
@@ -531,34 +553,6 @@ def _stage_agent_config(session: dict) -> None:
                     os.symlink(src, dst)
             except OSError:
                 pass  # best-effort; worst case kiro asks to sign in
-
-
-
-
-_PTY_BANNER = {
-    "codex": ("command -v codex >/dev/null "
-              "&& echo \"$(codex --version 2>/dev/null): type 'codex' to start it here\" "
-              f"|| echo 'Codex CLI not on PATH (npm i -g {_cli_toolchain().npm_spec('codex')})'; "
-              "echo 'configured: ~/.codex/config.toml -> amazon-bedrock-runtime, AWS SDK credentials'"),
-    "claude-code": ("command -v claude >/dev/null "
-                    "&& echo \"claude $(claude --version 2>/dev/null | head -1): type 'claude' to start it here\" "
-                    f"|| echo 'claude CLI not on PATH (npm i -g {_cli_toolchain().npm_spec('claude-code')})'; "
-                    "echo \"Bedrock-connected: CLAUDE_CODE_USE_BEDROCK=$CLAUDE_CODE_USE_BEDROCK "
-                    "model=$ANTHROPIC_MODEL region=$AWS_REGION (no API key)\""),
-    "opencode": ("command -v opencode >/dev/null "
-              "&& echo \"$(opencode --version 2>/dev/null | head -1): type 'opencode' to start it here\" "
-              "|| echo 'opencode CLI not on PATH (npm i -g opencode-ai)'; "
-              f"echo 'configured: ~/.config/opencode/opencode.json -> model {_OPENCODE_MODEL}, provider amazon-bedrock ({_OPENCODE_REGION})'"),
-    # The Kiro CLI binary is `kiro-cli` (the bare `kiro` is the IDE). Probe and
-    # tell the attendee the real command, and start the chat TUI with
-    # `kiro-cli chat`. The steering path is read from the REGISTRY so the banner
-    # cannot name a different file from the one _stage_agent_config just wrote.
-    "kiro": ("command -v kiro-cli >/dev/null "
-             "&& echo \"kiro-cli installed: type 'kiro-cli chat' to start it here\" "
-             "|| echo 'kiro-cli not on PATH; run the pinned workshop CLI installer from Development'; "
-             f"echo 'configured: ~/{_roles.get('kiro').steering_file.replace(os.sep, '/')}"
-             " -> model auto (vendor key brokered, never on disk)'"),
-}
 
 
 def _pty_open(session: dict, rows: int = 0, cols: int = 0) -> dict:
@@ -765,30 +759,6 @@ async def pty_stream_async(session_id: str, offset: int = 0):
         await asyncio.sleep(0.025)  # cancelled here on disconnect / shutdown
 
 
-def pty_stream(session_id: str, offset: int = 0, should_stop=None):
-    """Synchronous SSE generator, kept for non-async callers (the stdlib
-    backup server). The shipped FastAPI route uses ``pty_stream_async`` instead.
-
-    ``should_stop`` is an optional zero-arg predicate to break the loop early;
-    without it this is an unbounded ``while True`` a sync server cannot cancel.
-    """
-    sent = int(offset or 0)
-    yield b": open\n\n"
-    ticks = 0
-    while True:
-        if should_stop is not None and should_stop():
-            return
-        frames, sent, done = _pty_tick(session_id, sent, replay=ticks == 0 and offset == 0)
-        for f in frames:
-            yield f
-        if done:
-            return
-        ticks += 1
-        if ticks % 200 == 0:
-            yield b": ping\n\n"
-        time.sleep(0.025)
-
-
 # The Development workspace is the build and deploy surface (the console terminal
 # that replaces an SSH session into a build box). It starts at the box HOME, where
 # the attendee clones the public workshop repo into ~/<clone dirname>. After the
@@ -896,13 +866,6 @@ def _default_dev_root() -> tuple[str, str]:
         return clone, clone_label
     # No clone (plain local box, nothing cloned): the login HOME, VS Code-like.
     return real_home, "~"
-
-
-# Back-compat shim: callers that want the historic (root, home) tuple. The first
-# element is the workspace dir; HOME stays the real login home in every case.
-def _dev_root() -> tuple[str, str]:
-    workspace, _label = _default_dev_root()
-    return workspace, os.path.expanduser("~")
 
 
 def _folder_label(path: str) -> str:
@@ -1070,24 +1033,6 @@ def _new_session(agent_id: str) -> dict:
     return session
 
 
-def _to_virtual(session: dict, text: str) -> str:
-    # Map the session's real workspace root to the /mnt/s3files virtual root for
-    # BOTH role and Development sessions. The frontend's file tree strips
-    # /mnt/s3files to render the workspace's own top-level entries; without this a
-    # dev session (rooted at the real clone abs path) rendered the entire absolute
-    # path as phantom folders (home > ubuntu > <clone> > coding-agents > ...) and the
-    # open/read/write round-trip broke (_safe_join expects /mnt/s3files-relative).
-    # The interactive PTY is a separate raw stream, so real paths still show in the
-    # live terminal; only the file tree + scripted /input output are normalized.
-    # The virtual root is per-session (_vroot): /mnt/s3files on the workshop box, the
-    # login HOME (~) on a plain local box, or whatever folder the attendee opened.
-    return text.replace(session["_root"], session.get("_vroot", "/mnt/s3files"))
-
-
-def _to_real(session: dict, text: str) -> str:
-    return text.replace(session.get("_vroot", "/mnt/s3files"), session["_root"])
-
-
 def _run_command(session: dict, raw: str) -> str:
     """Execute ONE shell command for real in the session's cwd.
 
@@ -1137,253 +1082,11 @@ def _run_command(session: dict, raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Real workspace files: a tree/read/write surface over the session's jailed dir,
-# plus a harness scaffolder (copy/make the real steering files) and a code-upload
-# deploy that packages the workspace exactly like AgentCore's code-first launch.
+# Real workspace files: the tree/read/write surface over the session's jailed dir
+# lives in workspace_files.py (imported above). What stays here is the harness
+# scaffolder (copy/make the real steering files) and a code-upload deploy that
+# packages the workspace exactly like AgentCore's code-first launch.
 # ---------------------------------------------------------------------------
-_TEXT_EXT = {".py", ".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".html",
-             ".css", ".js", ".sh", ".cfg", ".ini", ".mdc", ""}
-_MAX_FILE = 200_000          # bytes; refuse to read/write larger blobs in the UI
-# Junk skipped at EVERY depth (never attendee work). Agent steering dirs created on
-# the mount (AGENTS.md, .config/opencode/opencode.json, .kiro/steering/*.md) remain visible because
-# they are workshop files. Root CLI cache names are filtered separately below.
-_SKIP_DIRS = {"__pycache__", ".git", ".pytest_cache", "node_modules",
-              ".local", ".cache", ".config", ".npm", ".aws",
-              "Library", ".semantic_search"}
-# Agent-CLI config artifacts hidden ONLY at the workspace ROOT. CLAUDE_CONFIG_DIR
-# is the workspace root, so claude drops these bare names there (cache/, plugins/,
-# settings.json, …). An attendee's OWN nested skills/logs/ or a settings.json they
-# create inside a project dir must stay visible; root-only keeps both true.
-_SKIP_DIRS_ROOT = {"marketplaces", "plugins", "backups", "statsig",
-                   "shell-snapshots", "cache", "projects", "todos", "logs",
-                   "ide", "history"}
-_SKIP_FILES_ROOT = {".claude.json", ".claude.json.backup", "settings.json",
-                    "known_marketplaces.json", ".last-update-result.json",
-                    "changelog.md", ".bash_history", ".viminfo"}
-
-
-def _safe_join(session: dict, rel: str) -> str | None:
-    """Resolve a vroot-relative path to a real path INSIDE the jail, or None."""
-    rel = (rel or "").replace(session.get("_vroot", "/mnt/s3files"), "").lstrip("/")
-    full = os.path.normpath(os.path.join(session["_root"], rel))
-    root = os.path.realpath(session["_root"])
-    if os.path.realpath(full) == root or os.path.realpath(full).startswith(root + os.sep):
-        return full
-    return None
-
-
-# Dot dirs that ARE attendee work and stay visible (steering); every OTHER dotdir
-# at depth is skipped so opening HOME doesn't descend ~/.vscode, ~/.git, ~/Library…
-_KEEP_DOTDIRS = {".config", ".kiro", ".claude"}
-
-
-def _file_tree(session: dict) -> list[dict]:
-    """Return the workspace as a flat, sorted list of {path,type,size} (dirs first).
-
-    Bounded by depth + node count so opening a huge folder (e.g. a real HOME with
-    100k+ files) returns a usable tree fast instead of walking everything and hanging
-    the "Mounting workspace…" spinner. VS Code lazily loads on expand; we keep the
-    flat-list contract but cap DEPTH + total NODES and skip un-authored dot-dirs.
-    The caps are read at CALL time (a real env seam tests can set), not import."""
-    root = session.get("_root") or ""
-    if not root or not os.path.isdir(root):
-        return []          # no-folder (VS Code welcome) state, or a stale root
-    max_depth = int(os.environ.get("WORKSHOP_TREE_MAX_DEPTH", "8"))
-    max_nodes = int(os.environ.get("WORKSHOP_TREE_MAX_NODES", "4000"))
-    out: list[dict] = []
-    root_depth = root.rstrip(os.sep).count(os.sep)
-    for dirpath, dirnames, filenames in os.walk(root):
-        if len(out) >= max_nodes:
-            break
-        at_root = os.path.samefile(dirpath, root) if os.path.exists(dirpath) else False
-        depth = dirpath.rstrip(os.sep).count(os.sep) - root_depth
-        skip_dirs = _SKIP_DIRS | (_SKIP_DIRS_ROOT if at_root else set())
-        # Prune: junk dirs always; past the depth cap stop descending; and below the
-        # root, skip dot-dirs that are not the agent-steering ones we want to show.
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if d not in skip_dirs
-            and depth < max_depth
-            and not (d.startswith(".") and d not in _KEEP_DOTDIRS))
-        for d in dirnames:
-            full = os.path.join(dirpath, d)
-            out.append({"path": _to_virtual(session, full), "type": "dir", "size": 0})
-        for fn in sorted(filenames):
-            if len(out) >= max_nodes:
-                break
-            if at_root and fn in _SKIP_FILES_ROOT:
-                continue
-            full = os.path.join(dirpath, fn)
-            try:
-                size = os.path.getsize(full)
-            except OSError:
-                size = 0
-            out.append({"path": _to_virtual(session, full), "type": "file", "size": size})
-    # Hierarchical (DFS) order, directories before files among siblings: the
-    # order a VS Code explorer paints, so a child row always sits directly
-    # under its parent. (The old depth-first-by-LEVEL sort scattered children
-    # to the bottom of the list.)
-    vroot = session.get("_vroot", "/mnt/s3files")
-    def _sort_key(e: dict) -> list:
-        parts = e["path"].replace(vroot, "").strip("/").split("/")
-        return ([(0, c) for c in parts[:-1]]
-                + [(0 if e["type"] == "dir" else 1, parts[-1])])
-    out.sort(key=_sort_key)
-    return out
-
-
-def _search_files(session: dict, query: str, *, max_files: int = 200,
-                  max_hits: int = 300) -> dict:
-    """Content-based workspace search (the editor's Cmd+F across files). Walks the
-    same jail/skip rules as the tree, reads each text file once, and returns the
-    matching lines grouped by file: [{path, hits:[{line, text}]}]. Case-insensitive
-    substring match (not a regex, so a stray bracket can't error). Bounded by
-    max_files / max_hits so a huge workspace never blocks the loop."""
-    q = (query or "").strip()
-    if not q:
-        return {"query": query, "results": [], "truncated": False}
-    needle = q.lower()
-    root = session["_root"]
-    results: list[dict] = []
-    hits_total = 0
-    files_scanned = 0
-    truncated = False
-    for dirpath, dirnames, filenames in os.walk(root):
-        at_root = os.path.samefile(dirpath, root) if os.path.exists(dirpath) else False
-        skip_dirs = _SKIP_DIRS | (_SKIP_DIRS_ROOT if at_root else set())
-        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
-        for fn in sorted(filenames):
-            if at_root and fn in _SKIP_FILES_ROOT:
-                continue
-            if os.path.splitext(fn)[1].lower() not in _TEXT_EXT:
-                continue
-            full = os.path.join(dirpath, fn)
-            try:
-                if os.path.getsize(full) > _MAX_FILE:
-                    continue
-                with open(full, encoding="utf-8") as f:
-                    lines = f.read().splitlines()
-            except (UnicodeDecodeError, OSError):
-                continue
-            files_scanned += 1
-            if files_scanned > max_files:
-                truncated = True
-                break
-            file_hits: list[dict] = []
-            for i, line in enumerate(lines, 1):
-                if needle in line.lower():
-                    file_hits.append({"line": i, "text": line[:400]})
-                    hits_total += 1
-                    if hits_total >= max_hits:
-                        truncated = True
-                        break
-            if file_hits:
-                results.append({"path": _to_virtual(session, full), "hits": file_hits})
-            if truncated:
-                break
-        if truncated:
-            break
-    return {"query": q, "results": results, "truncated": truncated}
-
-
-def _read_file(session: dict, rel: str) -> dict:
-    full = _safe_join(session, rel)
-    if not full or not os.path.isfile(full):
-        return {"error": "file not found", "path": rel}
-    if os.path.getsize(full) > _MAX_FILE:
-        return {"error": "file too large to open", "path": rel}
-    ext = os.path.splitext(full)[1].lower()
-    try:
-        with open(full, encoding="utf-8") as f:
-            content = f.read()
-    except (UnicodeDecodeError, OSError):
-        return {"path": _to_virtual(session, full), "binary": True, "content": ""}
-    return {"path": _to_virtual(session, full), "binary": False,
-            "language": _lang_for(ext), "content": content}
-
-
-def _write_file(session: dict, rel: str, content: str) -> dict:
-    full = _safe_join(session, rel)
-    if full is None:
-        return {"error": "path escapes workspace", "path": rel}
-    if len(content or "") > _MAX_FILE:
-        return {"error": "content too large", "path": rel}
-    os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w", encoding="utf-8") as f:
-        f.write(content)
-    return {"path": _to_virtual(session, full), "bytes": len(content.encode("utf-8")),
-            "tree": _file_tree(session)}
-
-
-def _delete_file(session: dict, rel: str) -> dict:
-    """Remove one workspace file OR directory (the explorer's right-click Delete).
-
-    Stays inside the jail via _safe_join; a directory is removed recursively (the
-    explorer can delete a folder, like VS Code). The workspace root itself cannot
-    be deleted. Missing file / bad path return {"error": ...}, never raise.
-    """
-    full = _safe_join(session, rel)
-    if full is None:
-        return {"error": "invalid path", "path": rel}
-    if not os.path.exists(full):
-        return {"error": "not found", "path": rel}
-    if os.path.realpath(full) == os.path.realpath(session["_root"]):
-        return {"error": "cannot delete the workspace root", "path": rel}
-    try:
-        if os.path.isdir(full):
-            shutil.rmtree(full)
-        else:
-            os.remove(full)
-    except OSError as exc:
-        return {"error": str(exc), "path": rel}
-    return {"ok": True, "path": rel, "tree": _file_tree(session)}
-
-
-def _make_dir(session: dict, rel: str) -> dict:
-    """Create a new directory in the workspace (the explorer's New Folder).
-
-    Stays inside the jail via _safe_join; an existing path is reported, never
-    silently merged into. Returns the fresh tree so the explorer re-renders.
-    """
-    full = _safe_join(session, rel)
-    if full is None:
-        return {"error": "path escapes workspace", "path": rel}
-    if os.path.exists(full):
-        return {"error": "already exists", "path": rel}
-    try:
-        os.makedirs(full, exist_ok=False)
-    except OSError as exc:
-        return {"error": str(exc), "path": rel}
-    return {"ok": True, "path": _to_virtual(session, full), "tree": _file_tree(session)}
-
-
-def _rename_file(session: dict, rel: str, to: str) -> dict:
-    """Move/rename one workspace file within the jail (explorer's Rename).
-
-    BOTH the source and the destination must resolve inside the session root
-    via _safe_join; either escaping rejects with {"error": "invalid path"}.
-    Returns the fresh tree on success.
-    """
-    src = _safe_join(session, rel)
-    dst = _safe_join(session, to)
-    if src is None or dst is None:
-        return {"error": "invalid path", "path": rel, "to": to}
-    if not os.path.exists(src):
-        return {"error": "not found", "path": rel}
-    try:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        os.rename(src, dst)
-    except OSError as exc:
-        return {"error": str(exc), "path": rel, "to": to}
-    return {"ok": True, "path": _to_virtual(session, dst), "tree": _file_tree(session)}
-
-
-def _lang_for(ext: str) -> str:
-    return {".py": "python", ".md": "markdown", ".json": "json", ".toml": "toml",
-            ".yaml": "yaml", ".yml": "yaml", ".html": "html", ".css": "css",
-            ".js": "javascript", ".sh": "bash", ".mdc": "markdown"}.get(ext, "text")
-
-
 # The harness files, by agent, in each agent's native format. "Set up harness" copies
 # these into the workspace; the file IS the configuration (no abstract "install").
 #
@@ -1423,7 +1126,7 @@ def _harness_files(agent_id: str) -> dict[str, str]:
             "{\n"
             '  "$schema": "https://opencode.ai/config.json",\n'
             '  "provider": { "amazon-bedrock": { "options": '
-            f'{{ "region": "{_OPENCODE_REGION}" }} }} }},\n'
+            f'{{ "region": "{_opencode_region()}" }} }} }},\n'
             f'  "model": "{_OPENCODE_MODEL}",\n'
             '  "small_model": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"\n'
             "}\n")

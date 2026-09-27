@@ -81,11 +81,31 @@ def reader_mirror_bucket() -> str:
     explicit = os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
     if explicit:
         return explicit
+    if os.environ.get("WORKSHOP_RUN_MIRROR_DISCOVERY", "1") == "0":
+        # The offline suite turns discovery off: a developer laptop with a real
+        # infra.config otherwise resolved its REAL bucket, and fixture runs were
+        # mirrored into it (observed 2026-09-27, 25 fixture records).
+        return ""
     try:
         import runtime_stage  # noqa: PLC0415 (lazy: keeps the offline import light)
         return runtime_stage.runtime_bucket()
     except Exception:  # noqa: BLE001 (no SDK / no credentials / no region)
         return ""
+
+
+def attach_reader_mirror() -> str:
+    """Point THIS read-only process at the deployed coordinator's mirror, once.
+
+    The watcher, the progress check, and the diagnostic bundle are separate host
+    processes (never the console, whose run list stays its own). Each needs the
+    same resolution; the diagnostic bundle lacked it and answered "none recorded"
+    for every Lab 2 build. Returns the bucket in use, or "" for local disk only.
+    """
+    if not os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip():
+        bucket = reader_mirror_bucket()
+        if bucket:
+            os.environ["WORKSHOP_RUNTIME_BUCKET"] = bucket
+    return os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
 
 
 def _s3() -> tuple[Any, str] | None:

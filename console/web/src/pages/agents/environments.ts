@@ -108,16 +108,6 @@ export function onAgentRoles(fn: (roles: AgentRole[]) => void): () => void {
   return () => waiting.delete(fn);
 }
 
-/** The default sidebar/URL segment: the first served role, or '' before load. */
-export function defaultAgentRole(): string {
-  return cached[0]?.id ?? '';
-}
-
-/** The role a URL segment addresses, or undefined until the roster loads. */
-export function agentRole(id: string | undefined): AgentRole | undefined {
-  return cached.find((e) => e.id === id) ?? cached[0];
-}
-
 // Resolve an instance id (e.g. 'claude-code-validator') to its human label, for
 // display anywhere a specific runtime instance is named (Settings, Fleet). Falls
 // back to the raw id, which is meaningful on its own.

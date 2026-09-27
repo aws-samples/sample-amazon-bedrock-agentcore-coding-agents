@@ -57,7 +57,7 @@ def test_restart_keeps_pr_and_check_evidence_without_reviving_workers(history):
     assert detail["status"] == run.status
     assert detail["role_prs"] == run.role_prs
     assert detail["gate_history"] == run.gate_history
-    assert detail["gate"] == run.gate
+    assert detail["gate"] == {**run.gate, "executed": True}
     assert "user_identity" not in detail and "options" not in detail
 
     code, result = api.dispatch("GET", f"/api/runs/{run.run_id}/result", None)

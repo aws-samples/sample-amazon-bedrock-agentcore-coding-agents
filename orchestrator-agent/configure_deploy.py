@@ -37,8 +37,18 @@ def ROLES() -> tuple[str, ...]:
 
 
 def _region(value: str | None) -> str:
-    return value or os.environ.get("AWS_REGION") or os.environ.get(
-        "AWS_DEFAULT_REGION", "us-west-2")
+    """The deployment region, never a literal: a us-west-2 default mis-wired every
+    us-east-1 deploy run from a shell without the workshop exports."""
+    region = value or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if not region:
+        try:
+            import boto3  # noqa: PLC0415
+            region = boto3.session.Session().region_name
+        except Exception:  # noqa: BLE001
+            region = None
+    if not region:
+        raise SystemExit("No AWS region: export AWS_REGION (the workshop's deployment region).")
+    return region
 
 
 # The two role ARNs configure_deploy needs. They have DETERMINISTIC names set by

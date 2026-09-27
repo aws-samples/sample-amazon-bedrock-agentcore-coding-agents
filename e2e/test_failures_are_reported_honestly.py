@@ -127,7 +127,7 @@ def test_unavailable_review_guidance_preserves_recorded_pr_evidence(review_reaso
             "work_id": "fixture_backend", "pr_url": "https://example.invalid/pr/7",
             "state": "blocked", "error": "REVIEW_UNAVAILABLE",
         }],
-        "gate": {"passed": True, "checks": [], "summary": "fixture check passed"},
+        "gate": {"passed": True, "executed": True, "checks": [], "summary": "fixture check passed"},
         "review": {
             "state": "changes_requested", "review_unavailable": True,
             "reasons": [review_reason],

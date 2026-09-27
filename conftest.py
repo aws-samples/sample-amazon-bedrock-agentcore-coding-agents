@@ -31,6 +31,11 @@ _ISOLATED = tempfile.mkdtemp(prefix="solution-test-isolate-")
 # exports a production WORKSHOP_RUNS_DIR. Individual tests may override it later.
 os.environ["WORKSHOP_RUNS_DIR"] = os.path.join(_ISOLATED, "runs")
 os.environ.pop("WORKSHOP_RUNTIME_BUCKET", None)
+# A reader derives the deployed coordinator's mirror bucket from infra.config and
+# STS. On a developer laptop with a real infra.config that was a REAL bucket, and
+# once a diagnostic attached it, every later fixture save was mirrored into it.
+# Discovery is off for the suite; tests of discovery itself turn it back on.
+os.environ["WORKSHOP_RUN_MIRROR_DISCOVERY"] = "0"
 # Credential store -> empty tmp file (no developer PAT on the ladder). Runtime ARN
 # config -> empty tmp file (no real wired runtime). Both read these env vars at
 # import by design. setdefault so a more specific package conftest / a test that
@@ -47,3 +52,16 @@ os.environ.setdefault("WORKSHOP_GATEWAY_STATE",
 os.environ.pop("GITHUB_TOKEN", None)
 os.environ.pop("GITHUB_REPO", None)
 os.environ.pop("GITHUB_GATEWAY_URL", None)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_mirror_bucket_leaks_between_tests():
+    """A reader that attaches a mirror sets WORKSHOP_RUNTIME_BUCKET process-wide;
+    clear it around every test so one test's attachment can never make a later
+    test's run_store.save write to S3."""
+    os.environ.pop("WORKSHOP_RUNTIME_BUCKET", None)
+    yield
+    os.environ.pop("WORKSHOP_RUNTIME_BUCKET", None)

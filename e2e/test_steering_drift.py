@@ -275,29 +275,6 @@ def test_the_interactive_session_stages_steering_at_the_registry_path(tmp_path, 
                 f"({banned!r}); validation is agentic only")
 
 
-def test_the_session_banner_names_the_file_the_session_actually_staged():
-    """A banner that names the wrong path teaches the attendee the wrong path.
-
-    The Lab 1 console prints "configured: ~/<file>" when the session opens, and that
-    string was a hardcoded literal that drifted from the staged filename in the same
-    change. It is the only place the attendee can see WHICH steering file is live.
-
-    Scoped to MARKDOWN paths on purpose: a banner may legitimately name a role's
-    non-steering config (opencode points at ``~/.config/opencode/opencode.json``).
-    What it may not do is name a ``.md`` file that is not the registry's steering.
-    """
-    sys.path.insert(0, os.path.join(_REPO, "interactive-api"))
-    import interactive_api
-
-    md_in_home = re.compile(r"~/(\S+\.md)")
-    for role_id, banner in interactive_api._PTY_BANNER.items():
-        declared = roles.get(role_id).steering_file.replace("\\", "/")
-        named = md_in_home.findall(banner)
-        assert all(path == declared for path in named), (
-            f"{role_id}: banner names {named}, but the registry declares "
-            f"{declared!r}. The attendee is told to edit the wrong file.")
-
-
 def test_no_shipped_skill_or_steering_promises_a_declaration_file_nothing_reads():
     """`run.json` was the engine's old start contract and NOTHING has read it for a long
     time: reviewer.run_gate only executes the validator's check and reads its exit code.

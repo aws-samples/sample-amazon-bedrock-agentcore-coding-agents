@@ -14,7 +14,6 @@ routing projects in that language.
 |---|---|
 | `main.py` | Runtime HTTP entrypoint and Strands streaming adapter |
 | `session_activity.py` | Register background builds with the Runtime async-task lifecycle |
-| `model/load.py` | Bedrock model construction |
 | `stage_engine.py` | Stage the root coordinator and use cases into the build context |
 | `configure_deploy.py` | Wire role ARNs, IAM roles, and account settings into generated CLI config |
 | `promote_runtime.py` | Verify the selected platform on the current CLI/CDK Runtime; update it when needed |

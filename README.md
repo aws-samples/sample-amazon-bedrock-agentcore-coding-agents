@@ -199,7 +199,16 @@ outside this CloudWatch query.
 
 ## When something is not working
 
-Both collect no credentials and are safe to re-run:
+Start with the one read-only command that says where you are in the labs and what
+to run next (it prints no keys and masks account IDs, so it is safe to paste):
+
+```bash
+python3 orchestrator/progress.py          # every lab checkpoint, then the one next step
+python3 orchestrator/workshop_urls.py 8000  # the finished /proxy/8000/ URL, and whether it answers
+./coding-agents/deploy-prebuilt.sh claude-code --explain   # the exact CreateAgentRuntime request; creates nothing
+```
+
+For a build or GitHub problem, these collect no credentials and are safe to re-run:
 
 ```bash
 python3 orchestrator/github.py doctor   # can the GitHub App reach YOUR repo?

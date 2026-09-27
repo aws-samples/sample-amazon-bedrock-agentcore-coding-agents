@@ -26,10 +26,13 @@ import tempfile
 import time
 from contextlib import redirect_stdout
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import engine  # noqa: E402
 import run_store  # noqa: E402
+import run_advice  # noqa: E402
 import watch_run  # noqa: E402
 
 
@@ -264,7 +267,8 @@ def test_the_console_feed_carries_the_printed_output_too():
 
 # ------------------------------------------------------- finding a coordinator's run
 
-def test_a_reader_derives_the_same_bucket_the_writer_was_told():
+def test_a_reader_derives_the_same_bucket_the_writer_was_told(monkeypatch):
+    monkeypatch.delenv("WORKSHOP_RUN_MIRROR_DISCOVERY", raising=False)
     import runtime_stage
     saved_env = os.environ.get("WORKSHOP_RUNTIME_BUCKET")
     saved_fn = runtime_stage.runtime_bucket
@@ -431,3 +435,247 @@ def test_the_watcher_never_reaches_for_a_model_or_a_verdict():
                       "boto3.client('bedrock", "invoke_agent_runtime"):
         assert forbidden not in source, \
             f"watch_run.py must not {forbidden!r}: watching may not influence a run"
+
+
+# ------------------------------------------------------- what to do when it stops
+
+def _terminal(tmp, **fields):
+    record = {"run_id": "run_061500_abcdef123456", "status": "passed",
+              "phase": "done", "task": "Use preset=game-from-scratch",
+              "progress": [{"agent": "claude-code", "role": "backend",
+                            "state": "done", "note": ""}]}
+    record.update(fields)
+    _persist(tmp, record)
+    return _watch_once(tmp, record["run_id"])
+
+
+_PR = "https://github.com/o/r/pull/1"
+
+
+def test_a_passed_run_says_merge_then_checkout_then_play(monkeypatch, tmp_path):
+    """September 25: attendees "never knew if it built". The record knows; say it,
+    and name the next commands."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with tempfile.TemporaryDirectory() as tmp:
+        out, rc = _terminal(tmp, role_prs=[{"work_id": "w1", "agent": "claude-code",
+                                            "role": "backend", "pr_url": _PR,
+                                            "state": "awaiting_review"}])
+    assert rc == 0
+    block = out.split("what to do now", 1)[1]
+    assert "BUILD PASSED" in block and _PR in block
+    assert "1. Open it, read its check and Assessment comments" in block
+    assert "Merge pull request" in block
+    assert "2. python3 orchestrator/github.py checkout ~/game\n" in block + "\n"
+    assert "Play Your Game" in block
+
+
+def test_an_auto_merged_run_skips_the_merge_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, role_prs=[{"work_id": "w1", "pr_url": _PR,
+                                             "state": "merged"}])
+    block = out.split("what to do now", 1)[1]
+    assert "merged into the default branch" in block
+    assert "Merge pull request" not in block
+    assert "1. python3 orchestrator/github.py checkout ~/game" in block
+
+
+def _blocked(error):
+    return [{"work_id": "w1", "pr_url": _PR, "state": "blocked", "error": error}]
+
+
+def test_a_red_run_offers_the_two_recoveries_the_page_teaches(monkeypatch, tmp_path):
+    """The other September 25 comment: a build failed and the attendee "was unsure how
+    to recover" while the room moved on. Both paths, as commands, and the one rule.
+    The reason is the one the engine actually records for a PR still red after its
+    repair (``_settle_run``): ROLE_PR_BLOCKED, with the row's error GATE_RED."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, status="needs_human", fail_reason="ROLE_PR_BLOCKED:w1",
+                             role_prs=_blocked("GATE_RED"),
+                             next_action="One or more pull requests did not become "
+                                         "mergeable.")
+    block = out.split("what to do now", 1)[1]
+    flat = " ".join(block.split())
+    assert "BUILD NEEDS YOU: ROLE_PR_BLOCKED:w1" in block
+    assert f"{_PR} (blocked)" in flat
+    assert "a. If you judge the game good enough" in flat
+    assert "merge it yourself" in flat and "latest check comment" in flat
+    assert "python3 orchestrator/github.py checkout ~/game" in block
+    assert "b. Or rerun Run a Build step 1 with a simpler direction" in flat
+    assert "NEW session ID" in flat
+    assert "Do not resubmit the same request to retry a red pull request" in flat
+
+
+@pytest.mark.parametrize("reason,error,advice", [
+    ("REVIEW_UNAVAILABLE:w1", "REVIEW_UNAVAILABLE",
+     "The review could not run; do not rebuild the application for a review failure."),
+    ("MODEL_QUOTA_EXHAUSTED", "ROLE_EXECUTION_ERROR",
+     "Bedrock quota is exhausted. Do not resubmit now."),
+    ("ROLE_PR_BLOCKED:w1", "ROLE_EXECUTION_ERROR", "The builder could not repair it."),
+])
+def test_other_stops_print_the_engines_own_advice_not_the_red_gate_choice(
+        monkeypatch, tmp_path, reason, error, advice):
+    """A review outage runs no repair, and a quota stop says not to resubmit now:
+    "stopped after its one repair, or rerun with a simpler direction" would contradict
+    the engine's next_action, which is printed in full instead."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, status="needs_human", fail_reason=reason,
+                             role_prs=_blocked(error), next_action=advice)
+    flat = " ".join(out.split("what to do now", 1)[1].split())
+    assert f"BUILD NEEDS YOU: {reason}" in flat and _PR in flat
+    assert advice in flat
+    assert "after its one repair" not in flat
+    assert "rerun Run a Build step 1" not in flat
+
+
+def test_a_lab3_chat_build_never_gets_lab2s_rebuild_advice(monkeypatch, tmp_path):
+    """A Chat build records its signed-in submitter. Rerunning Run a Build step 1 would
+    start a new game on top of the merged one; its checkout folder is ~/game-lab3."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "game").mkdir()
+    (tmp_path / "game" / "server.js").write_text("x")
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, status="needs_human", fail_reason="ROLE_PR_BLOCKED:w1",
+                             submitted_by="frontend-dev@workshop.aws",
+                             role_prs=_blocked("GATE_RED"))
+    flat = " ".join(out.split("what to do now", 1)[1].split())
+    assert "Run a Build step 1" not in flat
+    assert "Next action in Agent Studio" in flat
+    assert "checkout ~/game-lab3" in flat and "port 8001" in flat
+
+
+def test_a_pr_recorded_only_under_work_items_is_never_reported_missing(
+        monkeypatch, tmp_path):
+    """The engine opens the PR before the check and fills role_prs only when it
+    finalizes. A coordinator recycled while Kiro writes its check leaves the PR only
+    in work_items; "no pull request opened, resubmit" would duplicate the build."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
+        time.time() - run_store.ACTIVE_STALE_AFTER_S - 60))
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_w", "status": "running", "_saved_at": stale,
+                           "phase": "checker_authoring",
+                           "work_items": {"claude-code": {"work_id": "w1",
+                                                          "pr": {"pr_url": _PR}}}})
+        out, _rc = _watch_once(tmp, "run_w")
+    frame, block = out.split("what to do now", 1)
+    flat = " ".join(block.split())
+    assert _PR in frame and _PR in flat
+    assert "NO PULL REQUEST OPENED" not in flat
+    assert "Do not resubmit the whole build" in flat
+
+
+def test_a_run_with_no_pull_request_points_at_the_read_only_progress_check(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, status="failed", fail_reason="ROLE_TOTAL_FAILURE",
+                             next_action="The role produced nothing.")
+    block = out.split("what to do now", 1)[1]
+    assert "NO PULL REQUEST OPENED: ROLE_TOTAL_FAILURE" in block
+    assert "The role produced nothing." in block
+    assert "orchestrator/progress.py" in block
+    assert "diagnose.py" not in block, "diagnose runs the doctor check, which writes a branch"
+    assert "checkout" not in block, "there is nothing to check out"
+
+
+def test_an_interrupted_run_keeps_its_resubmit_advice_only_without_a_pr(
+        monkeypatch, tmp_path):
+    """No PR: nothing can advance it, so submit again. With a PR: that PR is the
+    durable record, and resubmitting duplicates the build (engine.next_action's rule)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
+        time.time() - run_store.ACTIVE_STALE_AFTER_S - 60))
+    base = {"status": "running", "phase": "agent_execution", "_saved_at": stale,
+            "progress": [{"agent": "claude-code", "role": "backend",
+                          "state": "running", "note": ""}]}
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_a", **base})
+        out, _rc = _watch_once(tmp, "run_a")
+    flat = " ".join(out.split("what to do now", 1)[1].split())
+    assert "COORDINATOR_SESSION_INTERRUPTED" in flat
+    assert "Submit it again with Run a Build step 1" in flat
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_b", **base,
+                           "role_prs": [{"pr_url": _PR, "state": "checking"}]})
+        out, _rc = _watch_once(tmp, "run_b")
+    frame, block = out.split("what to do now", 1)
+    flat = " ".join(block.split())
+    assert "BUILD NEEDS YOU: COORDINATOR_SESSION_INTERRUPTED" in flat and _PR in flat
+    assert "Do not resubmit the whole build" in flat
+    assert "submit the request again" not in " ".join(frame.split()), frame
+
+
+def test_the_suggested_checkout_never_replaces_an_existing_game(monkeypatch, tmp_path):
+    """`github.py checkout` REPLACES its destination. Suggesting ~/game after the Lab 2
+    game is there would delete the game the attendee played and its saved scores. A
+    folder holding only the repository's starter files is safe to replace."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rec = {"run_id": "run_061500_abcdef123456"}
+    assert run_advice.checkout_target(rec, str(tmp_path)) == ("~/game", False)
+    (tmp_path / "game").mkdir()
+    (tmp_path / "game" / "README.md").write_text("# new repo")
+    (tmp_path / "game" / ".claude").mkdir()
+    assert run_advice.checkout_target(rec, str(tmp_path)) == ("~/game", False)
+    (tmp_path / "game" / "server.js").write_text("x")
+    assert run_advice.checkout_target(rec, str(tmp_path)) == ("~/game-abcdef", True)
+    (tmp_path / "game-abcdef").mkdir()
+    assert run_advice.checkout_target(rec, str(tmp_path)) == ("~/game-abcdef-2", True)
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, role_prs=[{"pr_url": _PR, "state": "awaiting_review"}])
+    block = out.split("what to do now", 1)[1]
+    flat = " ".join(block.split())
+    assert "~/game already holds a checkout" in flat
+    assert "checkout ~/game-abcdef-2" in block
+    assert "checkout ~/game\n" not in block + "\n"
+    assert "not 8000 or 8001" in flat and "workshop_urls.py <port>" in flat
+
+
+def test_a_running_build_has_no_advice_yet():
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist(tmp, {"run_id": "run_live", "status": "running",
+                       "phase": "agent_execution",
+                       "progress": [{"agent": "claude-code", "role": "backend",
+                                     "state": "running", "note": ""}]})
+        out, _rc = _watch_once(tmp, "run_live")
+    assert "what to do now" not in out
+
+
+def test_the_loop_keeps_watching_an_interrupted_looking_run(monkeypatch, tmp_path):
+    """A heartbeat write can fail and recover, so a stale-looking record is reported
+    but still watched; the loop stops only on the record's own terminal status."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
+        time.time() - run_store.ACTIVE_STALE_AFTER_S - 60))
+    sleeps = []
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_c", "status": "running", "_saved_at": stale,
+                           "phase": "agent_execution"})
+
+        def recover(_s):
+            sleeps.append(_s)
+            _persist(tmp, {"run_id": "run_c", "status": "passed", "phase": "done",
+                           "role_prs": [{"pr_url": _PR, "state": "awaiting_review"}]})
+
+        monkeypatch.setattr(watch_run.time, "sleep", recover)
+        watch_run._RUNS_DIR = tmp
+        monkeypatch.setattr(sys, "argv", ["watch_run.py", "run_c", "--plain"])
+        monkeypatch.delenv("WORKSHOP_RUNTIME_BUCKET", raising=False)
+        monkeypatch.setattr(run_store, "reader_mirror_bucket", lambda: "")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            assert watch_run.main() == 0
+    out = buf.getvalue()
+    assert len(sleeps) == 1, "it kept watching after the stale frame"
+    assert "COORDINATOR_SESSION_INTERRUPTED" in out
+    assert "BUILD PASSED" in out and "watching stops here" in out
+
+
+def test_a_pasted_session_id_is_refused_and_a_punctuated_run_id_is_cleaned():
+    with pytest.raises(SystemExit) as excinfo:
+        watch_run._clean_run_id("2b8f1000-4295-4c3e-9d4e-1f2a3b4c5d6e")
+    assert "SESSION ID" in str(excinfo.value)
+    assert watch_run._clean_run_id("`run_230935_2a9340b0c184`.") == "run_230935_2a9340b0c184"

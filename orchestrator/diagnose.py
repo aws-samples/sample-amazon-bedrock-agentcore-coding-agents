@@ -168,13 +168,16 @@ def _last_runs_section(limit: int = 3) -> list[dict[str, Any]]:
         return [{"error": f"run store unavailable: {exc}"}]
     rows: list[dict[str, Any]] = []
     try:
+        run_store.attach_reader_mirror()
         for saved in run_store.recent(engine._RUNS_DIR, limit=limit):
+            saved = _as_read(saved)
             gate = saved.get("gate") or {}
             rows.append({
                 "run_id": saved.get("run_id"),
                 "status": saved.get("status"),
                 "fail_reason": saved.get("fail_reason"),
                 "next_action": saved.get("next_action"),
+                "gate_executed": _gate_executed(saved),
                 "gate_passed": bool(gate.get("passed")),
                 "gate_summary": gate.get("summary", ""),
                 "iterations": saved.get("iterations"),
@@ -246,6 +249,25 @@ def bundle(run_id: str | None = None) -> dict[str, Any]:
     return out
 
 
+def _gate_executed(saved: dict) -> bool:
+    """Whether any check actually ran; older records lack the explicit flag."""
+    gate = saved.get("gate") or {}
+    return bool(gate.get("executed", bool(saved.get("gate_history"))))
+
+
+def _as_read(saved: dict) -> dict:
+    """A record as its reader should see it: a dead heartbeat is an interruption."""
+    import engine  # noqa: PLC0415
+    import run_store  # noqa: PLC0415
+    if not run_store.active_snapshot_is_stale(saved):
+        return saved
+    reason = "COORDINATOR_SESSION_INTERRUPTED"
+    return {**saved, "status": "needs_human", "fail_reason": reason,
+            "next_action": engine.next_action(
+                "needs_human", reason, saved.get("pr"), saved.get("pr_url"),
+                saved.get("role_prs"), work_items=saved.get("work_items"))}
+
+
 def _one_run(run_id: str) -> dict[str, Any]:
     """One named run in more depth: its verdict plus the tail of its own log."""
     try:
@@ -253,15 +275,19 @@ def _one_run(run_id: str) -> dict[str, Any]:
         import run_store  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
+    run_store.attach_reader_mirror()
     saved = run_store.load(engine._RUNS_DIR, run_id)
     if saved is None:
         return {"run_id": run_id, "found": False,
-                "hint": "no persisted state for that run id; `list_runs` shows what "
-                        "this box has"}
+                "hint": "no saved record for that run id on this host or in the "
+                        "coordinator's mirror; check the id with "
+                        "`python3 orchestrator/watch_run.py --plain <run_id>`"}
+    saved = _as_read(saved)
     events = saved.get("events") or []
     return {"run_id": run_id, "found": True,
             "status": saved.get("status"),
             "next_action": saved.get("next_action"),
+            "gate_executed": _gate_executed(saved),
             "gate": saved.get("gate"),
             "review_state": (saved.get("review") or {}).get("state"),
             "pr_url": saved.get("pr_url"),
@@ -328,8 +354,10 @@ def render(data: dict[str, Any]) -> str:
         if row.get("error"):
             lines.append(f"- could not read: {row['error']}")
             continue
+        verdict = ("not run" if not row.get("gate_executed")
+                   else "green" if row.get("gate_passed") else "RED")
         lines.append(f"- `{row.get('run_id')}` {row.get('status')} "
-                     f"(gate {'green' if row.get('gate_passed') else 'RED'}: "
+                     f"(gate {verdict}: "
                      f"{row.get('gate_summary') or 'n/a'})"
                      + (f" -> {row.get('pr_url')}" if row.get("pr_url") else ""))
         if row.get("next_action"):
@@ -350,7 +378,9 @@ def render(data: dict[str, Any]) -> str:
             if run.get("review_state"):
                 lines.append(f"- review: {run['review_state']}")
             gate = run.get("gate") or {}
-            if gate:
+            if not run.get("gate_executed"):
+                lines.append("- gate: not run (no executable check was recorded)")
+            elif gate:
                 lines.append(f"- gate: {'green' if gate.get('passed') else 'RED'}"
                              f" ({gate.get('summary') or 'no summary'})")
             if run.get("log_tail"):

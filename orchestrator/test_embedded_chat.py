@@ -16,12 +16,13 @@ def test_chat_without_coordinator_streams_and_keeps_identity_and_history(monkeyp
     monkeypatch.setattr(connection_api, "_CONVERSATIONS", {})
     observed = []
 
-    def stream(prompt, *, model_id, messages, attachments):
+    def stream(prompt, *, model_id, messages, attachments, ledger, cancel=None):
         observed.append((prompt, list(messages), get_current_identity().email))
         yield {"type": "text", "text": "The coordinator runs on this host."}
         yield {
             "type": "done",
-            "messages": messages + [{"role": "user", "content": [{"text": prompt}]}],
+            "messages": messages + [{"role": "user", "content": [{"text": prompt}]},
+                                    {"role": "assistant", "content": [{"text": "ok"}]}],
         }
 
     monkeypatch.setattr(connection_api._chat, "stream_chat", stream)
@@ -35,14 +36,16 @@ def test_chat_without_coordinator_streams_and_keeps_identity_and_history(monkeyp
         return first, second
 
     first, second = contextvars.copy_context().run(converse)
-    assert first == second == [
-        {"type": "text", "text": "The coordinator runs on this host."},
-        {"type": "done"},
-    ]
+    text = {"type": "text", "text": "The coordinator runs on this host."}
+    # server_history says whether this process remembered earlier turns (False
+    # after a restart, which the UI then tells the participant).
+    assert first == [text, {"type": "done", "server_history": False}]
+    assert second == [text, {"type": "done", "server_history": True}]
     assert observed[0] == (
         "Where does Chat run?", [], "attendee@workshop.aws")
     assert observed[1] == (
         "Does it need another Runtime?",
-        [{"role": "user", "content": [{"text": "Where does Chat run?"}]}],
+        [{"role": "user", "content": [{"text": "Where does Chat run?"}]},
+         {"role": "assistant", "content": [{"text": "ok"}]}],
         "attendee@workshop.aws",
     )

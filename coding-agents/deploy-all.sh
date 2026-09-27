@@ -32,13 +32,13 @@ for agent in "${AGENTS[@]}"; do
   # attendee may not have minted their ksk_ key yet (the event provisions the
   # subscription; the key is per-attendee and comes after). Without a key its
   # setup.sh prompts on a TTY and FAILS LOUD without one, which would abort this
-  # whole batch. So build it keyless and let the attendee add the key later on the
-  # wired instance in console Settings; run.sh reads it from the Token Vault at
-  # session start. Pass KIRO_API_KEY to provision the vault here instead.
+  # whole batch. So build it keyless and let the attendee save the key later with
+  # Lab 1's hidden key prompt; run.sh reads it from the Token Vault at session
+  # start. Pass KIRO_API_KEY to provision the vault here instead.
   if [ "$agent" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
     echo "  No KIRO_API_KEY set; building kiro WITHOUT its Token Vault identity"
-    echo "  (--skip-identity). Add your ksk_ key on the wired Kiro instance in"
-    echo "  console Settings after it deploys."
+    echo "  (--skip-identity). Save your ksk_ key afterwards with Lab 1's hidden key"
+    echo "  prompt (Put All Three Agents on Runtime, step 2); no redeploy is needed."
     (cd "$AGENT_DIR" && ./setup.sh --skip-identity)
   else
     (cd "$AGENT_DIR" && ./setup.sh)
