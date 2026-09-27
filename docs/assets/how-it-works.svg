@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="t d">
+  <title id="t">How the loop works</title>
+  <desc id="d">You ask. A coordinator on AgentCore Runtime routes the work to builder agents, each in its own Runtime, and each opens one pull request through AgentCore Gateway. A separate checker agent writes an executable check, the engine runs it, an independent review reads the pull request, and a person merges. A red check goes back to its builder once, then to a person.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#64748b"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#c2410c"/></marker>
+    <style>
+      text { font-family: 'Amazon Ember', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .k { font-size: 15px; font-weight: 700; letter-spacing: 1.2px; }
+      .h { font-size: 23px; font-weight: 700; fill: #0f172a; }
+      .s { font-size: 17px; fill: #475569; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; }
+      .flow { stroke: #64748b; stroke-width: 2.5; fill: none; }
+    </style>
+  </defs>
+  <rect x="1" y="1" width="1598" height="718" rx="24" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+
+  <text x="48" y="58" class="k" fill="#2563eb">BUILD</text>
+  <g>
+    <rect class="card" x="40" y="76" width="340" height="150" rx="16"/>
+    <text x="64" y="112" class="k" fill="#2563eb">YOU</text>
+    <text x="64" y="148" class="h">Ask for a change</text>
+    <text x="64" y="180" class="s">In Agent Studio chat or the CLI,</text>
+    <text x="64" y="204" class="s">in your own words</text>
+
+    <rect class="card" x="430" y="76" width="340" height="150" rx="16"/>
+    <text x="454" y="112" class="k" fill="#2563eb">COORDINATOR · RUNTIME</text>
+    <text x="454" y="148" class="h">Plan and route</text>
+    <text x="454" y="180" class="s">Reads your repository and</text>
+    <text x="454" y="204" class="s">picks only the builders it needs</text>
+
+    <rect class="card" x="820" y="76" width="340" height="150" rx="16"/>
+    <text x="844" y="112" class="k" fill="#2563eb">BUILDERS · A RUNTIME EACH</text>
+    <text x="844" y="148" class="h">Claude Code, Codex</text>
+    <text x="844" y="180" class="s">Each on its own branch, with</text>
+    <text x="844" y="204" class="s">its own skill and tools</text>
+
+    <rect class="card" x="1210" y="76" width="350" height="150" rx="16"/>
+    <text x="1234" y="112" class="k" fill="#2563eb">GITHUB · THROUGH GATEWAY</text>
+    <text x="1234" y="148" class="h">One pull request each</text>
+    <text x="1234" y="180" class="s">No GitHub credential ever</text>
+    <text x="1234" y="204" class="s">enters an agent</text>
+  </g>
+  <path class="flow" d="M384 151 H424" marker-end="url(#a)"/>
+  <path class="flow" d="M774 151 H814" marker-end="url(#a)"/>
+  <path class="flow" d="M1164 151 H1204" marker-end="url(#a)"/>
+  <path class="flow" d="M1385 230 V322" marker-end="url(#a)"/>
+
+  <text x="48" y="304" class="k" fill="#15803d">VERIFY</text>
+  <g>
+    <rect class="card" x="1210" y="326" width="350" height="150" rx="16"/>
+    <text x="1234" y="362" class="k" fill="#15803d">CHECKER · ITS OWN RUNTIME</text>
+    <text x="1234" y="398" class="h">Kiro writes a check</text>
+    <text x="1234" y="430" class="s">An executable test for this</text>
+    <text x="1234" y="454" class="s">request, never the builder's</text>
+
+    <rect class="card" x="820" y="326" width="340" height="150" rx="16"/>
+    <text x="844" y="362" class="k" fill="#15803d">REAL EXECUTION</text>
+    <text x="844" y="398" class="h">Run it for real</text>
+    <text x="844" y="430" class="s">The exit code is the verdict.</text>
+    <text x="844" y="454" class="s">Red never turns green.</text>
+
+    <rect class="card" x="430" y="326" width="340" height="150" rx="16"/>
+    <text x="454" y="362" class="k" fill="#15803d">INDEPENDENT REVIEW</text>
+    <text x="454" y="398" class="h">Try to break it</text>
+    <text x="454" y="430" class="s">Adversarial and design lenses,</text>
+    <text x="454" y="454" class="s">posted on the pull request</text>
+
+    <rect class="card" x="40" y="326" width="340" height="150" rx="16"/>
+    <text x="64" y="362" class="k" fill="#15803d">YOU</text>
+    <text x="64" y="398" class="h">Review and merge</text>
+    <text x="64" y="430" class="s">The evidence is on the pull</text>
+    <text x="64" y="454" class="s">request. The merge is yours.</text>
+  </g>
+  <path class="flow" d="M1206 401 H1166" marker-end="url(#a)"/>
+  <path class="flow" d="M816 401 H776" marker-end="url(#a)"/>
+  <path class="flow" d="M426 401 H386" marker-end="url(#a)"/>
+
+  <path d="M990 322 V230" stroke="#c2410c" stroke-width="2.5" stroke-dasharray="8 7" fill="none" marker-end="url(#r)"/>
+  <rect x="1000" y="258" width="196" height="40" rx="20" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="1098" y="284" text-anchor="middle" style="font-size:15px;font-weight:700" fill="#c2410c">Red: one repair, then you</text>
+
+  <rect x="40" y="530" width="1520" height="150" rx="16" fill="#0f172a"/>
+  <text x="72" y="572" class="k" fill="#fb923c">ON AWS, NOT ON A LAPTOP</text>
+  <text x="72" y="612" style="font-size:20px" fill="#e2e8f0">Amazon Bedrock AgentCore Runtime · Gateway · Identity</text>
+  <text x="72" y="648" style="font-size:18px" fill="#94a3b8">Shared workspace on Amazon S3 Files · sign-in with Amazon Cognito · OpenTelemetry usage by person in Amazon CloudWatch</text>
+</svg>
