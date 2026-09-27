@@ -372,7 +372,7 @@ def test_coordinator_receipt_reads_local_state_only(tmp_path):
         (cli / name).unlink()
     sparse = "\n".join(module.receipt_lines(project))
     assert "Runtime ARN:     not recorded" in sparse
-    assert "(the engine default)" in sparse and "us.anthropic." in sparse
+    assert "(the engine default)" in sparse and "global.anthropic." in sparse
 
 
 def test_coordinator_receipt_never_fails_on_an_unexpected_local_shape(tmp_path):

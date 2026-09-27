@@ -37,7 +37,7 @@ def load_existing_config(path: Path) -> dict[str, Any]:
 # must be able to change it without editing code or rebuilding the image. It MUST be an
 # inference profile: a bare `anthropic.claude-haiku-...` id is rejected for on-demand
 # use by Converse, InvokeModel and InvokeModelWithResponseStream alike.
-_SMALL_MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_SMALL_MODEL_DEFAULT = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 def _small_model() -> str:
@@ -57,7 +57,7 @@ def build_config(
                 "options": {"region": region},
             },
         },
-        "model": "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+        "model": "amazon-bedrock/global.anthropic.claude-sonnet-5",
         "small_model": _small_model(),
     }
     if gateway_url:

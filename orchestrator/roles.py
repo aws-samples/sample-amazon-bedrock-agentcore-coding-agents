@@ -64,6 +64,10 @@ class Role:
     telemetry_env: dict[str, str] = field(default_factory=dict)  # Lab 3: emit signals
     model_env: str = ""          # env var carrying the model id, if the CLI reads one
     credential: str = "bedrock-native"
+    # "bedrock": the model is a Bedrock id or an llm alias, resolved before dispatch.
+    # Any other value names a CLI that has its OWN model names (Kiro's
+    # `claude-sonnet-5` is not the Bedrock alias of the same spelling).
+    model_namespace: str = "bedrock"
     # opencode's Bedrock provider (Vercel AI SDK) signs with SigV4 but does not walk
     # the AWS credential chain, so its keys must be materialized before the CLI runs.
     needs_static_credentials: bool = False
@@ -173,10 +177,12 @@ _CLAUDE_TELEMETRY = {
     "OTEL_METRIC_EXPORT_INTERVAL": "5000",
     "OTEL_LOGS_EXPORT_INTERVAL": "2000",
 }
-# The backend uses medium effort, as exercised in the timed workshop build.
+# The backend uses low effort. On 2026-09-27, Sonnet 5 at low opened the first
+# game's pull request in about three minutes where medium took about four, and
+# the check passed as often; the executable, not the effort, decides the verdict.
 # Keep the restored validator's separate default and explicit operator overrides.
 # `claude --effort` accepts low|medium|high|xhigh|max; an empty setting omits the flag.
-_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "medium").strip()
+_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "low").strip()
 _CLAUDE_VALIDATOR_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
 # opencode calls the same idea a model VARIANT and its accepted values are
 # provider-specific (its help names high, max, minimal), so it gets its own variable.
@@ -192,22 +198,28 @@ def _claude_cli(effort: str) -> str:
 
 _CLAUDE_CLI = _claude_cli(_CLAUDE_EFFORT)
 
-# Each role's default model is WIRABLE, because an account without Opus access must
+# Each role's default model is WIRABLE, because an account without a model's access must
 # be able to run the workshop by exporting one variable rather than editing code.
 # These are the same names the Stage 1 harness configurators read, so the shelf, the
 # deployed image, and the dispatch all name one model.
 _CLAUDE_MODEL = (os.environ.get("WORKSHOP_CLAUDE_MODEL", "").strip()
-                or "us.anthropic.claude-opus-4-6-v1")
+                or "global.anthropic.claude-sonnet-5")
 _OPENCODE_MODEL = os.environ.get(
-    "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
-_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "us.openai.gpt-5.6-sol")
+    "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/global.anthropic.claude-sonnet-5")
+_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "global.openai.gpt-5.6-sol")
 # Kiro names models in its OWN vendor namespace, not as Bedrock inference profiles, so
 # this cannot share _CLAUDE_MODEL. Verified against a live Runtime with
-# `kiro-cli chat --list-models`: claude-opus-5 / claude-sonnet-5 / claude-opus-4.8 /
+# `kiro-cli chat --list-models`: claude-opus-5.5 / claude-opus-5 / claude-sonnet-5 /
 # auto / ... . Kept wirable like every other role's model, and read by BOTH halves of
 # the flow (this registry for the Lab 2 dispatch, run.sh for the Lab 1 session).
-_KIRO_MODEL = os.environ.get("WORKSHOP_KIRO_MODEL", "claude-opus-5")
-_KIRO_EFFORT = os.environ.get("WORKSHOP_KIRO_EFFORT", "medium").strip()
+# claude-opus-5.5 (2.00x credits, listed as an experimental preview) wrote each of
+# five first-game checks in two to three minutes on 2026-09-27, while claude-opus-5
+# (2.20x) took two to nine. If Kiro withdraws the preview, set claude-sonnet-5.
+_KIRO_MODEL = os.environ.get("WORKSHOP_KIRO_MODEL", "claude-opus-5.5")
+# Low effort: the check it authors is the slowest step of a build, and on
+# 2026-09-27 opus-5 at low wrote a passing check in about two minutes where
+# medium took almost nine. The executable, not the effort, decides the verdict.
+_KIRO_EFFORT = os.environ.get("WORKSHOP_KIRO_EFFORT", "low").strip()
 if _KIRO_EFFORT not in ("", "low", "medium", "high", "xhigh", "max"):
     raise ValueError("WORKSHOP_KIRO_EFFORT must be low, medium, high, xhigh, max, or empty")
 _KIRO_CLI = (
@@ -318,6 +330,7 @@ REGISTRY: tuple[Role, ...] = (
         env={"WORKSHOP_KIRO_EFFORT": _KIRO_EFFORT},
         skills=("configure-kiro-validator",),
         credential="api-key",
+        model_namespace="kiro",
         # Kiro is the one served role whose CLI authenticates with a VENDOR key
         # rather than with AWS credentials. Lab 1's interactive session gets it from
         # ``/app/run.sh``, but the Lab 2 dispatch runs ``kiro-cli`` directly (run.sh
@@ -349,7 +362,7 @@ REGISTRY: tuple[Role, ...] = (
         # override. Keep this restore default independent; engine._role_model
         # still resolves WORKSHOP_MODEL and WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR.
         cli=_claude_cli(_CLAUDE_VALIDATOR_EFFORT),
-        default_model="us.anthropic.claude-opus-4-6-v1",
+        default_model="global.anthropic.claude-sonnet-5",
         skills=("configure-claude-code-validator",),
         env={**_CLAUDE_ENV, "WORKSHOP_CLAUDE_EFFORT": _CLAUDE_VALIDATOR_EFFORT},
         telemetry_env=_CLAUDE_TELEMETRY,

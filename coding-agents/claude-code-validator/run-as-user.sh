@@ -16,7 +16,7 @@ USER_ID="${1:?usage: run-as-user.sh <user> \"<prompt>\"}"
 PROMPT="${2:?usage: run-as-user.sh <user> \"<prompt>\"}"
 ROLE_ARN="${PERUSER_ROLE_ARN:?set PERUSER_ROLE_ARN to the pre-provisioned per-user role ARN}"
 REGION="${AWS_REGION:-us-west-2}"
-MODEL="${ANTHROPIC_MODEL:-us.anthropic.claude-opus-4-6-v1}"
+MODEL="${ANTHROPIC_MODEL:-global.anthropic.claude-sonnet-5}"
 
 # Become the user: a short-lived STS session named for the user. The session name
 # is what lands in the invocation log as assumed-role/<role>/<user>.

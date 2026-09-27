@@ -88,7 +88,7 @@ def test_manual_shell_reads_staged_checker_without_shared_frontend_context(tmp_p
     assert child["steering"] == "Attendee-edited checker instructions\n"
     assert not child["frontend_in_project"]
     assert child["args"] == [
-        "chat", "--no-interactive", "--trust-all-tools", "--effort", "medium",
+        "chat", "--no-interactive", "--trust-all-tools", "--effort", "low",
         "Describe your role"]
     assert steering.read_text() == child["steering"]
 

@@ -87,12 +87,12 @@ Export model settings before running the script. It forwards the stack's
 the backend. For example, an event can select these models separately:
 
 ```bash
-export WORKSHOP_CLAUDE_MODEL=us.anthropic.claude-opus-5
-export WORKSHOP_REVIEW_MODEL=us.anthropic.claude-opus-4-6-v1
+export WORKSHOP_CLAUDE_MODEL=global.anthropic.claude-opus-5
+export WORKSHOP_REVIEW_MODEL=global.anthropic.claude-sonnet-5
 ```
 
 Set both before `deploy-coordinator.sh`. Without an explicit review model,
-the reviewer uses `WORKSHOP_CLAUDE_MODEL`, then Sonnet 4.6 as its fallback.
+the reviewer uses `WORKSHOP_CLAUDE_MODEL`, then Sonnet 5 as its fallback.
 `ORCHESTRATOR_MODEL_ID` independently selects the coordinator's chat model.
 Existing `WORKSHOP_MODEL` and
 `WORKSHOP_MODEL_<ROLE>` overrides still take precedence for role dispatch;

@@ -13,11 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("arguments,model,effort", [
-    ([], "claude-opus-5", "medium"),
-    (["--model", "claude-opus-4.6"], "claude-opus-4.6", "medium"),
-    (["--effort", "medium"], "claude-opus-5", "medium"),
-    (["--model", "claude-opus-4.6", "--effort", "low"],
-     "claude-opus-4.6", "low"),
+    ([], "claude-opus-5.5", "low"),
+    (["--model", "claude-sonnet-5"], "claude-sonnet-5", "low"),
+    (["--effort", "medium"], "claude-opus-5.5", "medium"),
+    (["--model", "claude-sonnet-5", "--effort", "high"],
+     "claude-sonnet-5", "high"),
 ])
 def test_bare_and_option_only_launches_open_interactive_chat(
         tmp_path, arguments, model, effort):
@@ -83,10 +83,10 @@ def test_effort_reaches_fresh_registry_or_is_rejected_before_dispatch(effort, tm
         return
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
-    expected = "medium" if effort is None else effort
+    expected = "low" if effort is None else effort
     assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == expected
     assert "--effort high" in observed["backend"]
     if expected:
-        assert "--effort medium" in observed["command"]
+        assert f"--effort {expected}" in observed["command"]
     else:
         assert "--effort" not in observed["command"]

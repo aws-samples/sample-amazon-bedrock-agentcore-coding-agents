@@ -8,8 +8,8 @@ description: >-
   "build the backend", "deploy claude-code", "point Claude Code at the task",
   or asks which agent owns the server/tools side.
   Claude Code runs Bedrock-native (CLAUDE_CODE_USE_BEDROCK=1, IAM bedrock:InvokeModel,
-  NO API key) on default model us.anthropic.claude-opus-4-6-v1 with medium effort. Opus suits the
-  multi-file backend work. Do NOT use this for Kiro (the validator) or Codex
+  NO API key) on default model global.anthropic.claude-sonnet-5 with low effort. Opus 5 is
+  the opt-in for harder multi-file backend work. Do NOT use this for Kiro (the validator) or Codex
   (frontend builder); those have their own configure skills.
 ---
 
@@ -34,10 +34,10 @@ execution -> finalization). Claude Code's job is to produce the backend so the
 validator's authored check can exit 0.
 
 Why Claude Code is the backend: this role is multi-file, contract-driven server work.
-Per per-task model routing, the most capable model is the right call for complex/critical
-work; Opus recognizes rabbit holes and self-corrects, where mid-tier models persist in
-unproductive loops. That is why the default model here is `us.anthropic.claude-opus-4-6-v1`
-and why this role owns the server side.
+The default model is Claude Sonnet 5 (`global.anthropic.claude-sonnet-5`) because the
+whole loop waits on this turn. In live builds of the workshop's first game on
+2026-09-27, Opus 5 took three to six times as long as Sonnet 5 to open the same pull
+request. Choose Opus 5 when a task needs more depth and the build can take longer.
 
 ---
 
@@ -48,10 +48,11 @@ they say "use defaults":
 
 1. **AWS region**: use the existing `AWS_REGION` / `AWS_DEFAULT_REGION` or AWS
    CLI configuration. Ask only when the deployment region is unresolved.
-2. **Model id**: default `us.anthropic.claude-opus-4-6-v1` with `medium` effort.
+2. **Model id**: default `global.anthropic.claude-sonnet-5` with `low` effort.
    Export `WORKSHOP_CLAUDE_MODEL` and `WORKSHOP_CLAUDE_EFFORT` before deploying
    the backend and configuring the coordinator to use an explicit override.
-   Do NOT downgrade to Sonnet/Haiku for this role; backend work is the Opus opt-in case.
+   Do not choose Haiku for this role. Opus 5 (`global.anthropic.claude-opus-5`) is the
+   opt-in for harder work; expect a slower build.
 3. **Has shared infra + Gateway been deployed yet?** This skill assumes:
    - `coding-agents/infra` (shared VPC + S3 Files) is up, and
    - `coding-agents/gateway_mcp/deploy-all.sh` has produced a Gateway URL.
@@ -101,7 +102,7 @@ What `deploy.py` wires up (do not re-create it by hand):
 - The runtime IAM role gets `bedrock:InvokeModel`; this is the credential path.
 - `run.sh` inside the microVM generates `~/.mcp.json` (pointing at the Gateway MCP
   endpoint), sets `CLAUDE_CODE_USE_BEDROCK=1`, and launches
-  `claude --dangerously-skip-permissions --effort medium --model us.anthropic.claude-opus-4-6-v1`.
+  `claude --dangerously-skip-permissions --effort low --model global.anthropic.claude-sonnet-5`.
 - Persistent `/mnt/s3files` is the S3 Files / managed session storage mount.
 
 Sanity-check the Bedrock-native config that makes this the no-key path:
@@ -167,11 +168,11 @@ completion to the orchestrator.
   credential surface minimal (IAM `bedrock:InvokeModel`, no key) is the security-by-default
   and "put the LLM in a box" tenet. Do not bolt a Token Vault / credential provider onto
   this agent; the Kiro validator and Codex skills each own their own credential path.
-- **Why Opus for this role.** Model routing is per-task: `pr_review` -> Haiku (cheap,
-  read-only), `new_task`/`pr_iteration` -> Sonnet (balanced), complex/critical ->
-  **Opus**. Backend server work is the complex/critical case, so the default stays
-  `us.anthropic.claude-opus-4-6-v1`. Routing is about quality, not just cost: Opus
-  self-corrects out of rabbit holes that trap mid-tier models on multi-file work.
+- **Why Sonnet 5 for this role.** Model routing is per-task and weighs depth against
+  the loop's clock: Haiku for cheap read-only work, Sonnet 5 for the builds a person
+  waits on, Opus 5 for complex or critical work that can take longer. The workshop's
+  builds are the waited-on case, so the default is `global.anthropic.claude-sonnet-5`.
+  An operator opts into Opus 5 with `WORKSHOP_CLAUDE_MODEL`.
 - **Swap behind the interface.** New backend strategies plug in behind the same MCP tool
   contract (the Gateway target) without touching the orchestrator: the extensibility
   principle. The contract is the seam; keep it stable.

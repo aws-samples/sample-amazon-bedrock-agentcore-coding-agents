@@ -1,5 +1,5 @@
 # Codex project configuration paired with the root AGENTS.md.
-model = "us.openai.gpt-5.6-sol"
+model = "global.openai.gpt-5.6-sol"
 model_provider = "amazon-bedrock-runtime"
 model_reasoning_effort = "medium"
 

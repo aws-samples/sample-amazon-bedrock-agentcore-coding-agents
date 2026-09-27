@@ -839,15 +839,15 @@ def build_tools() -> list:
 # Wirable via env; the console's message-bar picker overrides it per conversation
 # by passing model_id into build_agent/stream_chat.
 DEFAULT_MODEL_ID = os.environ.get(
-    "ORCHESTRATOR_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+    "ORCHESTRATOR_MODEL_ID", "global.anthropic.claude-sonnet-5")
 
 # Human labels/hints for the orchestrator-brain models the picker offers. Only
 # Claude tiers belong here: the orchestrator REASONS with Claude (the dispatched
 # coding agents bring their own models). Labels are presentation; the ids are the
 # real Bedrock ids resolved from llm.BEDROCK_MODEL_MAP at call time.
 _MODEL_META: dict[str, dict[str, str]] = {
-    "claude-opus-4-6": {"label": "Claude Opus 4.6",  "hint": "most capable"},
-    "claude-sonnet-4-6": {"label": "Claude Sonnet 4.6", "hint": "fast, balanced; the default brain"},
+    "claude-opus-5": {"label": "Claude Opus 5", "hint": "most capable, slower"},
+    "claude-sonnet-5": {"label": "Claude Sonnet 5", "hint": "fast, balanced; the default brain"},
     "claude-haiku-4-5": {"label": "Claude Haiku 4.5", "hint": "fastest"},
 }
 

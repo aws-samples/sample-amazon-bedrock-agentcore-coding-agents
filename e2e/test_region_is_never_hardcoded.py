@@ -243,14 +243,14 @@ def test_the_small_model_is_wirable_and_always_an_inference_profile() -> None:
     saved = os.environ.pop("WORKSHOP_SMALL_MODEL", None)
     try:
         default = configure_opencode._small_model()
-        assert default.startswith("amazon-bedrock/us."), default
+        assert default.startswith(("amazon-bedrock/us.", "amazon-bedrock/global.")), default
         # An override without the provider prefix must be normalised, not doubled.
-        os.environ["WORKSHOP_SMALL_MODEL"] = "us.anthropic.claude-sonnet-4-6"
+        os.environ["WORKSHOP_SMALL_MODEL"] = "global.anthropic.claude-sonnet-5"
         assert configure_opencode._small_model() == (
-            "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
-        os.environ["WORKSHOP_SMALL_MODEL"] = "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
+            "amazon-bedrock/global.anthropic.claude-sonnet-5")
+        os.environ["WORKSHOP_SMALL_MODEL"] = "amazon-bedrock/global.anthropic.claude-sonnet-5"
         assert configure_opencode._small_model() == (
-            "amazon-bedrock/us.anthropic.claude-sonnet-4-6")
+            "amazon-bedrock/global.anthropic.claude-sonnet-5")
     finally:
         os.environ.pop("WORKSHOP_SMALL_MODEL", None)
         if saved is not None:

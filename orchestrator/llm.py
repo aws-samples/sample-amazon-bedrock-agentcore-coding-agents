@@ -2,10 +2,9 @@
 
 Two wire paths, matching how each model is served on Bedrock:
 
-  * **Claude (Converse)**: ``boto3 bedrock-runtime.converse``. Opus 4.6 keeps
-    Converse/InvokeModel compatibility, so the same call shape serves every
-    Claude tier. Short model aliases resolve through ``BEDROCK_MODEL_MAP``:
-    Fable 5 ships ONLY a ``global.`` profile; the 4.x family routes ``us.``.
+  * **Claude (Converse)**: ``boto3 bedrock-runtime.converse``. The same call
+    shape serves every Claude tier. Short model aliases resolve through
+    ``BEDROCK_MODEL_MAP`` to Global cross-Region inference profiles.
   * **OpenAI (Responses API)**: GPT-5.5/5.4 do not appear in the standard
     Bedrock model catalog; they are served from the OpenAI-compatible endpoint
     ``https://bedrock-mantle.{region}.api.aws/openai/v1/responses`` with a
@@ -27,14 +26,20 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-# Short alias -> Bedrock model id. Fable 5 ships ONLY a `global.` profile
-# (us.anthropic.claude-fable-5 is invalid); the 4.x family routes `us.`.
+# Short alias -> Bedrock model id, always a Global cross-Region profile (the
+# re:Invent 2026 Bedrock guidance asks for Global CRIS). Older aliases resolve to
+# their supported successor, so a saved "claude-sonnet-4-6" setting still runs.
+# Some aliases share a spelling with Kiro's own model names (`claude-opus-5`,
+# `claude-sonnet-5`); the engine resolves aliases only for roles whose
+# `model_namespace` is "bedrock", so Kiro keeps its own names.
 BEDROCK_MODEL_MAP: dict[str, str] = {
     "claude-fable-5": "global.anthropic.claude-fable-5",
-    "claude-opus-4-6": "us.anthropic.claude-opus-4-6-v1",
-    "claude-sonnet-4-6": "us.anthropic.claude-sonnet-4-6",
-    "claude-sonnet-4-5": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "claude-haiku-4-5": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
+    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-opus-4-6": "global.anthropic.claude-sonnet-5",
+    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-5",
+    "claude-sonnet-4-5": "global.anthropic.claude-sonnet-5",
 }
 
 def claude_region() -> str:
@@ -57,9 +62,10 @@ OPENAI_RESPONSES_URL = f"https://bedrock-mantle.{OPENAI_REGION}.api.aws/openai/v
 # but its inference backend 5xxs (a provider-side outage of one model, distinct
 # from an SCP denial or a 4xx bad request), fall back to a sibling OpenAI model
 # that is healthy in the same region. Observed live: gpt-5.5 in us-east-2 returned
-# HTTP 500 on every inference while gpt-5.4 served the identical request. Set
-# WORKSHOP_OPENAI_FALLBACK="" to disable (then a 5xx propagates as LLMUnavailable).
-OPENAI_FALLBACK_MODEL = os.environ.get("WORKSHOP_OPENAI_FALLBACK", "openai.gpt-5.4")
+# HTTP 500 on every inference while gpt-5.4 served the identical request. OFF by
+# default: re:Invent 2026 sessions may not use GPT-5.4 or 5.5, and a silent swap
+# would add an unlisted model. Set WORKSHOP_OPENAI_FALLBACK to opt in.
+OPENAI_FALLBACK_MODEL = os.environ.get("WORKSHOP_OPENAI_FALLBACK", "")
 
 _TIMEOUT_S = 120
 
@@ -100,16 +106,21 @@ def available() -> bool:
 
 # --------------------------------------------------------------------- invoke
 def invoke(model: str, prompt: str, system: str | None = None,
-           max_tokens: int = 8000) -> dict[str, Any]:
+           max_tokens: int = 8000, tool: dict[str, Any] | None = None,
+           effort: str = "") -> dict[str, Any]:
     """One model call. Returns the API's own text + token counts.
 
     ``{"text", "input_tokens", "output_tokens", "model_id", "api"}`` where
     ``api`` is ``converse`` (Claude) or ``responses`` (OpenAI-on-Bedrock).
+    With ``tool``, a Claude model must answer through that tool, and ``text`` is
+    its JSON input. OpenAI models ignore ``tool`` and ``effort``.
     Raises LLMUnavailable on any transport/credential/access failure.
     """
     model_id = resolve(model)
     if model_id.startswith("openai."):
         return _invoke_openai(model_id, prompt, system, max_tokens)
+    if tool is not None:
+        return _invoke_claude_tool(model_id, prompt, tool, system, max_tokens, effort)
     return _invoke_claude(model_id, prompt, system, max_tokens)
 
 
@@ -133,6 +144,53 @@ def _invoke_claude(model_id: str, prompt: str, system: str | None,
     return {"text": text, "input_tokens": usage.get("inputTokens", 0),
             "output_tokens": usage.get("outputTokens", 0),
             "model_id": model_id, "api": "converse"}
+
+
+def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
+                       system: str | None, max_tokens: int,
+                       effort: str) -> dict[str, Any]:
+    """One Claude Converse call whose answer arrives as a tool call's JSON input.
+
+    A schema-validated tool input cannot contain the bracket or quoting mistakes a
+    long free-text JSON answer can. ``effort`` is sent as Claude's
+    ``output_config.effort``; a model that rejects it is retried once without it.
+    ``text`` carries the tool input as JSON when one was returned.
+    """
+    name = tool["toolSpec"]["name"]
+    try:
+        import boto3  # noqa: PLC0415
+        rt = boto3.client("bedrock-runtime", region_name=claude_region() or None)
+        kwargs: dict[str, Any] = {
+            "modelId": model_id,
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"maxTokens": max_tokens},
+            "toolConfig": {"tools": [tool], "toolChoice": {"any": {}}},
+        }
+        if system:
+            kwargs["system"] = [{"text": system}]
+        if effort:
+            kwargs["additionalModelRequestFields"] = {"output_config": {"effort": effort}}
+        try:
+            resp = rt.converse(**kwargs)
+        except Exception as exc:
+            if not effort or "ValidationException" not in type(exc).__name__ + str(exc):
+                raise
+            kwargs.pop("additionalModelRequestFields", None)
+            resp = rt.converse(**kwargs)
+    except Exception as exc:
+        raise LLMUnavailable(f"converse({model_id}) failed: {exc}") from exc
+    blocks = resp["output"]["message"]["content"]
+    text = "".join(b.get("text", "") for b in blocks)
+    calls = [b["toolUse"].get("input") for b in blocks
+             if "toolUse" in b and b["toolUse"].get("name") == name]
+    tool_input = calls[0] if calls and isinstance(calls[0], dict) else None
+    usage = resp.get("usage", {})
+    return {"text": json.dumps(tool_input) if tool_input is not None else text,
+            "tool_input": tool_input,
+            "input_tokens": usage.get("inputTokens", 0),
+            "output_tokens": usage.get("outputTokens", 0),
+            "stop_reason": resp.get("stopReason"),
+            "model_id": model_id, "api": "converse_tool"}
 
 
 # Signature of "this model id is no longer served" coming back from the mantle

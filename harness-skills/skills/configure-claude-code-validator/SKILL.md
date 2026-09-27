@@ -56,7 +56,7 @@ that separation is what makes the gate honest).
 Before running anything, confirm with the user (ask only for what is missing):
 
 - **Region**: default `us-west-2` (all workshop examples use this).
-- **Model**: default `us.anthropic.claude-opus-4-6-v1`. Offer the pinned
+- **Model**: default `global.anthropic.claude-sonnet-5`. Offer the pinned
   alternatives `claude-sonnet-4.6` / `claude-haiku-4.5` if the user wants a
   cheaper validator (validation is read-and-assert work, so a mid-tier model is
   often the right trade-off).
@@ -82,7 +82,7 @@ cd coding-agents/claude-code-validator
 python deploy.py
 ```
 
-Default model is `us.anthropic.claude-opus-4-6-v1`. To pin a cheaper validator,
+Default model is `global.anthropic.claude-sonnet-5`. To pin a cheaper validator,
 pass `WORKSHOP_MODEL=...` to `deploy.py`. Do NOT run any Token Vault /
 credential-provider steps here: the validator has no vendor key.
 

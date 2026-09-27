@@ -124,11 +124,11 @@ def test_unset_roster_override_is_not_forwarded(monkeypatch, tmp_path):
 def test_stack_model_settings_reach_a_fresh_coordinator_process(monkeypatch, tmp_path):
     """The host's stack model parameters must survive the deployment boundary."""
     settings = {
-        "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-sonnet-4-6",
-        "WORKSHOP_CODEX_MODEL": "us.openai.gpt-5.6-sol",
-        "WORKSHOP_OPENCODE_MODEL": "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "WORKSHOP_SMALL_MODEL": "us.anthropic.claude-sonnet-4-6",
-        "ORCHESTRATOR_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "WORKSHOP_CLAUDE_MODEL": "global.anthropic.claude-sonnet-5",
+        "WORKSHOP_CODEX_MODEL": "global.openai.gpt-5.6-sol",
+        "WORKSHOP_OPENCODE_MODEL": "amazon-bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "WORKSHOP_SMALL_MODEL": "global.anthropic.claude-sonnet-5",
+        "ORCHESTRATOR_MODEL_ID": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     }
     for name, value in settings.items():
         monkeypatch.setenv(name, value)
@@ -162,7 +162,7 @@ def test_explicit_review_model_survives_a_backend_model_change(monkeypatch, tmp_
     """The deployed reviewer must keep its own selection after backend promotion."""
     settings = {
         "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-opus-5",
-        "WORKSHOP_REVIEW_MODEL": "  us.anthropic.claude-opus-4-6-v1  ",
+        "WORKSHOP_REVIEW_MODEL": "  global.anthropic.claude-sonnet-5  ",
     }
     for name, value in settings.items():
         monkeypatch.setenv(name, value)
@@ -185,7 +185,7 @@ def test_explicit_review_model_survives_a_backend_model_change(monkeypatch, tmp_
     )
     assert json.loads(result) == {
         "backend": "us.anthropic.claude-opus-5",
-        "reviewer": "us.anthropic.claude-opus-4-6-v1",
+        "reviewer": "global.anthropic.claude-sonnet-5",
     }
 
 
@@ -252,20 +252,20 @@ def test_kiro_effort_survives_coordinator_configuration(monkeypatch, tmp_path, e
         "print(json.dumps({'cli':r.cli,'env':r.env}))"],
         env=child_env, text=True)
     observed = json.loads(child)
-    expected = "medium" if effort is None else effort
+    expected = "low" if effort is None else effort
     assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == expected
-    assert ("--effort medium" in observed["cli"]) == bool(expected)
+    assert (f"--effort {expected}" in observed["cli"]) == bool(expected)
 
 @pytest.mark.parametrize("overrides,options,backend_model,validator_model", [
-    ({}, {}, "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-6-v1"),
-    ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
-     {}, "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-4-6"),
-    ({"WORKSHOP_MODEL": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
-     {}, "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-6"),
-    ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "us.anthropic.claude-sonnet-4-6"},
-     {"models": {"claude-code-validator": "us.anthropic.claude-haiku-4-5-20251001-v1:0"}},
-     "us.anthropic.claude-opus-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+    ({}, {}, "us.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5"),
+    ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "global.anthropic.claude-sonnet-5"},
+     {}, "us.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5"),
+    ({"WORKSHOP_MODEL": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "global.anthropic.claude-sonnet-5"},
+     {}, "global.anthropic.claude-haiku-4-5-20251001-v1:0", "global.anthropic.claude-sonnet-5"),
+    ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "global.anthropic.claude-sonnet-5"},
+     {"models": {"claude-code-validator": "global.anthropic.claude-haiku-4-5-20251001-v1:0"}},
+     "us.anthropic.claude-opus-5", "global.anthropic.claude-haiku-4-5-20251001-v1:0"),
 ])
 def test_restored_validator_model_is_resolved_after_coordinator_configuration(
         monkeypatch, tmp_path, overrides, options, backend_model, validator_model):
@@ -314,9 +314,9 @@ print(json.dumps({"roster": roles.roster_ids(), "roles": records}))
     backend = resolved["roles"]["claude-code"]
     validator = resolved["roles"]["claude-code-validator"]
     assert backend["default"] == "us.anthropic.claude-opus-5"
-    assert validator["default"] == "us.anthropic.claude-opus-4-6-v1"
+    assert validator["default"] == "global.anthropic.claude-sonnet-5"
     for role, expected, effort in (
-            (backend, backend_model, "medium"), (validator, validator_model, "xhigh")):
+            (backend, backend_model, "low"), (validator, validator_model, "xhigh")):
         argv = role["argv"]
         assert argv[argv.index("--model") + 1] == expected
         assert argv[argv.index("--effort") + 1] == role["effort"] == effort

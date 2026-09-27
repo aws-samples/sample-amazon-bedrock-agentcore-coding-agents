@@ -24,7 +24,9 @@ import llm  # noqa: E402
 
 def test_resolve_passes_through_openai_ids():
     assert llm.resolve("openai.gpt-5.5") == "openai.gpt-5.5"
-    assert llm.resolve("claude-opus-4-6") == "us.anthropic.claude-opus-4-6-v1"
+    # Retired aliases resolve to the supported Global CRIS successor.
+    assert llm.resolve("claude-opus-4-6") == "global.anthropic.claude-sonnet-5"
+    assert llm.resolve("claude-sonnet-5") == "global.anthropic.claude-sonnet-5"
 
 
 def _http_error(code: int, body: bytes = b'{"error":{"message":"server error"}}'):
@@ -174,7 +176,7 @@ def test_openai_sibling_resolution(monkeypatch):
     monkeypatch.setattr(llm, "OPENAI_FALLBACK_MODEL", "openai.gpt-5.4")
     assert llm.openai_sibling("openai.gpt-5.5") == "openai.gpt-5.4"
     assert llm.openai_sibling("openai.gpt-5.4") is None         # already the sibling
-    assert llm.openai_sibling("us.anthropic.claude-opus-4-6-v1") is None  # not OpenAI
+    assert llm.openai_sibling("global.anthropic.claude-sonnet-5") is None  # not OpenAI
     monkeypatch.setattr(llm, "OPENAI_FALLBACK_MODEL", "")
     assert llm.openai_sibling("openai.gpt-5.5") is None          # fallback disabled
 

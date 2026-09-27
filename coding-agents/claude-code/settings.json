@@ -1,6 +1,6 @@
 {
-  "model": "us.anthropic.claude-opus-4-6-v1",
-  "effortLevel": "medium",
+  "model": "global.anthropic.claude-sonnet-5",
+  "effortLevel": "low",
   "permissionMode": "dontAsk",
   "permissions": {
     "deny": [

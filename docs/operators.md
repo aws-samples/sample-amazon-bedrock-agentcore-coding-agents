@@ -15,11 +15,14 @@ and Kiro, producing one builder PR. A separate Claude Code validator remains a
 restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
 opencode remains the alternate frontend, selected the same way.
 
-The backend defaults to **Claude Opus 4.6** (`us.anthropic.claude-opus-4-6-v1`) with
-`medium` effort. Codex uses **GPT-5.6 Sol** (`us.openai.gpt-5.6-sol`) with
-`medium` reasoning through the native Bedrock Runtime provider. The stack's
-`BackendModelId` and `FrontendModelId` parameters select different models when
-needed. Model access depends on the account; verify a complete tool turn in
+The backend defaults to **Claude Sonnet 5** (`global.anthropic.claude-sonnet-5`)
+with `low` effort, and the integrated reviewer to **Claude Opus 5**
+(`global.anthropic.claude-opus-5`). Codex uses **GPT-5.6 Sol**
+(`global.openai.gpt-5.6-sol`) with `medium` reasoning through the native Bedrock
+Runtime provider. Kiro uses its own `claude-opus-5.5` with `low` effort. Every
+Bedrock default is a Global cross-Region inference profile. The stack's
+`BackendModelId`, `ReviewModelId` and `FrontendModelId` parameters select different
+models when needed; `WORKSHOP_KIRO_MODEL` selects Kiro's. Model access depends on the account; verify a complete tool turn in
 Lab 1 before starting a build.
 
 The tested CLI versions are Claude Code **2.1.278**, Codex **0.155.1**, and
@@ -172,7 +175,7 @@ stack-specific bucket names; `WORKSHOP_RUNTIME_BUCKET` remains an explicit overr
 ## Layout
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
-  - `claude-code/` backend builder (Claude Code, native Bedrock, Opus 4.6/medium)
+  - `claude-code/` backend builder (Claude Code, native Bedrock, Sonnet 5/low)
   - `codex/` frontend builder (Codex 0.155.1, Bedrock Runtime Responses, Sol/medium)
   - `kiro/` acceptance-contract validator (Kiro CLI; steered by `.kiro/steering/*.md` with `inclusion: always`, which directs it to author an executable check whose exit code is the gate; authenticates with your own `ksk_` key, fetched from the AgentCore Identity Token Vault at session start)
   - `opencode/` alternate frontend (hidden; restore with `WORKSHOP_ROLES=claude-code,opencode,kiro`)

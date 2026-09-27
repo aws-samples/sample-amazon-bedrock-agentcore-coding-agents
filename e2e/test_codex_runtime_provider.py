@@ -126,7 +126,7 @@ def test_host_gateway_settings_never_configure_a_worker_mcp(cli_env):
 
 
 @pytest.mark.parametrize("overrides,expected", [
-    ({}, "us.openai.gpt-5.6-sol"),
+    ({}, "global.openai.gpt-5.6-sol"),
     ({"WORKSHOP_CODEX_MODEL": "stack-model"}, "stack-model"),
     ({"WORKSHOP_CODEX_MODEL": "stack", "WORKSHOP_MODEL": "all-role"}, "all-role"),
     ({"WORKSHOP_CODEX_MODEL": "stack", "WORKSHOP_MODEL": "all-role",
@@ -415,7 +415,7 @@ def test_iam_grants_openai_inference_streaming_and_project_without_gateway(
                    for s in statements)
 
     project = f"arn:aws:bedrock:{region}:123456789012:project/default"
-    profile = f"arn:aws:bedrock:{region}:123456789012:inference-profile/us.openai.gpt-5.6-sol"
+    profile = f"arn:aws:bedrock:{region}:123456789012:inference-profile/global.openai.gpt-5.6-sol"
     target = "arn:aws:bedrock:us-west-2::foundation-model/openai.gpt-5.6-sol"
     assert allows("bedrock:InvokeModel", project)
     for action in ("bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"):

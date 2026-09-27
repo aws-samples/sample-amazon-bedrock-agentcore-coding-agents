@@ -700,10 +700,10 @@ def test_per_task_model_override_resolves():
     run = Run(run_id="run_000000_001", task="t", agents=[], roles={})
     run.options = {"models": {"claude-code": "claude-sonnet-4-6"}}
     assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "claude-sonnet-4-6"
-    assert llm.resolve("claude-sonnet-4-6") == "us.anthropic.claude-sonnet-4-6"
+    assert llm.resolve("claude-sonnet-4-6") == "global.anthropic.claude-sonnet-5"
     # no override -> roster default; a full Bedrock id passes through resolve()
     run.options = {}
-    assert engine._role_model(run, "opencode", "amazon-bedrock/us.anthropic.claude-sonnet-4-6") == "amazon-bedrock/us.anthropic.claude-sonnet-4-6"
+    assert engine._role_model(run, "opencode", "amazon-bedrock/global.anthropic.claude-sonnet-5") == "amazon-bedrock/global.anthropic.claude-sonnet-5"
     assert llm.resolve("openai.gpt-5.5") == "openai.gpt-5.5"
     engine.shutdown()
 
@@ -721,8 +721,8 @@ def test_role_model_env_override_wires_deploy_time_default(monkeypatch):
     assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "claude-sonnet-4-6"
 
     # agent-specific env override wins over the generic one (dashes -> underscores)
-    monkeypatch.setenv("WORKSHOP_MODEL_CLAUDE_CODE", "us.anthropic.claude-sonnet-4-6")
-    assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "us.anthropic.claude-sonnet-4-6"
+    monkeypatch.setenv("WORKSHOP_MODEL_CLAUDE_CODE", "global.anthropic.claude-sonnet-5")
+    assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "global.anthropic.claude-sonnet-5"
     # a different agent is unaffected by the claude-code-specific var
     assert engine._role_model(run, "kiro", "auto") == "claude-sonnet-4-6"
 

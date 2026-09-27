@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--session", help="Runtime session ID (reuse same microVM)")
     parser.add_argument("--prompt", help="Run a prompt in headless mode (one-shot, exits when done)")
     parser.add_argument("--cmd", help="Run a raw shell command on the microVM")
-    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. global.anthropic.claude-opus-4-6-v1)")
+    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. global.anthropic.claude-sonnet-5)")
     args = parser.parse_args()
     runtime_connect.main(args, script_dir=SCRIPT_DIR, label="Claude Code",
                          model_flag=f" --model {args.model}" if args.model else "",

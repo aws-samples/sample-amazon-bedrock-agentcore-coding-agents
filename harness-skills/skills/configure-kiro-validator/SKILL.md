@@ -53,10 +53,11 @@ Before running anything, confirm with the user (ask only for what is missing):
   Kiro API key (`ksk_...`)? It is fetched on demand at session start and held in
   memory only, never written to disk."
 - **Region**: use the configured workshop deployment region.
-- **Model**: default `claude-opus-5` in Kiro's vendor namespace.
+- **Model**: default `claude-opus-5.5` in Kiro's vendor namespace (Kiro lists it
+  as an experimental preview; `claude-sonnet-5` is the fallback).
   `WORKSHOP_KIRO_MODEL` overrides it. The launcher and dispatch both pass
   `--model`; this is separate from a Bedrock model id.
-- **Effort**: default `medium`. `WORKSHOP_KIRO_EFFORT` overrides it; an explicitly
+- **Effort**: default `low`. `WORKSHOP_KIRO_EFFORT` overrides it; an explicitly
   empty value omits the effort flag.
 - **Prerequisites already met?**: confirm shared infra is deployed
   (`coding-agents/infra/setup.sh us-west-2` runs ONCE for all agents) and the

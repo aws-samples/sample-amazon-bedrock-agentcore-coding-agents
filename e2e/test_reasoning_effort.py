@@ -1,6 +1,6 @@
 """Claude Code and the opencode restore path keep their effort settings wirable.
 
-The backend defaults to medium effort. The restored validator keeps its own
+The backend defaults to low effort. The restored validator keeps its own
 default, and explicit settings can raise effort or omit the flag.
 
 The flag names were verified against the INSTALLED CLIs, not assumed:
@@ -56,7 +56,7 @@ def test_dispatch_keeps_separate_backend_and_validator_effort_defaults():
         for role in roles.REGISTRY:
             cli = role.cli
             if cli.startswith("claude"):
-                expected = "medium" if role.id == "claude-code" else "xhigh"
+                expected = "low" if role.id == "claude-code" else "xhigh"
                 assert f"--effort {expected}" in cli, cli
             elif cli.startswith("opencode"):
                 assert "--variant high" in cli, cli

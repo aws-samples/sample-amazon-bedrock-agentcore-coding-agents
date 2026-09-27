@@ -65,8 +65,8 @@ else
   RUN_DIR="$HOME"
 fi
 
-# ── Parse --model flag (default: Bedrock Claude Sonnet 4.6) ──────────────────
-MODEL="amazon-bedrock/us.anthropic.claude-sonnet-4-6"
+# ── Parse --model flag (default: Bedrock Claude Sonnet 5, Global profile) ──────────────────
+MODEL="amazon-bedrock/global.anthropic.claude-sonnet-5"
 # Reasoning effort, high by default and wirable. Same rationale as the
 # orchestrator dispatch: these roles are given real projects and graded by an
 # executable, so thinking less costs a red gate rather than saving anything.

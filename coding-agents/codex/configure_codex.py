@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 
-DEFAULT_MODEL = "us.openai.gpt-5.6-sol"
+DEFAULT_MODEL = "global.openai.gpt-5.6-sol"
 PROVIDER = "amazon-bedrock-runtime"
 
 

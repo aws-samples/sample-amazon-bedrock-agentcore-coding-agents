@@ -22,7 +22,7 @@ from work_items import WorkItem, dependency_order
 
 PLAN_MODEL = os.environ.get(
     "WORKSHOP_INTEGRATION_PLAN_MODEL",
-    os.environ.get("ORCHESTRATOR_MODEL_ID", "claude-sonnet-4-6"),
+    os.environ.get("ORCHESTRATOR_MODEL_ID", "claude-sonnet-5"),
 )
 
 _SYSTEM = """You are the integration lead for a small software team.

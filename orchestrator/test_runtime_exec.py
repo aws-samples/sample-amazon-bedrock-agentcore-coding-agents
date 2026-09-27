@@ -58,7 +58,7 @@ def _stub_artifact(monkeypatch, text="<html>ok</html>"):
 
 
 def test_runtime_inference_profile_failure_does_not_retry_a_mantle_sibling(monkeypatch):
-    model = "us.openai.gpt-5.6-sol"
+    model = "global.openai.gpt-5.6-sol"
     calls = _stub_dispatch(monkeypatch, {model: (1, _BACKEND)})
     with pytest.raises(runtime_exec.RoleExecutionError):
         runtime_exec.run_in_runtime(
@@ -71,6 +71,9 @@ def test_runtime_inference_profile_failure_does_not_retry_a_mantle_sibling(monke
 def test_codex_model_gone_falls_back_to_sibling(monkeypatch):
     """gpt-5.5 de-registered (404 'Engine not found' in CLI text) -> retry once on
     the sibling, which succeeds; the run returns the sibling's artifact."""
+    # The sibling fallback is opt-in (re:Invent may not use GPT-5.4/5.5 by default).
+    import llm  # noqa: PLC0415
+    monkeypatch.setattr(llm, "OPENAI_FALLBACK_MODEL", "openai.gpt-5.4")
     calls = _stub_dispatch(monkeypatch, {
         "openai.gpt-5.5": (1, _GONE),
         "openai.gpt-5.4": (0, "wrote chatbot.html"),
@@ -90,6 +93,9 @@ def test_codex_model_gone_falls_back_to_sibling(monkeypatch):
 def test_codex_backend_outage_falls_back_to_sibling(monkeypatch):
     """A transient 5xx-style CLI failure ('server had an error / stream disconnected')
     also triggers the one-shot sibling retry."""
+    # The sibling fallback is opt-in (re:Invent may not use GPT-5.4/5.5 by default).
+    import llm  # noqa: PLC0415
+    monkeypatch.setattr(llm, "OPENAI_FALLBACK_MODEL", "openai.gpt-5.4")
     calls = _stub_dispatch(monkeypatch, {
         "openai.gpt-5.5": (1, _BACKEND),
         "openai.gpt-5.4": (0, "ok"),
@@ -123,7 +129,7 @@ def test_claude_role_does_not_fall_back(monkeypatch):
     """A non-OpenAI role (claude-code) has no sibling, so a failure never retries,
     even if the text happens to look like a backend error."""
     calls = _stub_dispatch(monkeypatch, {
-        "us.anthropic.claude-opus-4-6-v1": (1, "server had an error"),
+        "global.anthropic.claude-sonnet-5": (1, "server had an error"),
     })
     _stub_artifact(monkeypatch)
 
@@ -131,8 +137,8 @@ def test_claude_role_does_not_fall_back(monkeypatch):
         runtime_exec.run_in_runtime(
             runtime_arn="arn:...:runtime/claude", agent_id="claude-code",
             prompt="build", run_subdir="run1", artifact_rel="mcp_server.py",
-            model="us.anthropic.claude-opus-4-6-v1")
-    assert calls == ["us.anthropic.claude-opus-4-6-v1"]
+            model="global.anthropic.claude-sonnet-5")
+    assert calls == ["global.anthropic.claude-sonnet-5"]
 
 
 def test_claude_daily_quota_fails_even_when_the_cli_exits_zero(monkeypatch):
@@ -141,7 +147,7 @@ def test_claude_daily_quota_fails_even_when_the_cli_exits_zero(monkeypatch):
     The empty checkout must be reported as model capacity, not as a builder that
     decided to write nothing, and an immediate second dispatch would be wasteful.
     """
-    model = "us.anthropic.claude-opus-4-6-v1"
+    model = "global.anthropic.claude-sonnet-5"
     calls = _stub_dispatch(monkeypatch, {
         model: (
             0,
@@ -420,7 +426,7 @@ def test_dispatch_stamps_the_run_id_not_the_exchange_path(monkeypatch):
     cmd = runtime_exec._build_command(
         "claude-code", "build",
         "run_test_001/work/work_claude-code_123", None,
-        "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
+        "global.anthropic.claude-sonnet-5", "us-east-1", "abc123",
     )
     assert "run.id=run_test_001," in cmd
     assert "run.id=run_test_001/work/" not in cmd
@@ -449,7 +455,7 @@ def test_dispatch_uses_runtime_local_worktree_and_one_s3_archive(monkeypatch):
         "run_1/work/work_backend_a") == "worktree-work-backend-a"
     cmd = runtime_exec._build_command(
         "claude-code", "build", "run_1/work/backend", None,
-        "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
+        "global.anthropic.claude-sonnet-5", "us-east-1", "abc123",
         archive_uri="s3://bucket/run_1/work/backend.tar.gz",
         skills_uri="s3://bucket/run_1-skills.tar.gz",
     )
@@ -488,7 +494,7 @@ def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
     archive = "s3://bucket/run_1/work/backend.tar.gz"
     cmd = runtime_exec._build_command(
         "claude-code", "build", "run_1/work/backend", None,
-        "us.anthropic.claude-opus-4-6-v1", "us-east-1", "abc123",
+        "global.anthropic.claude-sonnet-5", "us-east-1", "abc123",
         archive_uri=archive,
     )
 

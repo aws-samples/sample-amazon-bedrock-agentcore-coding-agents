@@ -38,7 +38,7 @@ import boto3
 # (Marketplace subscription gaps) can point the lab at any enabled Claude
 # model without editing this file. The default matches the models the
 # workshop already requires (Sonnet 4.6 is enabled for opencode/validator).
-MODEL_ID = os.environ.get("WORKSHOP_MODEL", "us.anthropic.claude-sonnet-4-6")
+MODEL_ID = os.environ.get("WORKSHOP_MODEL", "global.anthropic.claude-sonnet-5")
 REGION = (
     os.environ.get("AWS_REGION")
     or os.environ.get("AWS_DEFAULT_REGION")

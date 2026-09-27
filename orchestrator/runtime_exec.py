@@ -1065,7 +1065,7 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     could be de-registered or have a transient outage, surfaced as a nonzero exit
     with a model-down signature. ``llm.openai_sibling`` returns a healthy sibling
     ONLY for an ``openai.*`` model id, so this retry fires only for that provider.
-    The served Codex frontend uses a ``us.openai.*`` Runtime inference profile,
+    The served Codex frontend uses a ``global.openai.*`` Runtime inference profile,
     so ``openai_sibling`` returns None. Its errors remain failures; it must not
     silently switch to the legacy Mantle model family.
 

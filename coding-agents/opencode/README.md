@@ -1,7 +1,7 @@
 # opencode on AgentCore Runtime
 
 This folder builds and deploys the workshop's frontend coding assistant. opencode
-runs `anthropic.claude-sonnet-4-6` through Amazon Bedrock in the Runtime's own
+runs Claude Sonnet 5 (`global.anthropic.claude-sonnet-5`) through Amazon Bedrock in the Runtime's own
 region; the Runtime IAM role supplies the AWS SDK credential chain, so no API key
 is stored in the image. Because it uses plain Bedrock (not the OpenAI/mantle
 path), it is unaffected by the GPT-5.x allowlisting that gates the Codex path.

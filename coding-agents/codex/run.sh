@@ -29,7 +29,7 @@ fi
 cd "$run_dir"
 run_dir="$PWD"
 
-model="${WORKSHOP_MODEL_CODEX:-${WORKSHOP_MODEL:-${WORKSHOP_CODEX_MODEL:-us.openai.gpt-5.6-sol}}}"
+model="${WORKSHOP_MODEL_CODEX:-${WORKSHOP_MODEL:-${WORKSHOP_CODEX_MODEL:-global.openai.gpt-5.6-sol}}}"
 prompt_args=()
 while [ $# -gt 0 ]; do
   case "$1" in

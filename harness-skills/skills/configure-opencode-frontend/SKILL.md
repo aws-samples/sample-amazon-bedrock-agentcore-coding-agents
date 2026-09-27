@@ -5,7 +5,7 @@ description: >-
   Use for deploying the opencode Runtime, staging AGENTS.md and
   .config/opencode/opencode.json, or verifying that the generated interface resolves
   its service address at runtime and delegates work to the backend MCP server.
-  opencode runs Bedrock-native (amazon-bedrock provider, claude-sonnet-4-6) with no
+  opencode runs Bedrock-native (amazon-bedrock provider, Claude Sonnet 5) with no
   API key.
 ---
 
@@ -21,7 +21,7 @@ opencode builds the frontend interface. Claude Code builds the backend and Kiro
 ## Prerequisites
 
 - `coding-agents/infra.config` exists.
-- The `amazon-bedrock` provider can reach `claude-sonnet-4-6` in `us-west-2`.
+- The `amazon-bedrock` provider can reach `global.anthropic.claude-sonnet-5` in the workshop region.
 - The Runtime execution role can use the AWS SDK credential chain.
 - Docker Buildx or Finch can build arm64 images.
 
@@ -52,7 +52,7 @@ test -s /mnt/s3files/.config/opencode/opencode.json
 
 The root `AGENTS.md` defines the frontend role. The hidden
 `.config/opencode/opencode.json` selects the `amazon-bedrock` provider and
-the `claude-sonnet-4-6` model.
+the `global.anthropic.claude-sonnet-5` model.
 
 ## The thin-client rule (why it is a browser fact, not a preference)
 

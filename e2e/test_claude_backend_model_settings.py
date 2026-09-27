@@ -104,14 +104,14 @@ def test_headless_launchers_do_not_impose_a_turn_count_or_hide_cli_failure(launc
 
 @pytest.mark.parametrize("path", ["run.sh", "run-as-user.sh"])
 @pytest.mark.parametrize("overrides,expected", [
-    ({}, "us.anthropic.claude-opus-4-6-v1"),
+    ({}, "global.anthropic.claude-sonnet-5"),
     ({"ANTHROPIC_MODEL": "native-model"}, "native-model"),
     ({"ANTHROPIC_MODEL": "native-model", "WORKSHOP_CLAUDE_MODEL": "stack-model"}, "stack-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "stack-model", "WORKSHOP_MODEL": "generic-model"}, "generic-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "stack-model", "WORKSHOP_MODEL": "generic-model",
       "WORKSHOP_MODEL_CLAUDE_CODE": "role-model"}, "role-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "", "WORKSHOP_MODEL": "",
-      "WORKSHOP_MODEL_CLAUDE_CODE": ""}, "us.anthropic.claude-opus-4-6-v1"),
+      "WORKSHOP_MODEL_CLAUDE_CODE": ""}, "global.anthropic.claude-sonnet-5"),
 ])
 def test_model_environment_precedence_reaches_the_cli(launcher, path, overrides, expected):
     result, record = launcher(path, overrides)
@@ -133,7 +133,7 @@ def test_effort_default_override_and_omission_reach_the_cli(launcher, path, effo
         assert "--effort" not in arguments
     else:
         assert arguments.count("--effort") == 1
-        assert arguments[arguments.index("--effort") + 1] == (effort or "medium")
+        assert arguments[arguments.index("--effort") + 1] == (effort or "low")
 
 
 @pytest.mark.parametrize("args", [
@@ -165,8 +165,8 @@ def test_interactive_launcher_honors_settings_without_switching_to_print_mode(la
     arguments = record["argv"]
     assert "--print" not in arguments
     assert arguments[arguments.index("--model") + 1] == (
-        "explicit-model" if args else "us.anthropic.claude-opus-4-6-v1")
-    assert arguments[arguments.index("--effort") + 1] == ("max" if args else "medium")
+        "explicit-model" if args else "global.anthropic.claude-sonnet-5")
+    assert arguments[arguments.index("--effort") + 1] == ("max" if args else "low")
 
 
 @pytest.mark.parametrize("prompt", [None, "Inspect the task"], ids=["interactive", "headless"])

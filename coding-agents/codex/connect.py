@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--session", help="Runtime session ID (reuse same microVM)")
     parser.add_argument("--prompt", help="Run a prompt in headless mode (one-shot, exits when done)")
     parser.add_argument("--cmd", help="Run a raw shell command on the microVM")
-    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. us.openai.gpt-5.6-sol)")
+    parser.add_argument("--model", help="Model ID to pass to run.sh (e.g. global.openai.gpt-5.6-sol)")
     args = parser.parse_args()
     runtime_connect.main(args, script_dir=SCRIPT_DIR, label="Codex",
                          model_flag=f" --model {shlex.quote(args.model)}" if args.model else "",

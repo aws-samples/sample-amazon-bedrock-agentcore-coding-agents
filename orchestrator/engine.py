@@ -1420,7 +1420,7 @@ class Engine:
                 result = runtime_exec.run_in_runtime(
                     runtime_arn=arn, agent_id=agent_id, prompt=prompt,
                     run_subdir=run_subdir, artifact_rel=artifact_rel,
-                    model=llm.resolve(model),
+                    model=self._wire_model(agent_id, model),
                     region=runtime_exec.region_for(arn),
                     on_line=on_line, timeout_s=HARNESS_ROLE_TIMEOUT_S)
                 break
@@ -2305,13 +2305,23 @@ class Engine:
         return staged
 
     @staticmethod
+    def _wire_model(agent_id: str, model: str) -> str:
+        """The model name this role's CLI receives. Bedrock aliases resolve to ids;
+        a CLI with its own model names gets the name unchanged. The two overlap:
+        on 2026-09-27 Kiro's `claude-sonnet-5` resolved to a Bedrock profile id and
+        kiro-cli answered "Model 'global.anthropic.claude-sonnet-5' does not exist"."""
+        if roles.get(agent_id).model_namespace != "bedrock":
+            return model
+        return llm.resolve(model)
+
+    @staticmethod
     def _role_model(run: Run, agent_id: str, default: str) -> str:
         """Per-task model selection: ``options.models[agent_id]`` (alias or full
         Bedrock id, resolved by llm.resolve) overrides the roster default: the
         same per-task override surface a production model selector exposes.
 
         The roster ``default`` is itself wirable at deploy time so an event whose
-        account lacks a given model (e.g. Opus 4.6 without a Bedrock Marketplace
+        account lacks a given model (for example, one without a Bedrock Marketplace
         subscription) can retarget a role without a code edit:
         ``WORKSHOP_MODEL_<AGENT_ID>`` (agent-specific, e.g.
         ``WORKSHOP_MODEL_CLAUDE_CODE``) wins over the generic ``WORKSHOP_MODEL``,

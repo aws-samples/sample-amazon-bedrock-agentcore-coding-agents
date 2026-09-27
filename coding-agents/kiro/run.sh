@@ -135,11 +135,12 @@ fi
 # leaving the checker on a router made it the only role whose model nobody chose.
 #
 # The id is kiro-cli's OWN vendor name, not a Bedrock inference profile: verified with
-# `kiro-cli chat --list-models` inside a live Runtime, which lists `claude-opus-5`
-# (2.20x credits, 1M context) alongside `auto`, `claude-sonnet-5`, `claude-opus-4.8`
-# and the rest. A Bedrock model id here would be silently rejected by the CLI.
-MODEL="${WORKSHOP_KIRO_MODEL:-claude-opus-5}"
-EFFORT="${WORKSHOP_KIRO_EFFORT-medium}"
+# `kiro-cli chat --list-models` inside a live Runtime, which lists `claude-opus-5.5`
+# (2.00x credits, 1M context, an experimental preview) alongside `auto`,
+# `claude-opus-5`, `claude-sonnet-5` and the rest. A Bedrock model id here would be
+# rejected by the CLI. Keep this default equal to orchestrator/roles.py.
+MODEL="${WORKSHOP_KIRO_MODEL:-claude-opus-5.5}"
+EFFORT="${WORKSHOP_KIRO_EFFORT-low}"
 REMAINING_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in

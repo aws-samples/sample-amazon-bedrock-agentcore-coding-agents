@@ -129,8 +129,8 @@ def _runtime_environment() -> dict:
         "WORKSHOP_AGENT_NAME": AGENT_NAME,
     }
     # Optional deploy-time model override: pass WORKSHOP_MODEL into the runtime so
-    # run.sh uses it as the default (for accounts without Opus 4.6 Marketplace
-    # access). Only forwarded when set, so the baked default stays the norm.
+    # run.sh uses it as the default (for accounts without access to the default
+    # model). Only forwarded when set, so the baked default stays the norm.
     if os.environ.get("WORKSHOP_MODEL"):
         env_vars["WORKSHOP_MODEL"] = os.environ["WORKSHOP_MODEL"]
 

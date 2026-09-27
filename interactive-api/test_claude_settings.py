@@ -129,8 +129,8 @@ def session_cli(tmp_path):
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 @pytest.mark.parametrize("role,model,effort,kind,hidden", [
-    ("claude-code", "us.anthropic.claude-opus-4-6-v1", "medium", "builder", False),
-    ("claude-code-validator", "us.anthropic.claude-opus-4-6-v1", "xhigh", "checker", True),
+    ("claude-code", "global.anthropic.claude-sonnet-5", "low", "builder", False),
+    ("claude-code-validator", "global.anthropic.claude-sonnet-5", "xhigh", "checker", True),
 ])
 def test_session_uses_its_own_registry_defaults(
         session_cli, mode, role, model, effort, kind, hidden):
@@ -153,7 +153,7 @@ def test_backend_stack_model_is_isolated_from_validator_with_shared_effort(
         "WORKSHOP_CLAUDE_EFFORT": effort,
     })
     expected = ("configured-stack-model" if role == "claude-code"
-                else "us.anthropic.claude-opus-4-6-v1")
+                else "global.anthropic.claude-sonnet-5")
     assert record["model"] == record["settings"]["model"] == expected
     assert record["workshop_effort"] == effort
     assert record["settings"].get("effortLevel") == (effort or None)
@@ -162,8 +162,8 @@ def test_backend_stack_model_is_isolated_from_validator_with_shared_effort(
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 @pytest.mark.parametrize("role,model,effort", [
-    ("claude-code", "us.anthropic.claude-opus-5", "medium"),
-    ("claude-code-validator", "us.anthropic.claude-opus-4-6-v1", "xhigh"),
+    ("claude-code", "us.anthropic.claude-opus-5", "low"),
+    ("claude-code-validator", "global.anthropic.claude-sonnet-5", "xhigh"),
 ])
 def test_configured_backend_keeps_restored_shelf_and_session_models_separate(
         session_cli, mode, role, model, effort):
@@ -174,14 +174,14 @@ def test_configured_backend_keeps_restored_shelf_and_session_models_separate(
         "claude-code", "codex", "claude-code-validator",
     ]
     assert record["catalog_models"]["claude-code"] == "us.anthropic.claude-opus-5"
-    assert record["catalog_models"]["claude-code-validator"] == "us.anthropic.claude-opus-4-6-v1"
+    assert record["catalog_models"]["claude-code-validator"] == "global.anthropic.claude-sonnet-5"
     assert record["model"] == record["settings"]["model"] == model
     assert record["workshop_effort"] == record["settings"]["effortLevel"] == effort
 
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 def test_restored_validator_model_override_reaches_both_session_paths(session_cli, mode):
-    selected = "us.anthropic.claude-sonnet-4-6"
+    selected = "global.anthropic.claude-sonnet-5"
     record = session_cli("claude-code-validator", mode, {
         "WORKSHOP_CLAUDE_MODEL": "us.anthropic.claude-opus-5",
         "WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": selected,
@@ -206,7 +206,7 @@ def test_model_selection_precedence_reaches_the_command(session_cli, role, layer
     if role == "claude-code-validator":
         overrides["WORKSHOP_MODEL_CLAUDE_CODE"] = "backend-only-model"
     record = session_cli(role, overrides=overrides, **options)
-    expected = ("us.anthropic.claude-opus-4-6-v1"
+    expected = ("global.anthropic.claude-sonnet-5"
                 if role == "claude-code-validator" and layer == "stack"
                 else f"{layer}-model")
     assert record["model"] == record["settings"]["model"] == expected

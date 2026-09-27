@@ -1,7 +1,7 @@
 # Codex on AgentCore Runtime
 
 This folder builds and deploys the workshop's frontend coding assistant. Codex
-CLI is pinned to **0.155.1** and uses **`us.openai.gpt-5.6-sol`** through the
+CLI is pinned to **0.155.1** and uses **`global.openai.gpt-5.6-sol`** through the
 built-in **`amazon-bedrock-runtime`** provider. That provider uses
 `https://bedrock-runtime.<region>.amazonaws.com/openai/v1` with Bedrock SigV4.
 The Runtime IAM role supplies the AWS SDK credential chain; no OpenAI or

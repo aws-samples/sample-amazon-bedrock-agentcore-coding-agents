@@ -297,16 +297,39 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
 
 
 # ----------------------------------------------------- integrated read-only review
-# At an event the backend model is the strongest Bedrock-native model known to be
-# enabled, so use it unless the operator explicitly picks a cheaper review model.
+# The stack sets WORKSHOP_REVIEW_MODEL (ReviewModelId, Opus 5 by default); without
+# it the review follows the backend model, then Sonnet 5.
 # The reviewer is independent from every builder conversation, but it evaluates both
 # required lenses in one turn to avoid paying twice for the same candidate context.
 _REVIEW_MODEL = (
     os.environ.get("WORKSHOP_REVIEW_MODEL")
     or os.environ.get("WORKSHOP_CLAUDE_MODEL")
-    or "claude-sonnet-4-6"
+    or "global.anthropic.claude-sonnet-5"
 )
 INTEGRATED_REVIEW_MODEL = _REVIEW_MODEL
+# Claude 5 models reason before they answer: a 3,200-token cap ended Opus 5's reply
+# before its verdict on 2026-09-23. The verdict now arrives through a tool schema, so
+# a long answer cannot break its own JSON, and low effort keeps a review near
+# twenty seconds (Opus 5: 20-23 s over three game builds on 2026-09-27).
+_REVIEW_MAX_TOKENS = int(os.environ.get("WORKSHOP_REVIEW_MAX_TOKENS", "16000"))
+_REVIEW_EFFORT = os.environ.get("WORKSHOP_REVIEW_EFFORT", "low").strip()
+_REVIEW_TOOL = {"toolSpec": {
+    "name": "submit_review",
+    "description": "Submit the complete integrated review verdict for this pull request.",
+    "inputSchema": {"json": {
+        "type": "object",
+        "required": ["approve", "reasons", "work_item_evidence",
+                     "adversarial_assessment", "design_assessment"],
+        "properties": {
+            "approve": {"type": "boolean"},
+            "reasons": {"type": "array", "items": {"type": "string"}},
+            "work_item_evidence": {"type": "object",
+                                   "additionalProperties": {"type": "string"}},
+            "adversarial_assessment": {"type": "string"},
+            "design_assessment": {"type": "string"},
+        },
+    }},
+}}
 
 _REVIEW_RESPONSE_CONTRACT = (
     "Reply with STRICT JSON only:\n"
@@ -517,7 +540,9 @@ def _run_review_turn(
                 )
         try:
             out = llm_module.invoke(
-                model, prompt, system=_INTEGRATED_REVIEW_SYSTEM, max_tokens=3200)
+                model, prompt + "\n\nSubmit the verdict by calling the submit_review tool once.",
+                system=_INTEGRATED_REVIEW_SYSTEM, max_tokens=_REVIEW_MAX_TOKENS,
+                tool=_REVIEW_TOOL, effort=_REVIEW_EFFORT)
         except Exception as exc:  # noqa: BLE001 (record the model boundary)
             prior_error = f"model invocation unavailable ({type(exc).__name__})"
             if not attempt:

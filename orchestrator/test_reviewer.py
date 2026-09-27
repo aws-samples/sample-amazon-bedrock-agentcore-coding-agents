@@ -368,12 +368,14 @@ def test_integrated_review_runs_once_and_either_lens_can_block(
 
     calls = []
 
-    def invoke(model, prompt, system=None, max_tokens=0):
+    def invoke(model, prompt, system=None, max_tokens=0, tool=None, effort=""):
         calls.append({
             "model": model,
             "prompt": prompt,
             "system": system,
             "max_tokens": max_tokens,
+            "tool": tool,
+            "effort": effort,
         })
         return {
             "model_id": "integrated-review-model",
@@ -400,6 +402,10 @@ def test_integrated_review_runs_once_and_either_lens_can_block(
     monkeypatch.setattr(llm, "invoke", invoke)
     review = reviewer._default_judge(run, _GREEN_GATE, backend)
     assert len(calls) == 1
+    # The verdict arrives through a schema, so a long reasoning answer cannot
+    # truncate or break its own JSON (a Claude 5 failure at a 3,200 cap).
+    assert calls[0]["tool"]["toolSpec"]["name"] == "submit_review"
+    assert calls[0]["max_tokens"] >= 16000
     assert "Apply BOTH" in calls[0]["system"]
     assert "Adversarial verification" in calls[0]["system"]
     assert "Design and integration" in calls[0]["system"]

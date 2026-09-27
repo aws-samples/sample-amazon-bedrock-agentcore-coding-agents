@@ -17,7 +17,7 @@ The request determines the files, language, and design.
 ## Prerequisites
 
 - `coding-agents/infra.config` exists.
-- The account can invoke `us.openai.gpt-5.6-sol` in the deployment region, or
+- The account can invoke `global.openai.gpt-5.6-sol` in the deployment region, or
   `WORKSHOP_CODEX_MODEL` names an available Runtime Responses model.
 - `AWS_REGION` or `AWS_DEFAULT_REGION` identifies the deployment region.
 - The Runtime execution role can use the AWS SDK credential chain.
