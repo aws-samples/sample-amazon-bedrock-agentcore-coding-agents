@@ -33,6 +33,7 @@ and merges on its own.
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import tempfile
@@ -85,6 +86,20 @@ GATE_TIMEOUT_S = max(180, int(os.environ.get("WORKSHOP_GATE_BUDGET_S") or 240))
 # purpose: this runs on the verdict path, and a wedged reap must not hold up the run.
 _GROUP_REAP_S = 5
 
+
+
+def _decode_literal_newlines(text: str) -> str:
+    """Undo a model's double-escaped line breaks so a lens renders as Markdown.
+
+    A September 29 review arrived with literal backslash-n sequences between its
+    bullets, which GitHub then showed as text. A literal one becomes a line break
+    when it starts a list item, or anywhere when the lens has no real line break.
+    """
+    if "\\n" not in text:
+        return text
+    if "\n" not in text:
+        return text.replace("\\n", "\n")
+    return re.sub(r"\\n(?=\s*[-*] )", "\n", text)
 
 def _kill_process_group(pgid: int | None) -> None:
     """Tear down the check's whole process group (SIGTERM, then SIGKILL).
@@ -444,8 +459,8 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
             + ", ".join(missing)
         )
 
-    adversarial = str(parsed.get("adversarial_assessment") or "").strip()
-    design = str(parsed.get("design_assessment") or "").strip()
+    adversarial = _decode_literal_newlines(str(parsed.get("adversarial_assessment") or "").strip())
+    design = _decode_literal_newlines(str(parsed.get("design_assessment") or "").strip())
     missing_lenses = [
         label for label, value in (
             ("adversarial_assessment", adversarial),

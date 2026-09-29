@@ -731,3 +731,13 @@ def test_gate_summary_skips_the_started_services_own_log_lines():
 
     # And the empty case still falls back to the exit code.
     assert reviewer._summary_line("", 1) == "exit 1"
+
+
+def test_double_escaped_lens_newlines_render_as_markdown():
+    """A lens whose line breaks arrived as literal backslash-n renders as bullets."""
+    decode = reviewer._decode_literal_newlines
+    one_line = "- Seam matches.\\n- Duplicate guard resets.\\n- Not run in a browser."
+    assert decode(one_line) == "- Seam matches.\n- Duplicate guard resets.\n- Not run in a browser."
+    mixed = "Intro line\n- first\\n- second uses `split(\"\\n\")`"
+    assert decode(mixed) == "Intro line\n- first\n- second uses `split(\"\\n\")`"
+    assert decode("plain text") == "plain text"
