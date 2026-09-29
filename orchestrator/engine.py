@@ -2180,7 +2180,8 @@ class Engine:
             "deliverable's URL from the `DELIVERABLE_URL` env var"
             + (f" (it will be {endpoint!r})" if endpoint else "") + ". Do not soften "
             "a real failure, and do not rubber-stamp. You do NOT edit the work; you "
-            "only check it. Write ONLY the file; do not run it.\n\n"
+            "only check it. Write ONLY the file; do not run its acceptance "
+            "behavior.\n\n"
             "IF THE DELIVERABLE IS A SERVICE, YOUR CHECK MUST START IT ITSELF, wait "
             "for it to accept connections, and stop it when it is done. NOTHING ELSE "
             "STARTS IT FOR YOU: no process is running when your check begins, so a "
@@ -2202,10 +2203,14 @@ class Engine:
             "for.\n\n"
             "KEEP THE CHECK ITSELF EXECUTABLE: do not pass quoted test data through "
             "nested shell/source snippets such as `python -c` or `node -e`; serialize "
-            "payloads with the check language's native JSON support. Before handing "
+            "payloads with the check language's native JSON support. Pass whole "
+            "numbers to every process and network timeout, rounding any computed "
+            "budget first. Before handing "
             "the file off, run a PARSE-ONLY syntax check (`bash -n`, "
-            "`python -m py_compile`, or `node --check`, as appropriate). Do not run "
-            "the acceptance behavior; the engine owns that one real execution."
+            "`python -m py_compile`, or `node --check`, as appropriate). If the file "
+            "has its own parser controls, run it once with WORKSHOP_CHECK_SELFTEST=1 "
+            "(controls only, no deliverable) and fix the check until they pass. Do "
+            "not run the acceptance behavior; the engine owns that one real execution."
             + feedback)
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
                                    _ACCEPTANCE_CHECK)

@@ -80,10 +80,17 @@ REALLY EXERCISING the work rather than reading it.
   cannot recognize valid input is a checking failure, not a missing application
   feature. Report that distinction and stop; do not change the required result.
   Do not require a particular document format unless the request requires it.
+  Give these controls their own mode: when `WORKSHOP_CHECK_SELFTEST=1` is set, run
+  only the parser controls on their literal excerpts and exit, without starting or
+  reading the deliverable.
 - **Syntax-check the executable before handing it off.** You may run a parse-only check
-  such as `bash -n`, `python -m py_compile`, or `node --check`. Do not start the
+  such as `bash -n`, `python -m py_compile`, or `node --check`, and run the file once
+  with `WORKSHOP_CHECK_SELFTEST=1`. Fix the check until its own controls pass: a
+  control that fails in the real gate stops the build for a person. Do not start the
   deliverable or execute the acceptance behavior yourself; the orchestrator owns that
   one real execution and reads its exit code.
+- **Pass whole numbers to process and network timeouts.** Round any computed budget
+  to integer milliseconds or seconds before passing it on.
 
 **You decide what "acceptable" means for this task**, derived from the request itself. Let
 the deliverable tell you how: a service is probed over its wire, a command line tool is run
