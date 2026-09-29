@@ -6,7 +6,10 @@ Prerequisites:
   - Image built (run ./setup.sh)
 
 Usage:
-    python deploy.py
+    python deploy.py              # create or update the Runtime
+    python deploy.py --explain    # print the request; write nothing
+    python deploy.py --prepare    # create the role, print the console form values
+    python deploy.py --adopt      # check the console-built Runtime, then record it
 """
 
 import json
@@ -79,8 +82,8 @@ S3FILES_MOUNT_PATH = "/mnt/s3files"
 
 session = boto3.Session(region_name=REGION)
 
-# A preview says so itself; it is not a deployment.
-if "--explain" not in sys.argv[1:]:
+# A preview or the console path says so itself; neither is a deployment.
+if not {"--explain", "--prepare", "--adopt"} & set(sys.argv[1:]):
     print("=" * 60)
     print(f"Deploying {AGENT_NAME} to AgentCore Runtime")
     print(f"  Region:      {REGION}")
@@ -150,9 +153,61 @@ def deploy_runtime(role_arn: str) -> dict:
         runtime_id=_load_runtime_id(os.path.join(SCRIPT_DIR, "runtime_config.json")))
 
 
+def _console_expectations() -> dict:
+    return dict(image=ECR_URI, role_name=execution_role_documents()[0],
+                subnets=[SUBNET_1, SUBNET_2], security_groups=[SECURITY_GROUP],
+                mount_ap_arn=S3FILES_AP_ARN, mount_path=S3FILES_MOUNT_PATH,
+                environment=_runtime_environment())
+
+
+def prepare_for_console() -> None:
+    """Create the execution role, then print what to enter in the console form."""
+    if not S3FILES_AP_ARN:
+        raise SystemExit("infra.config has no S3 Files access point yet; ask a facilitator.")
+    role_arn = create_execution_role()
+    names = runtime_deploy.console_names(session, subnets=[SUBNET_1, SUBNET_2],
+                                         security_groups=[SECURITY_GROUP],
+                                         mount_ap_arn=S3FILES_AP_ARN)
+    print(f"Execution role ready: {role_arn}")
+    print("  It lets the agent pull its image, call Bedrock, mount the shared folder and")
+    print("  send telemetry. Read it in IAM > Roles; the console form only selects it.\n")
+    for line in runtime_deploy.console_sheet(
+            name=AGENT_NAME, platform=runtime_deploy.selected_platform(), image=ECR_URI,
+            role_name=execution_role_documents()[0], names=names,
+            mount_path=S3FILES_MOUNT_PATH, environment=_runtime_environment()):
+        print(line)
+
+
+def adopt_console_runtime() -> None:
+    """Check the Runtime the person created in the console, then record it."""
+    control = runtime_deploy.control_client(REGION, session)
+    record, checks = runtime_deploy.adopt_console_runtime(
+        control, name=AGENT_NAME, platform=runtime_deploy.selected_platform(),
+        **_console_expectations())
+    print(f"Checking the Runtime named {AGENT_NAME} that you created in the console:")
+    runtime_deploy.print_checks(checks)
+    if record is None:
+        raise SystemExit("\nNot recorded. Fix the FAIL lines in the console (Update runtime), "
+                         "then run --adopt again.")
+    config = {"agent_name": AGENT_NAME, **record, "region": REGION, "ecr_uri": ECR_URI,
+              "s3files_access_point_arn": S3FILES_AP_ARN,
+              "s3files_mount_path": S3FILES_MOUNT_PATH, "created_in": "console"}
+    with open(os.path.join(SCRIPT_DIR, "runtime_config.json"), "w") as f:
+        json.dump(config, f, indent=2)
+    print("")
+    runtime_deploy.print_receipt(record, region=REGION,
+                                 saved_to="coding-agents/claude-code/runtime_config.json")
+
+
 def main():
     runtime_deploy.require_runtime_sdk()
     runtime_deploy.validate_environment(_runtime_environment())
+    if runtime_deploy.CONSOLE_MODE == "--prepare":
+        prepare_for_console()
+        return
+    if runtime_deploy.CONSOLE_MODE == "--adopt":
+        adopt_console_runtime()
+        return
     if runtime_deploy.EXPLAIN:
         role_name, trust_policy, inline_policy = execution_role_documents()
         deploy_runtime(runtime_deploy.explain_role(
@@ -186,6 +241,9 @@ def main():
 if __name__ == "__main__":
     # --explain: print the exact request (and the role) without any AWS write.
     runtime_deploy.EXPLAIN = "--explain" in sys.argv[1:]
+    # --prepare / --adopt: the console path (role and form values, then the check).
+    runtime_deploy.CONSOLE_MODE = next(
+        (arg for arg in sys.argv[1:] if arg in ("--prepare", "--adopt")), "")
     try:
         main()
     except runtime_deploy.RuntimeDeploymentError as error:

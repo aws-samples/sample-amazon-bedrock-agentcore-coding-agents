@@ -333,7 +333,7 @@ if name == "runtime_deploy.py":
 
     bad = subprocess.run(["bash", str(coding / "deploy-prebuilt.sh"), "claude-code", "--now"],
                          env=env, capture_output=True, text=True, timeout=20)
-    assert bad.returncode == 2 and "[--explain]" in bad.stderr
+    assert bad.returncode == 2 and "--explain" in bad.stderr and "--adopt" in bad.stderr
 
 
 def test_coordinator_receipt_reads_local_state_only(tmp_path):

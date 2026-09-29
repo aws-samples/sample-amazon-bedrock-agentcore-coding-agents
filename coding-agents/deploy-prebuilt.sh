@@ -29,6 +29,8 @@
 #   ./deploy-prebuilt.sh claude-code-validator       # restore path (Bedrock-native, no key)
 #   ./deploy-prebuilt.sh opencode                   # alternate frontend
 #   ./deploy-prebuilt.sh claude-code --explain       # print the exact request; create nothing
+#   ./deploy-prebuilt.sh claude-code --prepare       # role only, then the console form values
+#   ./deploy-prebuilt.sh claude-code --adopt         # check the console-built Runtime, record it
 #
 # --explain reads only: it prints the IAM execution role the deploy would create or
 # reuse, the CreateAgentRuntime (or UpdateAgentRuntime) request field by field, and the
@@ -45,7 +47,10 @@ case "$AGENT" in
 esac
 case "$MODE" in
   ""|--explain) ;;
-  *) echo "Usage: $0 $AGENT [--explain]" >&2; exit 2 ;;
+  --prepare|--adopt)
+    # The console path exists for the Runtime the attendee creates themselves.
+    [ "$AGENT" = "claude-code" ] || { echo "$MODE is for claude-code, the Runtime you create in Lab 1." >&2; exit 2; } ;;
+  *) echo "Usage: $0 $AGENT [--explain|--prepare|--adopt]" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -57,6 +62,15 @@ if [ ! -f "$INFRA_CONFIG" ]; then
   echo "Error: infra.config not found at ${INFRA_CONFIG}." >&2
   echo "  The workshop stack writes it when it creates the shared storage; ask a facilitator." >&2
   exit 1
+fi
+
+if [ "$MODE" = "--prepare" ] || [ "$MODE" = "--adopt" ]; then
+  if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; then
+    echo "No pre-built ${AGENT} image yet (agent.config has no ECR_URI); run ./deploy-prebuilt.sh ${AGENT} instead." >&2
+    exit 1
+  fi
+  ( cd "${SCRIPT_DIR}/${AGENT}" && python3 deploy.py "$MODE" )
+  exit 0
 fi
 
 if [ "$MODE" = "--explain" ]; then

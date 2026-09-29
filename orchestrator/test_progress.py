@@ -174,8 +174,9 @@ def test_a_missing_backend_runtime_names_the_exact_deploy_command(box):
     # Printed flush left, exactly as the page shows it, so the pasted block runs.
     assert ("\ncd ~/sample-amazon-bedrock-agentcore-coding-agents/coding-agents\n"
             "WORKSHOP_MODEL=\"${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_CLAUDE_MODEL:-}}\" \\\n"
-            "  ./deploy-prebuilt.sh claude-code\n") in text
-    assert "Runtime ARN:" in text
+            "  ./deploy-prebuilt.sh claude-code --prepare\n") in text
+    # The console path: the person builds it, then --adopt checks and records it.
+    assert "AgentCore console" in text and "--adopt" in text
 
 
 def test_a_runtime_without_the_mount_is_not_done(box):

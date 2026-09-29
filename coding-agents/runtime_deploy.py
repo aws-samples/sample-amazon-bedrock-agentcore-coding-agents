@@ -27,6 +27,8 @@ PLATFORM_ENV = "WORKSHOP_RUNTIME_PLATFORM_VERSION"
 _SELECTED_PLATFORM = object()
 READY_TIMEOUT_SECONDS = 900
 POLL_SECONDS = 10
+# Set by a deployer's __main__: "", "--prepare" or "--adopt" (the console path).
+CONSOLE_MODE = ""
 # Count UTF-8 key/value bytes plus '=' and a delimiter. V2's documented 2.5 KB
 # container budget uses a conservative decimal-KB limit.
 CONTAINER_ENV_BYTES = {"V1": 4096, "V2": 2500}
@@ -1034,6 +1036,169 @@ def deploy_role_runtime(control, *, name: str, image: str, role_arn: str,
         description=description,
         **fs_kwargs,
     ), runtime_id=runtime_id)
+
+
+# --- Building the Runtime in the AWS Management Console -------------------------
+# The console path teaches the same request by hand: --prepare makes the execution
+# role and prints each form field to choose, the person creates the Runtime in the
+# AgentCore console, and --adopt checks what they built before recording it. The
+# check is the point: the person makes it, a script they did not write verifies it.
+
+def console_names(session, *, subnets: list, security_groups: list,
+                  mount_ap_arn: str) -> dict:
+    """The labels the console shows for the workshop's network and storage.
+
+    The console lists these resources by name as well as ID, so the sheet names
+    what to pick. Any lookup that fails falls back to the plain ID."""
+    names = {"vpc": "", "subnets": {s: s for s in subnets},
+             "security_groups": {g: g for g in security_groups},
+             "file_system": "", "access_point": mount_ap_arn.rsplit("/", 1)[-1] if mount_ap_arn else ""}
+    try:
+        ec2 = session.client("ec2")
+        for subnet in ec2.describe_subnets(SubnetIds=list(subnets)).get("Subnets", []):
+            tag = next((t["Value"] for t in subnet.get("Tags", []) if t["Key"] == "Name"), "")
+            names["subnets"][subnet["SubnetId"]] = (f"{subnet['SubnetId']} ({tag})" if tag
+                                                    else subnet["SubnetId"])
+            vpc_id = subnet.get("VpcId", "")
+            if vpc_id and not names["vpc"]:
+                vpcs = ec2.describe_vpcs(VpcIds=[vpc_id]).get("Vpcs", [])
+                tag = next((t["Value"] for t in (vpcs[0].get("Tags", []) if vpcs else [])
+                            if t["Key"] == "Name"), "")
+                names["vpc"] = f"{vpc_id} ({tag})" if tag else vpc_id
+        for group in ec2.describe_security_groups(
+                GroupIds=list(security_groups)).get("SecurityGroups", []):
+            names["security_groups"][group["GroupId"]] = (
+                f"{group['GroupId']} ({group.get('GroupName', '')})")
+    except Exception:  # noqa: BLE001 - names are a convenience; IDs still work
+        pass
+    if mount_ap_arn and "file-system/" in mount_ap_arn:
+        fs_id = mount_ap_arn.split("file-system/", 1)[1].split("/", 1)[0]
+        names["file_system"] = fs_id
+        try:
+            fs = session.client("s3files").get_file_system(fileSystemId=fs_id)
+            label = fs.get("name") or next((t.get("value") or t.get("Value") for t in fs.get("tags", [])
+                                            if (t.get("key") or t.get("Key")) == "Name"), "")
+            if label:
+                names["file_system"] = f"{label} ({fs_id})"
+        except Exception:  # noqa: BLE001
+            pass
+    return names
+
+
+def console_sheet(*, name: str, platform: str, image: str, role_name: str, names: dict,
+                  mount_path: str, environment: dict) -> list[str]:
+    """Each console field to set, in the order the Create runtime form shows them."""
+    mount_leaf = mount_path.removeprefix("/mnt/")
+    lines = [
+        "Create it in the console: Amazon Bedrock AgentCore > Runtime > Create runtime",
+        "",
+        "  Runtime details",
+        f"    Name                          {name}   (replace the suggested name)",
+        f"    Runtime platform versions     {platform}",
+        "    Compute type                  microVMs",
+        "  Agent source",
+        "    Source type                   ECR Container",
+        f"    Image URI                     {image}",
+        "  Permissions",
+        "    IAM permissions               Use another role > Choose an existing role",
+        f"                                  {role_name}",
+        "  Inbound Auth (expand it)",
+        "    Protocol                      HTTP",
+        "    Inbound Auth Type             Use IAM permissions",
+        "  Filesystem configuration (expand it) > Add filesystem",
+        "    Filesystem type               S3 files",
+        f"    Filesystem                    {names.get('file_system') or '(the workshop file system)'}",
+        f"    Access point                  {names.get('access_point', '')}",
+        f"    Mount path                    /mnt/{mount_leaf}   (type {mount_leaf} after /mnt/), then Save",
+        "  Advanced configurations (expand it)",
+        "    Security                      VPC (Virtual Private Cloud)",
+        f"    VPC                           {names.get('vpc') or '(the workshop VPC)'}",
+    ]
+    for label, values in (("Subnets", names.get("subnets", {})),
+                          ("Security groups", names.get("security_groups", {}))):
+        for i, value in enumerate(values.values()):
+            lines.append(f"    {label if i == 0 else '':<30}{value}")
+    lines.append("    Environment variables         Add new variable, once per line:")
+    for key, value in environment.items():
+        lines.append(f"      {key:<28}{value}")
+    lines += ["", "Then choose Create runtime. It is Ready within about a minute.",
+              f"Finish with: ./deploy-prebuilt.sh {name.replace('_', '-')} --adopt"]
+    return lines
+
+
+def check_console_runtime(current: dict | None, *, image: str, role_name: str,
+                          subnets: list, security_groups: list, mount_ap_arn: str,
+                          mount_path: str, environment: dict,
+                          platform: str | None = None) -> list[tuple[bool, str, str]]:
+    """Compare a person-built Runtime with the request the workshop expects.
+
+    Returns (ok, what was checked, what to change); extra environment variables and
+    console-only defaults such as lifecycle are allowed."""
+    if current is None:
+        return [(False, "Runtime exists", "create it in the console with the --prepare values")]
+    checks = []
+
+    def check(ok: bool, label: str, fix: str) -> None:
+        checks.append((bool(ok), label, "" if ok else fix))
+
+    status = current.get("status", "UNKNOWN")
+    check(status == "READY", f"status READY (now {status})",
+          "wait until the console shows Ready, then run --adopt again")
+    actual_platform = current.get("platformVersion")
+    if platform and actual_platform is not None:
+        check(actual_platform == platform, f"platform {platform}",
+              f"choose {platform} under Runtime platform versions (Update runtime)")
+    uri = ((current.get("agentRuntimeArtifact") or {}).get("containerConfiguration") or {}).get(
+        "containerUri", "")
+    check(uri == image, "image is the workshop's pre-built image", f"Image URI must be {image}")
+    role = current.get("roleArn", "")
+    check(role.endswith(f":role/{role_name}"), f"execution role {role_name}",
+          f"choose the existing role {role_name}")
+    protocol = (current.get("protocolConfiguration") or {}).get("serverProtocol", "")
+    check(protocol == "HTTP", "protocol HTTP", "choose HTTP under Inbound Auth > Protocol")
+    net = current.get("networkConfiguration") or {}
+    config = net.get("networkModeConfig") or {}
+    check(net.get("networkMode") == "VPC", "network VPC",
+          "choose VPC under Advanced configurations > Security")
+    check(set(config.get("subnets") or []) == set(subnets), "both private agent subnets",
+          "choose exactly the two agent-private subnets from --prepare")
+    check(set(config.get("securityGroups") or []) == set(security_groups),
+          "the agent security group", "choose the AgentSecurityGroup from --prepare")
+    mounts = [(item.get("s3FilesAccessPoint") or {}) for item in
+              current.get("filesystemConfigurations") or []]
+    want = mount_path.rstrip("/")
+    check(any(m.get("accessPointArn") == mount_ap_arn and
+              (m.get("mountPath") or "").rstrip("/") == want for m in mounts),
+          f"S3 Files mounted at {want}",
+          f"add the S3 files access point with mount path {want}")
+    env = current.get("environmentVariables") or {}
+    for key, value in environment.items():
+        check(env.get(key) == value, f"environment {key}", f"add {key} = {value}")
+    return checks
+
+
+def adopt_console_runtime(control, *, name: str, wait_s: float = 180, **expected) -> tuple:
+    """Find the Runtime by name, wait out creation, and check it; (record, checks)."""
+    current = _by_name(control, name)
+    deadline = time.monotonic() + wait_s
+    while current is not None and current.get("status") in {"CREATING", "UPDATING"} \
+            and time.monotonic() < deadline:
+        print(f"Runtime {current['agentRuntimeId']}: {current['status']}...", file=sys.stderr,
+              flush=True)
+        time.sleep(POLL_SECONDS)
+        current = control.get_agent_runtime(agentRuntimeId=current["agentRuntimeId"])
+    checks = check_console_runtime(current, **expected)
+    if current is None or not all(ok for ok, _, _ in checks):
+        return None, checks
+    return runtime_record(current), checks
+
+
+def print_checks(checks: list, *, file=None) -> None:
+    out = file or sys.stdout
+    for ok, label, fix in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f"\n        fix: {fix}" if fix else ""), file=out)
+    passed = sum(1 for ok, _, _ in checks if ok)
+    print(f"  {passed} of {len(checks)} checks passed", file=out)
 
 
 def read_state(path: Path) -> dict:

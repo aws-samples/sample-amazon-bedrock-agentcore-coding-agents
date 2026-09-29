@@ -112,6 +112,10 @@ CMD_BACKEND = [
     "WORKSHOP_MODEL=\"${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_CLAUDE_MODEL:-}}\" \\",
     "  ./deploy-prebuilt.sh claude-code",
 ]
+# The taught path builds the backend in the AgentCore console: --prepare prints the
+# form values, the person creates the Runtime, and --adopt checks and records it.
+CMD_BACKEND_PREPARE = CMD_BACKEND[:-1] + ["  ./deploy-prebuilt.sh claude-code --prepare"]
+CMD_BACKEND_ADOPT = CMD_BACKEND[:-1] + ["  ./deploy-prebuilt.sh claude-code --adopt"]
 CMD_STEERING = [
     "REPO=~/sample-amazon-bedrock-agentcore-coding-agents",
     "cp \"$REPO/orchestrator/harness/codex/AGENTS.md\" /mnt/s3files/AGENTS.md",
@@ -687,13 +691,18 @@ def specs() -> list[Spec]:
     for role in served:
         if role.capability != "backend":
             continue
-        commands = (CMD_BACKEND if role.id == "claude-code"
-                    else [f"{REPO_CD}/coding-agents", f"./deploy-prebuilt.sh {role.harness_dir}"])
+        if role.id == "claude-code":
+            commands = CMD_BACKEND_PREPARE
+            note = ("It prints each console field. Create the Runtime in the AgentCore console "
+                    "(Runtime > Create runtime), then run the same command with --adopt instead "
+                    "of --prepare; every check must PASS. The page's expand has the one-command path.")
+        else:
+            commands = [f"{REPO_CD}/coding-agents", f"./deploy-prebuilt.sh {role.harness_dir}"]
+            note = ("If it is already running in another terminal, wait for it instead. Keep it "
+                    "running until it prints Runtime ARN: and then Done. It usually takes about a minute.")
         out.append(Spec(
             LAB1, f"{role.label} Runtime (yours)", f"{P_RUNTIMES} > 3. Create the backend Runtime",
-            (lambda d=role.harness_dir: _check_runtime(d, False)), commands,
-            note="If it is already running in another terminal, wait for it instead. Keep it "
-                 "running until it prints Runtime ARN: and then Done. It usually takes about a minute."))
+            (lambda d=role.harness_dir: _check_runtime(d, False)), commands, note=note))
     # Claude Code roles read the CLAUDE.md baked into their image, so only the other
     # roles' steering belongs on the shared mount (a copy nobody reads would only
     # reach the checker). Skills follow the builder capabilities actually served.
