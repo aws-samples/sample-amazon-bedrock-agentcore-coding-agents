@@ -7,6 +7,8 @@
 #   logs    -> CloudWatch Logs  /workshop/coding-agents/telemetry  (awscloudwatchlogs)
 #   traces  -> X-Ray Transaction Search -> aws/spans log group     (otlphttp + sigv4auth)
 #   metrics -> CloudWatch EMF   namespace Workshop/CodingAgents     (awsemf)
+#           -> CloudWatch OTLP metrics, which feed GenAI Observability >
+#              Coding Agent Insights                          (otlphttp + sigv4auth)
 #
 # The log group and X-Ray Transaction Search are pre-created by the workshop
 # CloudFormation stack; this collector only writes to them. Region and the log
@@ -22,6 +24,11 @@ extensions:
   sigv4auth:
     region: "${env:AWS_REGION:-us-west-2}"
     service: "xray"
+  # The CloudWatch OTLP metrics endpoint signs as the "monitoring" service and
+  # needs cloudwatch:PutMetricData, which the execution role already grants.
+  sigv4auth/metrics:
+    region: "${env:AWS_REGION:-us-west-2}"
+    service: "monitoring"
 
 receivers:
   otlp:
@@ -36,6 +43,16 @@ processors:
     timeout: 60s
   batch/logs:
     timeout: 5s
+  # Coding Agent Insights groups usage by the user.email RESOURCE attribute. The
+  # dispatch labels a signed-in submitter as user.id (its email, else its subject
+  # ID), so copy an email-shaped user.id to user.email. Unlabeled requests stay
+  # unlabeled; nothing is invented.
+  transform/insights:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'set(attributes["user.email"], attributes["user.id"]) where attributes["user.email"] == nil and attributes["user.id"] != nil and IsMatch(attributes["user.id"], "^[^@ ]+@[^@ ]+$")'
 
 exporters:
   # Logs -> CloudWatch Logs. Stream = WORKSHOP_AGENT_NAME (claude_code / opencode).
@@ -63,9 +80,15 @@ exporters:
     namespace: "Workshop/CodingAgents"
     log_group_name: "/workshop/coding-agents/metrics"
     log_stream_name: "${env:WORKSHOP_AGENT_NAME:-agent}"
+  # Metrics -> the CloudWatch native OTLP metrics endpoint, queryable with PromQL
+  # and shown under GenAI Observability > Coding Agent Insights.
+  otlphttp/cloudwatch-metrics:
+    metrics_endpoint: "https://monitoring.${env:AWS_REGION:-us-west-2}.amazonaws.com/v1/metrics"
+    auth:
+      authenticator: sigv4auth/metrics
 
 service:
-  extensions: [health_check, sigv4auth]
+  extensions: [health_check, sigv4auth, sigv4auth/metrics]
   pipelines:
     logs:
       receivers: [otlp]
@@ -77,8 +100,8 @@ service:
       exporters: [otlphttp/xray]
     metrics:
       receivers: [otlp]
-      processors: [batch/metrics]
-      exporters: [awsemf]
+      processors: [transform/insights, batch/metrics]
+      exporters: [awsemf, otlphttp/cloudwatch-metrics]
   telemetry:
     logs:
       level: warn

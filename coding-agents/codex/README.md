@@ -92,6 +92,12 @@ It retains the native token counters and the user, team, agent, run, and session
 resource labels supplied by the console or coordinator. CloudWatch writes use the
 Runtime role, scoped to that log group.
 
+Codex's native OTLP metrics (`metrics_exporter`, which otherwise defaults to
+`statsig`) also go to the local collector. It keeps the same resource labels,
+copies an email-shaped `user.id` to `user.email`, and sends them to the
+CloudWatch OTLP metrics endpoint with the Runtime role. CloudWatch shows them
+under **GenAI Observability > Coding Agent Insights > Codex**.
+
 Codex 0.155.1 can emit a zero log timestamp with a valid observed timestamp. The
 collector uses that observed timestamp when the log timestamp is zero, so the
 event reaches the correct CloudWatch time window. It converts the native string

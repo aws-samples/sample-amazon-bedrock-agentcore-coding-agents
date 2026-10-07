@@ -68,6 +68,7 @@ LAB2 = "Lab 2. Coordinate a Multi-Agent Build"
 LAB3 = "Lab 3. Improve and Govern Your Game"
 P_WORKSPACE = "Lab 1 > Confirm the Shared Coding Workspace"
 P_RUNTIMES = "Lab 1 > Put All Three Agents on Runtime"
+P_BACKEND = f"{P_RUNTIMES} > Create the Backend Runtime in the Console"
 P_SHELL = "Lab 1 > Open a Shell Inside a Live Agent"
 P_GITHUB = "Lab 2 > Connect GitHub Without Giving Agents Credentials"
 P_COORD = "Lab 2 > Deploy the Multi-Agent Coordinator"
@@ -75,9 +76,10 @@ P_BUILD = "Lab 2 > Run a Build and Follow It"
 P_EVIDENCE = "Lab 2 > Read the Evidence on Each Pull Request"
 P_PLAY = "Lab 2 > Play Your Game"
 P_STUDIO = "Lab 3 > Improve Your Game in Agent Studio"
-AFTER_ALL = ("Lab 3 > Trace the Fix (it reads CloudWatch, which this host check does "
-             "not), then the optional pages: Optional: Try team governance, Optional: "
-             "Verify in the AWS Console, and Best Practices.")
+AFTER_ALL = ("Lab 3 > Trace the Fix and Lab 3 > See Your Agents in CloudWatch (both "
+             "read CloudWatch, which this host check does not), then the optional pages: "
+             "Optional: Try team governance, Optional: Verify in the AWS Console, and "
+             "Best Practices.")
 
 # Account IDs as they appear in ARNs and ECR hosts; a 12-digit run-ID suffix after
 # "_" is not one, so it is left readable.
@@ -679,7 +681,7 @@ def specs() -> list[Spec]:
         if role.capability == "backend":
             continue
         out.append(Spec(
-            LAB1, f"{role.label} Runtime", f"{P_RUNTIMES} > Verify",
+            LAB1, f"{role.label} Runtime", f"{P_BACKEND} > Verify",
             (lambda d=role.harness_dir: _check_runtime(d, True)),
             [f"{REPO_CD}/coding-agents", f"./deploy-prebuilt.sh {role.harness_dir}"],
             note="The stack prepares this one. If it is missing, that page's Verify step "
@@ -694,14 +696,15 @@ def specs() -> list[Spec]:
         if role.id == "claude-code":
             commands = CMD_BACKEND_PREPARE
             note = ("It prints each console field. Create the Runtime in the AgentCore console "
-                    "(Runtime > Create runtime), then run the same command with --adopt instead "
-                    "of --prepare; every check must PASS. The page's expand has the one-command path.")
+                    "(Runtime > Create runtime) section by section as the page shows, then run the same "
+                    "command with --adopt instead of --prepare; every check must PASS. The page's expand "
+                    "has the one-command path.")
         else:
             commands = [f"{REPO_CD}/coding-agents", f"./deploy-prebuilt.sh {role.harness_dir}"]
             note = ("If it is already running in another terminal, wait for it instead. Keep it "
                     "running until it prints Runtime ARN: and then Done. It usually takes about a minute.")
         out.append(Spec(
-            LAB1, f"{role.label} Runtime (yours)", f"{P_RUNTIMES} > 3. Create the backend Runtime",
+            LAB1, f"{role.label} Runtime (yours)", f"{P_BACKEND} > 1. Print the values the form needs",
             (lambda d=role.harness_dir: _check_runtime(d, False)), commands, note=note))
     # Claude Code roles read the CLAUDE.md baked into their image, so only the other
     # roles' steering belongs on the shared mount (a copy nobody reads would only

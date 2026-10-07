@@ -1,9 +1,17 @@
 # Codex sends native OTLP logs to a collector running with the Runtime IAM role.
 # Export only completed responses with token counts. Raw SSE frames, prompts,
 # tool commands and tool output do not belong in the workshop usage log.
+# Codex's native OTLP metrics (counters and histograms, no prompt text) go to the
+# CloudWatch OTLP metrics endpoint, which feeds GenAI Observability > Coding Agent
+# Insights.
 extensions:
   health_check:
     endpoint: 127.0.0.1:13133
+  # The CloudWatch OTLP metrics endpoint signs as the "monitoring" service and
+  # needs cloudwatch:PutMetricData, which the execution role already grants.
+  sigv4auth/metrics:
+    region: "${env:AWS_REGION}"
+    service: "monitoring"
 
 receivers:
   otlp:
@@ -58,20 +66,40 @@ processors:
         - 'attributes["reasoning_token_count"] != nil and not IsInt(attributes["reasoning_token_count"])'
   batch/logs:
     timeout: 5s
+  # Keep only the workshop's own resource labels on metrics, as the logs pipeline
+  # does, and copy an email-shaped user.id to user.email, the resource attribute
+  # Coding Agent Insights groups by. Unlabeled requests stay unlabeled.
+  transform/insights:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(attributes, ["service.name", "service.version", "user.id", "user.email", "team.id", "agent.id", "run.id", "session.id"])'
+          - 'set(attributes["user.email"], attributes["user.id"]) where attributes["user.email"] == nil and attributes["user.id"] != nil and IsMatch(attributes["user.id"], "^[^@ ]+@[^@ ]+$")'
+  batch/metrics:
+    timeout: 60s
 
 exporters:
   awscloudwatchlogs:
     region: "${env:AWS_REGION}"
     log_group_name: "/workshop/coding-agents/telemetry"
     log_stream_name: "${env:WORKSHOP_AGENT_NAME:-codex}"
+  otlphttp/cloudwatch-metrics:
+    metrics_endpoint: "https://monitoring.${env:AWS_REGION}.amazonaws.com/v1/metrics"
+    auth:
+      authenticator: sigv4auth/metrics
 
 service:
-  extensions: [health_check]
+  extensions: [health_check, sigv4auth/metrics]
   pipelines:
     logs:
       receivers: [otlp]
       processors: [filter/usage, transform/usage, filter/typed_usage, batch/logs]
       exporters: [awscloudwatchlogs]
+    metrics:
+      receivers: [otlp]
+      processors: [transform/insights, batch/metrics]
+      exporters: [otlphttp/cloudwatch-metrics]
   telemetry:
     logs:
       level: warn

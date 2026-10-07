@@ -181,6 +181,12 @@ def collector(tmp_path_factory, record_testsuite_property):
         "path": str(output), "format": "json", "flush_interval": "100ms",
     }}
     config["service"]["pipelines"]["logs"]["exporters"] = ["file/offline"]
+    # The metrics pipeline signs to CloudWatch; offline it writes to the same file
+    # and needs no SigV4 signer.
+    config["service"]["pipelines"]["metrics"]["exporters"] = ["file/offline"]
+    config["service"]["extensions"] = [
+        name for name in config["service"]["extensions"] if not name.startswith("sigv4auth")]
+    config["processors"]["batch/metrics"] = {"timeout": "100ms"}
     fixture_config = directory / "collector.yaml"
     fixture_config.write_text(yaml.safe_dump(config, sort_keys=False))
     http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -338,3 +344,63 @@ def test_int64_boundary_is_exact_and_overflow_is_rejected_or_unavailable(collect
             assert field not in _attribute_map(record), (
                 f"Out-of-range {field}={overflow} was exported as {_attribute_map(record)[field]!r}"
             )
+
+
+def _metric_payload(resource, value):
+    return {"resourceMetrics": [{
+        "resource": {"attributes": _attributes(resource)},
+        "scopeMetrics": [{"scope": {"name": "codex_otel", "version": "0.155.1"}, "metrics": [{
+            "name": "codex.turn.token_usage",
+            "sum": {"aggregationTemporality": 1, "isMonotonic": True, "dataPoints": [{
+                "asInt": str(value), "timeUnixNano": str(time.time_ns()),
+                "attributes": _attributes({"token_type": "input"}),
+            }]},
+        }]}],
+    }]}
+
+
+def _exported_metric_resources(collector):
+    resources = []
+    if collector.output.exists():
+        for line in collector.output.read_text().splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            resources += [group.get("resource", {}) for group in payload.get("resourceMetrics", [])]
+    return resources
+
+
+def _plain(resource):
+    return {item["key"]: item["value"].get("stringValue") for item in resource.get("attributes", [])}
+
+
+def test_metrics_carry_the_insights_identity_and_only_workshop_labels(collector):
+    """Coding Agent Insights groups by the user.email RESOURCE attribute."""
+    cases = {
+        "metric-email": {**RESOURCE, "run.id": "metric-email", "user.id": "attendee@workshop.aws",
+                         "host.name": PRIVATE_MARKER},
+        "metric-sub": {**RESOURCE, "run.id": "metric-sub", "user.id": "0b1c2d3e-subject"},
+        "metric-none": {key: value for key, value in {**RESOURCE, "run.id": "metric-none"}.items()
+                        if key != "user.id"},
+    }
+    for resource in cases.values():
+        request = urllib.request.Request(
+            collector.endpoint + "/v1/metrics",
+            data=json.dumps(_metric_payload(resource, 42)).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with collector.http.open(request, timeout=5) as response:
+            assert response.status == 200
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        found = {_plain(r).get("run.id"): _plain(r) for r in _exported_metric_resources(collector)}
+        if set(cases) <= set(found):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"metrics not exported; collector log:\n{collector.log.read_text()}")
+    assert found["metric-email"]["user.email"] == "attendee@workshop.aws"
+    assert found["metric-email"]["user.id"] == "attendee@workshop.aws"
+    assert "user.email" not in found["metric-sub"]
+    assert "user.email" not in found["metric-none"] and "user.id" not in found["metric-none"]
+    assert PRIVATE_MARKER not in json.dumps(_exported_metric_resources(collector))

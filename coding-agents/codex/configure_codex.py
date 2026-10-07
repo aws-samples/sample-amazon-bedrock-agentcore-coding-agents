@@ -44,6 +44,7 @@ def render_config(region, model, workdirs=()):
         'environment = "workshop"\n'
         'log_user_prompt = false\n'
         'exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\n'
+        'metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }\n'
         'trace_exporter = "none"\n'
         f"\n[model_providers.{PROVIDER}.aws]\n"
         f"region = {quote(region)}\n"

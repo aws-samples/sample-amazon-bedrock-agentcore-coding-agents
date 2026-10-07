@@ -170,7 +170,8 @@ def test_a_missing_backend_runtime_names_the_exact_deploy_command(box):
     box.storage().runtime("codex").runtime("kiro").kiro_key()
     _checks, text, step = box.report()
     assert step.name == "Claude Code Runtime (yours)"
-    assert step.page == "Lab 1 > Put All Three Agents on Runtime > 3. Create the backend Runtime"
+    assert step.page == ("Lab 1 > Put All Three Agents on Runtime > Create the Backend Runtime in the Console"
+                         " > 1. Print the values the form needs")
     # Printed flush left, exactly as the page shows it, so the pasted block runs.
     assert ("\ncd ~/sample-amazon-bedrock-agentcore-coding-agents/coding-agents\n"
             "WORKSHOP_MODEL=\"${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_CLAUDE_MODEL:-}}\" \\\n"
