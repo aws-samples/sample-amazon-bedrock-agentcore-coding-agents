@@ -295,7 +295,7 @@ def _vault_key_prelude(role: "_roles.Role", region: str) -> str:
         f'{key_env}="$({fetch_command})"; '
         f"export {key_env}; "
         f"if [ -z \"${key_env}\" ]; then "
-        f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Save it with the hidden key prompt in Lab 1, Put All Three Agents on Runtime, step 2 (Agent Studio: Settings > Kiro access); no redeploy is needed, then submit again.')} >&2; "
+        f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Save it with the hidden key prompt in Lab 1, Read a Harness and Store the Kiro Key, step 2 (Agent Studio: Settings > Kiro access); no redeploy is needed, then submit again.')} >&2; "
         "exit 1; fi; "
     )
 

@@ -67,8 +67,8 @@ LAB1 = "Lab 1. Build Your Coding Assistant Team"
 LAB2 = "Lab 2. Coordinate a Multi-Agent Build"
 LAB3 = "Lab 3. Improve and Govern Your Game"
 P_WORKSPACE = "Lab 1 > Confirm the Shared Coding Workspace"
-P_RUNTIMES = "Lab 1 > Put All Three Agents on Runtime"
-P_BACKEND = f"{P_RUNTIMES} > Create the Backend Runtime in the Console"
+P_HARNESS = "Lab 1 > Read a Harness and Store the Kiro Key"
+P_BACKEND = "Lab 1 > Create the Backend Runtime in the Console"
 P_SHELL = "Lab 1 > Open a Shell Inside a Live Agent"
 P_GITHUB = "Lab 2 > Connect GitHub Without Giving Agents Credentials"
 P_COORD = "Lab 2 > Deploy the Multi-Agent Coordinator"
@@ -687,7 +687,7 @@ def specs() -> list[Spec]:
             note="The stack prepares this one. If it is missing, that page's Verify step "
                  "deploys it from the prebuilt image with this command."))
     if "kiro" in [role.id for role in served]:
-        out.append(Spec(LAB1, "Kiro API key", f"{P_RUNTIMES} > 2. Give Kiro your API key",
+        out.append(Spec(LAB1, "Kiro API key", f"{P_HARNESS} > 2. Give Kiro your API key",
                         check_kiro_key, CMD_KIRO_KEY,
                         note="Paste the key at the hidden prompt. Look for \"key_check\": \"verified\"."))
     for role in served:
