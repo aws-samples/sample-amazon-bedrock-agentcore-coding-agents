@@ -238,6 +238,21 @@ def test_explain_lists_every_policy_statement_with_its_reason(tmp_path, monkeypa
     assert "bedrock-agentcore.amazonaws.com" in out
 
 
+@pytest.mark.parametrize("role", ROLES)
+def test_a_collector_that_sends_insights_metrics_may_put_metric_data(role, tmp_path, monkeypatch):
+    # The CloudWatch OTLP metrics endpoint authorizes each signed export as
+    # PutMetricData. Without it the collector's metrics are refused while its logs
+    # still land, so Coding Agent Insights shows nothing for that agent.
+    collector = (ROOT / "coding-agents" / role / "otel-collector-config.yaml").read_text()
+    if "monitoring.${env:AWS_REGION" not in collector:
+        pytest.skip(f"{role}'s collector sends no OTLP metrics")
+    module, _ = load_role(role, tmp_path, monkeypatch)
+    _, _, policy = module.execution_role_documents()
+    allowed = {action for statement in policy["Statement"] if statement["Effect"] == "Allow"
+               for action in statement["Action"]}
+    assert "cloudwatch:PutMetricData" in allowed
+
+
 def test_receipt_reports_what_aws_accepted_and_never_env_values():
     accepted = runtime(
         name="claude_code", roleArn=f"arn:aws:iam::{ACCOUNT}:role/agentcore-claude_code",

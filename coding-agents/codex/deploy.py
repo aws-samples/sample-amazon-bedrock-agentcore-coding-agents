@@ -113,6 +113,15 @@ def execution_role_documents() -> tuple[str, dict, dict]:
             ],
         },
         {
+            # The collector also sends Codex's OTLP metrics to the CloudWatch metrics
+            # endpoint behind Coding Agent Insights, which authorizes each SigV4-signed
+            # request as PutMetricData. That action has no resource-level scoping.
+            "Sid": "InsightsMetrics",
+            "Effect": "Allow",
+            "Action": ["cloudwatch:PutMetricData"],
+            "Resource": ["*"],
+        },
+        {
             "Sid": "BedrockOpenAIInference",
             "Effect": "Allow",
             "Action": [
