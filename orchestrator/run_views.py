@@ -18,7 +18,7 @@ from typing import Any
 # Runtime's own IAM role, and a brokered vendor key is command-substituted, never
 # echoed), so this is defence in depth for a role that prints one anyway.
 _SECRET_RE = re.compile(
-    r"\b(?:ksk_[A-Za-z0-9_-]{8,}"
+    r"\b(?:(?:ksk|kak)_[A-Za-z0-9_-]{8,}"
     r"|gh[pousr]_[A-Za-z0-9]{8,}"
     r"|(?:AKIA|ASIA)[0-9A-Z]{8,}"
     r"|sk-[A-Za-z0-9_-]{12,})")

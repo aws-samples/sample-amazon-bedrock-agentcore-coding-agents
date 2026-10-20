@@ -166,8 +166,8 @@ cd sample-amazon-bedrock-agentcore-coding-agents && coding-agents/infra/setup.sh
 ```
 
 **In your own AWS account:** launch the workshop stack in one region, then follow
-the same pages. You need Amazon Bedrock access to Claude Sonnet 5, and a GitHub account
-for Labs 3 and 4.
+the same pages. You need Amazon Bedrock access to Claude Sonnet 5.5 (and, for Lab 4,
+Claude Opus 5.5 and GPT-6.1 Sol), and a GitHub account for Labs 3 and 4.
 
 <p>
   <a href="https://us-west-2.console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/create/review?templateURL=https://ws-assets-prod-iad-r-pdx-f3b3f9f1a7d6a3d0.s3.us-west-2.amazonaws.com/7b1cc169-b7a2-4a64-b215-df050bd8c8f1/cfn.yaml&stackName=coding-agents-workshop&param_AssetsBucketName=ws-assets-prod-iad-r-pdx-f3b3f9f1a7d6a3d0&param_AssetsBucketPrefix=7b1cc169-b7a2-4a64-b215-df050bd8c8f1"><img src="docs/assets/launch-stack.svg" alt="Launch Stack"></a>&nbsp; US West (Oregon), recommended<br>

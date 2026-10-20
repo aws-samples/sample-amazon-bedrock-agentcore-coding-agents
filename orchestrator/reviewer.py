@@ -32,6 +32,7 @@ and merges on its own.
 
 from __future__ import annotations
 
+import codecs
 import json
 import re
 import os
@@ -86,6 +87,33 @@ GATE_TIMEOUT_S = max(180, int(os.environ.get("WORKSHOP_GATE_BUDGET_S") or 240))
 # purpose: this runs on the verdict path, and a wedged reap must not hold up the run.
 _GROUP_REAP_S = 5
 
+
+
+# Sonnet 5.5 and Opus 5.5 under tool choice `auto` (they refuse a forced tool) can
+# leave tool-call markup or the review's own field names as XML-style tags inside a
+# lens: a design assessment ending in `</design_assessment>`, a stray `</invoke>`
+# (October 19-20). Those tags are transport residue, not findings, so they never
+# reach the posted assessment. Text inside code spans and fenced blocks is quoted
+# code and is left exactly as written.
+_TOOL_MARKUP_TAGS = ("invoke", "parameter", "function_calls", "function_results",
+                     "tool_use", "tool_call", "tool_calls", "tool_result")
+
+
+def _stray_tag_pattern(field_names: tuple[str, ...]) -> re.Pattern[str]:
+    names = "|".join(re.escape(name) for name in field_names + _TOOL_MARKUP_TAGS)
+    return re.compile(
+        r"(?P<code>```[\s\S]*?(?:```|\Z)|~~~[\s\S]*?(?:~~~|\Z)"
+        r"|(?P<tick>`+)[^`\n]*?(?P=tick))"
+        r"|(?P<tag></?[ \t]*(?:antml:)?(?:" + names + r")(?=[\s/>])[^<>\n]*>)",
+        re.IGNORECASE)
+
+
+def _strip_stray_markup(text: str) -> str:
+    """Remove stray tool-call and review-field tags from prose, never from code."""
+    if "<" not in text:
+        return text
+    return _STRAY_TAG_RE.sub(
+        lambda m: m.group("code") if m.group("code") is not None else "", text).strip()
 
 
 def _decode_literal_newlines(text: str) -> str:
@@ -327,14 +355,16 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
 
 
 # ----------------------------------------------------- integrated read-only review
-# The stack sets WORKSHOP_REVIEW_MODEL (ReviewModelId, Opus 5 by default); without
-# it the review follows the backend model, then Sonnet 5.
+# The stack sets WORKSHOP_REVIEW_MODEL (ReviewModelId, Opus 5.5 at low effort by
+# default); without it the review follows the backend model, then Opus 5.5. On
+# October 19-20 Opus 5.5's change requests were real defects (median 17.8 s per
+# call), while Sonnet 5.5 asked for changes in 7 of 16 rounds.
 # The reviewer is independent from every builder conversation, but it evaluates both
 # required lenses in one turn to avoid paying twice for the same candidate context.
 _REVIEW_MODEL = (
     os.environ.get("WORKSHOP_REVIEW_MODEL")
     or os.environ.get("WORKSHOP_CLAUDE_MODEL")
-    or "global.anthropic.claude-sonnet-5"
+    or "global.anthropic.claude-opus-5-5"
 )
 INTEGRATED_REVIEW_MODEL = _REVIEW_MODEL
 # Claude 5 models reason before they answer: a 3,200-token cap ended Opus 5's reply
@@ -360,6 +390,10 @@ _REVIEW_TOOL = {"toolSpec": {
         },
     }},
 }}
+# The tags a stray-markup strip removes: this tool's own name and field names.
+_STRAY_TAG_RE = _stray_tag_pattern(
+    (_REVIEW_TOOL["toolSpec"]["name"],)
+    + tuple(_REVIEW_TOOL["toolSpec"]["inputSchema"]["json"]["properties"]))
 
 _REVIEW_RESPONSE_CONTRACT = (
     "Reply with STRICT JSON only:\n"
@@ -451,15 +485,16 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
         for reason in raw_reasons
     ):
         raise ValueError("reviewer reasons must be an array of nonempty defect strings")
-    reasons = [reason.strip() for reason in raw_reasons][:5]
+    reasons = [cleaned for cleaned in (
+        _strip_stray_markup(reason.strip()) for reason in raw_reasons) if cleaned][:5]
 
     raw_evidence = parsed.get("work_item_evidence")
     evidence = {
-        str(work_id): str(detail).strip()
+        str(work_id): _strip_stray_markup(str(detail).strip())
         for work_id, detail in (
             raw_evidence.items() if isinstance(raw_evidence, dict) else []
         )
-        if str(detail).strip()
+        if _strip_stray_markup(str(detail).strip())
     }
     # The model decides which defects exist. Its approval flag cannot erase a
     # finding it recorded, just as it cannot turn a red executable green.
@@ -474,8 +509,10 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
             + ", ".join(missing)
         )
 
-    adversarial = _decode_literal_newlines(str(parsed.get("adversarial_assessment") or "").strip())
-    design = _decode_literal_newlines(str(parsed.get("design_assessment") or "").strip())
+    adversarial = _strip_stray_markup(_decode_literal_newlines(
+        str(parsed.get("adversarial_assessment") or "").strip()))
+    design = _strip_stray_markup(_decode_literal_newlines(
+        str(parsed.get("design_assessment") or "").strip()))
     missing_lenses = [
         label for label, value in (
             ("adversarial_assessment", adversarial),
@@ -745,17 +782,34 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
     # Hand over complete source files. Silent 3,000-character prefixes made a
     # live reviewer claim a getter and CSS rules were missing when they were
     # present later in the same files. Exceeding the bounded context is our
-    # review limitation, never a defect for the builder to repair.
+    # review limitation, never a defect for the builder to repair. Binary files
+    # and generated build output are left out and listed (``_review_omission``).
     remaining = _MAX_JUDGE_CONTENT_CHARS
-    for label, path in _artifact_files(run, subject):
+    omitted: list[tuple[str, int, str]] = []
+    for label, path in _artifact_files(run, subject, omitted=omitted):
         if not path:
             record = _review_record(
                 INTEGRATED_REVIEW_MODEL,
                 note=f"source inventory exceeds the review context limit: {label}")
             return _combine_review(gate, record, None)
         if path and os.path.isfile(path):
-            with open(path, encoding="utf-8", errors="replace") as f:
-                content = f.read(remaining + 1)
+            size = _file_size(path)
+            # A UTF-8 character is at most four bytes, so a larger file cannot fit.
+            if size > 4 * (remaining + 1):
+                record = _review_record(
+                    INTEGRATED_REVIEW_MODEL,
+                    note=f"complete source exceeds the review context limit at {label}")
+                return _combine_review(gate, record, None)
+            with open(path, "rb") as f:
+                raw = f.read()
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                if label != _AUTHORED_CHECK_LABEL:
+                    omitted.append((label, len(raw), "binary file (not UTF-8 text)"))
+                    continue
+                # The check that decided the gate is always shown to the reviewer.
+                content = raw.decode("utf-8", errors="replace")
             if len(content) > remaining:
                 record = _review_record(
                     INTEGRATED_REVIEW_MODEL,
@@ -763,6 +817,8 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
                 return _combine_review(gate, record, None)
             parts.append(f"--- {label} ---\n{content}")
             remaining -= len(content)
+    if omitted:
+        parts.append(_omitted_section(omitted))
     base_prompt = (
         "Review this pull request through both required lenses. Do not trust a "
         "builder's self-assessment or infer success from the green gate alone.\n\n"
@@ -779,15 +835,96 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
 
     logger = getattr(run, "log", None)
     if callable(logger):
-        logger(f"integrated review: {record['state']}")
+        logger(f"integrated review: {record['state']}"
+               + (f" ({len(omitted)} binary or generated files left out)"
+                  if omitted else ""))
     return _combine_review(gate, record, decision)
 
 
 _MAX_JUDGE_FILES = 48
 _MAX_JUDGE_CONTENT_CHARS = 192_000
 
+# What the review leaves out, because it is not source a reviewer can read: binary
+# files and generated build output. October 19-20: a GPT-6.1 frontend committed its
+# Vite bundle and a .ttf font, the font was read as text, and the review abstained on
+# the context limit (REVIEW_UNAVAILABLE) over two green pull requests. Everything
+# else still arrives COMPLETE, and every omitted file is listed with its size, so
+# the reviewer knows it exists and can still call committed build output a finding.
+_GENERATED_DIRS = frozenset({"dist", "build", ".vite"})
+_GENERATED_SUFFIXES = (".min.js", ".min.mjs", ".min.css", ".map")
+_BINARY_EXTENSIONS = frozenset({
+    # fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    # images
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".avif", ".tif",
+    ".tiff", ".psd",
+    # audio and video
+    ".mp3", ".wav", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".mp4", ".m4v",
+    ".webm", ".mov", ".avi", ".mkv",
+    # archives
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".jar", ".zst",
+    # documents, compiled code and databases
+    ".pdf", ".wasm", ".so", ".dylib", ".dll", ".exe", ".bin", ".o", ".a",
+    ".pyc", ".class", ".sqlite", ".sqlite3", ".db",
+})
+_SNIFF_BYTES = 8192
+_MAX_OMITTED_LISTED = 60
+_AUTHORED_CHECK_LABEL = "the validator's authored acceptance check"
 
-def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
+
+def _review_omission(rel: str, full: str) -> str:
+    """Why a file stays out of the review context, or "" when it is source to read.
+
+    By path first (generated bundles, binary extensions), then by content: a NUL
+    byte or bytes that are not UTF-8 text mean a binary file whatever its name.
+    """
+    parts = [part for part in rel.replace("\\", "/").split("/") if part]
+    name = parts[-1].lower() if parts else ""
+    if (any(part.lower() in _GENERATED_DIRS for part in parts[:-1])
+            or name.endswith(_GENERATED_SUFFIXES)):
+        return "generated build output"
+    if os.path.splitext(name)[1] in _BINARY_EXTENSIONS:
+        return "binary file"
+    try:
+        with open(full, "rb") as f:
+            head = f.read(_SNIFF_BYTES)
+    except OSError:
+        return ""   # the reader reports an unreadable file; do not hide it here
+    if b"\0" in head:
+        return "binary file"
+    try:
+        # A multi-byte character cut at the sniff boundary is not a decode failure.
+        codecs.getincrementaldecoder("utf-8")().decode(
+            head, final=len(head) < _SNIFF_BYTES)
+    except UnicodeDecodeError:
+        return "binary file (not UTF-8 text)"
+    return ""
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _omitted_section(omitted: list[tuple[str, int, str]]) -> str:
+    """The review-context note naming every file left out, with its size."""
+    lines = [
+        "Left out of this review because they are not source text (listed so you "
+        "know they exist; committed build output can itself be a finding):"]
+    lines.extend(f"- {label}: {size:,} bytes, {reason}"
+                 for label, size, reason in omitted[:_MAX_OMITTED_LISTED])
+    rest = omitted[_MAX_OMITTED_LISTED:]
+    if rest:
+        lines.append(f"- and {len(rest)} more files, "
+                     f"{sum(size for _label, size, _reason in rest):,} bytes in total")
+    return "\n".join(lines)
+
+
+def _artifact_files(run: Any, subject: Any = None,
+                    omitted: list[tuple[str, int, str]] | None = None,
+                    ) -> list[tuple[str, str]]:
     """(label, path) for the artifacts of ONE pull request under review.
 
     READS THE TREE, names nothing. This used to look for `_server_file`, `_ui_dir`,
@@ -798,14 +935,20 @@ def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
     Reads the tree the executable gate actually inspected: that pull request's own
     tree, built on the base branch as it stands. A role checkout is not used, because
     it includes its private base and may be stale.
+
+    Binary files and generated build output are not listed; each one is appended to
+    ``omitted`` as (label, size in bytes, reason) instead, and does not count toward
+    the file limit.
     """
+    if omitted is None:
+        omitted = []
     files: list[tuple[str, str]] = []
     authored = getattr(run, "_acceptance_test_file", None)
     if subject is not None:
         authored = (getattr(run, "_item_checks", None) or {}).get(
             subject.work_id, authored)
     if authored:
-        files.append(("the validator's authored acceptance check", authored))
+        files.append((_AUTHORED_CHECK_LABEL, authored))
 
     seen = {os.path.abspath(authored)} if authored else set()
     root = getattr(run, "_review_work_dir", "") or ""
@@ -823,14 +966,19 @@ def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
         full = os.path.join(root, *rel.replace("\\", "/").split("/"))
         if not os.path.isfile(full) or os.path.abspath(full) in seen:
             continue
+        label = (f"{subject.work_id} ({subject.capability}) changed {rel}"
+                 if subject is not None else rel)
+        reason = _review_omission(rel, full)
+        if reason:
+            seen.add(os.path.abspath(full))
+            omitted.append((label, _file_size(full), reason))
+            continue
         if len(files) >= _MAX_JUDGE_FILES:
             files.append((
                 f"NOTE: changed-path contents exceed {_MAX_JUDGE_FILES} files; "
                 "the complete inventory is in the provenance above", ""))
             return files
         seen.add(os.path.abspath(full))
-        label = (f"{subject.work_id} ({subject.capability}) changed {rel}"
-                 if subject is not None else rel)
         files.append((label, full))
 
     # Fill the remaining budget from the tree, so a read-only review of an older run
@@ -844,6 +992,12 @@ def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
             full = os.path.join(dirpath, fn)
             if os.path.abspath(full) in seen:
                 continue
+            rel = os.path.relpath(full, root)
+            reason = _review_omission(rel, full)
+            if reason:
+                seen.add(os.path.abspath(full))
+                omitted.append((f"on the base branch: {rel}", _file_size(full), reason))
+                continue
             if len(files) >= _MAX_JUDGE_FILES:
                 files.append((
                     f"NOTE: artifact contents exceed {_MAX_JUDGE_FILES} files; "
@@ -852,7 +1006,6 @@ def _artifact_files(run: Any, subject: Any = None) -> list[tuple[str, str]]:
                 ))
                 return files
             seen.add(os.path.abspath(full))
-            rel = os.path.relpath(full, root)
             files.append((f"on the base branch: {rel}", full))
     return files
 

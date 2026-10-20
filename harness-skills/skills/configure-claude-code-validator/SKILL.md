@@ -56,10 +56,10 @@ that separation is what makes the gate honest).
 Before running anything, confirm with the user (ask only for what is missing):
 
 - **Region**: default `us-west-2` (all workshop examples use this).
-- **Model**: default `global.anthropic.claude-sonnet-5`. Offer the pinned
-  alternatives `claude-sonnet-4.6` / `claude-haiku-4.5` if the user wants a
-  cheaper validator (validation is read-and-assert work, so a mid-tier model is
-  often the right trade-off).
+- **Model**: default `global.anthropic.claude-sonnet-5-5`. Offer
+  `global.anthropic.claude-opus-5-5` if the user wants a stronger validator. Do not
+  offer Haiku or Fable: Workshop Studio's private marketplace refuses Haiku 5.5, and
+  Fable 5.1 needs a data-retention mode event accounts do not have.
 - **Prerequisites already met?**: confirm shared infra is deployed
   (`coding-agents/infra/setup.sh us-west-2` runs ONCE for all agents). No vendor
   key is needed: the validator is Bedrock-native, exactly like the backend.
@@ -82,8 +82,8 @@ cd coding-agents/claude-code-validator
 python deploy.py
 ```
 
-Default model is `global.anthropic.claude-sonnet-5`. To pin a cheaper validator,
-pass `WORKSHOP_MODEL=...` to `deploy.py`. Do NOT run any Token Vault /
+Default model is `global.anthropic.claude-sonnet-5-5`. To pin a different validator
+model, pass `WORKSHOP_MODEL=...` to `deploy.py`. Do NOT run any Token Vault /
 credential-provider steps here: the validator has no vendor key.
 
 ## Step 3: The validator's job - author the check, not answer the task

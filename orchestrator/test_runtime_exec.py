@@ -660,3 +660,73 @@ def test_the_prompt_crosses_the_typed_shell_as_base64_so_every_byte_survives(mon
 ])
 def test_only_the_clis_own_429_line_means_the_quota_is_spent(text, quota):
     assert runtime_exec.model_quota_exhausted(text) is quota
+
+
+# ------------------------------------------------- Python 3.10 handshake timeout
+# October 19 (test event 5b5c823d): the host's Python 3.10 websockets raised
+# asyncio.TimeoutError on a cold backend handshake. On 3.10 that class is not the
+# built-in TimeoutError, so the connect retry treated it as fatal and the team build
+# stopped at ROLE_EXECUTION_ERROR without the retry it was owed.
+class _HandshakeSession:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    async def __aenter__(self):
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+    async def __aexit__(self, *exc):
+        return None
+
+
+class _HandshakeClient:
+    def __init__(self, outcomes):
+        self.outcomes, self.calls = list(outcomes), []
+
+    def open_shell(self, **kw):
+        self.calls.append(kw)
+        return _HandshakeSession(self.outcomes.pop(0))
+
+
+def _open_through_retry(client):
+    import asyncio
+    import time
+
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+
+    async def go():
+        async with runtime_exec._open_shell(
+                client, "arn:rt", "s" * 36, "shell-1",
+                time.monotonic() + 60.0, sleep=sleep) as shell:
+            return shell
+    return asyncio.run(go()), slept
+
+
+def test_an_asyncio_handshake_timeout_is_retried_on_the_same_shell():
+    import asyncio
+
+    client = _HandshakeClient(
+        [asyncio.TimeoutError("timed out during opening handshake"), "SHELL"])
+    shell, slept = _open_through_retry(client)
+    assert shell == "SHELL" and slept == [2.0]
+    assert [(c["session_id"], c["shell_id"]) for c in client.calls] == [
+        ("s" * 36, "shell-1")] * 2
+
+
+def test_the_python_310_asyncio_timeout_class_is_transient(monkeypatch):
+    """Simulate 3.10, where asyncio.TimeoutError is its own Exception subclass."""
+    import asyncio
+    import types
+
+    class Py310AsyncioTimeout(Exception):
+        pass
+
+    assert not issubclass(Py310AsyncioTimeout, TimeoutError)
+    monkeypatch.setattr(runtime_exec, "asyncio", types.SimpleNamespace(
+        TimeoutError=Py310AsyncioTimeout, sleep=asyncio.sleep))
+    assert runtime_exec._transient_connect_error(Py310AsyncioTimeout())
+    assert not runtime_exec._transient_connect_error(ValueError("region mismatch"))

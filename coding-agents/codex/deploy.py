@@ -174,6 +174,10 @@ def _runtime_environment() -> dict:
         value = os.environ.get(name, "").strip()
         if value:
             env_vars[name] = value
+    # An explicitly empty effort omits model_reasoning_effort (Codex's own default);
+    # dropping it would restore the image's low setting after deployment.
+    if "WORKSHOP_CODEX_EFFORT" in os.environ:
+        env_vars["WORKSHOP_CODEX_EFFORT"] = os.environ["WORKSHOP_CODEX_EFFORT"].strip()
     return env_vars
 
 

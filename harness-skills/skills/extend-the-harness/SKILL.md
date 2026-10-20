@@ -51,7 +51,9 @@ Two principles make this concrete:
   `deploy.py`), so core glue is untouched.
 - **Cost efficiency**: agents burn compute + inference tokens; cost is first-class. Every new
   role multiplies the autonomous run's cost. The cheaper the model the role can use, the lower
-  the bar to justify it (a Haiku read-only reviewer is far easier to justify than an Opus one).
+  the bar to justify it (a read-only reviewer at low effort is far easier to justify than a
+  second Opus implementer). The workshop runs no Haiku: Workshop Studio's private
+  marketplace refuses Haiku 5.5.
 
 ---
 
@@ -68,7 +70,7 @@ Before deciding, get the user to name the JOB. Ask (AskUserQuestion style; pick 
    (Reviewer -> findings count / blocked-merge rate; Docs -> README/CHANGELOG present; Security ->
    threats filed; extra implementer -> sub-feature passes its own slice of the gate.)
 4. **Read-only or write?** Read-only roles (reviewer, security-analysis, docs-read) are cheaper,
-   safer, and map to `pr_review` -> Haiku routing. Write roles need sandbox + least-privilege
+   safer, and map to `pr_review` -> low-effort routing. Write roles need sandbox + least-privilege
    review (security by default).
 5. **Where does it sit in the blueprint?** Almost always inside Phase 4 (agent execution), feeding
    Phase 5 (finalization). The VALIDATOR (Kiro) stays the final gate; a new role
@@ -86,9 +88,9 @@ read-only -> cheap; authoring -> mid-tier; critical -> opt-in Opus).
 
 | Candidate role | Add it WHEN (the distinct job) | Don't add it when | Read/Write | Suggested model |
 |---|---|---|---|---|
-| **REVIEWER / critic** | The diff ships but nobody adversarially critiques it before the gate; you want a read-only second pair of eyes that can block a merge. Different job from authoring. | "The backend has bugs": that is the author's job; tighten the authored acceptance check first. | Read-only | **Haiku** (`pr_review` = fast, cheap, read-only) |
+| **REVIEWER / critic** | The diff ships but nobody adversarially critiques it before the gate; you want a read-only second pair of eyes that can block a merge. Different job from authoring. | "The backend has bugs": that is the author's job; tighten the authored acceptance check first. | Read-only | **Sonnet 5.5** at low effort (`pr_review` = fast, read-only) |
 | **DOCS writer** | The deliverable ships without README / CHANGELOG / API docs and that is a stated outcome gap. Authoring prose is a different job from authoring the API. | The backend's docstrings are thin; that is the backend author's job. | Write (docs only) | **Sonnet** (authoring, mid-tier) |
-| **SECURITY / threat agent** | You need an explicit threat pass (secrets, injection, IAM over-grant, SSRF) that authoring agents will not self-perform. Security-by-default makes this a real, distinct job for sensitive repos. | The repo is a throwaway sample with no secrets and no external surface. | Read-only (analysis; files findings, does not patch) | **Haiku** for triage, escalate to **Opus** only for critical/complex repos |
+| **SECURITY / threat agent** | You need an explicit threat pass (secrets, injection, IAM over-grant, SSRF) that authoring agents will not self-perform. Security-by-default makes this a real, distinct job for sensitive repos. | The repo is a throwaway sample with no secrets and no external surface. | Read-only (analysis; files findings, does not patch) | **Sonnet 5.5** for triage, escalate to **Opus 5.5** only for critical/complex repos |
 | **Extra IMPLEMENTER (parallel sub-feature)** | The work decomposes into genuinely independent sub-features that can be built and gated independently. This is the ONE case where "more of the same job" is legitimate, because each sub-feature is its own job with its own slice of the gate. | The sub-features share state or one depends on the other; that is one job; do it sequentially or as orchestrator fan-out within the existing BACKEND role. | Write | **Sonnet** default; **Opus** for the complex/critical slice (Opus recognizes rabbit holes; mid-tier persists in unproductive loops) |
 
 Model-routing rationale: routing is not only cost. Capable models (Opus) recognize rabbit holes
@@ -106,9 +108,9 @@ Before registering, confirm the new role does not break the platform invariants:
   can wedge the run (the only hard gate stays the authored-check acceptance gate run by the
   validator).
 - **Cost efficiency**: estimate the added cost. Illustrative orders of magnitude: a small
-  run is ~$150-500/mo, dominated by Bedrock inference + compute, not infra. A Haiku read-only
-  reviewer is a small marginal add; a second Opus implementer is not. If the role can run on
-  Haiku, it almost always clears the bar.
+  run is ~$150-500/mo, dominated by Bedrock inference + compute, not infra. A read-only
+  reviewer at low effort is a small marginal add; a second Opus implementer is not. If the
+  role can run read-only at low effort, it almost always clears the bar.
 - **Security by default**: write roles get an isolated sandbox + least-privilege IAM. Read-only
   roles (reviewer/security) must NOT have Write/Edit; hard-deny (`pr_review` agents may never
   invoke Write/Edit). Enforce that in the agent's settings, not by convention.

@@ -100,7 +100,7 @@ def _prune_dirs(parent: str, keep: int) -> None:
 # opencode remains a registered restore path. Its own model setting must not be
 # reused for the default Codex frontend or the Claude coordinator.
 _OPENCODE_MODEL = os.environ.get(
-    "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/global.anthropic.claude-sonnet-5")
+    "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/global.anthropic.claude-sonnet-5-5")
 
 
 def _deployment_region(env=None) -> str:
@@ -125,7 +125,7 @@ def _opencode_region() -> str:
 # Cheap background model for opencode (titles/summaries). Same wirable seam as
 # the two above; must be an inference profile, never a bare model id.
 _SMALL_MODEL = "amazon-bedrock/" + os.environ.get(
-    "WORKSHOP_SMALL_MODEL", "global.anthropic.claude-sonnet-5"
+    "WORKSHOP_SMALL_MODEL", "global.anthropic.claude-sonnet-5-5"
 ).removeprefix("amazon-bedrock/")
 
 _OS_USER = getpass.getuser()
@@ -415,7 +415,8 @@ def _codex_config_text(workdirs=()):
     spec.loader.exec_module(module)
     env = _agent_env("codex")
     return module.render_config(module.region_from_env(env),
-                                module.model_from_env(env), workdirs)
+                                module.model_from_env(env), workdirs,
+                                effort=module.effort_from_env(env))
 
 
 def _cli_toolchain():
@@ -1145,7 +1146,7 @@ def _harness_files(agent_id: str) -> dict[str, str]:
             '  "provider": { "amazon-bedrock": { "options": '
             f'{{ "region": "{_opencode_region()}" }} }} }},\n'
             f'  "model": "{_OPENCODE_MODEL}",\n'
-            '  "small_model": "amazon-bedrock/global.anthropic.claude-sonnet-5"\n'
+            f'  "small_model": "{_SMALL_MODEL}"\n'
             "}\n")
     return files
 

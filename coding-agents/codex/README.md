@@ -1,7 +1,8 @@
 # Codex on AgentCore Runtime
 
 This folder builds and deploys the workshop's frontend coding assistant. Codex
-CLI is pinned to **0.163.0** and uses **`global.openai.gpt-5.6-sol`** through the
+CLI is pinned to **0.163.0** and uses **`global.openai.gpt-6.1-sol`** at **low**
+reasoning effort through the
 built-in **`amazon-bedrock-runtime`** provider. That provider uses
 `https://bedrock-runtime.<region>.amazonaws.com/openai/v1` with Bedrock SigV4.
 The Runtime IAM role supplies the AWS SDK credential chain; no OpenAI or
@@ -42,6 +43,17 @@ overrides it; the legacy all-role `WORKSHOP_MODEL` also takes precedence over
 the default. Prefer a role-specific override when the roster uses different
 model providers. `/app/run.sh --model MODEL` and a per-task model override win
 for their invocation. The coordinator uses `ORCHESTRATOR_MODEL_ID` independently.
+
+`WORKSHOP_CODEX_EFFORT` sets `model_reasoning_effort` (`low` by default; `none`,
+`minimal`, `medium`, `high` or `xhigh`; an empty value omits it). `deploy.py`
+forwards it to the Runtime, the boot config and `/app/run.sh` read it, `/app/run.sh
+--effort EFFORT` overrides it for one invocation, and the coordinator passes it on
+every dispatch. At medium, GPT-6.1 Sol took 407-658 s for a team build's frontend on
+2026-10-19/20, past the ten-minute demo budget; at low it took 152-386 s.
+
+A one-shot `/app/run.sh "<prompt>"` redirects stdin from `/dev/null`: `codex exec`
+reads a prompt from stdin while stdin is open, so a turn started without a terminal
+would otherwise wait forever.
 
 ## Open a shell
 

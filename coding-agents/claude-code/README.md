@@ -21,10 +21,13 @@ python deploy.py
 
 `deploy.py` writes the Runtime ARN to `runtime_config.json`.
 
-The backend defaults to `global.anthropic.claude-sonnet-5` with `low` effort. To
-change either setting, export `WORKSHOP_CLAUDE_MODEL` or
-`WORKSHOP_CLAUDE_EFFORT` before running `deploy.py`; the settings are forwarded
-to the Runtime. Use the same exports when configuring the coordinator.
+The backend defaults to `global.anthropic.claude-sonnet-5-5`. `/app/run.sh` uses
+`medium` effort when nothing sets one, for the attendee's own sessions in Labs 1 to 3
+(at low, 3 of 4 hand-run Lab 1 games crashed on their first frame on 2026-10-19/20);
+the Lab 4 coordinator passes `low` explicitly on every dispatch. To change either
+setting, export `WORKSHOP_CLAUDE_MODEL` or `WORKSHOP_CLAUDE_EFFORT` before running
+`deploy.py`; the settings are forwarded to the Runtime. Use the same exports when
+configuring the coordinator.
 
 For model selection, an explicit launcher `--model` wins, followed by
 `WORKSHOP_MODEL_CLAUDE_CODE`, `WORKSHOP_MODEL`, `WORKSHOP_CLAUDE_MODEL`,

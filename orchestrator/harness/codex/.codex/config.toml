@@ -1,7 +1,7 @@
 # Codex project configuration paired with the root AGENTS.md.
-model = "global.openai.gpt-5.6-sol"
+model = "global.openai.gpt-6.1-sol"
 model_provider = "amazon-bedrock-runtime"
-model_reasoning_effort = "medium"
+model_reasoning_effort = "low"
 
 # The Runtime's global configuration supplies the deployment region.
 # Do not pin a different region in a source archive or on the shared mount.

@@ -5,7 +5,7 @@
       "options": { "region": "us-west-2" }
     }
   },
-  "model": "amazon-bedrock/global.anthropic.claude-sonnet-5",
-  "small_model": "amazon-bedrock/global.anthropic.claude-sonnet-5",
+  "model": "amazon-bedrock/global.anthropic.claude-sonnet-5-5",
+  "small_model": "amazon-bedrock/global.anthropic.claude-sonnet-5-5",
   "experimental": { "openTelemetry": true }
 }

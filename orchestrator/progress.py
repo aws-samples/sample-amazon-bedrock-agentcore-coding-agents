@@ -517,7 +517,8 @@ SPECS = [
               "with your image and Create default role (Lab 1, Create the Runtime and Open a Session, step 1)."),
     Spec(PART1, "The work it finished", check_lid_work, CMD_CONNECT + CMD_START,
          note="Connect, start Claude Code in the shared folder, give it the task on the page, "
-              "then press Ctrl+] while it works."),
+              "then press Ctrl+] while it works. The 'Shell connection closed unexpectedly' "
+              "line after the reconnect command is expected: the session keeps running."),
     Spec(PART2, "The shared repository", check_shared_repo, CMD_SHARE,
          note="This makes ~/lid-game a Git repository and pushes it to a bare repository on the "
               "mount, which every agent clones."),

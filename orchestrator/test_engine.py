@@ -700,7 +700,7 @@ def test_per_task_model_override_resolves():
     run = Run(run_id="run_000000_001", task="t", agents=[], roles={})
     run.options = {"models": {"claude-code": "claude-sonnet-4-6"}}
     assert engine._role_model(run, "claude-code", "claude-opus-4-6") == "claude-sonnet-4-6"
-    assert llm.resolve("claude-sonnet-4-6") == "global.anthropic.claude-sonnet-5"
+    assert llm.resolve("claude-sonnet-4-6") == "global.anthropic.claude-sonnet-5-5"
     # no override -> roster default; a full Bedrock id passes through resolve()
     run.options = {}
     assert engine._role_model(run, "opencode", "amazon-bedrock/global.anthropic.claude-sonnet-5") == "amazon-bedrock/global.anthropic.claude-sonnet-5"

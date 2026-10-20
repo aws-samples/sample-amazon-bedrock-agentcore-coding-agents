@@ -38,3 +38,10 @@ def test_engine_re_exports_the_same_objects():
                  "public_events", "public_submitter", "next_action", "resubmission_allowed",
                  "_NEXT_ACTION", "_RESUBMITTABLE_REASONS", "_published_rows", "_redact"):
         assert getattr(engine, name) is getattr(run_views, name), name
+
+
+def test_a_central_kiro_key_is_redacted_like_a_personal_one():
+    import run_views
+    text = "boom kak_0123456789abcdefABCDEF0123456789 and ksk_0123456789abcdef"
+    out = run_views._redact(text)
+    assert "kak_" not in out and "ksk_" not in out and out.count("[redacted]") == 2

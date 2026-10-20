@@ -15,14 +15,19 @@ and Kiro, producing one builder PR. A separate Claude Code validator remains a
 restore path: deploy and wire it, then select it with `WORKSHOP_ROLES`.
 opencode remains the alternate frontend, selected the same way.
 
-The backend defaults to **Claude Sonnet 5** (`global.anthropic.claude-sonnet-5`)
-with `low` effort, and the integrated reviewer to **Claude Opus 5**
-(`global.anthropic.claude-opus-5`). Codex uses **GPT-5.6 Sol**
-(`global.openai.gpt-5.6-sol`) with `medium` reasoning through the native Bedrock
-Runtime provider. Kiro uses its own `claude-opus-5.5` with `low` effort. Every
-Bedrock default is a Global cross-Region inference profile. The stack's
-`BackendModelId`, `ReviewModelId` and `FrontendModelId` parameters select different
-models when needed; `WORKSHOP_KIRO_MODEL` selects Kiro's. Model access depends on the account; verify a complete tool turn in
+The defaults are three models. Claude Code runs **Claude Sonnet 5.5**
+(`global.anthropic.claude-sonnet-5-5`): the coordinator dispatches it at `low` effort
+(`WORKSHOP_CLAUDE_EFFORT`), and `/app/run.sh` uses `medium` when nothing is set. The
+integrated reviewer uses **Claude Opus 5.5** (`global.anthropic.claude-opus-5-5`) at
+`low`. Codex uses **GPT-6.1 Sol** (`global.openai.gpt-6.1-sol`) with `low` reasoning
+through the native Bedrock Runtime provider; `WORKSHOP_CODEX_EFFORT` changes it, and
+the coordinator deploy forwards it. The coordinator and small model use Sonnet 5.5.
+Kiro uses its own `claude-opus-5.5` with `low` effort. Every Bedrock default is a
+Global cross-Region inference profile. The stack's `BackendModelId`, `ReviewModelId`,
+`FrontendModelId`, `CoordinatorModelId` and `SmallModelId` parameters select different
+models when needed; `WORKSHOP_KIRO_MODEL` selects Kiro's. Do not choose Haiku 5.5 or
+Fable 5.1: Workshop Studio's private marketplace refuses the first, and the second
+needs a data-retention mode the events do not have. Model access depends on the account; verify a complete tool turn in
 Lab 1 before starting a build.
 
 The tested CLI versions are Claude Code **2.1.304**, Codex **0.163.0**, and
@@ -175,8 +180,8 @@ stack-specific bucket names; `WORKSHOP_RUNTIME_BUCKET` remains an explicit overr
 ## Layout
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
-  - `claude-code/` backend builder (Claude Code, native Bedrock, Sonnet 5/low)
-  - `codex/` frontend builder (Codex 0.163.0, Bedrock Runtime Responses, Sol/medium)
+  - `claude-code/` backend builder (Claude Code, native Bedrock, Sonnet 5.5; `low` from the coordinator, `medium` in `/app/run.sh` by default)
+  - `codex/` frontend builder (Codex 0.163.0, Bedrock Runtime Responses, GPT-6.1 Sol/low)
   - `kiro/` acceptance-contract validator (Kiro CLI; steered by `.kiro/steering/*.md` with `inclusion: always`, which directs it to author an executable check whose exit code is the gate; authenticates with an API key fetched from the AgentCore Identity Token Vault at session start: your own `ksk_` key stored with `orchestrator/kiro_config.py save`, or at a Workshop Studio event a per-team key the central account delivers and the stack imports with `kiro_config.py import-secret`)
   - `opencode/` alternate frontend (hidden; restore with `WORKSHOP_ROLES=claude-code,opencode,kiro`)
   - `claude-code-validator/` alternate checker (hidden; restore with `WORKSHOP_ROLES=claude-code,codex,claude-code-validator`): the same acceptance-check-authoring contract in a `CLAUDE.md`, Bedrock-native with no key, for an account without a Kiro subscription

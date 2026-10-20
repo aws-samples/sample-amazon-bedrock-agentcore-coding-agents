@@ -82,17 +82,20 @@ stops the script before it prints the build-submission instructions.
 
 Export model settings before running the script. It forwards the stack's
 `WORKSHOP_CLAUDE_MODEL`, `WORKSHOP_CODEX_MODEL`, `WORKSHOP_SMALL_MODEL`, and
-`WORKSHOP_REVIEW_MODEL` values into the coordinator process.
+`WORKSHOP_REVIEW_MODEL` values into the coordinator process, and the effort
+settings `WORKSHOP_CLAUDE_EFFORT`, `WORKSHOP_CODEX_EFFORT` (Codex's
+`model_reasoning_effort`, `low` by default), `WORKSHOP_KIRO_EFFORT`, and
+`WORKSHOP_REVIEW_EFFORT` when they are set, including an explicit empty value.
 `WORKSHOP_REVIEW_MODEL` selects the integrated PR reviewer independently from
 the backend. For example, an event can select these models separately:
 
 ```bash
-export WORKSHOP_CLAUDE_MODEL=global.anthropic.claude-opus-5
-export WORKSHOP_REVIEW_MODEL=global.anthropic.claude-sonnet-5
+export WORKSHOP_CLAUDE_MODEL=global.anthropic.claude-opus-5-5
+export WORKSHOP_REVIEW_MODEL=global.anthropic.claude-sonnet-5-5
 ```
 
 Set both before `deploy-coordinator.sh`. Without an explicit review model,
-the reviewer uses `WORKSHOP_CLAUDE_MODEL`, then Sonnet 5 as its fallback.
+the reviewer uses `WORKSHOP_CLAUDE_MODEL`, then Opus 5.5 as its fallback.
 `ORCHESTRATOR_MODEL_ID` independently selects the coordinator's chat model.
 Existing `WORKSHOP_MODEL` and
 `WORKSHOP_MODEL_<ROLE>` overrides still take precedence for role dispatch;

@@ -25,8 +25,18 @@ import llm  # noqa: E402
 def test_resolve_passes_through_openai_ids():
     assert llm.resolve("openai.gpt-5.5") == "openai.gpt-5.5"
     # Retired aliases resolve to the supported Global CRIS successor.
-    assert llm.resolve("claude-opus-4-6") == "global.anthropic.claude-sonnet-5"
+    assert llm.resolve("claude-opus-4-6") == "global.anthropic.claude-sonnet-5-5"
     assert llm.resolve("claude-sonnet-5") == "global.anthropic.claude-sonnet-5"
+    assert llm.resolve("claude-sonnet-5-5") == "global.anthropic.claude-sonnet-5-5"
+    assert llm.resolve("claude-opus-5-5") == "global.anthropic.claude-opus-5-5"
+
+
+def test_no_alias_resolves_to_a_model_the_workshop_cannot_run():
+    """Haiku 5.5 is refused by Workshop Studio's private marketplace and Fable 5.1
+    needs a data-retention mode the event accounts lack (October 19-20)."""
+    for alias, model_id in llm.BEDROCK_MODEL_MAP.items():
+        assert "haiku" not in model_id and "fable" not in model_id, (alias, model_id)
+        assert model_id.startswith("global."), (alias, model_id)
 
 
 def _http_error(code: int, body: bytes = b'{"error":{"message":"server error"}}'):

@@ -256,8 +256,35 @@ def test_kiro_effort_survives_coordinator_configuration(monkeypatch, tmp_path, e
     assert observed["env"]["WORKSHOP_KIRO_EFFORT"] == expected
     assert (f"--effort {expected}" in observed["cli"]) == bool(expected)
 
+@pytest.mark.parametrize("effort", [None, "medium", ""])
+def test_codex_effort_survives_coordinator_configuration(monkeypatch, tmp_path, effort):
+    """The October 19-20 evaluation had to patch this in: a deployed coordinator
+    dispatches Codex from its OWN process env, so the effort must be forwarded."""
+    monkeypatch.delenv("WORKSHOP_CODEX_EFFORT", raising=False)
+    if effort is not None:
+        monkeypatch.setenv("WORKSHOP_CODEX_EFFORT", effort)
+    env = _configure(monkeypatch, tmp_path)
+    if effort is None:
+        assert "WORKSHOP_CODEX_EFFORT" not in env
+    else:
+        assert env["WORKSHOP_CODEX_EFFORT"] == effort
+    child_env = {name: value for name, value in os.environ.items()
+                 if not name.startswith("WORKSHOP_")}
+    child_env.update(env, PYTHONPATH=str(HERE.parent / "orchestrator"))
+    child = subprocess.check_output([
+        sys.executable, "-c",
+        "import json, roles; r=roles.get('codex'); "
+        "print(json.dumps({'cli':r.cli,'env':r.env}))"],
+        env=child_env, text=True)
+    observed = json.loads(child)
+    expected = "low" if effort is None else effort
+    assert observed["env"]["WORKSHOP_CODEX_EFFORT"] == expected
+    assert (f"model_reasoning_effort=\"{expected}\"" in observed["cli"]) == bool(expected)
+    assert ("model_reasoning_effort" in observed["cli"]) == bool(expected)
+
+
 @pytest.mark.parametrize("overrides,options,backend_model,validator_model", [
-    ({}, {}, "us.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5"),
+    ({}, {}, "us.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5-5"),
     ({"WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR": "global.anthropic.claude-sonnet-5"},
      {}, "us.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5"),
     ({"WORKSHOP_MODEL": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -314,7 +341,7 @@ print(json.dumps({"roster": roles.roster_ids(), "roles": records}))
     backend = resolved["roles"]["claude-code"]
     validator = resolved["roles"]["claude-code-validator"]
     assert backend["default"] == "us.anthropic.claude-opus-5"
-    assert validator["default"] == "global.anthropic.claude-sonnet-5"
+    assert validator["default"] == "global.anthropic.claude-sonnet-5-5"
     for role, expected, effort in (
             (backend, backend_model, "low"), (validator, validator_model, "xhigh")):
         argv = role["argv"]

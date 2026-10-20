@@ -104,14 +104,14 @@ def test_headless_launchers_do_not_impose_a_turn_count_or_hide_cli_failure(launc
 
 @pytest.mark.parametrize("path", ["run.sh", "run-as-user.sh"])
 @pytest.mark.parametrize("overrides,expected", [
-    ({}, "global.anthropic.claude-sonnet-5"),
+    ({}, "global.anthropic.claude-sonnet-5-5"),
     ({"ANTHROPIC_MODEL": "native-model"}, "native-model"),
     ({"ANTHROPIC_MODEL": "native-model", "WORKSHOP_CLAUDE_MODEL": "stack-model"}, "stack-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "stack-model", "WORKSHOP_MODEL": "generic-model"}, "generic-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "stack-model", "WORKSHOP_MODEL": "generic-model",
       "WORKSHOP_MODEL_CLAUDE_CODE": "role-model"}, "role-model"),
     ({"WORKSHOP_CLAUDE_MODEL": "", "WORKSHOP_MODEL": "",
-      "WORKSHOP_MODEL_CLAUDE_CODE": ""}, "global.anthropic.claude-sonnet-5"),
+      "WORKSHOP_MODEL_CLAUDE_CODE": ""}, "global.anthropic.claude-sonnet-5-5"),
 ])
 def test_model_environment_precedence_reaches_the_cli(launcher, path, overrides, expected):
     result, record = launcher(path, overrides)
@@ -125,6 +125,8 @@ def test_model_environment_precedence_reaches_the_cli(launcher, path, overrides,
 @pytest.mark.parametrize("path", ["run.sh", "run-as-user.sh"])
 @pytest.mark.parametrize("effort", [None, "max", ""])
 def test_effort_default_override_and_omission_reach_the_cli(launcher, path, effort):
+    """The attendee's own session defaults to medium (at low, Sonnet 5.5 crashed 3 of 4
+    hand-built Lab 1 games on October 19-20); the coordinator passes low itself."""
     overrides = {} if effort is None else {"WORKSHOP_CLAUDE_EFFORT": effort}
     result, record = launcher(path, overrides)
     assert result.returncode == 0, result.stderr
@@ -133,7 +135,7 @@ def test_effort_default_override_and_omission_reach_the_cli(launcher, path, effo
         assert "--effort" not in arguments
     else:
         assert arguments.count("--effort") == 1
-        assert arguments[arguments.index("--effort") + 1] == (effort or "low")
+        assert arguments[arguments.index("--effort") + 1] == (effort or "medium")
 
 
 @pytest.mark.parametrize("args", [
@@ -165,8 +167,8 @@ def test_interactive_launcher_honors_settings_without_switching_to_print_mode(la
     arguments = record["argv"]
     assert "--print" not in arguments
     assert arguments[arguments.index("--model") + 1] == (
-        "explicit-model" if args else "global.anthropic.claude-sonnet-5")
-    assert arguments[arguments.index("--effort") + 1] == ("max" if args else "low")
+        "explicit-model" if args else "global.anthropic.claude-sonnet-5-5")
+    assert arguments[arguments.index("--effort") + 1] == ("max" if args else "medium")
 
 
 @pytest.mark.parametrize("prompt", [None, "Inspect the task"], ids=["interactive", "headless"])

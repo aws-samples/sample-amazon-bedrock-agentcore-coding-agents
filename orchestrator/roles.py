@@ -177,10 +177,14 @@ _CLAUDE_TELEMETRY = {
     "OTEL_METRIC_EXPORT_INTERVAL": "5000",
     "OTEL_LOGS_EXPORT_INTERVAL": "2000",
 }
-# The backend uses low effort. On 2026-09-27, Sonnet 5 at low opened the first
-# game's pull request in about three minutes where medium took about four, and
-# the check passed as often; the executable, not the effort, decides the verdict.
-# Keep the restored validator's separate default and explicit operator overrides.
+# The Lab 4 backend builder runs at low effort, passed EXPLICITLY on every dispatch
+# (the headless `--effort` flag and the interactive launcher's env below), because
+# the image's own launcher defaults to medium for the attendee's Labs 1 to 3
+# sessions. On 2026-10-19/20 Sonnet 5.5 at low wrote the backend in 31-50 s of a
+# team build that finished in 482-585 s; in a hand-run Lab 1 game, low crashed 3 of
+# 4 games on their first frame where medium worked 2 of 2. The executable, not the
+# effort, decides the verdict. Keep the restored validator's separate default and
+# explicit operator overrides.
 # `claude --effort` accepts low|medium|high|xhigh|max; an empty setting omits the flag.
 _CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "low").strip()
 _CLAUDE_VALIDATOR_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
@@ -203,18 +207,27 @@ _CLAUDE_CLI = _claude_cli(_CLAUDE_EFFORT)
 # These are the same names the Stage 1 harness configurators read, so the shelf, the
 # deployed image, and the dispatch all name one model.
 _CLAUDE_MODEL = (os.environ.get("WORKSHOP_CLAUDE_MODEL", "").strip()
-                or "global.anthropic.claude-sonnet-5")
+                or "global.anthropic.claude-sonnet-5-5")
 _OPENCODE_MODEL = os.environ.get(
-    "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/global.anthropic.claude-sonnet-5")
-_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "global.openai.gpt-5.6-sol")
+    "WORKSHOP_OPENCODE_MODEL", "amazon-bedrock/global.anthropic.claude-sonnet-5-5")
+_CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "global.openai.gpt-6.1-sol")
+# Codex's reasoning effort, passed on every dispatch as `model_reasoning_effort`.
+# Low, measured: on 2026-10-19/20 GPT-6.1 Sol wrote the frontend in 152-386 s at
+# low and 407-658 s at medium, and every medium team build ran past ten minutes.
+# An empty value omits the flag, so the image's config.toml decides.
+_CODEX_EFFORT = os.environ.get("WORKSHOP_CODEX_EFFORT", "low").strip()
+CODEX_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh")
+if _CODEX_EFFORT not in CODEX_EFFORTS:
+    raise ValueError("WORKSHOP_CODEX_EFFORT must be none, minimal, low, medium, high, "
+                     "xhigh, or empty")
 # Kiro names models in its OWN vendor namespace, not as Bedrock inference profiles, so
 # this cannot share _CLAUDE_MODEL. Verified against a live Runtime with
-# `kiro-cli chat --list-models`: claude-opus-5.5 / claude-opus-5 / claude-sonnet-5 /
-# auto / ... . Kept wirable like every other role's model, and read by BOTH halves of
-# the flow (this registry for the Lab 2 dispatch, run.sh for the Lab 1 session).
-# claude-opus-5.5 (2.00x credits, listed as an experimental preview) wrote each of
-# five first-game checks in two to three minutes on 2026-09-27, while claude-opus-5
-# (2.20x) took two to nine. If Kiro withdraws the preview, set claude-sonnet-5.
+# `kiro-cli chat --list-models` (kiro-cli 2.32.0): claude-opus-5.5 / claude-sonnet-5.5
+# / claude-opus-5 / claude-sonnet-5 / auto / ... . Kept wirable like every other
+# role's model, and read by BOTH halves of the flow (this registry for the dispatch,
+# run.sh for a hand-opened session). claude-opus-5.5 caught 3 real frontend defects
+# on 2026-10-19/20 where claude-sonnet-5.5 caught 1; if Kiro withdraws it, set
+# claude-sonnet-5.5.
 _KIRO_MODEL = os.environ.get("WORKSHOP_KIRO_MODEL", "claude-opus-5.5")
 # Low effort: the check it authors is the slowest step of a build, and on
 # 2026-09-27 opus-5 at low wrote a passing check in about two minutes where
@@ -293,12 +306,19 @@ REGISTRY: tuple[Role, ...] = (
         steering_file="AGENTS.md",
         harness_dir="codex",
         # The boot config supplies the Runtime region and SDK authentication.
-        # Pin the provider here too: direct dispatch does not call run.sh.
+        # Pin the provider and the reasoning effort here too: direct dispatch does
+        # not call run.sh. `codex exec` also reads a prompt from stdin while stdin is
+        # open, so a one-shot turn without a PTY must not leave it open.
         cli=("codex exec --dangerously-bypass-approvals-and-sandbox "
              "--skip-git-repo-check --cd {workdir} "
-             "-c 'model_provider=\"amazon-bedrock-runtime\"' -m {model} -- {prompt}"),
+             "-c 'model_provider=\"amazon-bedrock-runtime\"' "
+             + (f"-c 'model_reasoning_effort=\"{_CODEX_EFFORT}\"' " if _CODEX_EFFORT else "")
+             + "-m {model} -- {prompt} < /dev/null"),
         default_model=_CODEX_MODEL,
         skills=("configure-codex-frontend",),
+        # Interactive dispatch starts run.sh instead of the command above; carry the
+        # same effort into that process, including an explicit blank.
+        env={"WORKSHOP_CODEX_EFFORT": _CODEX_EFFORT},
         model_env="WORKSHOP_CODEX_MODEL",
         credential="runtime-iam",
     ),
@@ -322,7 +342,7 @@ REGISTRY: tuple[Role, ...] = (
         #
         # The id is kiro-cli's OWN vendor name, NOT a Bedrock inference profile.
         # Verified with `kiro-cli chat --list-models` in a live Runtime:
-        # `claude-opus-5` (2.20x credits, 1M context). `--model`/`--effort` were
+        # `claude-opus-5.5` and `claude-sonnet-5.5` on 2.32.0. `--model`/`--effort` were
         # verified in `kiro-cli chat --help` there too; an earlier comment here
         # claimed this CLI had no model flag, which was wrong.
         cli=_KIRO_CLI,
@@ -362,7 +382,7 @@ REGISTRY: tuple[Role, ...] = (
         # override. Keep this restore default independent; engine._role_model
         # still resolves WORKSHOP_MODEL and WORKSHOP_MODEL_CLAUDE_CODE_VALIDATOR.
         cli=_claude_cli(_CLAUDE_VALIDATOR_EFFORT),
-        default_model="global.anthropic.claude-sonnet-5",
+        default_model="global.anthropic.claude-sonnet-5-5",
         skills=("configure-claude-code-validator",),
         env={**_CLAUDE_ENV, "WORKSHOP_CLAUDE_EFFORT": _CLAUDE_VALIDATOR_EFFORT},
         telemetry_env=_CLAUDE_TELEMETRY,

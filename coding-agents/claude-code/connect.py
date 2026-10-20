@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "--model",
         help="Override the Runtime launcher model "
-             "(default: global.anthropic.claude-sonnet-5 unless configured at deployment)",
+             "(default: global.anthropic.claude-sonnet-5-5 unless configured at deployment)",
     )
     args = parser.parse_args()
     runtime_connect.main(args, script_dir=SCRIPT_DIR, label="Claude Code",

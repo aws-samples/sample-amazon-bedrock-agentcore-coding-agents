@@ -169,8 +169,12 @@ Other important settings:
 - `WORKSHOP_REVIEW_MODEL` selects the model for the integrated read-only review.
   Set it before starting the console or deploying the coordinator to keep review
   selection independent from the backend. When unset, the reviewer uses
-  `WORKSHOP_CLAUDE_MODEL`, then Sonnet 5. Builder-specific model overrides and
+  `WORKSHOP_CLAUDE_MODEL`, then Opus 5.5. Builder-specific model overrides and
   the coordinator's chat model picker do not select the reviewer.
+- `WORKSHOP_CLAUDE_EFFORT` (default `low`), `WORKSHOP_CODEX_EFFORT` (default `low`,
+  Codex's `model_reasoning_effort`) and `WORKSHOP_KIRO_EFFORT` (default `low`) set each
+  dispatched role's effort; an empty value omits the flag. A hand-opened Claude Code
+  session (`/app/run.sh`) defaults to `medium` instead.
 - `WORKSHOP_FINAL_MERGE_POLICY` is `human_review` (default) or `auto`.
   `WORKSHOP_MERGE_POLICY` remains a compatibility alias.
 

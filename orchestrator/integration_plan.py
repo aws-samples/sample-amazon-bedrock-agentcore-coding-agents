@@ -22,7 +22,7 @@ from work_items import WorkItem, dependency_order
 
 PLAN_MODEL = os.environ.get(
     "WORKSHOP_INTEGRATION_PLAN_MODEL",
-    os.environ.get("ORCHESTRATOR_MODEL_ID", "claude-sonnet-5"),
+    os.environ.get("ORCHESTRATOR_MODEL_ID", "claude-sonnet-5-5"),
 )
 # Measured October 13 on the team-game request: at the model's default effort the
 # brief overran its 2,500-token cap, came back as truncated JSON and needed the repair

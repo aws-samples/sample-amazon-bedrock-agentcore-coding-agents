@@ -76,5 +76,14 @@ if [ -n "$session" ] && [ -n "$shell" ]; then
   touch "$state_dir/detached-$role"   # progress.py: this person has detached at least once
   if [ "$role" = claude-code ]; then hint="./connect.sh --resume"; else hint="./connect.sh $role --resume"; fi
   echo "Your agent keeps running in its microVM. Come back any time with:  $hint" >&2
+  # AgentCore CLI 0.31.1 ends a Ctrl+] detach with "Shell connection closed unexpectedly
+  # before the shell reported an exit status" and exit 1, after printing the reconnect
+  # command (0.30.0 exited 0). The session keeps running and the reconnect works
+  # (measured October 19-20), so a detach is a success.
+  if [ "$status" -ne 0 ] \
+      && grep -q 'closed unexpectedly before the shell reported an exit status' "$log"; then
+    echo "(The 'Shell connection closed unexpectedly' line is how the CLI reports a detach.)" >&2
+    status=0
+  fi
 fi
 exit "$status"

@@ -372,7 +372,8 @@ def test_available_models_comes_from_the_real_bedrock_catalog():
     cat = chat.available_models()
     ids = {m["id"] for m in cat["models"]}
     # ids are full Bedrock ids resolved from llm.BEDROCK_MODEL_MAP, not aliases
-    assert "global.anthropic.claude-sonnet-5" in ids
+    assert "global.anthropic.claude-sonnet-5-5" in ids
+    assert not any("haiku" in i or "fable" in i for i in ids)  # never offered (llm.py)
     assert all(m.get("label") for m in cat["models"])      # every entry is labelled
     assert cat["default"] == chat.DEFAULT_MODEL_ID
     assert cat["default"] in ids

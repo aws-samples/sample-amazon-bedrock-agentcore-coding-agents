@@ -130,3 +130,34 @@ def test_opencode_never_passes_a_flag_it_does_not_have():
         assert "--auto" in oc.cli
     finally:
         _roles_with({})
+
+
+def test_codex_effort_defaults_low_is_wirable_and_rejects_typos():
+    """Codex's model_reasoning_effort rides on every dispatch. Low by default: at
+    medium, GPT-6.1 Sol ran every October 19-20 team build past ten minutes."""
+    saved = os.environ.pop("WORKSHOP_CODEX_EFFORT", None)
+    try:
+        for value, expected in ((None, "low"), ("medium", "medium"), ("", None)):
+            os.environ.pop("WORKSHOP_CODEX_EFFORT", None)
+            if value is not None:
+                os.environ["WORKSHOP_CODEX_EFFORT"] = value
+            roles = _roles_with({})
+            codex = roles.get("codex")
+            assert codex.env["WORKSHOP_CODEX_EFFORT"] == (expected or "")
+            if expected:
+                assert f"-c 'model_reasoning_effort=\"{expected}\"'" in codex.cli
+            else:
+                assert "model_reasoning_effort" not in codex.cli
+        os.environ["WORKSHOP_CODEX_EFFORT"] = "mediun"
+        sys.modules.pop("roles", None)
+        try:
+            importlib.import_module("roles")
+        except ValueError as exc:
+            assert "WORKSHOP_CODEX_EFFORT" in str(exc)
+        else:
+            raise AssertionError("an unknown Codex effort must fail loud")
+    finally:
+        os.environ.pop("WORKSHOP_CODEX_EFFORT", None)
+        if saved is not None:
+            os.environ["WORKSHOP_CODEX_EFFORT"] = saved
+        _roles_with({})

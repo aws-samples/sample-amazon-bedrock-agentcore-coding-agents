@@ -142,7 +142,7 @@ def _safe_reason(reason: object, environment=None) -> str:
     for value in (environment or {}).values():
         if isinstance(value, str) and len(value) >= 8:
             text = text.replace(value, "[environment value]")
-    text = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bksk_[A-Za-z0-9_-]+",
+    text = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:ksk|kak)_[A-Za-z0-9_-]+",
                   "[redacted]", text)
     text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[redacted]", text)
     return text[:1000]

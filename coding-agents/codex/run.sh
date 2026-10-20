@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Codex on Bedrock Runtime Responses, authenticated by the Runtime IAM role.
-# /app/run.sh [--model MODEL] [PROMPT] opens the TUI or runs one headless turn.
+# /app/run.sh [--model MODEL] [--effort EFFORT] [PROMPT] opens the TUI or runs
+# one headless turn.
 set -euo pipefail
 
 # Command-shell sessions may not inherit the container's configured environment.
@@ -11,6 +12,11 @@ for name in AWS_REGION AWS_DEFAULT_REGION WORKSHOP_CODEX_MODEL WORKSHOP_MODEL_CO
     if [ -n "$value" ]; then export "$name=$value"; fi
   fi
 done
+# The effort keeps an explicitly empty value, which omits the setting.
+if ! printenv WORKSHOP_CODEX_EFFORT >/dev/null && [ -r /proc/1/environ ]; then
+  value=$(tr '\0' '\n' < /proc/1/environ | grep "^WORKSHOP_CODEX_EFFORT=" || true)
+  if [ -n "$value" ]; then export "$value"; fi
+fi
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
 : "${AWS_REGION:?No AWS region. Set AWS_REGION or AWS_DEFAULT_REGION.}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
@@ -29,13 +35,19 @@ fi
 cd "$run_dir"
 run_dir="$PWD"
 
-model="${WORKSHOP_MODEL_CODEX:-${WORKSHOP_MODEL:-${WORKSHOP_CODEX_MODEL:-global.openai.gpt-5.6-sol}}}"
+model="${WORKSHOP_MODEL_CODEX:-${WORKSHOP_MODEL:-${WORKSHOP_CODEX_MODEL:-global.openai.gpt-6.1-sol}}}"
+# Low reasoning by default: GPT-6.1 Sol at medium took 407-658 s for a team build's
+# frontend (October 19-20), past the ten-minute demo budget; low took 152-386 s.
+effort="${WORKSHOP_CODEX_EFFORT-low}"
 prompt_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --model)
       [ $# -ge 2 ] && [ -n "$2" ] || { echo "--model needs a value" >&2; exit 2; }
       model="$2"; shift 2 ;;
+    --effort)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "--effort needs a value" >&2; exit 2; }
+      effort="$2"; shift 2 ;;
     --) shift; prompt_args+=("$@"); break ;;
     *) prompt_args+=("$1"); shift ;;
   esac
@@ -48,9 +60,16 @@ region_setting=$(python3 -c 'import json,os; print("model_providers.amazon-bedro
 codex_args=(--model "$model" --dangerously-bypass-approvals-and-sandbox --cd "$run_dir"
             -c 'model_provider="amazon-bedrock-runtime"'
             -c "$region_setting" -c "$trust_setting")
-echo "Using Bedrock Runtime in $AWS_REGION with model $model"
+if [ -n "$effort" ]; then
+  effort_setting=$(CODEX_EFFORT="$effort" python3 -c 'import json,os; print("model_reasoning_effort="+json.dumps(os.environ["CODEX_EFFORT"]))')
+  codex_args+=(-c "$effort_setting")
+fi
+echo "Using Bedrock Runtime in $AWS_REGION with model $model${effort:+, $effort reasoning}"
 if [ ${#prompt_args[@]} -gt 0 ]; then
-  exec codex exec "${codex_args[@]}" --skip-git-repo-check -- "${prompt_args[*]}"
+  # `codex exec` also reads a prompt from stdin while stdin is open, so a one-shot
+  # turn started without a terminal (a script, `agentcore exec` without --it) would
+  # wait forever. The prompt is the argument; stdin is never needed here.
+  exec codex exec "${codex_args[@]}" --skip-git-repo-check -- "${prompt_args[*]}" < /dev/null
 else
   exec codex "${codex_args[@]}"
 fi

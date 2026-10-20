@@ -175,7 +175,11 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
             env[var] = value
     # Preserve an explicitly empty effort: it tells the headless launcher to omit
     # --effort. Dropping the value would silently restore the packaged default.
-    for var in ("WORKSHOP_CLAUDE_EFFORT", "WORKSHOP_KIRO_EFFORT"):
+    # WORKSHOP_CODEX_EFFORT becomes Codex's model_reasoning_effort on every dispatch
+    # (roles.py); the October 19-20 evaluation had to patch it in, because without
+    # it a deployed coordinator could not run Codex at anything but the default.
+    for var in ("WORKSHOP_CLAUDE_EFFORT", "WORKSHOP_KIRO_EFFORT", "WORKSHOP_CODEX_EFFORT",
+                "WORKSHOP_REVIEW_EFFORT"):
         if var in os.environ:
             env[var] = os.environ[var].strip()
     # WORKSHOP_ROLES rides in for the same reason, and its absence was a REAL defect:

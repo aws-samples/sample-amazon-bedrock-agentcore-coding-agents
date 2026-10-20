@@ -351,3 +351,21 @@ def test_import_secret_cli_prints_status_only(delivered, capsys):
     assert kiro_config.main(["import-secret", "--secret-id", "team-key", "--wait", "5"]) == 0
     printed = capsys.readouterr().out
     assert json.loads(printed)["key_status"] == "READY" and DELIVERED not in printed
+
+
+def test_a_central_kak_key_is_stored_and_reported_as_kak(delivered):
+    """Test event c83a9584 (October 20): the key a WS central account mints is kak_."""
+    secrets, vault = delivered
+    kak = "kak_0123456789abcdefABCDEF0123456789"
+    secrets.add_response("get_secret_value", _secret_value(kak), {"SecretId": "kiro-api-key"})
+    _expect_vault_create(vault, key=kak)
+    out = kiro_config.import_from_secret(wait_s=10, sleep=_Clock().sleep, now=_Clock().now)
+    assert out["key_status"] == "READY" and out["key_format"] == "kak"
+    assert kak not in json.dumps(out)
+
+
+def test_a_pasted_kak_key_is_not_rejected_as_a_wrong_paste():
+    out = kiro_config.save_api_key("not-a-key")
+    assert "not a Kiro API key" in out["error"]
+    import re as _re
+    assert _re.findall(r"(?:ksk|kak)_[A-Za-z0-9_\-]+", "KIRO_API_KEY=kak_abcdef0123456789") == ["kak_abcdef0123456789"]

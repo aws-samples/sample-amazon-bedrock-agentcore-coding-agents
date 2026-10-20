@@ -126,7 +126,7 @@ def test_host_gateway_settings_never_configure_a_worker_mcp(cli_env):
 
 
 @pytest.mark.parametrize("overrides,expected", [
-    ({}, "global.openai.gpt-5.6-sol"),
+    ({}, "global.openai.gpt-6.1-sol"),
     ({"WORKSHOP_CODEX_MODEL": "stack-model"}, "stack-model"),
     ({"WORKSHOP_CODEX_MODEL": "stack", "WORKSHOP_MODEL": "all-role"}, "all-role"),
     ({"WORKSHOP_CODEX_MODEL": "stack", "WORKSHOP_MODEL": "all-role",
@@ -225,6 +225,85 @@ cd() {
         if arg == "-c":
             settings.update(tomllib.loads(argv[index + 1]))
     assert settings["projects"] == {str(expected): {"trust_level": "trusted"}}
+
+
+def _cli_settings(argv):
+    settings = {}
+    for index, arg in enumerate(argv[:-1]):
+        if arg == "-c":
+            settings.update(tomllib.loads(argv[index + 1]))
+    return settings
+
+
+@pytest.mark.parametrize("overrides,args,boot,launcher", [
+    ({}, (), "low", "low"),
+    ({"WORKSHOP_CODEX_EFFORT": "medium"}, (), "medium", "medium"),
+    ({"WORKSHOP_CODEX_EFFORT": "medium"}, ("--effort", "high"), "medium", "high"),
+    ({"WORKSHOP_CODEX_EFFORT": ""}, (), None, None),
+])
+def test_reasoning_effort_reaches_boot_config_and_launcher(cli_env, overrides, args,
+                                                            boot, launcher):
+    """Low by default: GPT-6.1 Sol at medium took 407-658 s for a team build's frontend
+    on October 19-20, past the ten-minute budget. An empty value omits the setting."""
+    cli_env.update(AWS_REGION="us-east-1", **overrides)
+    result = _boot(cli_env, "bash", str(HARNESS / "run.sh"), *args, cwd=cli_env["HOME"])
+    assert result.returncode == 0, result.stderr
+    record = _record(result)
+    assert tomllib.loads(record["config"]).get("model_reasoning_effort") == boot
+    assert _cli_settings(record["argv"]).get("model_reasoning_effort") == launcher
+
+
+def test_boot_refuses_an_unknown_reasoning_effort(cli_env, tmp_path):
+    target = tmp_path / "must-not-run"
+    cli_env.update(AWS_REGION="us-east-1", WORKSHOP_CODEX_EFFORT="mediun")
+    result = _boot(cli_env, "touch", str(target))
+    assert result.returncode != 0
+    assert "WORKSHOP_CODEX_EFFORT" in result.stderr
+    assert not target.exists()
+
+
+def _stdin_recorder(tmp_path):
+    bin_dir = tmp_path / "stdin-bin"
+    bin_dir.mkdir()
+    recorder = bin_dir / "codex"
+    recorder.write_text(f"#!{sys.executable}\n" + """
+import json, os, stat, sys
+fd, null = os.fstat(0), os.stat(os.devnull)
+print(json.dumps({"argv": sys.argv[1:], "stdin_is_devnull": stat.S_ISCHR(fd.st_mode)
+                  and (fd.st_rdev, fd.st_ino) == (null.st_rdev, null.st_ino)}))
+""")
+    recorder.chmod(0o755)
+    return bin_dir
+
+
+def _run_with_open_stdin(command, env, cwd):
+    # A pipe nobody writes to: `codex exec` reads a prompt from stdin while it is open.
+    process = subprocess.Popen(command, env=env, cwd=cwd, stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stderr
+    return json.loads(stdout.splitlines()[-1])
+
+
+def test_a_one_shot_launcher_turn_never_reads_an_open_stdin(cli_env, tmp_path):
+    env = {**cli_env, "AWS_REGION": "us-east-1",
+           "PATH": str(_stdin_recorder(tmp_path)) + os.pathsep + cli_env["PATH"]}
+    record = _run_with_open_stdin(["bash", str(HARNESS / "run.sh"), "build the page"],
+                                  env, cli_env["HOME"])
+    assert record["argv"][0] == "exec" and record["argv"][-1] == "build the page"
+    assert record["stdin_is_devnull"] is True
+
+
+def test_a_dispatched_codex_turn_never_reads_an_open_stdin(cli_env, tmp_path):
+    sys.path.insert(0, str(ROOT / "orchestrator"))
+    import runtime_exec
+
+    cli = runtime_exec._cli_invocation("codex", "P", "us.openai.test-model", str(tmp_path))
+    env = {**cli_env, "PATH": str(_stdin_recorder(tmp_path)) + os.pathsep + cli_env["PATH"]}
+    record = _run_with_open_stdin(["bash", "-c", 'P="the request"; ' + cli], env, tmp_path)
+    assert record["argv"][0] == "exec" and record["argv"][-1] == "the request"
+    assert record["stdin_is_devnull"] is True
+    assert _cli_settings(record["argv"])["model_reasoning_effort"] == "low"
 
 
 def test_missing_model_argument_fails_before_codex(cli_env):

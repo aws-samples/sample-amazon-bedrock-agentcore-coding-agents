@@ -107,10 +107,10 @@ fi
 # Default model is wirable: WORKSHOP_MODEL (a deploy-time runtime env var) wins over
 # the baked default, so an event whose account has not enabled the default model
 # (Bedrock Marketplace subscription) can point the backend at an enabled model
-# (e.g. global.anthropic.claude-opus-5) WITHOUT editing this image. An explicit
+# (e.g. global.anthropic.claude-opus-5-5) WITHOUT editing this image. An explicit
 # --model on the command line still overrides both.
 CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT:-xhigh}"
-MODEL="${WORKSHOP_MODEL:-global.anthropic.claude-sonnet-5}"
+MODEL="${WORKSHOP_MODEL:-global.anthropic.claude-sonnet-5-5}"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in

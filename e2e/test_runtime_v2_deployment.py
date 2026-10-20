@@ -1151,3 +1151,11 @@ def test_coordinator_refuses_cross_target_state_without_api_calls(tmp_path, acco
     with pytest.raises(deploy.RuntimeDeploymentError, match="account and region"):
         module.promote_project(tmp_path, control=control)
     assert control.mock_calls == []
+
+
+def test_a_failure_reason_never_carries_a_kiro_key():
+    """A personal ksk_ key and a Workshop Studio central kak_ key are both redacted."""
+    import runtime_deploy as deploy_module
+    out = deploy_module._safe_reason(
+        "bad env KIRO_API_KEY=kak_0123456789abcdefABCDEF0123456789 or ksk_0123456789abcdef")
+    assert "kak_" not in out and "ksk_" not in out

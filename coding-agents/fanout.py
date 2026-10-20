@@ -241,7 +241,9 @@ def agent_command(index: int, name: str, clone_url: str, task: str, *, agents: i
         f"GIT_COMMITTER_EMAIL={mail}",
         f"rm -rf {q(clone_dir)}; git clone -q {q(clone_url)} {q(clone_dir)} || {{ echo CLONE_FAILED; exit 90; }}",
         f"cd {q(clone_dir)}",
-        f"WORKSHOP_AGENT_WORKDIR={q(clone_dir)} {launcher} -w {q(name)} {q(prompt)} > {out} 2>&1 & agent=$!",
+        # stdin is /dev/null on purpose: a one-shot CLI with no terminal can wait on an
+        # open stdin for a prompt it already has (`codex exec` does).
+        f"WORKSHOP_AGENT_WORKDIR={q(clone_dir)} {launcher} -w {q(name)} {q(prompt)} < /dev/null > {out} 2>&1 & agent=$!",
         f"sleep {int(peer_wait)}; echo PEERS $(grep -las '[-]-dangerously-skip-permissions' "
         "/proc/[0-9]*/cmdline | wc -l)",
         "wait $agent; code=$?",

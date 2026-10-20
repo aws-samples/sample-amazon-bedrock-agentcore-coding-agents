@@ -10,7 +10,11 @@ import os
 from pathlib import Path
 
 
-DEFAULT_MODEL = "global.openai.gpt-5.6-sol"
+DEFAULT_MODEL = "global.openai.gpt-6.1-sol"
+# Low reasoning: on October 19-20 GPT-6.1 Sol wrote a team build's frontend in
+# 152-386 s at low and 407-658 s at medium, past the ten-minute demo budget.
+DEFAULT_EFFORT = "low"
+EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
 PROVIDER = "amazon-bedrock-runtime"
 
 
@@ -26,7 +30,18 @@ def model_from_env(env):
             or env.get("WORKSHOP_CODEX_MODEL") or DEFAULT_MODEL)
 
 
-def render_config(region, model, workdirs=()):
+def effort_from_env(env):
+    """WORKSHOP_CODEX_EFFORT, low when unset; an explicit empty value omits it."""
+    if "WORKSHOP_CODEX_EFFORT" not in env:
+        return DEFAULT_EFFORT
+    effort = (env.get("WORKSHOP_CODEX_EFFORT") or "").strip()
+    if effort and effort not in EFFORTS:
+        raise ValueError("WORKSHOP_CODEX_EFFORT must be one of "
+                         + ", ".join(EFFORTS) + ", or empty")
+    return effort
+
+
+def render_config(region, model, workdirs=(), effort=DEFAULT_EFFORT):
     """Render only workshop-owned settings, without embedding credentials."""
     if not region.strip():
         raise ValueError("No AWS region. Set AWS_REGION or AWS_DEFAULT_REGION.")
@@ -38,8 +53,8 @@ def render_config(region, model, workdirs=()):
         "# Generated at container startup; AWS credentials come from the SDK chain.\n"
         f"model = {quote(model)}\n"
         f"model_provider = {quote(PROVIDER)}\n"
-        'model_reasoning_effort = "medium"\n'
-        'check_for_update_on_startup = false\n'
+        + (f"model_reasoning_effort = {quote(effort)}\n" if effort else "")
+        + 'check_for_update_on_startup = false\n'
         '\n[otel]\n'
         'environment = "workshop"\n'
         'log_user_prompt = false\n'
@@ -60,7 +75,7 @@ def configure(env=None):
     # CODEX_HOME, when supplied, is Codex's configuration directory, not HOME.
     config_dir = Path(env.get("CODEX_HOME") or str(Path(env["HOME"]) / ".codex"))
     config_dir.mkdir(parents=True, exist_ok=True)
-    text = render_config(region, model_from_env(env))
+    text = render_config(region, model_from_env(env), effort=effort_from_env(env))
     target = config_dir / "config.toml"
     target.write_text(text, encoding="utf-8")
     return target

@@ -27,19 +27,25 @@ import urllib.request
 from typing import Any
 
 # Short alias -> Bedrock model id, always a Global cross-Region profile (the
-# re:Invent 2026 Bedrock guidance asks for Global CRIS). Older aliases resolve to
-# their supported successor, so a saved "claude-sonnet-4-6" setting still runs.
+# re:Invent 2026 Bedrock guidance asks for Global CRIS). Retired aliases resolve to
+# the supported default, so a saved "claude-sonnet-4-6" setting still runs. The
+# workshop uses no Haiku (Workshop Studio's private marketplace refuses Haiku 5.5)
+# and no Fable (Fable 5.1 needs a data-retention mode the event accounts lack), so
+# those aliases resolve to the default too rather than to a model that cannot run.
 # Some aliases share a spelling with Kiro's own model names (`claude-opus-5`,
 # `claude-sonnet-5`); the engine resolves aliases only for roles whose
-# `model_namespace` is "bedrock", so Kiro keeps its own names.
+# `model_namespace` is "bedrock", so Kiro keeps its own names. Kiro spells the 5.5
+# models with a dot (`claude-opus-5.5`); the Bedrock aliases below use a dash.
 BEDROCK_MODEL_MAP: dict[str, str] = {
-    "claude-fable-5": "global.anthropic.claude-fable-5",
+    "claude-opus-5-5": "global.anthropic.claude-opus-5-5",
+    "claude-sonnet-5-5": "global.anthropic.claude-sonnet-5-5",
     "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
-    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "claude-opus-4-6": "global.anthropic.claude-sonnet-5",
-    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-5",
-    "claude-sonnet-4-5": "global.anthropic.claude-sonnet-5",
+    "claude-fable-5": "global.anthropic.claude-sonnet-5-5",
+    "claude-haiku-4-5": "global.anthropic.claude-sonnet-5-5",
+    "claude-opus-4-6": "global.anthropic.claude-sonnet-5-5",
+    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-5-5",
+    "claude-sonnet-4-5": "global.anthropic.claude-sonnet-5-5",
 }
 
 def claude_region() -> str:

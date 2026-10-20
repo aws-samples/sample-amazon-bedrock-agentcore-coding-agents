@@ -17,8 +17,13 @@ The request determines the files, language, and design.
 ## Prerequisites
 
 - `coding-agents/infra.config` exists.
-- The account can invoke `global.openai.gpt-5.6-sol` in the deployment region, or
+- The account can invoke `global.openai.gpt-6.1-sol` in the deployment region, or
   `WORKSHOP_CODEX_MODEL` names an available Runtime Responses model.
+- Reasoning effort is `low` unless `WORKSHOP_CODEX_EFFORT` sets another value
+  (`none`, `minimal`, `medium`, `high`, `xhigh`; empty omits it). At medium,
+  GPT-6.1 Sol took 407-658 s for a team build's frontend on 2026-10-19/20, past the
+  ten-minute demo budget; low took 152-386 s. The coordinator passes it as
+  `-c model_reasoning_effort=...` on every dispatch.
 - `AWS_REGION` or `AWS_DEFAULT_REGION` identifies the deployment region.
 - The Runtime execution role can use the AWS SDK credential chain.
 - Docker Buildx or Finch can build arm64 images.
@@ -56,7 +61,9 @@ test -s /mnt/s3files/skills/frontend-design/SKILL.md
 ```
 
 The root `AGENTS.md` defines the frontend role. The container's global Codex
-configuration supplies provider, model, and region. `entrypoint.sh` configures it
+configuration supplies provider, model, reasoning effort, and region. A one-shot
+`/app/run.sh "<prompt>"` without a terminal reads nothing from stdin (the launcher
+redirects it from `/dev/null`); `codex exec` would otherwise wait on an open stdin. `entrypoint.sh` configures it
 before serving shells, including direct `codex exec` dispatch. The launcher
 trusts its actual work directory for that process without changing `CODEX_HOME`.
 

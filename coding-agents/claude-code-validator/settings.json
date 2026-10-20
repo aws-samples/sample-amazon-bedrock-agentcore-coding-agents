@@ -1,5 +1,5 @@
 {
-  "model": "global.anthropic.claude-sonnet-5",
+  "model": "global.anthropic.claude-sonnet-5-5",
   "permissionMode": "dontAsk",
   "permissions": {
     "deny": [

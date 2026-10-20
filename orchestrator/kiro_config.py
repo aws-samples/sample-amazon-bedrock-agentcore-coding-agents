@@ -41,9 +41,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
 _RUNS_DIR = os.environ.get("WORKSHOP_RUNS_DIR", os.path.join(_REPO_ROOT, ".runs"))
 
-# Kiro API keys are the ksk_ prefix per the Kiro docs; we validate the shape so a
-# wrong paste (a GitHub PAT, a blank) fails loud instead of poisoning the vault.
+# Kiro API keys are the ksk_ prefix per the Kiro docs; a key a Workshop Studio central
+# account mints for a team (CreateServiceApiKey) starts kak_ (test event c83a9584,
+# October 20). We validate the shape so a wrong paste (a GitHub PAT, a blank) fails
+# loud instead of poisoning the vault.
 _KEY_PREFIX = "ksk_"
+_KEY_PREFIXES = ("ksk_", "kak_")
 _MIN_KEY_LEN = 8
 
 
@@ -157,10 +160,10 @@ def save_api_key(api_key: str, *, allow_empty: bool = False) -> dict[str, Any]:
     raw = api_key or ""
     # A copied key can pick up surrounding quotes or a wrapped line break.
     api_key = "".join(raw.split()).strip("'\"")
-    if api_key and not api_key.startswith(_KEY_PREFIX):
+    if api_key and not api_key.startswith(_KEY_PREFIXES):
         # People paste "Bearer ksk_...", a whole Event Outputs row
         # ("KiroApiKey<TAB>ksk_...") or "KIRO_API_KEY=ksk_...": take the one key in it.
-        found = set(re.findall(rf"{re.escape(_KEY_PREFIX)}[A-Za-z0-9_\-]+", raw))
+        found = set(re.findall(r"(?:ksk|kak)_[A-Za-z0-9_\-]+", raw))
         if len(found) == 1:
             api_key = found.pop()
     if not api_key:
@@ -172,7 +175,7 @@ def save_api_key(api_key: str, *, allow_empty: bool = False) -> dict[str, Any]:
         return {"error": "API key is empty: the hidden prompt received nothing. Paste the "
                          f"key (it starts with {_KEY_PREFIX}) and press Enter; the prompt "
                          "shows no characters while you paste."}
-    if not api_key.startswith(_KEY_PREFIX) or len(api_key) < _MIN_KEY_LEN:
+    if not api_key.startswith(_KEY_PREFIXES) or len(api_key) < _MIN_KEY_LEN:
         return {"error": f"not a Kiro API key (expected a '{_KEY_PREFIX}...' value; copy the "
                          "key itself, not a username or password)"}
     key_check = _check_with_kiro(api_key)
@@ -372,7 +375,7 @@ def import_from_secret(secret_id: str = "kiro-api-key", *, wait_s: float = 300.0
     if not key:
         return {**out, "key_status": f"UNAVAILABLE: {last} after {int(wait_s)} s, so the "
                                      f"central account delivered no key. {FALLBACK}"}
-    out["key_format"] = "ksk" if key.startswith(_KEY_PREFIX) else "other"
+    out["key_format"] = next((p[:-1] for p in _KEY_PREFIXES if key.startswith(p)), "other")
     try:
         _provision_vault(key)
     except Exception as exc:  # noqa: BLE001 (the reason, never the key)

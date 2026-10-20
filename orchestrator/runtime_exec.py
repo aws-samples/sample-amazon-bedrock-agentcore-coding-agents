@@ -582,7 +582,11 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 def _transient_connect_error(exc: BaseException) -> bool:
-    if isinstance(exc, (TimeoutError, ConnectionError)):
+    # Python 3.10 keeps asyncio.TimeoutError distinct from the built-in TimeoutError,
+    # and websockets raises the asyncio one when the opening handshake times out; the
+    # workshop host runs 3.10 (October 19: a dispatch failed on it, not retried). On
+    # 3.11+ the two names are one class. Read it at call time, not at import.
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, ConnectionError)):
         return True
     response = getattr(exc, "response", None)
     return getattr(response, "status_code", None) in _RETRY_STATUS

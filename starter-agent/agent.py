@@ -36,9 +36,9 @@ import boto3
 # can route across every geography where that model is available.
 # WORKSHOP_MODEL is honored so accounts without access to the default model
 # (Marketplace subscription gaps) can point the lab at any enabled Claude
-# model without editing this file. The default matches the models the
-# workshop already requires (Sonnet 4.6 is enabled for opencode/validator).
-MODEL_ID = os.environ.get("WORKSHOP_MODEL", "global.anthropic.claude-sonnet-5")
+# model without editing this file. The default matches the workshop's own
+# Claude model (Sonnet 5.5 builds, coordinates and summarizes).
+MODEL_ID = os.environ.get("WORKSHOP_MODEL", "global.anthropic.claude-sonnet-5-5")
 REGION = (
     os.environ.get("AWS_REGION")
     or os.environ.get("AWS_DEFAULT_REGION")
