@@ -7,10 +7,16 @@ into the image or shared workspace.
 
 ## Prepare the Kiro key
 
-An administrator must enable API key generation for the Kiro subscription. Sign
-in at <https://app.kiro.dev>, create a key under **API Keys**, and copy it while
-it is shown. This prerequisite applies to an AWS guided event and to your own
-account.
+In your own account, an administrator must enable API key generation for the Kiro
+subscription. Sign in at <https://app.kiro.dev>, create a key under **API Keys**, and
+copy it while it is shown. Store it with
+`python3 orchestrator/kiro_config.py save` from the repository root, or with
+`setup.sh` below.
+
+At an AWS guided event, skip this: the event's central account delivers a key for
+your team into the account's `kiro-api-key` secret, and the workshop stack copies it
+into the Token Vault with `python3 orchestrator/kiro_config.py import-secret`. The
+stack's `KiroKeyStatus` output shows the result.
 
 ## Build and deploy
 

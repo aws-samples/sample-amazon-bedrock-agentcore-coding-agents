@@ -2,7 +2,7 @@
   "schema_version": 1,
   "clis": {
     "claude-code": {
-      "version": "2.1.278",
+      "version": "2.1.304",
       "command": "claude",
       "npm_package": "@anthropic-ai/claude-code",
       "update_env": {
@@ -10,7 +10,7 @@
       }
     },
     "codex": {
-      "version": "0.155.1",
+      "version": "0.163.0",
       "command": "codex",
       "npm_package": "@openai/codex",
       "update_config": {
@@ -18,16 +18,16 @@
       }
     },
     "kiro": {
-      "version": "2.22.1",
+      "version": "2.32.0",
       "command": "kiro-cli",
       "siblings": [
         "kiro-cli-chat"
       ],
       "archives": {
         "linux-aarch64": {
-          "url": "https://prod.download.cli.kiro.dev/stable/2.22.1/kirocli-aarch64-linux-musl.zip",
-          "sha256": "cae114f8dcf44ca09c68690959d208e95b465b4ad3c4064b06ff567ebfaa9341",
-          "bytes": 323319865
+          "url": "https://prod.download.cli.kiro.dev/stable/2.32.0/kirocli-aarch64-linux-musl.zip",
+          "sha256": "219a047427ca2b43681f4788104df5e784eda030d98abeec1c732aac9090eb8b",
+          "bytes": 151681117
         }
       },
       "update_config": {
@@ -35,14 +35,14 @@
       }
     },
     "agentcore": {
-      "version": "0.30.0",
+      "version": "0.31.1",
       "command": "agentcore",
       "npm_package": "@aws/agentcore"
     }
   },
   "deploy_sdk": {
-    "boto3": "1.43.95",
-    "botocore": "1.43.95"
+    "boto3": "1.43.115",
+    "botocore": "1.43.115"
   },
   "runtime": {
     "platform_version": "V1",

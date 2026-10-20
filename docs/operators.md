@@ -25,8 +25,8 @@ Bedrock default is a Global cross-Region inference profile. The stack's
 models when needed; `WORKSHOP_KIRO_MODEL` selects Kiro's. Model access depends on the account; verify a complete tool turn in
 Lab 1 before starting a build.
 
-The tested CLI versions are Claude Code **2.1.278**, Codex **0.155.1**, and
-Kiro CLI **2.22.1**, declared in `coding-agents/cli-versions.json`. Host and
+The tested CLI versions are Claude Code **2.1.304**, Codex **0.163.0**, and
+Kiro CLI **2.32.0**, declared in `coding-agents/cli-versions.json`. Host and
 container installation use that manifest, verify the installed versions, and
 disable automatic updates. Change a pin deliberately and repeat the Runtime
 tool, shared-file, and telemetry checks before releasing it.
@@ -176,8 +176,8 @@ stack-specific bucket names; `WORKSHOP_RUNTIME_BUCKET` remains an explicit overr
 
 - `coding-agents/` the three coding-agent harnesses (container + setup.sh + deploy.py + connect.py) and shared infra/gateway
   - `claude-code/` backend builder (Claude Code, native Bedrock, Sonnet 5/low)
-  - `codex/` frontend builder (Codex 0.155.1, Bedrock Runtime Responses, Sol/medium)
-  - `kiro/` acceptance-contract validator (Kiro CLI; steered by `.kiro/steering/*.md` with `inclusion: always`, which directs it to author an executable check whose exit code is the gate; authenticates with your own `ksk_` key, fetched from the AgentCore Identity Token Vault at session start)
+  - `codex/` frontend builder (Codex 0.163.0, Bedrock Runtime Responses, Sol/medium)
+  - `kiro/` acceptance-contract validator (Kiro CLI; steered by `.kiro/steering/*.md` with `inclusion: always`, which directs it to author an executable check whose exit code is the gate; authenticates with an API key fetched from the AgentCore Identity Token Vault at session start: your own `ksk_` key stored with `orchestrator/kiro_config.py save`, or at a Workshop Studio event a per-team key the central account delivers and the stack imports with `kiro_config.py import-secret`)
   - `opencode/` alternate frontend (hidden; restore with `WORKSHOP_ROLES=claude-code,opencode,kiro`)
   - `claude-code-validator/` alternate checker (hidden; restore with `WORKSHOP_ROLES=claude-code,codex,claude-code-validator`): the same acceptance-check-authoring contract in a `CLAUDE.md`, Bedrock-native with no key, for an account without a Kiro subscription
 - `orchestrator/` the Strands orchestrator engine (routing, engine, executor, reviewer, github)

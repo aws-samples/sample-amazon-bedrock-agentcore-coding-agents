@@ -224,3 +224,130 @@ def test_a_pasted_key_with_quotes_or_a_wrapped_line_is_cleaned():
 
 def test_an_empty_paste_explains_the_hidden_prompt():
     assert "hidden prompt" in kiro_config.save_api_key("")["error"]
+
+
+# --- Event path: import_from_secret (the central account's per-team key) ----------
+DELIVERED = "ksk_delivered_team_key_7f3a"
+SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:kiro-api-key-AbCdEf"
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+
+@pytest.fixture
+def delivered(monkeypatch):
+    """Real botocore clients for both services, stubbed at the AWS boundary, so every
+    request and response is checked against the real service models."""
+    monkeypatch.delenv("WORKSHOP_KIRO_DISABLE_VAULT")
+    monkeypatch.setenv("WORKSHOP_BEDROCK_REGION", "us-east-1")
+    clients = {name: boto3.client(name, region_name="us-east-1", aws_access_key_id="testing",
+                                  aws_secret_access_key="testing")
+               for name in ("secretsmanager", "bedrock-agentcore-control")}
+    monkeypatch.setattr(boto3, "client", lambda service, **kwargs: clients[service])
+    with Stubber(clients["secretsmanager"]) as secrets, \
+            Stubber(clients["bedrock-agentcore-control"]) as vault:
+        yield secrets, vault
+        secrets.assert_no_pending_responses()
+        vault.assert_no_pending_responses()
+
+
+def _secret_value(value):
+    return {"ARN": SECRET_ARN, "Name": "kiro-api-key", "SecretString": value}
+
+
+def _expect_vault_create(vault, key=DELIVERED):
+    now = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    vault.add_response("get_workload_identity", {
+        "name": "kiro-coding-agent", "createdTime": now, "lastUpdatedTime": now,
+        "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/kiro-coding-agent"},
+        {"name": "kiro-coding-agent"})
+    vault.add_client_error("get_api_key_credential_provider", "ResourceNotFoundException",
+                           expected_params={"name": "kiro-api-key"})
+    meta = _provider_metadata()
+    vault.add_response("create_api_key_credential_provider", {
+        k: meta[k] for k in ("apiKeySecretArn", "name", "credentialProviderArn")},
+        {"name": "kiro-api-key", "apiKey": key})
+
+
+def test_a_late_secret_is_waited_for_then_stored_in_the_token_vault(delivered):
+    secrets, vault = delivered
+    for _ in range(2):
+        secrets.add_client_error("get_secret_value", "ResourceNotFoundException",
+                                 expected_params={"SecretId": "kiro-api-key"})
+    secrets.add_response("get_secret_value", _secret_value(DELIVERED), {"SecretId": "kiro-api-key"})
+    _expect_vault_create(vault)
+    clock = _Clock()
+    out = kiro_config.import_from_secret(wait_s=300, poll_s=10, sleep=clock.sleep, now=clock.now)
+    assert out["key_status"] == "READY"
+    assert out["waited_s"] == 20 and out["key_format"] == "ksk"
+    assert out["source"] == "central-account" and out["provider"] == "kiro-api-key"
+    assert DELIVERED not in json.dumps(out) and DELIVERED[-4:] not in json.dumps(out)
+
+
+def test_a_missing_secret_is_reported_with_the_fallback_not_raised(delivered):
+    secrets, _vault = delivered
+    for _ in range(4):
+        secrets.add_client_error("get_secret_value", "ResourceNotFoundException",
+                                 expected_params={"SecretId": "kiro-api-key"})
+    clock = _Clock()
+    out = kiro_config.import_from_secret(wait_s=30, poll_s=10, sleep=clock.sleep, now=clock.now)
+    assert out["key_status"].startswith("UNAVAILABLE: the secret does not exist after 30 s")
+    assert "claude_code_validator" in out["key_status"]
+    assert clock.t - 1000.0 <= 30
+
+
+def test_a_placeholder_value_is_not_a_key(delivered):
+    secrets, vault = delivered
+    secrets.add_response("get_secret_value", _secret_value("PENDING"), {"SecretId": "kiro-api-key"})
+    secrets.add_response("get_secret_value", _secret_value(json.dumps({"key": DELIVERED})),
+                         {"SecretId": "kiro-api-key"})
+    _expect_vault_create(vault)
+    clock = _Clock()
+    out = kiro_config.import_from_secret(wait_s=60, poll_s=10, sleep=clock.sleep, now=clock.now)
+    assert out["key_status"] == "READY" and out["waited_s"] == 10
+
+
+def test_a_denied_read_stops_at_once(delivered):
+    secrets, _vault = delivered
+    secrets.add_client_error("get_secret_value", "AccessDeniedException",
+                             expected_params={"SecretId": "kiro-api-key"})
+    clock = _Clock()
+    out = kiro_config.import_from_secret(wait_s=300, sleep=clock.sleep, now=clock.now)
+    assert out["key_status"].startswith("UNAVAILABLE: cannot read the kiro-api-key secret (AccessDeniedException)")
+    assert out["waited_s"] == 0
+
+
+def test_a_key_without_the_ksk_prefix_is_still_stored(delivered):
+    secrets, vault = delivered
+    other = "kiro_service_key_0123456789abcdef"
+    secrets.add_response("get_secret_value", _secret_value(other), {"SecretId": "kiro-api-key"})
+    _expect_vault_create(vault, key=other)
+    out = kiro_config.import_from_secret(wait_s=10, sleep=_Clock().sleep, now=_Clock().now)
+    assert out["key_status"] == "READY" and out["key_format"] == "other"
+
+
+def test_a_failed_vault_write_names_the_error_and_never_the_key(delivered):
+    secrets, vault = delivered
+    secrets.add_response("get_secret_value", _secret_value(DELIVERED), {"SecretId": "kiro-api-key"})
+    vault.add_client_error("get_workload_identity", "AccessDeniedException",
+                           expected_params={"name": "kiro-coding-agent"})
+    out = kiro_config.import_from_secret(wait_s=10, sleep=_Clock().sleep, now=_Clock().now)
+    assert out["key_status"].startswith("UNAVAILABLE: the Token Vault write failed (AccessDeniedException)")
+    assert DELIVERED not in json.dumps(out)
+
+
+def test_import_secret_cli_prints_status_only(delivered, capsys):
+    secrets, vault = delivered
+    secrets.add_response("get_secret_value", _secret_value(DELIVERED), {"SecretId": "team-key"})
+    _expect_vault_create(vault)
+    assert kiro_config.main(["import-secret", "--secret-id", "team-key", "--wait", "5"]) == 0
+    printed = capsys.readouterr().out
+    assert json.loads(printed)["key_status"] == "READY" and DELIVERED not in printed

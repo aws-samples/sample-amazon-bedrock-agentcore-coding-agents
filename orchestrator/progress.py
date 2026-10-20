@@ -58,6 +58,9 @@ SECRET_ID = "agentcore/github-mcp/github-app"
 GATEWAY_NAME = "github-mcp-gateway"
 WEBHOOK_PARAM = "/workshop/webhook-url"
 KIRO_PROVIDER = "kiro-api-key"
+# At an event the team stack's key import records its outcome here (names and the
+# status only, never the key): READY, or UNAVAILABLE with the reason and the fallback.
+KIRO_KEY_STATUS_PARAM = "/workshop/kiro/key-status"
 NO_KEY_CHECKER = "claude-code-validator"
 LID = "lid"
 SHARED_REPO = "lid.git"   # Lab 2: the bare repository on the mount
@@ -376,6 +379,16 @@ def _coordinator_roles() -> str:
     return found[0] if found else os.environ.get("WORKSHOP_ROLES", "")
 
 
+def _event_key_status() -> str | None:
+    """The event's key import outcome (KiroAccess central), or None outside an event."""
+    try:
+        value = _client("ssm").get_parameter(Name=KIRO_KEY_STATUS_PARAM)["Parameter"]["Value"]
+        status = json.loads(value).get("key_status")
+    except Exception:  # noqa: BLE001 (absent, unreadable or not JSON: no event record)
+        return None
+    return status if isinstance(status, str) and status else None
+
+
 def check_checker() -> dict:
     roles = [r.strip() for r in _coordinator_roles().split(",") if r.strip()]
     if NO_KEY_CHECKER in roles and "kiro" not in roles:
@@ -385,11 +398,16 @@ def check_checker() -> dict:
     except ImportError:
         return _outcome(UNKNOWN, "boto3 is not installed")
     except Exception as exc:  # noqa: BLE001
-        if _error_code(exc) == "ResourceNotFoundException":
-            return _outcome(TODO, "Kiro has no key in the Token Vault yet")
-        return _outcome(UNKNOWN, f"Token Vault unreadable ({_error_code(exc)})")
+        if _error_code(exc) != "ResourceNotFoundException":
+            return _outcome(UNKNOWN, f"Token Vault unreadable ({_error_code(exc)})")
+        event = _event_key_status()
+        if event and event != "READY":
+            # The event delivered no key: say why, and the fallback the import named.
+            return _outcome(TODO, f"the event's Kiro key did not arrive: {event}")
+        return _outcome(TODO, "Kiro has no key in the Token Vault yet")
     # Provider metadata only: GetApiKeyCredentialProvider never returns the key.
-    return _outcome(DONE, f"Kiro's key is in the Token Vault ({KIRO_PROVIDER})")
+    origin = " from the event's central account" if _event_key_status() == "READY" else ""
+    return _outcome(DONE, f"Kiro's key is in the Token Vault ({KIRO_PROVIDER}){origin}")
 
 
 def _runtime_arns(node) -> list[str]:
@@ -512,8 +530,10 @@ SPECS = [
          note="Open a pull request in your connected repository on GitHub, then watch its "
               "conversation."),
     Spec(PART4, "The checker's key", check_checker, CMD_KIRO_KEY,
-         note="Create your ksk_ key at app.kiro.dev, then paste it at the hidden prompt "
-              "(Lab 4, Set Up Your Kiro API Key). No Kiro seat? Step 2 of Build and Run the "
+         note="At an AWS event the key arrives on its own (KiroKeyStatus in Event outputs); if "
+              "the line above says it did not, use the fallback it names. In your own account, "
+              "create a key at app.kiro.dev, then paste it at the hidden prompt of the command "
+              "below (Lab 4, Check Kiro's API Key). No key at all? Step 2 of Build and Run the "
               "Team uses a checker that needs none."),
     Spec(PART4, "Codex and the checker", check_team_runtimes, CMD_TEAM_IMAGES,
          note="Create their repositories, build both images, then create the Runtimes codex "
@@ -522,7 +542,7 @@ SPECS = [
          note="Add your rule to a SKILL.md first (step 3): the coordinator image carries it."),
     Spec(PART4, "The team's grants", check_team_grants, CMD_GRANTS,
          note="Let each team Runtime trade its source archive through the bucket, and Kiro's "
-              "role read its key (step 5). No Kiro seat? Put claude_code_validator in place "
+              "role read its key (step 5). No Kiro key? Put claude_code_validator in place "
               "of kiro."),
     Spec(PART4, "A team build", check_team_build, CMD_ASK + [""] + CMD_WATCH,
          note="Send the request once, then watch it from a second terminal."),

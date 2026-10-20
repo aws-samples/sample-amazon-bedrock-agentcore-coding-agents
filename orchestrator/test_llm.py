@@ -230,3 +230,67 @@ def test_plain_claude_calls_send_effort_and_retry_without_it(monkeypatch):
     monkeypatch.setattr(boto3, "client", lambda *a, **k: plain)
     llm.invoke("global.anthropic.claude-sonnet-5", "hi")
     assert "additionalModelRequestFields" not in plain.calls[0]
+
+
+class _NoForcedToolChoice(_Converse):
+    """Claude Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced tool choice with a 400."""
+
+    def converse(self, **kwargs):
+        import copy
+        self.calls.append(copy.deepcopy(kwargs))
+        if "any" in kwargs["toolConfig"]["toolChoice"]:
+            raise RuntimeError('ValidationException: tool_choice: type "tool" and "any" '
+                               'are not supported for this model.')
+        return {"output": {"message": {"content": [
+                    {"toolUse": {"name": "submit_review", "input": {"approve": True}}}]}},
+                "usage": {"inputTokens": 1, "outputTokens": 1}, "stopReason": "tool_use"}
+
+
+_TOOL = {"toolSpec": {"name": "submit_review", "description": "d",
+                      "inputSchema": {"json": {"type": "object"}}}}
+
+
+def test_a_model_that_rejects_forced_tool_choice_is_asked_with_auto(monkeypatch):
+    import boto3
+    client = _NoForcedToolChoice()
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    out = llm.invoke("global.anthropic.claude-sonnet-5-5", "review", tool=_TOOL, effort="low")
+    assert out["tool_input"] == {"approve": True}
+    assert [c["toolConfig"]["toolChoice"] for c in client.calls] == [{"any": {}}, {"auto": {}}]
+    # The effort setting is kept: only the field the model named was changed.
+    assert client.calls[1]["additionalModelRequestFields"] == {"output_config": {"effort": "low"}}
+
+
+def test_a_forced_tool_choice_model_still_gets_one_call(monkeypatch):
+    import boto3
+
+    class Accepts(_Converse):
+        def converse(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"output": {"message": {"content": [
+                        {"toolUse": {"name": "submit_review", "input": {"approve": False}}}]}},
+                    "usage": {"inputTokens": 1, "outputTokens": 1}}
+
+    client = Accepts()
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    out = llm.invoke("global.anthropic.claude-sonnet-5", "review", tool=_TOOL, effort="low")
+    assert out["tool_input"] == {"approve": False} and len(client.calls) == 1
+
+
+def test_an_unrelated_validation_error_is_not_retried_forever(monkeypatch):
+    import boto3
+
+    class Rejects(_Converse):
+        def converse(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("ValidationException: messages: bad")
+
+    client = Rejects()
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    try:
+        llm.invoke("global.anthropic.claude-sonnet-5-5", "review", tool=_TOOL)
+    except llm.LLMUnavailable:
+        pass
+    else:
+        raise AssertionError("expected LLMUnavailable")
+    assert len(client.calls) == 1

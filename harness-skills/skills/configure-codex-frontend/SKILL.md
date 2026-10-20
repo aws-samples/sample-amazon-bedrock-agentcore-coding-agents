@@ -24,7 +24,7 @@ The request determines the files, language, and design.
 - Docker Buildx or Finch can build arm64 images.
 
 Codex does not need an OpenAI key, AgentCore workload identity, or API-key
-credential provider. Codex **0.155.1** uses the built-in
+credential provider. Codex **0.163.0** uses the built-in
 `amazon-bedrock-runtime` provider and the Runtime IAM role's AWS credential chain.
 The deploy helper grants invocation and streaming on OpenAI model/profile
 targets, plus `bedrock:InvokeModel` on the regional `project/default` ARN.

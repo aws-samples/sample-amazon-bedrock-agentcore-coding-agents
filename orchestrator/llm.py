@@ -164,6 +164,9 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
     A schema-validated tool input cannot contain the bracket or quoting mistakes a
     long free-text JSON answer can. ``effort`` is sent as Claude's
     ``output_config.effort``; a model that rejects it is retried once without it.
+    Claude Sonnet 5.5, Opus 5.5 and Fable 5.1 reject a forced tool choice
+    (``tool_choice: type "tool" and "any" are not supported``), so a model that
+    names ``tool_choice`` is retried once with ``auto``; the prompt asks for the call.
     ``text`` carries the tool input as JSON when one was returned.
     """
     name = tool["toolSpec"]["name"]
@@ -180,13 +183,23 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
             kwargs["system"] = [{"text": system}]
         if effort:
             kwargs["additionalModelRequestFields"] = {"output_config": {"effort": effort}}
-        try:
-            resp = rt.converse(**kwargs)
-        except Exception as exc:
-            if not effort or "ValidationException" not in type(exc).__name__ + str(exc):
-                raise
-            kwargs.pop("additionalModelRequestFields", None)
-            resp = rt.converse(**kwargs)
+        resp = None
+        for _ in range(3):
+            try:
+                resp = rt.converse(**kwargs)
+                break
+            except Exception as exc:
+                detail = type(exc).__name__ + str(exc)
+                if "ValidationException" not in detail:
+                    raise
+                if "tool_choice" in detail and "any" in kwargs["toolConfig"]["toolChoice"]:
+                    kwargs["toolConfig"]["toolChoice"] = {"auto": {}}
+                elif "additionalModelRequestFields" in kwargs:
+                    kwargs.pop("additionalModelRequestFields")
+                else:
+                    raise
+        if resp is None:
+            raise RuntimeError("no response after the compatibility retries")
     except Exception as exc:
         raise LLMUnavailable(f"converse({model_id}) failed: {exc}") from exc
     blocks = resp["output"]["message"]["content"]

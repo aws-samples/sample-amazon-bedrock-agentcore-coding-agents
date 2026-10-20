@@ -38,7 +38,7 @@ for agent in "${AGENTS[@]}"; do
   if [ "$agent" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
     echo "  No KIRO_API_KEY set; building kiro WITHOUT its Token Vault identity"
     echo "  (--skip-identity). Save your ksk_ key afterwards with the hidden key"
-    echo "  prompt (Lab 4, Set Up Your Kiro API Key, step 6); no redeploy is needed."
+    echo "  prompt (Lab 4, Check Kiro's API Key, In your account); no redeploy is needed."
     (cd "$AGENT_DIR" && ./setup.sh --skip-identity)
   else
     (cd "$AGENT_DIR" && ./setup.sh)

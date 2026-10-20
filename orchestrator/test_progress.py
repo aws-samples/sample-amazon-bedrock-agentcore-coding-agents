@@ -94,6 +94,11 @@ class FakeAws:
 
     # ssm
     def get_parameter(self, Name):
+        if Name == progress.KIRO_KEY_STATUS_PARAM:
+            if self.box.kiro_status is None:
+                raise ParameterNotFound()
+            return {"Parameter": {"Value": json.dumps({"key_status": self.box.kiro_status,
+                                                        "source": "central-account"})}}
         if not self.box.endpoint:
             raise ParameterNotFound()
         return {"Parameter": {"Value": "https://abc123.execute-api.us-west-2.amazonaws.com/github"}}
@@ -123,6 +128,7 @@ class Box:
         self.image = False
         self.endpoint = False
         self.grants = False
+        self.kiro_status = None  # the event key import's record, absent outside an event
         self.runs: list[dict] = []
         self.team_runtimes: list[str] = []
         monkeypatch.setattr(run_store, "attach_reader_mirror", lambda: "")
@@ -266,7 +272,7 @@ def test_the_walk_follows_the_four_parts_in_order(box):
     step = _next(box)
     # Part 4 opens with its prerequisite: the checker's key, before any image.
     assert step.part == progress.PART4 and step.commands == progress.CMD_KIRO_KEY
-    assert "Set Up Your Kiro API Key" in step.note
+    assert "Check Kiro's API Key" in step.note and "KiroKeyStatus" in step.note
     box.kiro_key = True
     step = _next(box)
     assert step.part == progress.PART4 and step.commands == progress.CMD_TEAM_IMAGES
@@ -288,6 +294,22 @@ def test_the_walk_follows_the_four_parts_in_order(box):
     box.runs[0]["status"] = "needs_human"
     assert _next(box) is None
     assert "All four labs are done" in progress.render(progress._run_all(progress.SPECS))
+
+
+def test_the_event_key_that_did_not_arrive_names_its_reason_and_fallback(box):
+    box.kiro_status = ("UNAVAILABLE: the secret does not exist after 420 s, so the central account "
+                       "delivered no key. Fallback: use the checker that needs no key "
+                       "(claude_code_validator, Build and Run the Team, step 2), or ask a facilitator "
+                       "to rerun the team's Kiro key import.")
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The checker's key")
+    assert check.state == progress.TODO
+    assert "did not arrive" in check.detail and "claude_code_validator" in check.detail
+
+
+def test_the_event_key_in_the_vault_is_done_and_says_where_it_came_from(box):
+    box.kiro_status, box.kiro_key = "READY", True
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The checker's key")
+    assert check.state == progress.DONE and "central account" in check.detail
 
 
 def test_a_coordinator_deployed_with_the_no_key_checker_needs_no_kiro_key(box):

@@ -80,7 +80,7 @@ def test_existing_wrong_version_cannot_be_reused_or_reported_success(tmp_path, t
 
 
 def test_explicit_prefix_cannot_reuse_another_installation(tmp_path, tools):
-    version_binary(tools / "codex", "codex-cli 0.155.1")
+    version_binary(tools / "codex", "codex-cli 0.163.0")
     prefix = tmp_path / "selected installation"
     with pytest.raises(RuntimeError, match="executable is missing"):
         cli.verify_cli("codex", home=tmp_path / "home", prefix=prefix)
@@ -90,24 +90,24 @@ import json, pathlib, sys
 pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))
 target = pathlib.Path({str(prefix / 'bin/codex')!r})
 target.parent.mkdir(parents=True)
-target.write_text("#!/bin/sh\\necho 'codex-cli 0.155.1'\\n")
+target.write_text("#!/bin/sh\\necho 'codex-cli 0.163.0'\\n")
 target.chmod(0o755)
 """)
     receipt = cli.install_cli("codex", home=tmp_path / "home", prefix=prefix)
     assert json.loads(log.read_text())[-3:] == [
-        "--prefix", str(prefix), "@openai/codex@0.155.1"]
+        "--prefix", str(prefix), "@openai/codex@0.163.0"]
     assert receipt["executables"][0]["path"] == str(prefix / "bin/codex")
 
 
 def test_zero_exit_without_the_exact_version_is_not_a_pass(tmp_path, tools):
-    version_binary(tools / "codex", "codex-cli 0.155.10")
+    version_binary(tools / "codex", "codex-cli 0.163.01")
     with pytest.raises(RuntimeError, match="version mismatch"):
         cli.verify_cli("codex", home=tmp_path)
 
 
 @pytest.mark.parametrize("version", [
-    "0.155.1-alpha.1", "0.155.1+build.1", "0.155.1-alpha.1+build.1",
-    "0.155.1rc1", "0.155.1.2",
+    "0.163.0-alpha.1", "0.163.0+build.1", "0.163.0-alpha.1+build.1",
+    "0.163.0rc1", "0.163.0.2",
 ])
 def test_version_suffix_cannot_be_reused_or_receive_a_success_receipt(tmp_path, tools, version):
     version_binary(tools / "codex", "codex-cli " + version)
@@ -129,17 +129,17 @@ def test_version_suffix_cannot_be_reused_or_receive_a_success_receipt(tmp_path, 
 
 
 def test_nonzero_version_probe_stays_a_failure(tmp_path, tools):
-    executable(tools / "codex", "#!/bin/sh\necho 'codex-cli 0.155.1'\nexit 8\n")
+    executable(tools / "codex", "#!/bin/sh\necho 'codex-cli 0.163.0'\nexit 8\n")
     with pytest.raises(subprocess.CalledProcessError) as error:
         cli.verify_cli("codex", home=tmp_path)
     assert error.value.returncode == 8
 
 
 @pytest.mark.parametrize("name,banner", [
-    ("claude-code", "2.1.278 (Claude Code)"),
-    ("codex", "codex-cli 0.155.1"),
-    ("kiro", "kiro-cli 2.22.1"),
-    ("agentcore", "0.30.0"),
+    ("claude-code", "2.1.304 (Claude Code)"),
+    ("codex", "codex-cli 0.163.0"),
+    ("kiro", "kiro-cli 2.32.0"),
+    ("agentcore", "0.31.1"),
 ])
 def test_live_readback_banner_formats_verify_exactly(tmp_path, tools, name, banner):
     item = cli.load_manifest()["clis"][name]
@@ -152,13 +152,13 @@ def test_live_readback_banner_formats_verify_exactly(tmp_path, tools, name, bann
 
 
 def test_sdk_specs_and_executing_environment_must_agree(monkeypatch):
-    assert cli.sdk_requirements() == ["boto3==1.43.95", "botocore==1.43.95"]
+    assert cli.sdk_requirements() == ["boto3==1.43.115", "botocore==1.43.115"]
     assert cli.runtime_platform_version() == "V1"
     monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: "1.43.90")
     with pytest.raises(RuntimeError, match="Deploy SDK mismatch"):
         cli.require_deploy_sdk()
-    monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: "1.43.95")
-    assert cli.require_deploy_sdk() == {"boto3": "1.43.95", "botocore": "1.43.95"}
+    monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: "1.43.115")
+    assert cli.require_deploy_sdk() == {"boto3": "1.43.115", "botocore": "1.43.115"}
 
 
 def test_reader_emits_plain_specs_from_the_selected_manifest(tmp_path):
@@ -338,7 +338,7 @@ def test_bootstrap_reader_and_codex_edit_need_only_python_310_stdlib(tmp_path):
             [sys.executable, "-I", "-S", "-B", "-c", driver, str(HELPER), *arguments],
             capture_output=True, text=True, timeout=10, check=True)
         if arguments == ["sdk-requirements"]:
-            assert result.stdout == "boto3==1.43.95\nbotocore==1.43.95\n"
+            assert result.stdout == "boto3==1.43.115\nbotocore==1.43.115\n"
     assert config.read_bytes() == before.replace(b"= true # preserve", b"= false # preserve")
 
 
@@ -355,7 +355,7 @@ install -m 755 bin/kiro-cli-chat "$HOME/.local/bin/kiro-cli-chat"
 """)
         for binary in ("kiro-cli", "kiro-cli-chat"):
             archive.writestr("kirocli/bin/" + binary,
-                             "#!/bin/sh\nprintf '%s\\n' '" + binary + " 2.22.1'\n")
+                             "#!/bin/sh\nprintf '%s\\n' '" + binary + " 2.32.0'\n")
     return buffer.getvalue()
 
 
@@ -384,9 +384,9 @@ def test_verified_kiro_installs_both_executables_without_changing_user_model(tmp
     receipt = cli.install_cli("kiro", home=home, manifest=manifest,
                               owner=(os.geteuid(), os.getegid()))
     assert len(receipt["executables"]) == 2
-    assert [item["version"] for item in receipt["executables"]] == ["2.22.1", "2.22.1"]
+    assert [item["version"] for item in receipt["executables"]] == ["2.32.0", "2.32.0"]
     assert urls == [manifest["clis"]["kiro"]["archives"]["linux-aarch64"]["url"]]
-    assert "/2.22.1/" in urls[0] and "/latest/" not in urls[0]
+    assert "/2.32.0/" in urls[0] and "/latest/" not in urls[0]
     assert json.loads(settings.read_text()) == {
         "chat.defaultModel": "keep", "custom": True, "app.disableAutoupdates": True}
     cli.install_cli("kiro", home=home, manifest=manifest)
@@ -407,7 +407,7 @@ def test_invalid_kiro_download_never_runs_its_installer(tmp_path, monkeypatch, t
 
 def test_kiro_main_binary_alone_is_not_a_complete_installation(tmp_path, tools):
     home = tmp_path / "home"
-    version_binary(home / ".local/bin/kiro-cli", "kiro-cli 2.22.1")
+    version_binary(home / ".local/bin/kiro-cli", "kiro-cli 2.32.0")
     with pytest.raises(RuntimeError, match="kiro-cli-chat"):
         cli.install_cli("kiro", home=home)
 

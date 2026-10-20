@@ -8,6 +8,11 @@ the key THERE: an operator pastes ``ksk_...`` in the console, and we create/upda
 ``kiro-api-key`` credential provider so the ALREADY-DEPLOYED runtime authenticates with
 NO redeploy.
 
+At a Workshop Studio event nobody pastes anything: the central account delivers a
+per-team key into this account's ``kiro-api-key`` secret, and the team stack's import
+build runs ``kiro_config.py import-secret``, which writes it into the same provider
+through the same ``_provision_vault`` call (see ``import_from_secret``).
+
 Mirrors ``github.py``: the secret itself lives only in the Token Vault (encrypted in
 Secrets Manager via KMS), never in a tracked file. A gitignored 0600 sidecar records
 only NON-secret status (provider name, region, the key's last 4 chars) so the console
@@ -53,6 +58,9 @@ def _settings_path() -> str:
 # where the runtime does not look. ``Role.vault_names()`` applies the same
 # WORKSHOP_KIRO_* operator overrides these functions always honoured.
 def _vault_names() -> tuple[str, str]:
+    import sys  # noqa: PLC0415
+    if _HERE not in sys.path:  # run by path under ``python -I``, or imported from elsewhere
+        sys.path.insert(0, _HERE)
     import roles as _roles
     return _roles.get("kiro").vault_names()
 
@@ -274,15 +282,125 @@ def clear_api_key() -> dict[str, Any]:
             "region": _region()}
 
 
+# --- Event path: the key the central account delivered ------------------------
+# At a Workshop Studio event the attendee never signs in to Kiro. The event's central
+# account mints one Kiro API key per team (KiroControlPlaneQDeveloperService
+# CreateServiceApiKey against one shared, Identity Center-backed profile) and writes it
+# into THIS account's Secrets Manager secret ``kiro-api-key`` with the team's vended
+# credentials (static/aws/central-account.yaml, after the Workshop Studio Kiro IDE
+# Browser cookbook). The team stack's own import build then calls
+# ``import_from_secret`` below under a role that only that build can use, so the key
+# goes from the secret into the Token Vault without passing through the attendee's
+# terminal. It reuses ``_provision_vault``: the same workload identity, the same
+# credential provider, and the same get -> update / create calls as ``save``.
+FALLBACK = ("Fallback: use the checker that needs no key (claude_code_validator, Build "
+            "and Run the Team, step 2), or ask a facilitator to rerun the team's Kiro key "
+            "import.")
+_SECRET_NOT_READY = ("ResourceNotFoundException", "InvalidRequestException")
+
+
+def _secrets_client():
+    import boto3  # noqa: PLC0415
+    from botocore.config import Config  # noqa: PLC0415
+    return boto3.client("secretsmanager", region_name=_region(),
+                        config=Config(connect_timeout=3, read_timeout=10,
+                                      retries={"max_attempts": 2}))
+
+
+def _delivered_key(value: str | None) -> str | None:
+    """The key from the secret's value: the plain string the central account writes,
+    or a JSON object with a ``key``/``apiKey``/``rawKey`` field. None if it is not
+    a usable key yet (blank, a ``PENDING`` placeholder, or text with spaces)."""
+    text = (value or "").strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        text = next((str(data[k]).strip() for k in ("key", "apiKey", "rawKey")
+                     if isinstance(data, dict) and data.get(k)), "")
+    if (not text or text.upper() == "PENDING" or len(text) < _MIN_KEY_LEN
+            or any(c.isspace() for c in text) or not text.isprintable()):
+        return None
+    return text
+
+
+def _error_code(exc: Exception) -> str:
+    return str(getattr(exc, "response", {}).get("Error", {}).get("Code") or type(exc).__name__)
+
+
+def import_from_secret(secret_id: str = "kiro-api-key", *, wait_s: float = 300.0,
+                       poll_s: float = 10.0, sleep=None, now=None) -> dict[str, Any]:
+    """Copy the delivered team key from a Secrets Manager secret into the Token Vault.
+
+    Waits up to ``wait_s`` for the secret to appear, because the central account can
+    write it after this stack starts. Never raises and never returns the key or any
+    part of it: the result is ``{"key_status": "READY" | "UNAVAILABLE: <reason>.
+    <fallback>", ...}`` with names, the region, and the wait only. The key's prefix is
+    not enforced here: a delivered key is whatever Kiro's control plane minted, and the
+    Kiro Runtime passes it to ``kiro-cli`` as ``KIRO_API_KEY`` either way."""
+    import time  # noqa: PLC0415
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
+    started = now()
+    out: dict[str, Any] = {"source": "central-account", "secret": secret_id}
+    try:
+        out.update(provider=_provider_name(), workload=_workload_name(), region=_region())
+        client = _secrets_client()
+    except Exception as exc:  # noqa: BLE001 (report, never raise)
+        return {**out, "key_status": f"UNAVAILABLE: the import could not start "
+                                     f"({type(exc).__name__}). {FALLBACK}"}
+    key, last = None, "the secret does not exist"
+    while True:
+        try:
+            key = _delivered_key(client.get_secret_value(SecretId=secret_id).get("SecretString"))
+            last = "the secret holds no usable key yet"
+        except Exception as exc:  # noqa: BLE001
+            code = _error_code(exc)
+            if code not in _SECRET_NOT_READY and code not in ("ThrottlingException",
+                                                             "InternalServiceError"):
+                # AccessDenied (or anything else) will not fix itself by waiting.
+                out["waited_s"] = round(now() - started, 1)
+                return {**out, "key_status": f"UNAVAILABLE: cannot read the {secret_id} "
+                                             f"secret ({code}). {FALLBACK}"}
+            last = ("the secret does not exist" if code == "ResourceNotFoundException"
+                    else f"the secret is not readable yet ({code})")
+        if key or now() - started + poll_s > wait_s:
+            break
+        sleep(poll_s)
+    out["waited_s"] = round(now() - started, 1)
+    if not key:
+        return {**out, "key_status": f"UNAVAILABLE: {last} after {int(wait_s)} s, so the "
+                                     f"central account delivered no key. {FALLBACK}"}
+    out["key_format"] = "ksk" if key.startswith(_KEY_PREFIX) else "other"
+    try:
+        _provision_vault(key)
+    except Exception as exc:  # noqa: BLE001 (the reason, never the key)
+        return {**out, "key_status": f"UNAVAILABLE: the Token Vault write failed "
+                                     f"({_error_code(exc)}). {FALLBACK}"}
+    finally:
+        key = None
+    return {**out, "key_status": "READY"}
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``save`` asks for the key at a hidden prompt; ``status`` reads metadata only."""
+    """``save`` asks for the key at a hidden prompt; ``status`` reads metadata only;
+    ``import-secret`` is the event bootstrap's copy from the delivered secret."""
     import argparse  # noqa: PLC0415
     import getpass  # noqa: PLC0415
     parser = argparse.ArgumentParser(description="Store Kiro's API key in the AgentCore Identity Token Vault.")
-    parser.add_argument("action", choices=("save", "status"))
+    parser.add_argument("action", choices=("save", "status", "import-secret"))
+    parser.add_argument("--secret-id", default="kiro-api-key",
+                        help="import-secret: the Secrets Manager secret the central account writes")
+    parser.add_argument("--wait", type=float, default=300.0,
+                        help="import-secret: seconds to wait for the secret to appear")
     args = parser.parse_args(argv)
     if args.action == "status":
         result = status(refresh=True)
+    elif args.action == "import-secret":
+        result = import_from_secret(args.secret_id, wait_s=args.wait)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("key_status") == "READY" else 3
     else:
         result = save_api_key(getpass.getpass("Kiro API key (hidden): "))
     print(json.dumps(result, indent=2, ensure_ascii=False))
