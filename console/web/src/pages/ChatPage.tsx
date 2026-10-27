@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, memo } from 'react';
 import { useParams, useNavigate, useHref, useSearchParams } from 'react-router-dom';
 import { newConversationId, touchChat, loadTranscript, saveTranscript, useChats, removeChat } from '../hooks/useChats';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
 import Alert from '@cloudscape-design/components/alert';
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
@@ -27,6 +24,8 @@ import {
   type RuntimeStatus, type GithubStatus,
 } from '../api';
 import { RunDetailPanel } from '../components/RunDetailPanel';
+import { BuildSnapshot } from '../components/BuildSnapshot';
+import { MarkdownContent } from '../components/MarkdownContent';
 import { ResourceTable } from '../shared/ResourceTable';
 import { LoadingState, ErrorState } from '../shared/States';
 import { presentRunDecision, recordedPullRequests, gateResultLabel } from '../lib/runPresentation';
@@ -632,7 +631,7 @@ const RunCard = memo(function RunCard({ runId, runKind, compact = false }: { run
     {terminals && Object.keys(terminals).length > 0 && <Container header={<Header variant="h2" description="Live Runtime sessions and recorded host output.">Terminal output</Header>}>
       <RunTerminalPane terminals={terminals} live={live} />
     </Container>}
-    {!live && <RunChangesPane runId={runId} />}
+    {!live && <RunSnapshotPane runId={runId} />}
     {result && <OrchestratorVerdict result={result} />}
   </SpaceBetween></div>;
 });
@@ -740,14 +739,9 @@ function RunTerminalPane({
     onChange={({ detail }) => setActiveLane(detail.activeTabId)} />;
 }
 
-// ── Changes tab ─────────────────────────────────────────────────────────────
-//
-// The composed change as a per-file unified diff, the local twin of the PR's
-// "Files changed" (Copilot-app pattern). Loaded from the run's REAL commit in
-// the composed repo (GET /runs/:id/diff -> `git show`), so the files and hunks
-// are exactly what the PR carries. Shown only once a run is terminal (the
-// commit lands when the gate goes green); a run with no commit renders nothing.
-const RunChangesPane = memo(function RunChangesPane({ runId }: { runId: string }) {
+// Each composed commit records the complete gated repository tree against an
+// empty base. Its patches include unchanged files; GitHub holds each PR's diff.
+const RunSnapshotPane = memo(function RunSnapshotPane({ runId }: { runId: string }) {
   const [diff, setDiff] = useState<RunDiff | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -755,39 +749,8 @@ const RunChangesPane = memo(function RunChangesPane({ runId }: { runId: string }
     return () => { cancelled = true; };
   }, [runId]);
 
-  if (!diff || diff.files.length === 0) return null;
-  const totalAdded = diff.files.reduce((n, f) => n + (f.added ?? 0), 0);
-  const totalRemoved = diff.files.reduce((n, f) => n + (f.removed ?? 0), 0);
-
-  return <Container header={<Header variant="h2" counter={`(${diff.files.length})`}
-    description={`${totalAdded} lines added, ${totalRemoved} removed${diff.branch ? ` · ${diff.branch}` : ''}`}>Changed files</Header>}>
-    <SpaceBetween size="s">{diff.files.map(f => <ExpandableSection key={f.path} headerText={f.path}
-      defaultExpanded={diff.files.length <= 2}><DiffBody patch={f.patch} /></ExpandableSection>)}</SpaceBetween>
-  </Container>;
+  return diff ? <BuildSnapshot snapshot={diff} /> : null;
 });
-
-// One file's unified-diff patch, colored per hunk line (Copilot's green/red
-// gutter). We render the raw `git show` patch; the +/- prefix drives the color.
-function DiffBody({ patch }: { patch: string }) {
-  // Drop the file header lines (diff --git / index / +++ / ---) so the pane
-  // shows the hunks, matching the reference's per-file body.
-  const lines = patch.split('\n').filter(
-    (l) => !/^(diff --git |index |--- |\+\+\+ |new file|deleted file|similarity |rename )/.test(l));
-  return (
-    <pre className="max-h-72 overflow-auto bg-[#1e1e1e] px-3 py-2 font-mono text-[11.5px] leading-relaxed [scrollbar-width:thin] [scrollbar-color:#555_transparent]">
-      {lines.map((l, i) => {
-        const tone = l.startsWith('@@')
-          ? 'text-sky-400'
-          : l.startsWith('+')
-            ? 'bg-emerald-500/10 text-emerald-300'
-            : l.startsWith('-')
-              ? 'bg-destructive/10 text-red-300'
-              : 'text-[#d4d4d4]';
-        return <div key={i} className={cn('whitespace-pre-wrap break-all px-1', tone)}>{l || ' '}</div>;
-      })}
-    </pre>
-  );
-}
 
 function OrchestratorVerdict({ result }: { result: RunResult }) {
   const prs = recordedPullRequests(result);
@@ -814,7 +777,7 @@ function AssistantBubble({ text, streaming }: { text: string; streaming: boolean
   if (!text && !streaming) return null;
   return <div className="chat-message-assistant" aria-label="Coordinator message">
     {!text ? <StatusIndicator type="loading">Thinking…</StatusIndicator>
-      : <div className={cn('prose-chat', streaming && 'md-stream')}><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{text}</ReactMarkdown></div>}
+      : <MarkdownContent text={text} streaming={streaming} />}
   </div>;
 }
 

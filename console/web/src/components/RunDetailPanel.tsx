@@ -10,6 +10,7 @@ import StatusIndicator, { type StatusIndicatorProps } from '@cloudscape-design/c
 import Tabs from '@cloudscape-design/components/tabs';
 import TextContent from '@cloudscape-design/components/text-content';
 import { AgentIcon } from './AgentIcon';
+import { MarkdownContent } from './MarkdownContent';
 import { presentRunDecision, recordedPullRequests } from '../lib/runPresentation';
 import { ResourceTable } from '../shared/ResourceTable';
 import { agentInstanceLabel } from '../pages/agents/environments';
@@ -81,7 +82,7 @@ export function Checks({ gates }: { gates: GateRecord[] }) {
         {!gate.passed && !!gate.failure_lines?.length && <ExpandableSection headerText="Failure diagnostics">
           <pre className="console-record">{gate.failure_lines.join('\n')}</pre>
         </ExpandableSection>}
-        {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded assertions`}>
+        {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded assertion${gate.checks.length === 1 ? '' : 's'}`}>
           <SpaceBetween size="s">{gate.checks.map((check, i) => <div key={i}>
             <StatusIndicator type={check.passed === true ? 'success' : check.passed === false ? 'error' : 'pending'}>
               {check.check || `Assertion ${i + 1}`}
@@ -93,7 +94,7 @@ export function Checks({ gates }: { gates: GateRecord[] }) {
     ]} />;
 }
 
-function Reviews({ review }: { review: RunDetail['review'] }) {
+export function Reviews({ review }: { review: RunDetail['review'] }) {
   const panels = review?.panels ?? [];
   return <SpaceBetween size="l">
     <Header variant="h2" description="A separate reviewer inspects the pull request using adversarial and design/integration lenses.">Independent review</Header>
@@ -108,14 +109,14 @@ function Reviews({ review }: { review: RunDetail['review'] }) {
       headerText={panel.label || label(panel.name)} headerActions={<StatusIndicator type={statusType(panel.state)}>{label(panel.state)}</StatusIndicator>}>
       <SpaceBetween size="m">
         {!!panel.reasons?.length && <TextContent><ul>{panel.reasons.map((reason, i) => <li key={i}>{reason}</li>)}</ul></TextContent>}
-        {panel.assessment && <Box>{panel.assessment}</Box>}
-        {panel.lenses?.adversarial && <KeyValuePairs items={[{ label: 'Adversarial verification', value: panel.lenses.adversarial }]} />}
-        {panel.lenses?.design && <KeyValuePairs items={[{ label: 'Design and integration', value: panel.lenses.design }]} />}
+        {panel.assessment && <MarkdownContent text={panel.assessment} />}
+        {panel.lenses?.adversarial && <KeyValuePairs items={[{ label: 'Adversarial verification', value: <MarkdownContent text={panel.lenses.adversarial} /> }]} />}
+        {panel.lenses?.design && <KeyValuePairs items={[{ label: 'Design and integration', value: <MarkdownContent text={panel.lenses.design} /> }]} />}
         {panel.note && <Box color="text-body-secondary">{panel.note}</Box>}
         {panel.model && <Box fontSize="body-s" color="text-body-secondary">Model: {panel.model}</Box>}
       </SpaceBetween>
     </ExpandableSection>) : <Box color="text-body-secondary">No review panels have been recorded.</Box>}
-    {review?.assessment && !panels.length && <Box>{review.assessment}</Box>}
+    {review?.assessment && !panels.length && <MarkdownContent text={review.assessment} />}
   </SpaceBetween>;
 }
 

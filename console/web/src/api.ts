@@ -349,9 +349,9 @@ export const getRunTerminals = (runId: string) =>
     events: r.events ?? {},
   }));
 
-// The composed change as a per-file unified diff: the session Changes tab's data,
-// read from this run's real commit in the composed repo (`git show`). `files` is
-// empty (with `reason`) until the gate is green and the commit lands.
+// The full build snapshot as per-file patches against an empty base, read from
+// this run's recorded commit (`git show`). Includes unchanged repository files,
+// rather than only the PR's changes. Empty until the composed commit lands.
 export interface RunDiffFile {
   path: string;
   added: number | null;
