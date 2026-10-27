@@ -227,10 +227,14 @@ def test_the_echoed_command_does_not_open_the_window():
         "only a sentinel ALONE on its line may open or close the window"
 
 
-def test_a_line_cut_in_half_by_a_frame_boundary_arrives_whole():
+def test_a_line_cut_in_half_by_a_frame_boundary_arrives_whole(monkeypatch):
     """Live defect: a frame boundary falls wherever the network put it, so a streaming
     TUI's sentence reached the watcher as a dozen one-word "lines" and filled the whole
     window with fragments. _drive_shell holds the tail until the next frame closes it."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from bedrock_agentcore.runtime.shell import ShellChannel, ShellFrame
     import runtime_exec
 
     got: list[str] = []
@@ -239,19 +243,34 @@ def test_a_line_cut_in_half_by_a_frame_boundary_arrives_whole():
               # glued together (gluing them ate the first letter of a word live).
               "Searching for package.json\rSuccessfully found 3 matches\n",
               "no newline yet"]
-    pending = ""
-    for text in frames:                       # the loop _drive_shell now runs
-        pending += text.replace("\r\n", "\n").replace("\r", "\n")
-        if "\n" in pending:
-            *complete, pending = pending.split("\n")
-            got.extend(complete)
-    if pending:
-        got.append(pending)                   # the flush when the shell ends
+    class Shell:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def send(self, command):
+            self.command = command
+
+        async def __aiter__(self):
+            for text in frames:
+                yield ShellFrame(ShellChannel.STDOUT, int(ShellChannel.STDOUT),
+                                 text.encode())
+            yield ShellFrame(ShellChannel.STATUS, int(ShellChannel.STATUS),
+                             b'{"status":"Success"}')
+
+    monkeypatch.setattr(
+        runtime_exec, "_client",
+        lambda region: SimpleNamespace(open_shell=lambda **bindings: Shell()))
+    result = asyncio.run(runtime_exec._drive_shell(
+        "arn:aws:bedrock-agentcore:us-west-2:000000000000:runtime/offline-fixture",
+        "printf offline", "us-west-2", got.append, 2.0, "offline-session-" + "x" * 32))
+    assert result["exit"] == 0
+    assert result["raw"] == "".join(frames)
     assert got == ["Writing src/app.js", "Writing src/routes.js",
                    "Searching for package.json", "Successfully found 3 matches",
                    "no newline yet"]
-    # And the real function still splits on newlines, so the buffer is the only change.
-    assert "pending" in runtime_exec._drive_shell.__code__.co_varnames
 
 
 def test_the_console_feed_carries_the_printed_output_too():

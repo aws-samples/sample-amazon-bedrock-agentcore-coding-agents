@@ -37,6 +37,10 @@ REALLY EXERCISING the work rather than reading it.
   If setup itself fails, report that setup failure and stop rather than inventing a
   failed assertion about application behavior. This setup belongs in the executable;
   do not run the acceptance behavior while authoring it.
+- **Keep test doubles local to the probe that needs them.** Control time or randomness
+  in an isolated context, or restore replaced values in a `finally` block before
+  other probes. Preserve the runtime APIs used by the application and its dependencies.
+  Report a failure caused by the checking environment as such.
 - **If you start the deliverable, poll for AT LEAST 60 SECONDS before concluding it
   did not come up.** This is a hard floor, not a suggestion, and it is the one number
   in this file. A first start may install declared dependencies, so a 15 or 20 second
@@ -63,6 +67,11 @@ REALLY EXERCISING the work rather than reading it.
   type limits. Include generated suffixes when checking its size. Test a rejected
   property separately so the reason for refusal is observable. Do not require the
   same input class to be both accepted and rejected in different assertions.
+- **Observe the precondition before asserting the outcome.** When timing or randomness
+  matters, use controlled inputs or observed state to reach the required condition.
+  A fixed input sequence alone does not prove it occurred. If the precondition remains
+  unverified, report that limitation and fail; do not attribute an unproven defect to
+  the application.
 - **Respect the semantics of the result you query.** A filtered, ranked, or
   paginated view may legitimately omit an accepted record. Establish that the
   record qualifies for that view before asserting membership. Verify acceptance

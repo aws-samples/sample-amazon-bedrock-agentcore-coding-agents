@@ -8,7 +8,8 @@ these tests hold it to two properties the model path gets from its steering:
   <idea>"`` admits, through the same ``run_build`` implementation, or it refuses with
   a code and starts nothing. One build at a time, failing closed: an event starts
   nothing while it can see another build, or while it cannot read the saved run
-  state that would show one. It is a check, not a lock.
+  state that would show one. The real engine also requires atomic repository
+  admission, tested across concurrent submissions in test_repository_admission.
 * The engine reports the terminal result on that issue ONCE, after the record is
   persisted, as reporting only. A Gateway failure never changes the verdict, and the
   comment never invites a retry: the bound has to hold one layer up as well.

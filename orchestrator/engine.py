@@ -153,6 +153,7 @@ import reviewer  # noqa: E402
 import presets  # noqa: E402
 import role_graph  # noqa: E402  (the agent-execution phase as a Strands graph)
 import run_store  # noqa: E402  (durable run state: a verdict outlives its session)
+import repository_admission  # noqa: E402  (one build per repository, across sessions)
 # The reporting projection (public views, next_action, redaction) lives in
 # run_views.py; re-exported so engine.X keeps working for every caller and test.
 from run_views import (  # noqa: E402,F401
@@ -177,11 +178,11 @@ TERMINAL = {"passed", "failed", "needs_human"}
 # orchestrator's MAX_REVIEW_ROUNDS (one re-implement pass): the cap is the
 # initial build round plus that many re-implement rounds.
 MAX_ITERATIONS = 1 + reviewer.MAX_REVIEW_ROUNDS
-# A role may also receive one later turn when its declared dependency actually
-# lands in the integration branch. That is not another red-gate repair cycle; it
-# is the bounded semantic rebase a human developer performs after an upstream PR
-# merges. Keeping the budgets separate prevents either loop from multiplying.
-MAX_DEPENDENCY_REFRESHES = 1
+# A role may also receive one owner turn when its base moves: a conflict refresh
+# or an optional semantic dependency refresh. It has its own allowance, so neither
+# it nor a repair consumes or replenishes the other's budget. Clean mechanical
+# rebases do not dispatch an owner and grant no additional repair attempts.
+MAX_BASE_REFRESHES = 1
 
 # The offline test double has no GitHub, so it names its own base branch rather than
 # leaving one blank: merge_work_item refuses a PR whose base is not the pinned
@@ -723,6 +724,9 @@ class Run:
     # A run a GitHub event started (options["origin"]) reports its terminal result on
     # that issue exactly once; this records that the one attempt was made.
     _origin_reported: bool = field(default=False, repr=False)
+    _repository_claim: Any = field(default=None, repr=False)
+    _submitted_repository: str | None = field(default=None, repr=False)
+    _unsettled_runtime_sessions: list[dict] = field(default_factory=list, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -938,34 +942,84 @@ class Engine:
     # ---------------------------------------------------------------- submit
     def submit(self, task: str, agents: list[str] | None = None,
                options: dict | None = None, preset: str | None = None) -> Run:
-        # Cap the work-dir pile before this run adds its own, so .runs/work can't
-        # grow without bound across a long workshop / many runs.
-        _prune_work_dirs(_MAX_WORK_DIRS)
         # Capture the calling user's identity for audit and cost attribution.
         try:
             from identity_baggage import get_current_identity
             identity = get_current_identity().to_dict()
         except Exception:
             identity = {}
-        with self._lock:
-            run = Run(
-                run_id=_new_run_id(),
-                task=task,
-                agents=list(agents) if agents else [],
-                roles={},
-                options=options or {},
-                created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                user_identity=identity,
-            )
-            run._explicit_agents = bool(agents)
-            run._preset_req = preset
-            run._executor_name = getattr(self.executor, "name", "fixture")
-            run._t0 = time.monotonic()
-            self._runs[run.run_id] = run
-        self._persist_run(run)
-        threading.Thread(target=self._drive, args=(run,), daemon=True).start()
-        threading.Thread(target=self._heartbeat, args=(run,), daemon=True).start()
+        run = Run(
+            run_id=_new_run_id(), task=task,
+            agents=list(agents) if agents else [], roles={}, options=options or {},
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            user_identity=identity,
+        )
+        run._explicit_agents = bool(agents)
+        run._preset_req = preset
+        run._executor_name = getattr(self.executor, "name", "fixture")
+        run._t0 = time.monotonic()
+        repository = github.configured_repository()
+        run._submitted_repository = repository
+        if repository:
+            # This boundary is shared by GitHub events, ask.sh, Chat and the HTTP
+            # build endpoint. A pre-submission listing alone cannot serialize
+            # requests from different coordinator microVMs.
+            run._repository_claim = repository_admission.acquire(
+                repository, run.run_id, _RUNS_DIR,
+                require_mirror=self.executor.name == "agentcore")
+        try:
+            _prune_work_dirs(_MAX_WORK_DIRS)
+            with self._lock:
+                self._runs[run.run_id] = run
+            self._persist_run(run)
+            worker = threading.Thread(target=self._drive, args=(run,), daemon=True)
+            worker.start()
+        except Exception:
+            # No worker was started: it is safe to give admission back. An
+            # ambiguous claim PUT never reaches this block.
+            run.status, run.fail_reason = "failed", "WORKER_START_FAILED"
+            try:
+                self._persist_run(run)
+            except Exception:
+                pass
+            with self._lock:
+                self._runs.pop(run.run_id, None)
+            self._release_repository(run)
+            raise
+        try:
+            threading.Thread(target=self._heartbeat, args=(run,), daemon=True).start()
+        except Exception as exc:
+            # A worker already owns the claim. A failed observer must neither
+            # release it nor tell the caller that the build did not start.
+            run.log(f"run heartbeat did not start: {type(exc).__name__}", "warn")
         return run
+
+    def _release_repository(self, run: Run) -> None:
+        claim = run._repository_claim
+        if claim is None:
+            return
+        if run._unsettled_runtime_sessions:
+            run.log("repository admission retained: remote execution termination "
+                    "is unconfirmed; inspect unsettled_runtime_sessions and stop "
+                    "the exact owned sessions before operator recovery", "warn")
+            try:
+                self._persist_run(run)
+            except Exception:
+                pass
+            return
+        try:
+            claim.release()
+            run._repository_claim = None
+        except Exception as exc:
+            # Keep an orphaned claim closed for operator inspection. Never grant
+            # concurrent admission merely because release was unavailable.
+            run.log(f"repository admission release failed "
+                    f"({getattr(exc, 'code', run_store._error_code(exc))}); inspect the claim after "
+                    "confirming this execution has stopped", "warn")
+            try:
+                self._persist_run(run)
+            except Exception:
+                pass
 
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
@@ -1074,6 +1128,12 @@ class Engine:
 
     # ----------------------------------------------------------- the blueprint
     def _drive(self, run: Run) -> None:
+        # A Settings change while this worker runs must never redirect its reads
+        # or writes to a repository for which it has not acquired admission.
+        with github.bind_repository(run._submitted_repository):
+            self._drive_bound(run)
+
+    def _drive_bound(self, run: Run) -> None:
         """One task in -> five phases -> terminal state. Always terminal."""
         try:
             for phase_fn in (self._admission, self._hydrate, self._preflight):
@@ -1081,7 +1141,7 @@ class Engine:
                     return  # fail-closed: phase set status/reason already
             # ONE agentic step, then per-pull-request finalization. There is no
             # whole-run round any more: each pull request carries its own bound
-            # (``item.attempt``) inside ``_finalize``, so a repair for one role can
+            # (``item.repair_attempts``) inside ``_finalize``, so a repair for one role can
             # never restart the others' work. That is what makes the bound hold at
             # every layer instead of only in the engine.
             run.iterations += 1
@@ -1093,6 +1153,11 @@ class Engine:
             run.status, run.fail_reason = "failed", f"ENGINE_ERROR: {exc}"
             run.log(f"engine error: {exc}", "error")
         finally:
+            if run._unsettled_runtime_sessions:
+                prior = run.fail_reason
+                run.status = "needs_human"
+                run.fail_reason = ("REMOTE_EXECUTION_UNSETTLED"
+                                   + (f":{prior}" if prior else ""))
             if run.status in ("queued", "running"):  # safety net
                 run.status = "failed"
                 run.fail_reason = run.fail_reason or "ENGINE_STALL"
@@ -1118,7 +1183,8 @@ class Engine:
             # history. Delete them only after the terminal snapshot above has
             # been attempted; a cleanup failure never changes the verdict.
             try:
-                self._cleanup_runtime_exchange(run)
+                if not run._unsettled_runtime_sessions:
+                    self._cleanup_runtime_exchange(run)
             except Exception as exc:  # noqa: BLE001 (cleanup is best-effort)
                 run.log(f"Runtime exchange cleanup failed: {exc}", "warn")
                 try:
@@ -1129,6 +1195,9 @@ class Engine:
             # run (a `/develop` comment) how it ended. Reporting, never the verdict
             # path: it reads the settled run and cannot raise.
             self._report_origin(run)
+            # Finalization and all its bounded repairs are finished. A terminal
+            # snapshot or stale heartbeat alone never releases admission.
+            self._release_repository(run)
             # The engine starts NOTHING, so there is nothing here to stop. If the
             # deliverable needs to run, the validator's authored check starts it, and
             # `reviewer.run_gate` tears that whole process group down when the check
@@ -1485,6 +1554,20 @@ class Engine:
                 # A known account/turn limit cannot recover in a fresh shell.
                 # Preserve the specific reason without restarting the same task.
                 raise
+            except runtime_exec.RemoteExecutionUnsettled as exc:
+                # A disconnected shell is not a stopped process. Starting a new
+                # role turn or releasing admission would overlap unknown remote
+                # work. Persist exact session identities for operator recovery.
+                with run._lock:
+                    role.runtime_arn = exc.runtime_arn
+                    role.runtime_session_id = exc.session_id
+                    run._unsettled_runtime_sessions.append({
+                        "agent": agent_id, "runtime_arn": exc.runtime_arn,
+                        "session_id": exc.session_id,
+                    })
+                run.log(f"{agent_id}: remote completion is unknown; no re-dispatch "
+                        "and repository admission will remain held", "warn")
+                raise
             except runtime_exec.RoleExecutionError as exc:
                 _last_exc = exc
                 if _attempt == 0:
@@ -1521,9 +1604,14 @@ class Engine:
         # The runtime CLI does not report machine usage over the shell; record an
         # honest zero (never invented), mirroring the no-usage local branch.
         role.estimated = False
+        output_detail = ""
+        if artifact_rel:
+            output_detail = f" ({artifact_rel} received)"
+        elif result.get("archive_receipt"):
+            output_detail = " (source archive received and verified)"
         run.add_event(agent_id, {"kind": "text",
-                                 "text": f"[{run.roles[agent_id]}] built on AgentCore "
-                                         f"Runtime {arn.split('/')[-1]} ({len(result['artifact'])}B artifact)"})
+                                 "text": f"[{run.roles[agent_id]}] completed on "
+                                         f"AgentCore Runtime {arn.split('/')[-1]}{output_detail}"})
         # Return the _read_artifact contract: the artifact is already on disk, so
         # exit 0 + the transcript lines suffice.
         return {"exit": result["exit"], "lines": collected,
@@ -3247,26 +3335,16 @@ class Engine:
             run.log(
                 f"{item.work_id}: refreshed checkout staged ({staged} files)")
             if conflicts or dependency_advanced:
-                if (dependency_advanced
-                        and item.dependency_refreshes >=
-                        MAX_DEPENDENCY_REFRESHES):
+                if item.refresh_attempts >= MAX_BASE_REFRESHES:
                     item.state = "blocked"
                     item.merge_state = "blocked"
                     raise RuntimeError(
                         f"STALE_PATCH_REFRESH_CAP:{item.work_id}: more than "
-                        f"{MAX_DEPENDENCY_REFRESHES} dependency integration "
-                        "refresh was requested")
-                allowed_attempts = (
-                    MAX_ITERATIONS + MAX_DEPENDENCY_REFRESHES
-                    if dependency_advanced else MAX_ITERATIONS
-                )
-                if item.attempt >= allowed_attempts:
-                    item.state = "blocked"
-                    item.merge_state = "blocked"
-                    raise RuntimeError(
-                        f"STALE_PATCH_REFRESH_CAP:{item.work_id}: this pull "
-                        "request still needs an owner turn after the bounded "
-                        f"{allowed_attempts} attempts")
+                        f"{MAX_BASE_REFRESHES} owner refresh was requested")
+                # Reserve the allowance before dispatch, including failed turns.
+                # Total owner attempts also include builds and repairs and cannot
+                # decide whether this separate refresh allowance is still available.
+                item.refresh_attempts += 1
                 active.append(item)
                 if dependency_advanced:
                     item.dependency_refreshes += 1
@@ -3412,7 +3490,7 @@ class Engine:
         Independent by construction: one pull request's outcome never decides
         another's. A red pull request is recorded and the loop CONTINUES to the next
         one, so a green sibling still merges. The repair bound is per pull request
-        (``item.attempt``), so N builders allow at most N repair rounds, one each,
+        (``item.repair_attempts``), so N builders allow at most N repair rounds, one each,
         and this can never become re-entrant.
 
         Returns True always on the build path: every pull request reaches its own
@@ -3494,14 +3572,15 @@ class Engine:
                 self._assess_pull_request(run, item, gate, stage)
 
             if not approved and item.merge_state != "review_unavailable":
-                # ONE bounded repair for THIS pull request only. A dependency
-                # refresh is its own budget: it does not spend the repair.
-                if item.attempt >= MAX_ITERATIONS + item.dependency_refreshes:
+                # ONE bounded repair for THIS pull request only. Both conflict and
+                # semantic refreshes have a separate budget; a clean rebase grants
+                # no repair credit either.
+                if item.repair_attempts >= reviewer.MAX_REVIEW_ROUNDS:
                     row["state"] = "blocked"
                     row["error"] = "ITERATION_CAP"
                     item.merge_state = "blocked"
                     run.log(f"{item.work_id}: still not acceptable after "
-                            f"{item.attempt} round(s); its pull request keeps the "
+                            f"{item.repair_attempts} repair attempt(s); its pull request keeps the "
                             "evidence", "warn")
                     continue
                 if not self._repair_pull_request(run, item, gate, stage):
@@ -3681,6 +3760,13 @@ class Engine:
         intact, and it is also what a person does: the reviewer comments, and the
         author pushes to the same pull request.
         """
+        if item.repair_attempts >= reviewer.MAX_REVIEW_ROUNDS:
+            run.log(f"{item.work_id}: repair allowance already spent; "
+                    "its pull request keeps the evidence", "warn")
+            return False
+        # Reserve before routing/execution. A failed attempt or another call to
+        # finalization must never grant this pull request a second repair.
+        item.repair_attempts += 1
         self._route_repair(run, gate, eligible=[item], stage=stage)
         if not run._active_builders:
             run.log(f"{item.work_id}: checker failure requires a person; "

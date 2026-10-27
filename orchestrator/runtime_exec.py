@@ -36,6 +36,7 @@ import shlex
 import time
 import uuid
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import roles as _roles
 from pty_typing import typeable
@@ -134,6 +135,17 @@ def _cli_invocation(agent_id: str, prompt_var: str, model: str, workdir: str) ->
 
 class RoleExecutionError(RuntimeError):
     """A role's runtime dispatch failed (no runtime, nonzero exit, missing artifact)."""
+
+
+class RemoteExecutionUnsettled(RoleExecutionError):
+    """A command may still be executing. No retry or repository-claim release."""
+
+    def __init__(self, runtime_arn: str, session_id: str, detail: str):
+        self.runtime_arn = runtime_arn
+        self.session_id = session_id
+        super().__init__(
+            "REMOTE_EXECUTION_UNSETTLED: " + detail
+            + "; the owned Runtime session's termination has not been confirmed")
 
 
 class ModelQuotaError(RoleExecutionError):
@@ -334,10 +346,48 @@ def worktree_branch(run_subdir: str) -> str:
     return f"worktree-{slug or 'role'}"
 
 
+def _result_destination(source_uri: str, run_subdir: str, agent_id: str,
+                        handoff_id: str) -> str:
+    """Derive a producer destination from coordinator configuration, without I/O."""
+    import runtime_stage  # noqa: PLC0415
+    source = urlsplit(source_uri)
+    if source.scheme != "s3" or not source.netloc:
+        raise RoleExecutionError("ARTIFACT_TRANSFER_ERROR: invalid source bucket")
+    return (f"s3://{source.netloc}/"
+            f"{runtime_stage.result_key(run_subdir, agent_id, handoff_id)}")
+
+
+def _result_upload_command(result_uri: str, path: str, region: str) -> str:
+    destination = urlsplit(result_uri)
+    if destination.scheme != "s3" or not destination.netloc or not destination.path:
+        raise RoleExecutionError("ARTIFACT_TRANSFER_ERROR: invalid result destination")
+    # Single-part PutObject supplies a whole-object SHA-256. The role's IAM policy
+    # requires If-None-Match: *; s3 cp can neither enforce this nor replace an input.
+    return (
+        f"aws s3api put-object --bucket {shlex.quote(destination.netloc)} "
+        f"--key {shlex.quote(destination.path.lstrip('/'))} "
+        f"--body {shlex.quote(path)} --content-type application/gzip "
+        f"--checksum-algorithm SHA256 --if-none-match '*' "
+        f"--region {shlex.quote(region)} >/dev/null"
+    )
+
+
+def _accept_result(run_subdir: str, agent_id: str, handoff_id: str,
+                   region: str) -> dict[str, str]:
+    import runtime_stage  # noqa: PLC0415
+    try:
+        return runtime_stage.accept_result(run_subdir, agent_id, handoff_id, region)
+    except Exception as exc:
+        raise RoleExecutionError(
+            f"ARTIFACT_TRANSFER_ERROR: {agent_id}'s exact result archive could not "
+            f"be verified and sealed: {exc}") from exc
+
+
 def _build_command(agent_id: str, prompt: str, run_subdir: str,
                    artifact_rel: str | None, model: str, region: str,
                    nonce: str, archive_uri: str | None = None,
-                   skills_uri: str | None = None) -> str:
+                   skills_uri: str | None = None,
+                   result_uri: str | None = None) -> str:
     """The one shell line dispatched into the runtime.
 
     Downloads the exact tracked checkout archive, creates one linked Git worktree
@@ -354,13 +404,16 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     run regardless, and the captured exit code reflects the CLI itself.
     """
     # Fresh local paths per turn prevent files from a failed/previous shell leaking
-    # into this attempt. The stable S3 object is the continuity boundary; the seed
-    # owns common Git metadata and the role edits only its linked worktree.
+    # into this attempt. Only the coordinator can advance the stable input object;
+    # the role creates one new output and edits only its linked local worktree.
     workdir = f"/tmp/workshop-{nonce}"
     seed_dir = f"/tmp/workshop-seed-{nonce}"
     source_archive = f"/tmp/workshop-source-{nonce}.tar.gz"
     result_archive = f"/tmp/workshop-result-{nonce}.tar.gz"
     archive_uri = archive_uri or f"s3://workshop-runtime-exchange/{run_subdir}.tar.gz"
+    result_uri = result_uri or _result_destination(
+        archive_uri, run_subdir, agent_id, uuid.uuid4().hex)
+    upload = _result_upload_command(result_uri, result_archive, region)
     branch = worktree_branch(run_subdir)
     # Every role uses the Runtime's own region, including Codex's Runtime
     # Responses provider. There is no Mantle-region override.
@@ -467,9 +520,7 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
         f"-czf {shlex.quote(result_archive)} .; "
         f"__pack_rc=$?; "
         f"if [ $__pack_rc -eq 0 ]; then "
-        f"aws s3 cp {shlex.quote(result_archive)} "
-        f"{shlex.quote(archive_uri)} --region {shlex.quote(cli_region)} "
-        "--only-show-errors; __pack_rc=$?; fi; "
+        f"{upload}; __pack_rc=$?; fi; "
         f"rm -f {shlex.quote(result_archive)}; "
         f"rm -rf {shlex.quote(workdir)} {shlex.quote(seed_dir)}; "
         f"printf '\\n%s\\n' \"$E1\"; "
@@ -481,7 +532,8 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
 def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
                                    model: str, region: str, nonce: str,
                                    archive_uri: str,
-                                   skills_uri: str | None = None) -> dict[str, str]:
+                                   skills_uri: str | None = None,
+                                   handoff_id: str | None = None) -> dict[str, str]:
     """Build the two commands used by a console-muxed interactive dispatch.
 
     ``launch`` hydrates the same immutable source archive and named local Git
@@ -495,6 +547,9 @@ def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
     seed_dir = f"/tmp/workshop-seed-{nonce}"
     source_archive = f"/tmp/workshop-source-{nonce}.tar.gz"
     result_archive = f"/tmp/workshop-result-{nonce}.tar.gz"
+    handoff_id = handoff_id or uuid.uuid4().hex
+    output = _result_destination(archive_uri, run_subdir, agent_id, handoff_id)
+    upload = _result_upload_command(output, result_archive, region)
     branch = worktree_branch(run_subdir)
     role = _role(agent_id)
 
@@ -570,14 +625,13 @@ def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
         f"if [ $__pack_rc -eq 0 ]; then tar -C {shlex.quote(workdir)} "
         f"{tar_excludes} -czf {shlex.quote(result_archive)} .; "
         f"__pack_rc=$?; fi; "
-        f"if [ $__pack_rc -eq 0 ]; then aws s3 cp "
-        f"{shlex.quote(result_archive)} {shlex.quote(archive_uri)} "
-        f"--region {shlex.quote(region)} --only-show-errors; "
+        f"if [ $__pack_rc -eq 0 ]; then {upload}; "
         f"__pack_rc=$?; fi; rm -f {shlex.quote(result_archive)}; "
         f"echo \"$E1\"; exit $__pack_rc\n"
     )
     return {"launch": launch + "\n", "snapshot": snapshot,
-            "workdir": workdir, "user_id": user_id, "nonce": nonce}
+            "workdir": workdir, "user_id": user_id, "nonce": nonce,
+            "handoff_id": handoff_id}
 
 
 # Opening a shell starts the session's microVM when it is new, and the SDK gives the
@@ -629,6 +683,21 @@ async def _open_shell(client: Any, runtime_arn: str, session_id: str, shell_id: 
 async def _drive_shell(runtime_arn: str, command: str, region: str,
                        on_line: Callable[[str], None] | None,
                        timeout_s: float, session_id: str) -> dict[str, Any]:
+    """Distinguish failure before delivery from unknown remote completion."""
+    execution: dict[str, bool] = {}
+    try:
+        return await _drive_shell_connected(
+            runtime_arn, command, region, on_line, timeout_s, session_id, execution)
+    except BaseException as exc:
+        if execution.get("attempted") and not execution.get("exited"):
+            raise RemoteExecutionUnsettled(runtime_arn, session_id, str(exc)) from exc
+        raise
+
+
+async def _drive_shell_connected(runtime_arn: str, command: str, region: str,
+                                 on_line: Callable[[str], None] | None,
+                                 timeout_s: float, session_id: str,
+                                 execution: dict[str, bool]) -> dict[str, Any]:
     """Run in a PTY and capture the command's actual exit code."""
     from bedrock_agentcore.runtime.shell import ShellChannel  # noqa: PLC0415
     client = _client(region)
@@ -646,6 +715,8 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
         # both with zero output) until killed by hand. A run that hangs reports no
         # verdict at all, which is worse than any red gate, so the wall clock -- not
         # the peer -- has to decide when to give up.
+        # A failed send can be ambiguous: bytes may have reached the Runtime.
+        execution["attempted"] = True
         await asyncio.wait_for(shell.send(typeable(command)),
                                timeout=max(1.0, deadline - time.monotonic()))
         frames = shell.__aiter__()
@@ -697,6 +768,7 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
                 out.append(frame.text)
             elif ch == ShellChannel.STATUS:
                 exit_code = _exit_from_status(frame)
+                execution["exited"] = type(exit_code) is int
                 break
             elif ch == ShellChannel.CLOSE:
                 break
@@ -708,6 +780,7 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
         # on the shell. CLOSE alone means eviction/disconnection, never success.
         if exit_code is None and type(getattr(shell, "exit_code", None)) is int:
             exit_code = shell.exit_code
+        execution["exited"] = type(exit_code) is int
     if exit_code is None:
         raise RoleExecutionError(
             "ROLE_EXECUTION_ERROR: runtime shell closed without a command exit code; "
@@ -897,6 +970,8 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     nonce = uuid.uuid4().hex[:12]
     import runtime_stage  # noqa: PLC0415
     archive_uri = runtime_stage.archive_uri(run_subdir, region)
+    handoff_id = uuid.uuid4().hex
+    output = _result_destination(archive_uri, run_subdir, agent_id, handoff_id)
     run_id = run_subdir.replace("\\", "/").split("/", 1)[0]
     skills_uri = runtime_stage.skills_archive_uri(run_id, agent_id, region)
     # runtimeSessionId must be >= 33 chars (AgentCore command-shell constraint);
@@ -904,14 +979,17 @@ def _dispatch_once(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
     session_id = "rex-" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
     command = _build_command(
         agent_id, prompt, run_subdir, artifact_rel, model, region, nonce,
-        archive_uri=archive_uri, skills_uri=skills_uri)
+        archive_uri=archive_uri, skills_uri=skills_uri, result_uri=output)
     # asyncio.run needs no running loop; the engine calls this from a worker
     # thread that has none, so run directly.
     result = asyncio.run(_drive_shell(runtime_arn, command, region, on_line,
                                       timeout_s, session_id))
     transcript = _slice(result["raw"], f"{_RUN_BEGIN}-{nonce}", f"{_RUN_END}-{nonce}")
+    receipt = {}
+    if result["exit"] == 0:
+        receipt = _accept_result(run_subdir, agent_id, handoff_id, region)
     return {"exit": result["exit"], "transcript": transcript,
-            "session_id": result["session_id"]}
+            "session_id": result["session_id"], "archive_receipt": receipt}
 
 
 # A bash prompt at the END of an interactive transcript means the role's TUI is no
@@ -958,10 +1036,11 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                       prompt: str, run_subdir: str, artifact_rel: str | None,
                       region: str, snapshot_command: str, nonce: str,
                       on_line: Callable[[str], None] | None,
-                      timeout_s: float) -> dict[str, Any]:
+                      timeout_s: float, handoff_id: str) -> dict[str, Any]:
     """Drive one native TUI turn, then seal and upload its isolated worktree."""
     session.busy = True
     transcript = ""
+    turn_attempted, turn_settled = False, False
     try:
         if not session.wait_ready(timeout_s=min(120.0, timeout_s)):
             raise RoleExecutionError(
@@ -971,6 +1050,7 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
         session.emit_banner(
             f"run {run_subdir}: {prompt[:120]}"
             + ("..." if len(prompt) > 120 else ""))
+        turn_attempted = True
         session.send_turn(prompt)
         quiet_s = float(os.environ.get("WORKSHOP_TURN_QUIET_S", "20"))
         if not session.wait_turn_idle(quiet_s=quiet_s, timeout_s=timeout_s):
@@ -993,6 +1073,7 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                 on_line(line)
             on_line(f"{_RUN_END}-{nonce}")
         if _tui_exited_to_shell(transcript):
+            turn_settled = True  # the CLI exited; this is a known failed turn
             # The TUI is gone and a shell prompt is what went quiet. Whatever put it
             # there (a first-run dialog answered by the pasted prompt, a crash, a
             # CLI that refused to start) is the launcher's or the platform's failure,
@@ -1005,6 +1086,7 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                 f"ROLE_EXECUTION_ERROR: {agent_id}'s interactive TUI exited to a "
                 "shell prompt before the turn ran; this is a launcher or platform "
                 f"failure, not the request. Transcript tail:\n{transcript[-900:]}")
+        turn_settled = True
 
         # The snapshot MUST run in the PTY's OWN session. A runtimeSessionId is a
         # microVM: a fresh session id gets a fresh /tmp, so a snapshot opened under its
@@ -1023,11 +1105,15 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                 f"ARTIFACT_TRANSFER_ERROR: {agent_id} finished its interactive "
                 f"turn but the isolated worktree snapshot failed (exit "
                 f"{result['exit']}):\n{snapshot_transcript[-600:]}")
+        receipt = _accept_result(run_subdir, agent_id, handoff_id, region)
         session.busy = False
         session.emit_banner(
-            "result snapshot uploaded; this PTY remains interactive")
-    except Exception:
+            "result snapshot verified and sealed; this PTY remains interactive")
+    except BaseException as exc:
         session.busy = False
+        if turn_attempted and not turn_settled:
+            raise RemoteExecutionUnsettled(
+                runtime_arn, session.session_id, str(exc)) from exc
         raise
 
     artifact = ""
@@ -1040,7 +1126,8 @@ def _run_in_muxed_pty(session: Any, runtime_arn: str, agent_id: str,
                 f"{artifact_rel} is missing/empty in its uploaded snapshot; "
                 f"transcript tail:\n{transcript[-600:]}")
     return {"exit": 0, "transcript": transcript, "artifact": artifact,
-            "session_id": session.session_id, "live_session": True}
+            "session_id": session.session_id, "live_session": True,
+            "archive_receipt": receipt}
 
 
 def _read_artifact_from_runtime(runtime_arn: str, run_subdir: str,
@@ -1160,7 +1247,7 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
         result = _run_in_muxed_pty(
             live, runtime_arn, agent_id, prompt, run_subdir, artifact_rel,
             region, interactive["snapshot"], interactive["nonce"], on_line,
-            timeout_s)
+            timeout_s, interactive["handoff_id"])
         if model_quota_exhausted(result["transcript"]):
             raise ModelQuotaError(
                 f"MODEL_QUOTA_EXHAUSTED: {agent_id} could not start because the "
@@ -1213,11 +1300,9 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
             f"ROLE_EXECUTION_ERROR: {agent_id} CLI exited {run['exit']} in its "
             f"runtime; transcript tail:\n{transcript[-600:]}")
 
-    # A NAMED artifact is read back in a SEPARATE session, with retries; S3Files
-    # write-back can lag a beat behind the CLI's own "file written" return. Only the
-    # validator's authored check is named: builders decide their own files, so their
-    # output is read as a whole tree by the caller, and "wrote nothing at all" is the
-    # failure signal there (engine._require_work) rather than a missing filename.
+    # Only the validator's authored check is named. The exact successful output
+    # has already passed the authenticated archive handoff; read that sealed input,
+    # never an old archive as a fallback when the new upload is missing.
     artifact = ""
     if artifact_rel:
         artifact = _read_artifact_from_runtime(runtime_arn, run_subdir,
@@ -1227,4 +1312,4 @@ def run_in_runtime(runtime_arn: str, agent_id: str, prompt: str, run_subdir: str
                 f"ROLE_EXECUTION_ERROR: {agent_id} finished but {artifact_rel} is "
                 f"missing/empty in the runtime after retries; transcript tail:\n{transcript[-600:]}")
     return {"exit": run["exit"], "transcript": transcript, "artifact": artifact,
-            "session_id": session_id}
+            "session_id": session_id, "archive_receipt": run.get("archive_receipt", {})}

@@ -7,8 +7,9 @@ run routed, with the edges that encode the one structural rule of the harness:
 
     every builder  ->  the checker
 
-and nothing else. Builders have no dependencies, so Strands runs them as one parallel
-entry batch, exactly as the threads did; the checker runs after them.
+Builders have no dependencies, so Strands runs them as one parallel entry batch,
+exactly as the threads did; the checker runs after them. A scheduler-only marker in
+that batch also points to the checker, so failed builders cannot prune the join.
 
 ## The line that does not move
 
@@ -23,7 +24,7 @@ WHO RUNS AND WHEN, and it decides nothing about the outcome:
     the checker still has to look at whatever WAS written. A red gate is a real
     verdict; a hang is no verdict at all, which is strictly worse.
 
-## Two Strands behaviors this code has to be explicit about
+## Strands behaviors this code has to be explicit about
 
 1. **A node fires when ANY incoming edge is satisfied**, not all of them
    (``Graph._is_node_ready_with_conditions`` returns True on the first satisfied
@@ -34,6 +35,11 @@ WHO RUNS AND WHEN, and it decides nothing about the outcome:
    total node runs so a mis-specified graph cannot spin; the engine's bounded
    re-implement round (``reviewer.MAX_REVIEW_ROUNDS``) remains the loop bound that
    matters, and it lives outside this graph.
+3. **Failed nodes do not nominate successors.** Strands 1.62 prunes their outgoing
+   edges before evaluating conditions. A no-op marker in the builder batch gives
+   the checker a completion edge even when every builder failed. Its edge uses the
+   SAME ``all_builders_done`` condition; each builder and the graph still report
+   FAILED. The marker is scheduling only, never a role, artifact, or verdict.
 """
 
 from __future__ import annotations
@@ -112,6 +118,12 @@ def _role_node_cls() -> Any:
             t0 = time.monotonic()
             try:
                 await asyncio.to_thread(self._dispatch)
+            except asyncio.CancelledError as exc:
+                # Cancellation does not stop the synchronous worker. Do not make
+                # it a finished predecessor that could release the checker early.
+                # run_graph drains that worker before returning to the engine.
+                self.error = exc
+                raise
             except BaseException as exc:      # noqa: BLE001 (recorded, not swallowed)
                 # Record it and report the node FAILED, rather than letting the
                 # exception abort the graph. The engine's real record of the failure is
@@ -163,13 +175,26 @@ def build_graph(agent_ids: list[str], dispatch_for: Callable[[str], Callable[[],
     partial = sorted(set(checker_waits_for or ()) & set(builders))
     if routed_checkers and partial and len(partial) < len(builders):
         def chain() -> None:
+            import contextvars
             import threading
-            threads = [threading.Thread(target=dispatch_for(b), name=f"role-{b}")
-                       for b in partial]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+            # asyncio.to_thread copies the bound repository and submitter. These
+            # manually-created child threads need the same explicit propagation.
+            threads = [
+                threading.Thread(target=contextvars.copy_context().run,
+                                 args=(dispatch_for(b),), name=f"role-{b}")
+                for b in partial
+            ]
+            started = []
+            try:
+                for t in threads:
+                    t.start()
+                    started.append(t)
+            finally:
+                # A later start can fail after an earlier child is running.
+                # These children are not the loop's executor threads, so this
+                # chain must join them before its own worker can finish.
+                for t in started:
+                    t.join()
             for checker in routed_checkers:
                 dispatch_for(checker)()
             # The engine's deterministic finalization for whatever is already green,
@@ -208,10 +233,23 @@ def build_graph(agent_ids: list[str], dispatch_for: Callable[[str], Callable[[],
         for b in builders:
             builder.add_edge(b, checker, condition=all_builders_done)
 
+    extra_nodes = 0
+    if builders and routed_checkers:
+        # The SDK considers successors only after this entire parallel batch has
+        # returned. Keep a successful scheduling edge available when every real
+        # builder returned FAILED; never relabel a builder as successful to do it.
+        batch_id = "_builder_batch"
+        while batch_id in nodes:
+            batch_id += "_"
+        builder.add_node(node_cls(batch_id, lambda: None), node_id=batch_id)
+        for checker in routed_checkers:
+            builder.add_edge(batch_id, checker, condition=all_builders_done)
+        extra_nodes = 1
+
     # Backstop only: one execution per node, plus headroom, so a mis-specified graph
     # cannot spin. The loop bound that matters (the single re-implement round) is the
     # engine's, outside this graph.
-    builder.set_max_node_executions(len(agent_ids) + 1)
+    builder.set_max_node_executions(len(agent_ids) + extra_nodes + 1)
     if execution_timeout:
         builder.set_execution_timeout(execution_timeout)
     graph = builder.build()
@@ -226,4 +264,27 @@ def run_graph(graph: Any) -> Any:
     means, and this module never converts a failure into a pass.
     """
     import asyncio
-    return asyncio.new_event_loop().run_until_complete(graph.invoke_async(""))
+    loop = asyncio.new_event_loop()
+
+    async def drain() -> None:
+        # Cancelling asyncio.to_thread does not stop its synchronous worker. In
+        # particular the partial chain can still publish/merge a PR. Never return
+        # to engine finalization and release repository admission while that code
+        # is running. The existing Runtime dispatch deadlines bound each call; a
+        # truly wedged call keeps admission closed for operator recovery.
+        pending = {task for task in asyncio.all_tasks(loop)
+                   if task is not asyncio.current_task(loop)}
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await loop.shutdown_asyncgens()
+        await loop.shutdown_default_executor()
+
+    try:
+        return loop.run_until_complete(graph.invoke_async(""))
+    finally:
+        try:
+            loop.run_until_complete(drain())
+        finally:
+            loop.close()

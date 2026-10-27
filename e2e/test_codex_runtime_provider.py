@@ -328,6 +328,8 @@ def test_direct_dispatch_executes_in_a_local_worktree_and_returns_its_real_exit(
     archive = tmp_path / "exchange.tar.gz"
     with tarfile.open(archive, "w:gz") as handle:
         handle.add(seed / "input.txt", arcname="input.txt")
+    original_input = archive.read_bytes()
+    result_archive = tmp_path / "producer-result.tar.gz"
     home = Path(cli_env["HOME"])
     shutil.copyfile(HARNESS / "AGENTS.md", home / "AGENTS.md")
     bin_dir = Path(cli_env["PATH"].split(os.pathsep)[0])
@@ -343,12 +345,20 @@ def test_direct_dispatch_executes_in_a_local_worktree_and_returns_its_real_exit(
     (bin_dir / "aws").write_text(f"#!{sys.executable}\n" + """
 import os, pathlib, shutil, sys
 args = sys.argv[1:]
-assert args[:2] == ["s3", "cp"], args
 assert args[args.index("--region") + 1] == "us-east-1", args
-source, target = args[2:4]
-exchange = os.environ["TEST_EXCHANGE_ARCHIVE"]
-shutil.copyfile(exchange if source.startswith("s3://") else source,
-                exchange if target.startswith("s3://") else target)
+if args[:2] == ["s3", "cp"]:
+    source, target = args[2:4]
+    assert source == "s3://offline/exchange.tar.gz" and not target.startswith("s3://")
+    shutil.copyfile(os.environ["TEST_EXCHANGE_ARCHIVE"], target)
+else:
+    assert args[:2] == ["s3api", "put-object"], args
+    assert args[args.index("--bucket") + 1] == "offline"
+    assert args[args.index("--key") + 1] == os.environ["TEST_RESULT_KEY"]
+    assert args[args.index("--if-none-match") + 1] == "*"
+    assert args[args.index("--checksum-algorithm") + 1] == "SHA256"
+    payload = pathlib.Path(args[args.index("--body") + 1]).read_bytes()
+    with pathlib.Path(os.environ["TEST_RESULT_ARCHIVE"]).open("xb") as output:
+        output.write(payload)
 """)
     (bin_dir / "aws").chmod(0o755)
     # Record the boundary inside the actual hydrated Git worktree.
@@ -368,15 +378,19 @@ raise SystemExit(29)
 """)
     (bin_dir / "codex").chmod(0o755)
     nonce = uuid.uuid4().hex
+    result_key = f"runtime-exchange/roles/codex/run_offline/work/frontend/{nonce}.tar.gz"
     command = runtime_exec._build_command(
         "codex", "a request with $(touch must-not-run) and 'quotes'",
         "run_offline/work/frontend", None, "us.openai.task-override", "us-east-1",
-        nonce, archive_uri="s3://offline/exchange.tar.gz")
-    cli_env.update(AWS_REGION="us-east-1", TEST_EXCHANGE_ARCHIVE=str(archive))
+        nonce, archive_uri="s3://offline/exchange.tar.gz",
+        result_uri=f"s3://offline/{result_key}")
+    cli_env.update(AWS_REGION="us-east-1", TEST_EXCHANGE_ARCHIVE=str(archive),
+                   TEST_RESULT_ARCHIVE=str(result_archive), TEST_RESULT_KEY=result_key)
     try:
         result = _boot(cli_env, "bash", "-c", command)
         assert result.returncode == 29, result.stderr
-        with tarfile.open(archive) as handle:
+        assert archive.read_bytes() == original_input
+        with tarfile.open(result_archive) as handle:
             members = handle.getnames()
             receipt_name = next(n for n in members
                                 if Path(n).name == "boundary-receipt.json")
@@ -407,7 +421,8 @@ def _deploy_module(tmp_path, monkeypatch, *, region="us-east-1", ap_region=None,
     role = folder / "codex"
     role.mkdir(parents=True)
     shutil.copyfile(HARNESS / "deploy.py", role / "deploy.py")
-    for name in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+    for name in ("runtime_deploy.py", "team_exchange_policy.py",
+                 "cli_versions.py", "cli-versions.json"):
         shutil.copyfile(ROOT / "coding-agents" / name, folder / name)
     ap = f"arn:aws:s3files:{ap_region or region}:123456789012:file-system/fs-one/access-point/ap-one"
     (folder / "infra.config").write_text(

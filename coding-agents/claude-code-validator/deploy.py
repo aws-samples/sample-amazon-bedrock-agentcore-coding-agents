@@ -105,9 +105,8 @@ def execution_role_documents() -> tuple[str, dict, dict]:
         *runtime_deploy.ecr_statements(ECR_URI, default_repo='coding-agents-claude-code',
                                        account_id=ACCOUNT_ID, region=REGION),
         *runtime_deploy.storage_statements(_s3files_policy_resources(), region=REGION,
-                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET),
-        runtime_deploy.gateway_statement(REGION, ACCOUNT_ID),
-        runtime_deploy.eventbridge_statement(),
+                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET,
+                                           role_id="claude-code-validator"),
     ]
     return (f"agentcore-{AGENT_NAME}-{REGION}-role",
             runtime_deploy.trust_policy(REGION, ACCOUNT_ID), runtime_deploy.policy(statements))

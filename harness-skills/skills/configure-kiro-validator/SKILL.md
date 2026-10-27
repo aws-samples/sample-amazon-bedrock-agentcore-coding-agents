@@ -127,6 +127,17 @@ executable is stored separately, so source inspection sees only the application'
 files. Resolve the application from the environment or cwd, not the check's
 own file location.
 
+Keep test doubles local to the probe that needs them. Control time or randomness
+in an isolated context, or restore replaced values in a `finally` block before
+other probes. Preserve the runtime APIs used by the application and its dependencies.
+Report a failure caused by the checking environment as such.
+
+Observe the precondition before asserting the outcome. When timing or randomness
+matters, use controlled inputs or observed state to reach the required condition.
+A fixed input sequence alone does not prove it occurred. If the precondition remains
+unverified, report that limitation and fail; do not attribute an unproven defect to
+the application.
+
 Size any readiness poll against that budget, and **never below 60 seconds**. A
 deliverable's first start may install declared dependencies and take much longer
 than a warm restart. Checks that allowed 15-20s produced red gates on services

@@ -433,7 +433,13 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
         options: dict[str, Any] = {"chat_request": request_provenance or {}}
         if origin:
             options["origin"] = dict(origin)
-        run = ENGINE.submit(task, agents=agents, preset=preset, options=options)
+        try:
+            run = ENGINE.submit(task, agents=agents, preset=preset, options=options)
+        except _engine.repository_admission.RepositoryBusy as exc:
+            raise UserRequestError(f"BUILD_ALREADY_RUNNING:{exc.run_id}") from exc
+        except _engine.repository_admission.AdmissionUnavailable as exc:
+            _event_log.warning("RUN_STATE_UNAVAILABLE %s: %r", exc.code, exc.__cause__)
+            raise UserRequestError(f"RUN_STATE_UNAVAILABLE:{exc.code}") from exc
         if request.ledger is not None:
             request.ledger.record_dispatch(request, run.run_id, {
                 "task": task, "preset": preset, "agent": agent_id,
@@ -543,8 +549,10 @@ def _running_build() -> str | None:
     session's ENGINE knows only its own runs and the S3 mirror is the only place a
     sibling session's build is visible. ``run_store.active_runs`` therefore requires
     that mirror and raises ``RunStateUnavailable`` on any list or get failure, which
-    the caller answers as RUN_STATE_UNAVAILABLE. This is a check, not a lock: two
-    comments seconds apart can both see nothing and both start."""
+    the caller answers as RUN_STATE_UNAVAILABLE. This compatibility check sees
+    runs created before repository claims were introduced. Engine.submit acquires
+    the actual atomic claim, so simultaneous empty listings cannot start two
+    builds. Claims never expire merely because this history heartbeat is stale."""
     for run in ENGINE.list():
         if getattr(run, "status", None) in ("queued", "running"):
             return run.run_id
@@ -640,7 +648,10 @@ def _admit_event_build(idea: str, origin: dict) -> dict:
     # workshop user, so dispatch never assumes the per-user cost role for it
     # (UserIdentity.attributes_cost): each role's commands run exactly as for ./ask.sh.
     set_current_identity(UserIdentity(user_id=f"github:{login}", name=login))
-    with bind_user_request(event_prompt(idea), ledger=RequestLedger()):
+    # Freeze the repository already validated above; a Settings edit between
+    # event validation and Engine.submit cannot redirect this event's work.
+    with (_github.bind_repository(f"{origin['owner']}/{origin['repo']}"),
+          bind_user_request(event_prompt(idea), ledger=RequestLedger())):
         result = json.loads(_run_build_impl(
             task="", preset=EVENT_PRESET, creative_direction=idea, origin=origin))
     if result.get("error"):

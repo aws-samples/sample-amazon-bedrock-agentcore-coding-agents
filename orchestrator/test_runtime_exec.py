@@ -197,8 +197,11 @@ def test_interactive_dispatch_keeps_local_worktree_and_archive_boundary(monkeypa
     assert "/app/run.sh --model amazon-bedrock/model" in spec["launch"]
     assert "/mnt/s3files" not in spec["launch"]
     assert "tar -C /tmp/workshop-mux123" in spec["snapshot"]
-    assert "aws s3 cp /tmp/workshop-result-mux123.tar.gz " \
-           "s3://bucket/run_1/work/frontend.tar.gz" in spec["snapshot"]
+    assert "aws s3api put-object --bucket bucket " \
+           "--key runtime-exchange/roles/opencode/run_1/work/frontend/" in spec["snapshot"]
+    assert "--body /tmp/workshop-result-mux123.tar.gz" in spec["snapshot"]
+    assert "--checksum-algorithm SHA256 --if-none-match '*'" in spec["snapshot"]
+    assert "s3://bucket/run_1/work/frontend.tar.gz" not in spec["snapshot"]
 
 
 def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatch):
@@ -236,7 +239,8 @@ def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatc
         runtime_exec, "_interactive_dispatch_commands",
         lambda *_args, **_kwargs: {
             "launch": "launch\n", "snapshot": "snapshot\n",
-            "workdir": "/tmp/work", "user_id": "user", "nonce": "mux123"})
+            "workdir": "/tmp/work", "user_id": "user", "nonce": "mux123",
+            "handoff_id": "a" * 32})
     monkeypatch.setattr(runtime_exec, "_live_session_for", lambda *_args: session)
     monkeypatch.setattr(
         runtime_exec, "_dispatch_once",
@@ -250,6 +254,9 @@ def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatc
                 "exit": 0, "session_id": "snap"}
 
     monkeypatch.setattr(runtime_exec, "_drive_shell", snapshot)
+    accepted = []
+    monkeypatch.setattr(runtime_exec, "_accept_result",
+                        lambda *args: accepted.append(args) or {"sha256": "sealed"})
     out = runtime_exec.run_in_runtime(
         runtime_arn=session.runtime_arn, agent_id="claude-code",
         prompt="build it", run_subdir="run_1/work/backend",
@@ -258,6 +265,8 @@ def test_console_dispatch_muxes_the_native_tui_and_uploads_a_snapshot(monkeypatc
     assert session.busy is False
     assert out["live_session"] is True
     assert out["session_id"] == session.session_id
+    assert accepted == [("run_1/work/backend", "claude-code", "a" * 32, "us-west-2")]
+    assert out["archive_receipt"]["sha256"] == "sealed"
 
 
 class _MuxSession:
@@ -292,6 +301,7 @@ def _mux_snapshot_ok(monkeypatch, seen_sessions=None):
         return {"raw": ("__ROLE_RUN_BEGIN__-mux123\nsnapshot uploaded\n"
                         "__ROLE_RUN_END__-mux123\n"), "exit": 0, "session_id": "snap"}
     monkeypatch.setattr(runtime_exec, "_drive_shell", snapshot)
+    monkeypatch.setattr(runtime_exec, "_accept_result", lambda *_args: {})
 
 
 def test_the_snapshot_runs_in_the_ptys_own_session(monkeypatch):
@@ -305,7 +315,7 @@ def test_the_snapshot_runs_in_the_ptys_own_session(monkeypatch):
     session = _MuxSession("built it\n")
     runtime_exec._run_in_muxed_pty(
         session, session.runtime_arn, "claude-code", "build it", "run_1/work/backend",
-        None, "us-west-2", "snapshot\n", "mux123", None, 600.0)
+        None, "us-west-2", "snapshot\n", "mux123", None, 600.0, "a" * 32)
     assert sessions == [session.session_id], \
         "the snapshot must share the PTY's microVM, not open a fresh one"
 
@@ -318,7 +328,7 @@ def test_an_interactive_turn_reaches_the_watcher_inside_the_same_window(monkeypa
     seen: list[str] = []
     out = runtime_exec._run_in_muxed_pty(
         session, session.runtime_arn, "claude-code", "build it", "run_1/work/backend",
-        None, "us-west-2", "snapshot\n", "mux123", seen.append, 600.0)
+        None, "us-west-2", "snapshot\n", "mux123", seen.append, 600.0, "a" * 32)
     assert out["live_session"] is True
     markers = [runtime_exec.run_window_marker(l) for l in seen]
     assert markers[0] == "begin" and markers[-1] == "end"
@@ -338,7 +348,8 @@ def test_a_tui_that_quit_to_a_shell_is_a_launcher_failure_not_the_roles(monkeypa
     with pytest.raises(runtime_exec.RoleExecutionError) as excinfo:
         runtime_exec._run_in_muxed_pty(
             session, session.runtime_arn, "claude-code", "build it",
-            "run_1/work/backend", None, "us-west-2", "snapshot\n", "mux123", None, 600.0)
+            "run_1/work/backend", None, "us-west-2", "snapshot\n", "mux123", None,
+            600.0, "a" * 32)
     msg = str(excinfo.value)
     assert "exited to a shell prompt" in msg and "launcher or platform" in msg
     assert "Quick safety check" in msg, "the evidence must travel with the error"
@@ -506,10 +517,7 @@ def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
     )
     assume = cmd.index("__ASSUME_USER_CREDENTIALS__")
     subshell_end = cmd.index("); __rc=$?", assume)
-    upload = cmd.index(
-        f"aws s3 cp /tmp/workshop-result-abc123.tar.gz {archive}",
-        subshell_end,
-    )
+    upload = cmd.index("aws s3api put-object --bucket bucket", subshell_end)
     assert download < worktree < assume < subshell_end < upload
 
 
@@ -530,7 +538,8 @@ def _dispatched(agent_id, monkeypatch, identity, peruser=_PERUSER):
         monkeypatch.delenv("PERUSER_ROLE_ARN", raising=False)
     headless = runtime_exec._build_command(
         agent_id, "check the work", "run_1/work/validate", None, "m", "us-west-2", "n1",
-        archive_uri="s3://bucket/run_1/work/validate.tar.gz")
+        archive_uri="s3://bucket/run_1/work/validate.tar.gz",
+        result_uri=f"s3://bucket/runtime-exchange/roles/{agent_id}/fixture.tar.gz")
     tui = runtime_exec._interactive_dispatch_commands(
         agent_id, "run_1/work/validate", "m", "us-west-2", "n1",
         "s3://bucket/run_1/work/validate.tar.gz")["launch"]
@@ -617,7 +626,7 @@ def test_every_api_key_role_materializes_its_credential_on_dispatch():
         fetch = cmd.index(f"export {role.api_key_env}")
         cd_workdir = cmd.index("cd /tmp/workshop-n1")
         subshell_end = cmd.index("); __rc=$?", fetch)
-        upload = cmd.index("aws s3 cp /tmp/workshop-result-n1.tar.gz", subshell_end)
+        upload = cmd.index("aws s3api put-object", subshell_end)
         assert cd_workdir < fetch < subshell_end < upload
 
 

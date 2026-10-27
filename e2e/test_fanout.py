@@ -80,7 +80,7 @@ def _session(tmp_path: Path, bare: Path, index: int, name: str, env=None) -> sub
     scratch.mkdir()
     command = fanout.agent_command(index, name, str(bare), "item {n} as {name}", agents=3,
                                    clone_dir=str(scratch / "lid"), scratch=str(scratch),
-                                   launcher=_launcher(tmp_path), peer_wait=0)
+                                   launcher=_launcher(scratch), peer_wait=0)
     return subprocess.run(shlex.split(command), capture_output=True, text=True,
                           env={**dict(__import__("os").environ), **(env or {})}, timeout=60)
 
@@ -200,7 +200,9 @@ def test_the_host_checks_each_branch_out_as_a_worktree_and_reads_it(shared, tmp_
     for i in (1, 2):
         assert _session(tmp_path, bare, i, f"feature-{i:02d}").returncode == 0
     out = tmp_path / "arcade"
-    tiles = [fanout.Tile(i, f"feature-{i:02d}", pushed="x") for i in (1, 2)]
+    tiles = [fanout.Tile(i, f"feature-{i:02d}",
+                         pushed=fanout.git(bare, "rev-parse", f"worktree-feature-{i:02d}"))
+             for i in (1, 2)]
     for t in tiles:
         fanout.collect(t, repo, remote, "main", out)
     listed = fanout.worktrees(repo)
@@ -221,6 +223,11 @@ def test_a_second_run_moves_the_worktree_to_the_new_branch_but_never_your_edits(
     assert _session(tmp_path, bare, 1, "feature-01").returncode == 0
     fanout.collect(fanout.Tile(1, "feature-01"), repo, remote, "main", out)
     first = fanout.git(out / "feature-01", "rev-parse", "HEAD")
+    # Change the input, so a fast run cannot produce the same tree, parent and
+    # second-resolution commit timestamp as its predecessor.
+    (repo / "CLAUDE.md").write_text(RULES + "- Show the feature in the title.\n")
+    fanout.git(repo, "commit", "-qam", "Update the shared house rules")
+    fanout.git(repo, "push", "-q", remote, "main")
     shutil.rmtree(tmp_path / "vm-01")
     assert _session(tmp_path, bare, 1, "feature-01").returncode == 0, "a rerun replaces its own branch"
     again = fanout.Tile(1, "feature-01")
@@ -228,6 +235,8 @@ def test_a_second_run_moves_the_worktree_to_the_new_branch_but_never_your_edits(
     second = fanout.git(out / "feature-01", "rev-parse", "HEAD")
     assert second != first and second == fanout.git(bare, "rev-parse", "worktree-feature-01")
     (out / "feature-01" / "index.html").write_text("my own edit\n")
+    fanout.git(repo, "commit", "-q", "--allow-empty", "-m", "Next base revision")
+    fanout.git(repo, "push", "-q", remote, "main")
     shutil.rmtree(tmp_path / "vm-01")
     assert _session(tmp_path, bare, 1, "feature-01").returncode == 0
     kept = fanout.Tile(1, "feature-01")
@@ -274,12 +283,14 @@ def test_the_board_shows_branch_session_age_isolation_lines_and_title():
 
 
 def test_the_arcade_page_has_a_card_per_branch_linking_its_worktree(tmp_path):
-    tiles = [fanout.Tile(1, "feature-01", state="done", title="Dash: Boss <b>", lines="+9 -1",
+    tiles = [fanout.Tile(1, "feature-01", state="done", collected=True,
+                         title="Dash: Boss <b>", lines="+9 -1",
                          done_line="a boss fish"),
              fanout.Tile(2, "feature-02", state="failed", error="exit 1")]
     page = fanout.write_index(tmp_path, tiles, "Arcade").read_text()
     assert 'href="feature-01/"' in page and "Dash: Boss &lt;b&gt;" in page and "+9 -1" in page
     assert 'class="card failed"' in page and "exit 1" in page
+    assert 'href="feature-02/"' not in page and "Worktree unavailable" in page
 
 
 def test_an_index_someone_else_wrote_is_left_alone(tmp_path):
@@ -314,8 +325,11 @@ def test_a_session_that_failed_before_any_work_gets_one_new_session():
         calls.append(tile.session)
         if len(calls) == 1:
             tile.state, tile.error = "failed", "RuntimeClientError: x"
+            tile.started, tile.finished = 100.0, 101.0
             tile.errors.append("RuntimeClientError: x")
         else:
+            tile.started = 102.0
+            assert tile.elapsed(103.0) == 1.0, "the board must time the new session"
             tile.state, tile.up = "done", "25"
 
     tile = fanout.Tile(1, "feature-01")
@@ -347,7 +361,7 @@ def test_the_run_record_is_written_beside_the_worktrees(shared, tmp_path, monkey
         scratch.mkdir()
         cmd = fanout.agent_command(tile.index, tile.name, str(bare), "item {n}", agents=2,
                                    clone_dir=str(scratch / "lid"), scratch=str(scratch),
-                                   launcher=_launcher(tmp_path), peer_wait=0)
+                                   launcher=_launcher(scratch), peer_wait=0)
         run = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=60)
         for line in run.stdout.splitlines():
             fanout.read_line(tile, line)
@@ -361,10 +375,108 @@ def test_the_run_record_is_written_beside_the_worktrees(shared, tmp_path, monkey
     assert code == 0
     summary = json.loads((out / "fanout-summary.json").read_text())
     assert summary["agents"] == 2 and summary["pushed"] == 2 and summary["finished"] == 2
+    assert summary["collected"] == 2
     assert [b["branch"] for b in summary["branches"]] == ["worktree-feature-01", "worktree-feature-02"]
     assert summary["branches"][0]["title"] == "Mina's Dumpling Dash: feature-01"
     assert (out / "index.html").read_text().count('class="card done"') == 2
     assert len(fanout.worktrees(repo)) == 3, "the repository itself and one worktree per branch"
+
+
+def test_collect_recovers_a_delayed_git_object_without_another_agent(shared, tmp_path, monkeypatch):
+    """The actual event exhausted five fetches; the sixth must still be a Git transfer."""
+    repo, bare, remote, _ = shared
+    run = _session(tmp_path, bare, 13, "feature-13")
+    assert run.returncode == 0
+    expected = fanout.git(bare, "rev-parse", "worktree-feature-13")
+    assert len(expected) == 40 and f"PUSHED worktree-feature-13 {expected}" in run.stdout
+    tile = fanout.Tile(13, "feature-13", pushed=expected)
+    real_git, attempts, sleeps = fanout.git, [], []
+
+    def temporarily_unreadable(repo, *args, **kwargs):
+        if args[0] == "fetch":
+            attempts.append(kwargs["timeout"])
+            if len(attempts) <= 5:
+                raise fanout.GitError(f"fatal: git upload-pack: not our ref {expected}")
+        return real_git(repo, *args, **kwargs)
+
+    def pause(seconds):
+        assert fanout.GIT_LOCK.acquire(blocking=False), "other branches can collect during the wait"
+        fanout.GIT_LOCK.release()
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(fanout, "git", temporarily_unreadable)
+    monkeypatch.setattr(fanout.time, "sleep", pause)
+    out = tmp_path / "arcade"
+    fanout.collect(tile, repo, remote, "main", out)
+    assert len(attempts) == 6 and len(sleeps) == 5
+    assert all(0 < timeout <= 10 for timeout in attempts)
+    assert tile.collected and real_git(out / "feature-13", "rev-parse", "HEAD") == expected
+
+
+def test_collect_stops_at_its_deadline_and_never_links_a_missing_worktree(shared, tmp_path, monkeypatch):
+    repo, _, remote, _ = shared
+    tile = fanout.Tile(13, "feature-13", state="failed", pushed="a" * 40, done_line="finished the game")
+    now, calls = [0.0], []
+
+    def unavailable(repo, *args, **kwargs):
+        assert args[0] == "fetch"
+        calls.append(kwargs["timeout"])
+        now[0] += kwargs["timeout"]
+        raise fanout.GitError("fatal: git upload-pack: not our ref " + tile.pushed)
+
+    monkeypatch.setattr(fanout, "git", unavailable)
+    monkeypatch.setattr(fanout.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(fanout.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    out = tmp_path / "arcade"
+    with pytest.raises(fanout.GitError, match="not our ref") as error:
+        fanout.collect(tile, repo, remote, "main", out)
+    assert now[0] == fanout.COLLECT_TIMEOUT_S and calls
+    assert not tile.collected and not (out / tile.name).exists()
+    tile.error = str(error.value)
+    page = fanout.write_index(out, [tile], "Arcade").read_text()
+    assert "not our ref" in page and "Worktree unavailable" in page
+    assert 'href="feature-13/"' not in page
+
+
+def test_collect_refuses_a_branch_that_moved_since_the_push_receipt(shared, tmp_path):
+    repo, bare, remote, _ = shared
+    assert _session(tmp_path, bare, 1, "feature-01").returncode == 0
+    old_commit = fanout.git(bare, "rev-parse", "main")
+    tile = fanout.Tile(1, "feature-01", pushed=old_commit)
+    out = tmp_path / "arcade"
+    with pytest.raises(fanout.GitError, match="moved: session pushed"):
+        fanout.collect(tile, repo, remote, "main", out)
+    assert not tile.collected and not (out / tile.name).exists()
+
+
+def test_run_receipt_distinguishes_pushed_branches_from_ready_worktrees(shared, tmp_path, monkeypatch, capsys):
+    repo, bare, _, _ = shared
+    real_collect = fanout.collect
+
+    def session(tile, *args):
+        run = _session(tmp_path, bare, tile.index, tile.name)
+        assert run.returncode == 0
+        for line in run.stdout.splitlines():
+            fanout.read_line(tile, line)
+        tile.state = "done"
+
+    def collect(tile, *args, **kwargs):
+        if tile.index == 2:
+            raise fanout.GitError("fatal: git upload-pack: not our ref")
+        real_collect(tile, *args, **kwargs)
+
+    monkeypatch.setattr(fanout, "run_tile", session)
+    monkeypatch.setattr(fanout, "collect", collect)
+    monkeypatch.setenv("ARN", "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/claude_code-x")
+    out = tmp_path / "arcade"
+    assert fanout.main(["--repo", str(repo), "--bare", str(bare), "--agents", "2", "--out", str(out)]) == 1
+    summary = json.loads((out / "fanout-summary.json").read_text())
+    assert summary["pushed"] == 2 and summary["collected"] == summary["finished"] == 1
+    assert summary["errors"]["worktree-feature-02"]
+    receipt = capsys.readouterr().out
+    assert "2 branches pushed" in receipt and "1 worktrees prepared" in receipt
+    assert "each checked out" not in receipt and "instead of running all agents again" in receipt
+    assert 'href="feature-02/"' not in (out / "index.html").read_text()
 
 
 def test_paths_in_your_home_print_as_you_would_type_them():

@@ -3,7 +3,8 @@
 # coordinator's team on a /develop comment on an issue.
 #
 #   ./connect-github.sh owner/repository
-#   ./connect-github.sh --restart          # start the GitHub App setup over (e.g. after Confirm access)
+#   ./connect-github.sh --resume           # continue the saved App setup after a callback timeout
+#   ./connect-github.sh --restart          # start over only if the App was never created
 #
 # 1. Registers a GitHub App for this workshop (two clicks on GitHub: Create, Install).
 #    It subscribes to pull request and issue comment events and sends them to the
@@ -16,8 +17,14 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-restart=()
-if [ "${1:-}" = "--restart" ]; then restart=(--restart); shift; fi
+setup_mode=()
+case "${1:-}" in
+  --resume|--restart) setup_mode=("$1"); shift ;;
+esac
+if [ "$#" -gt 1 ] || [[ "${1:-}" == --* ]]; then
+  echo "Usage: ./connect-github.sh [--resume | --restart] [owner/repository]" >&2
+  exit 2
+fi
 repo="${1:-${GITHUB_REPO:-}}"
 if [ -z "$repo" ]; then
   read -r -p "Your GitHub repository (owner/name): " repo
@@ -25,8 +32,8 @@ fi
 export GITHUB_REPO="$repo"
 
 cd "$here/gateway_mcp"
-if [ ! -f github-app.env ] || [ ${#restart[@]} -gt 0 ]; then
-  python3 create-github-app.py "${restart[@]}" --repo "$repo"
+if [ ! -f github-app.env ] || [ ${#setup_mode[@]} -gt 0 ]; then
+  python3 create-github-app.py "${setup_mode[@]}" --repo "$repo"
 fi
 # shellcheck disable=SC1091
 . ./github-app.env

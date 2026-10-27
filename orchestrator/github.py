@@ -32,6 +32,8 @@ only on the signing path.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import io
 import json
 import os
@@ -57,6 +59,25 @@ _SETTINGS = os.environ.get("WORKSHOP_GITHUB_SETTINGS",
 _MERGE_POLICY_FILE = os.path.join(_RUNS_DIR, "merge_policy.local.json")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_BOUND_REPOSITORY: ContextVar[str | None] = ContextVar(
+    "workshop_build_repository", default=None)
+
+
+@contextmanager
+def bind_repository(repository: str | None):
+    """Freeze one worker's target without changing other users' Settings.
+
+    None leaves a direct, non-submitted caller's context alone; an empty string
+    explicitly means no repository was selected when the engine admitted the run.
+    """
+    if repository is None:
+        yield
+        return
+    token = _BOUND_REPOSITORY.set(repository)
+    try:
+        yield
+    finally:
+        _BOUND_REPOSITORY.reset(token)
 
 
 def normalize_repo(value: str | None) -> str:
@@ -176,7 +197,9 @@ def _gateway_config() -> dict | None:
         os.environ.get("GITHUB_GATEWAY_URL"), file.get("gateway_url"))
         if v and str(v).strip().startswith("https://")), "") or (
         _discover_gateway_url() or "").strip()
-    repo = normalize_repo(os.environ.get("GITHUB_REPO") or file.get("repo"))
+    bound = _BOUND_REPOSITORY.get()
+    repo = (bound if bound is not None
+            else normalize_repo(os.environ.get("GITHUB_REPO") or file.get("repo")))
     if not gateway_url or not _REPO_RE.match(repo):
         return None
     target = (os.environ.get("GITHUB_GATEWAY_TARGET")
@@ -670,7 +693,9 @@ def _repo_parts(cfg: dict) -> tuple[str, str]:
 
 def configured_repository() -> str:
     """The selected target, without probing its Gateway or substituting this repo."""
-    return normalize_repo(os.environ.get("GITHUB_REPO") or _load_config_file().get("repo"))
+    bound = _BOUND_REPOSITORY.get()
+    return (bound if bound is not None else normalize_repo(
+        os.environ.get("GITHUB_REPO") or _load_config_file().get("repo")))
 
 
 def _extract_repository_archive(encoded: str, destination: str) -> int:

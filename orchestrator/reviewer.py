@@ -189,7 +189,7 @@ def _is_service_noise(line: str) -> bool:
 
 
 def _summary_line(out: str, code: int) -> str:
-    """The last line of the check's output that actually SAYS something.
+    """Quote a failure on a red gate, otherwise the last meaningful output.
 
     Was `lines[-1]` unconditionally, which is wrong for the most natural way a shell
     check ends: printing a results line and then a `====` rule under it. A live run
@@ -199,7 +199,14 @@ def _summary_line(out: str, code: int) -> str:
 
     Scans backwards for the last line with real content and falls back to the raw last
     line (then to the exit code) rather than inventing a verdict.
+
+    A failed process may print its runtime version after the actual failure and
+    exception. Prefer those recorded diagnostics; only the exit code decides red.
     """
+    if code != 0:
+        failures = extract_failure_lines(out)
+        if failures:
+            return failures[0].strip()
     lines = (out or "").strip().splitlines()
     if not lines:
         return f"exit {code}"

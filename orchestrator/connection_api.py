@@ -426,14 +426,20 @@ def dispatch(method: str, path: str, body: dict | None,
                 # Same bound as Chat: the task reaches the CLI as one argument and the
                 # check as one environment variable, both under a 128 KiB kernel limit.
                 return 413, {"error": "REQUEST_TOO_LARGE_TO_BUILD"}
-            run = ENGINE.submit(
-                task=body.get("task") or "",
-                # agents omitted -> the ROUTER decides which roles dispatch;
-                # an explicit list is honored (and validated) for compat.
-                agents=body.get("agents"),
-                options=body.get("options") or {},
-                preset=body.get("preset"),
-            )
+            try:
+                run = ENGINE.submit(
+                    task=body.get("task") or "",
+                    # agents omitted -> the ROUTER decides which roles dispatch;
+                    # an explicit list is honored (and validated) for compat.
+                    agents=body.get("agents"),
+                    options=body.get("options") or {},
+                    preset=body.get("preset"),
+                )
+            except _engine.repository_admission.RepositoryBusy as exc:
+                return 409, {"error": "BUILD_ALREADY_RUNNING",
+                             "running_run_id": exc.run_id}
+            except _engine.repository_admission.AdmissionUnavailable as exc:
+                return 503, {"error": "RUN_STATE_UNAVAILABLE", "detail": exc.code}
             return 202, public_run(run)
         if path == "/api/github":
             if body is None:

@@ -2,9 +2,12 @@
 
 The GitHub Gateway gives the coordinator a tracked branch snapshot. This module
 packs those source bytes into one normalized archive per isolated work item.
-Runtimes download the archive through the S3 API, work on local disk, and upload
-one result archive. The orchestration path never copies a repository file by file
-through the S3 Files NFS mount.
+Runtimes download coordinator-owned inputs through the S3 API, work on local disk,
+and create one result in their own IAM-scoped namespace. A result key is chosen by
+the coordinator for one dispatch; IAM requires If-None-Match: * and grants no
+delete, so even its producer cannot replace it. The coordinator checks S3's stored
+SHA-256 before sealing those bytes as the next input. Neither namespace is under
+the writable S3 Files mount's agents/ prefix.
 
 S3 Files remains the customer-visible shared storage used in Lab 1. The local-dev
 seam also uses ``WORKSHOP_S3FILES_DIR`` so tests can exercise the same tree shape
@@ -23,6 +26,8 @@ without that file can still use the account/region naming convention.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -34,7 +39,9 @@ import tarfile
 import time
 from typing import Any, Iterable
 
-_EXCHANGE_PREFIX = "agents/runtime-exchange"
+_EXCHANGE_PREFIX = "runtime-exchange"
+_INPUT_PREFIX = f"{_EXCHANGE_PREFIX}/coordinator"
+_RESULT_PREFIX = f"{_EXCHANGE_PREFIX}/roles"
 _SOURCE_ROOT = Path(__file__).resolve().parent.parent
 _ARCHIVE_EXCLUDES = {
     "node_modules", "__pycache__", ".git", ".venv", "venv",
@@ -64,7 +71,7 @@ def item_subdir(run_id: str, work_id: str) -> str:
     Keyed on the work id, not just the run: a run stages one of these per role
     pull request, and a single per-run prefix would make them overwrite each other.
     """
-    return f"{run_id}-pr-{work_id}"
+    return f"{run_id}/pr-{work_id}"
 
 
 def item_path(run_id: str, work_id: str) -> str:
@@ -73,7 +80,7 @@ def item_path(run_id: str, work_id: str) -> str:
 
 def base_subdir(run_id: str) -> str:
     """The latest immutable integration base cloned into role checkouts."""
-    return f"{run_id}-base"
+    return f"{run_id}/base"
 
 
 def base_path(run_id: str) -> str:
@@ -82,7 +89,7 @@ def base_path(run_id: str) -> str:
 
 def refresh_subdir(run_id: str, work_id: str) -> str:
     """One owner-specific refresh seed after the integration branch advances."""
-    return f"{run_id}-refresh-{work_id}"
+    return f"{run_id}/refresh-{work_id}"
 
 
 def refresh_path(run_id: str, work_id: str) -> str:
@@ -152,13 +159,25 @@ def _safe_subdir(value: str) -> str:
 
 
 def archive_key(subdir: str) -> str:
-    """The one S3 object carrying a Runtime checkout.
+    """A coordinator-owned checkout. Role IAM permits only GetObject here.
 
-    Runtime work no longer traverses the S3 Files mount file by file. The host
-    checks out an exact Git ref through the GitHub Gateway, stores its tracked
-    bytes in one archive, and each Runtime downloads that object to local disk.
+    It must stay OUTSIDE agents/: the S3 Files mount can write that prefix using
+    its own data-access role, independently of a Runtime's direct S3 permissions.
     """
-    return f"{_EXCHANGE_PREFIX}/{_safe_subdir(subdir)}.tar.gz"
+    return f"{_INPUT_PREFIX}/{_safe_subdir(subdir)}.tar.gz"
+
+
+def result_key(subdir: str, agent_id: str, nonce: str) -> str:
+    """One producer's create-only handoff, selected before the Runtime starts.
+
+    The role and nonce come from the coordinator's dispatch, never from a claimed
+    artifact URI, a model response, or S3 object metadata.
+    """
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", agent_id):
+        raise RuntimeError("unsafe Runtime archive producer")
+    if not re.fullmatch(r"[a-f0-9]{32}", nonce):
+        raise RuntimeError("invalid Runtime archive handoff nonce")
+    return f"{_RESULT_PREFIX}/{agent_id}/{_safe_subdir(subdir)}/{nonce}.tar.gz"
 
 
 def _infra_bucket(source_root: Path, region: str, account_id: str) -> str:
@@ -230,9 +249,15 @@ def archive_uri(subdir: str, region: str | None = None) -> str:
     return f"s3://{_bucket_name(region)}/{archive_key(subdir)}"
 
 
+def result_uri(subdir: str, agent_id: str, nonce: str,
+               region: str | None = None) -> str:
+    region = region or _s3_region()
+    return f"s3://{_bucket_name(region)}/{result_key(subdir, agent_id, nonce)}"
+
+
 def skills_subdir(run_id: str, agent_id: str | None = None) -> str:
     suffix = f"-{_safe_subdir(agent_id)}" if agent_id else ""
-    return f"{run_id}-skills{suffix}"
+    return f"{run_id}/skills{suffix}"
 
 
 def skills_archive_uri(run_id: str, agent_id: str | None = None,
@@ -302,6 +327,7 @@ def _put_archive(subdir: str, trees: Iterable[tuple[str, str]],
                 Key=archive_key(subdir),
                 Body=body,
                 ContentType="application/gzip",
+                ChecksumSHA256=_checksum(body),
             )
             return count
         except Exception:  # noqa: BLE001 (re-raised on final transient failure)
@@ -323,15 +349,60 @@ def clone_archive(source_subdir: str, destination_subdir: str,
         CopySource={"Bucket": bucket, "Key": archive_key(source_subdir)},
         ContentType="application/gzip",
         MetadataDirective="REPLACE",
+        ChecksumAlgorithm="SHA256",
     )
 
 
-def read_archive(subdir: str, region: str | None = None) -> dict[str, bytes]:
-    """Read one atomically uploaded Runtime result archive."""
+def _checksum(payload: bytes) -> str:
+    return base64.b64encode(hashlib.sha256(payload).digest()).decode("ascii")
+
+
+def _verified_payload(s3: Any, bucket: str, key: str) -> tuple[bytes, dict]:
+    """Verify the checksum returned by S3, not a digest claimed by a role.
+
+    Uploads use single-part PutObject with SHA256. A missing checksum (including a
+    legacy archive), composite checksum, or mismatched body fails closed.
+    """
+    response = s3.get_object(Bucket=bucket, Key=key, ChecksumMode="ENABLED")
+    try:
+        payload = response["Body"].read()
+    finally:
+        response["Body"].close()
+    expected = response.get("ChecksumSHA256")
+    if (not expected or response.get("ChecksumType") == "COMPOSITE"
+            or expected != _checksum(payload)):
+        raise RuntimeError(
+            f"ARCHIVE_INTEGRITY_ERROR: S3 SHA-256 missing or mismatched for {key}")
+    return payload, response
+
+
+def accept_result(subdir: str, agent_id: str, nonce: str,
+                  region: str | None = None) -> dict[str, str]:
+    """Seal the exact IAM-authenticated, immutable output of one successful turn.
+
+    A sibling role cannot create this key; its producer cannot overwrite or delete
+    it. Do not accept an output location or hash from the Runtime's transcript.
+    Reading an old coordinator input after a missing upload would silently accept
+    the previous turn, so this read and verification must succeed before handoff.
+    """
     region = region or _s3_region()
-    response = _client(region).get_object(
-        Bucket=_bucket_name(region), Key=archive_key(subdir))
-    payload = response["Body"].read()
+    bucket = _bucket_name(region)
+    key = result_key(subdir, agent_id, nonce)
+    s3 = _client(region)
+    payload, response = _verified_payload(s3, bucket, key)
+    # Reject malformed archives before replacing the trusted repair seed.
+    _unpack_archive(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    s3.put_object(
+        Bucket=bucket, Key=archive_key(subdir), Body=payload,
+        ContentType="application/gzip", ChecksumSHA256=_checksum(payload),
+        Metadata={"producer-role": agent_id, "result-key": key, "sha256": digest},
+    )
+    return {"producer": agent_id, "key": key, "sha256": digest,
+            "version_id": response.get("VersionId", "")}
+
+
+def _unpack_archive(payload: bytes) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tf:
         for member in tf.getmembers():
@@ -347,16 +418,34 @@ def read_archive(subdir: str, region: str | None = None) -> dict[str, bytes]:
     return files
 
 
+def read_archive(subdir: str, region: str | None = None) -> dict[str, bytes]:
+    """Read verified bytes from the coordinator-owned checkout only."""
+    region = region or _s3_region()
+    payload, _ = _verified_payload(
+        _client(region), _bucket_name(region), archive_key(subdir))
+    return _unpack_archive(payload)
+
+
 def list_archive(subdir: str, region: str | None = None) -> str:
     return "\n".join(sorted(read_archive(subdir, region))) + "\n"
 
 
 def cleanup_run(run_id: str, region: str | None = None) -> None:
     """Delete one run's exchange archives after its durable result is saved."""
+    import roles  # noqa: PLC0415 (include the registered restore paths too)
+
     region = region or _s3_region()
     bucket = _bucket_name(region)
     s3 = _client(region)
-    prefix = f"{_EXCHANGE_PREFIX}/{_safe_subdir(run_id)}"
+    run_id = _safe_subdir(run_id)
+    prefixes = [f"{_INPUT_PREFIX}/{run_id}/"] + [
+        f"{_RESULT_PREFIX}/{role.id}/{run_id}/" for role in roles.REGISTRY
+    ]
+    for prefix in prefixes:
+        _delete_prefix(s3, bucket, prefix)
+
+
+def _delete_prefix(s3: Any, bucket: str, prefix: str) -> None:
     token: str | None = None
     while True:
         kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
@@ -365,7 +454,9 @@ def cleanup_run(run_id: str, region: str | None = None) -> None:
         page = s3.list_objects_v2(**kwargs)
         objects = [{"Key": row["Key"]} for row in page.get("Contents", [])]
         if objects:
-            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+            deleted = s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+            if deleted.get("Errors"):
+                raise RuntimeError("ARCHIVE_CLEANUP_ERROR: S3 rejected archive deletion")
         if not page.get("IsTruncated"):
             return
         token = page.get("NextContinuationToken")

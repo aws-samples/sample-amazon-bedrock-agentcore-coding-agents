@@ -70,7 +70,10 @@ class FakeAws:
             or (PolicyName == "ReadKiroKey" and name == "kiro" and self.box.kiro_read))
         if not held:
             raise NoSuchEntity()
-        return {"PolicyName": PolicyName}
+        document = (progress.team_exchange_policy.document("bucket-1", name.replace("_", "-"))
+                    if PolicyName == "TeamRunExchange" else {})
+        return {"PolicyName": PolicyName,
+                "PolicyDocument": self.box.policy_documents.get(name, document)}
 
     def get_api_key_credential_provider(self, name):
         if not self.box.kiro_key:
@@ -142,6 +145,7 @@ class Box:
         self.grants = False      # every console role holds TeamRunExchange
         self.kiro_read = False   # a console kiro role also holds ReadKiroKey
         self.policy_reads: list[tuple[str, str]] = []
+        self.policy_documents: dict[str, dict] = {}
         self.kiro_status = None  # the event key import's record, absent outside an event
         self.runs: list[dict] = []
         self.team_runtimes: list[str] = []
@@ -223,7 +227,7 @@ def test_a_ready_host_is_told_to_build_then_create_the_runtime(box):
     step = _next(box)
     assert step.name == "Claude Code Runtime" and not step.commands
     assert "console" in step.note and "Create default role" in step.note
-    assert "Agents > Bring your own code" in step.note and "Runtime > Create runtime" not in step.note
+    assert "Agents > More > Host agent" in step.note and "Runtime > Create runtime" not in step.note
 
 
 def test_a_fresh_clone_is_told_to_record_the_stack_ids(box):
@@ -351,6 +355,7 @@ def test_the_grant_is_for_claude_code_alone(box):
     assert '"$(role claude_code)"' in grant and "TeamRunExchange" in grant
     assert "for n in" not in grant and "codex" not in grant and "kiro" not in grant
     assert "ReadKiroKey" not in " ".join(progress.CMD_GRANTS)
+    assert 'team_exchange_policy.py --role claude-code --bucket "$INFRA_BUCKET"' in grant
     assert progress.CMD_TEAM_CODEX[1:] == ["./deploy-prebuilt.sh codex"]
     assert progress.CMD_TEAM_KIRO[1:] == ["./deploy-prebuilt.sh kiro"]
 
@@ -389,7 +394,7 @@ def test_a_team_runtime_made_in_the_console_is_still_named_with_its_fix(box):
     box.console_roles = {"claude_code", "codex"}
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
     assert check.state == progress.TODO
-    assert "claude_code, codex" in check.detail and "in place of claude_code" in check.detail
+    assert "claude_code, codex" in check.detail and "--role" in check.detail
     assert "kiro" not in check.detail
 
 
@@ -402,6 +407,30 @@ def test_the_no_key_checker_grant_is_looked_up_by_its_own_runtime_name(box):
     box.team_runtimes = ["codex", "claude_code_validator"]
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
     assert check.state == progress.DONE
+
+
+@pytest.mark.parametrize("console_name", ["claude_code", "kiro", "claude_code_validator"])
+def test_existing_console_grant_cannot_hide_shared_writes_or_wrong_producer(box, console_name):
+    checker = "claude-code-validator" if console_name == "claude_code_validator" else "kiro"
+    box.coordinator(roles=f"claude-code,codex,{checker}")
+    box.console_runtime, box.grants, box.kiro_read = True, True, True
+    box.console_roles.add(console_name)
+    box.team_runtimes = ["codex", checker.replace("-", "_")]
+    box.policy_documents[console_name] = {
+        "Version": "2012-10-17", "Statement": [{
+            "Sid": "TradeSourceArchives", "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+            "Resource": "arn:aws:s3:::bucket-1/agents/runtime-exchange/*",
+        }]}
+    result = progress.check_team_grants()
+    assert result["state"] == progress.TODO
+    assert "outdated or wrong-producer" in result["detail"]
+    assert console_name in result["detail"] and "team_exchange_policy.py" in result["detail"]
+    box.policy_documents[console_name] = progress.team_exchange_policy.document("bucket-1", "codex")
+    assert progress.check_team_grants()["state"] == progress.TODO
+    box.policy_documents[console_name] = progress.team_exchange_policy.document(
+        "bucket-1", console_name.replace("_", "-"))
+    assert progress.check_team_grants()["state"] == progress.DONE
 
 
 def test_the_event_key_that_did_not_arrive_names_its_reason_and_fallback(box):

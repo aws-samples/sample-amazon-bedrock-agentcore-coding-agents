@@ -148,10 +148,10 @@ def execution_role_documents() -> tuple[str, dict, dict]:
         *runtime_deploy.ecr_statements(ECR_URI, default_repo='coding-agents-codex',
                                        account_id=ACCOUNT_ID, region=REGION),
         *runtime_deploy.storage_statements(_s3files_policy_resources(), region=REGION,
-                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET),
+                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET,
+                                           role_id="codex"),
         # No Gateway or SecretsManager grant: the coordinator owns GitHub.
         # The worker receives source archives and returns source archives.
-        runtime_deploy.eventbridge_statement(),
     ]
     return (f"agentcore-{AGENT_NAME}-{REGION}-role",
             runtime_deploy.trust_policy(REGION, ACCOUNT_ID), runtime_deploy.policy(statements))

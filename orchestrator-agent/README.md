@@ -33,6 +33,35 @@ The registration is completed once every worker stops, or when the engine's
 execution bound expires. It makes no model calls or self-invocations. An
 actually idle session can still expire; terminal results remain in the run store.
 
+## One build per repository
+
+`Engine.submit` acquires an atomic repository claim before starting a worker.
+GitHub `/develop`, `ask.sh`, and Agent Studio use the same S3 bucket and claim.
+The selected repository stays bound to that worker even if Studio Settings change.
+The claim is released after the worker and its graph threads finish, including
+bounded repairs, finalization, and reporting. A refused request starts no build.
+
+Claims live under `orchestrator/repository-admission/`, outside the role Runtimes'
+shared mount and direct S3 write grants. The coordinator conditionally creates the
+claim with `If-None-Match: *` and deletes only its own ETag. The existing
+`OrchestratorRuntimeExecution` policy supplies the required S3 get, put, and delete
+permissions; no additional attendee grant is needed.
+
+A claim has **no automatic expiry**. A stale heartbeat is not proof that a
+coordinator or its role work has stopped. If a coordinator crashes, inspect the
+claim's `run_id` and the recorded run, stop the exact old coordinator and role
+sessions, and confirm that they have stopped before removing the claim. Never
+clear it merely to retry a red gate.
+
+For operator recovery, derive the key with
+`repository_admission.key_for("owner/repository")` from the `orchestrator` directory.
+Read that exact object with `aws s3api get-object`, retaining its JSON and returned
+ETag. After confirming the old execution has stopped and that the JSON names the
+expected run, delete with `aws s3api delete-object --bucket <bucket> --key <key>
+--if-match <returned-etag>`. A precondition failure means the claim changed: inspect
+it again, and do not issue an unconditional delete. This operation releases
+admission only; it neither changes a recorded verdict nor starts a replacement run.
+
 ## Deploy the coordinator
 
 Complete Lab 1 and the GitHub Gateway setup first. The wrapper reads the same

@@ -124,7 +124,8 @@ def execution_role_documents() -> tuple[str, dict, dict]:
         *runtime_deploy.ecr_statements(ECR_URI, default_repo='coding-agents-opencode',
                                        account_id=ACCOUNT_ID, region=REGION),
         *runtime_deploy.storage_statements(_s3files_policy_resources(), region=REGION,
-                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET),
+                                           account_id=ACCOUNT_ID, bucket=S3FILES_BUCKET,
+                                           role_id="opencode"),
         runtime_deploy.identity_statement(),
         {
             "Sid": "BedrockApiKey",
@@ -136,7 +137,6 @@ def execution_role_documents() -> tuple[str, dict, dict]:
             "Resource": ["*"],
         },
         runtime_deploy.gateway_statement(REGION, ACCOUNT_ID),
-        runtime_deploy.eventbridge_statement(),
     ]
     return (f"agentcore-{AGENT_NAME}-{REGION}-role",
             runtime_deploy.trust_policy(REGION, ACCOUNT_ID), runtime_deploy.policy(statements))

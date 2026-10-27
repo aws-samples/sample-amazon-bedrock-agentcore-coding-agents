@@ -47,6 +47,9 @@ def version_binary(path, output):
 def test_normal_npm_gets_exact_spec_and_actual_version_is_verified(tmp_path, monkeypatch, tools, name):
     manifest = cli.load_manifest()
     item = manifest["clis"][name]
+    # This case starts without the CLI. Event hosts also have their pinned CLIs
+    # in /bin, so os.defpath would exercise reuse and never call this fake npm.
+    monkeypatch.setenv("PATH", str(tools))
     log = tmp_path / "npm.json"
     home = tmp_path / "user home"
     monkeypatch.setenv("NPM_TEST_LOG", str(log))

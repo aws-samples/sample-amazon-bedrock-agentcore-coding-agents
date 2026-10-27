@@ -235,6 +235,9 @@ def test_a_silent_shell_raises_at_the_deadline(monkeypatch) -> None:
         f"raised only after {elapsed:.1f}s for a 2s budget: the deadline is not "
         "bounding the frame wait")
     assert "exceeded" in str(excinfo.value)
+    assert isinstance(excinfo.value, runtime_exec.RemoteExecutionUnsettled)
+    assert excinfo.value.runtime_arn == _ARN
+    assert excinfo.value.session_id == "s" * 40
 
 
 def test_the_normal_path_is_unchanged(monkeypatch) -> None:

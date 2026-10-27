@@ -113,6 +113,12 @@ _NEXT_ACTION = {
     "ROLE_EXECUTION_ERROR":
         "A role's turn produced no usable work. This is usually transient: submit the "
         "SAME request again. Do not try to finish it by dispatching one role by hand.",
+    "REMOTE_EXECUTION_UNSETTLED":
+        "A remote command may still be running. Do not resubmit this request. "
+        "Repository admission remains held. An operator must inspect "
+        "unsettled_runtime_sessions, stop those exact Runtime sessions and confirm "
+        "they have stopped before conditionally releasing the repository claim. "
+        "Keep the existing pull requests and executed verdicts unchanged.",
     "ROLE_TURN_LIMIT":
         "A role reached its configured CLI turn limit. Do not resubmit this "
         "request automatically. Read the role's recorded limit error and original "
@@ -375,6 +381,8 @@ def public_result(run: Any) -> dict:
         "composed_branch": run.composed_branch,
         "composed_commit": run.composed_commit,
         "fail_reason": run.fail_reason,
+        "unsettled_runtime_sessions": list(
+            getattr(run, "_unsettled_runtime_sessions", [])),
         "route": run.route,
         "review": run.review,
         "pr": run.pr,

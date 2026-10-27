@@ -224,6 +224,9 @@ def test_existing_failure_styles_remain_quotations_not_a_new_check_format(tmp_pa
         "✗ the probe returned 500",
         "× the probe omitted its result",
         "comparison FAILED: values differ",
+        "TypeError: markResourceTiming is not a function",
+        "\tValueError: the saved value is invalid",
+        "example.InvalidStateException: the worker stopped",
     ]
     ignored = [
         "PASS negative case rejected an ERROR",
@@ -239,6 +242,39 @@ def test_existing_failure_styles_remain_quotations_not_a_new_check_format(tmp_pa
     assert gate["passed"] is False
 
 
+@pytest.mark.parametrize("include_failed_probe", [True, False])
+def test_failed_check_keeps_actionable_lines_before_runtime_footer(
+    tmp_path, include_failed_probe,
+):
+    # The live Node check printed a FAIL, then an exception, then its version.
+    failure = "FAIL: collecting flowers earns score (final 0, 0 pickups)"
+    exception = "TypeError: markResourceTiming is not a function"
+    diagnostics = ([failure] if include_failed_probe else []) + [exception]
+    output = "\n".join([
+        "PASS: round length matches stated timer",
+        *([failure] if include_failed_probe else []),
+        "PASS: no scoring after round end",
+        "node:internal/deps/undici/undici:10733",
+        "      markResourceTiming(",
+        "      ^",
+        exception,
+        "    at finalizeAndReportTiming (node:internal/deps/undici/undici:10733:7)",
+        "",
+        "Node.js v22.23.2",
+        "",
+    ])
+    gate = _execute(tmp_path, output, code=1)
+    assert gate["passed"] is False
+    assert gate["checks"][0]["passed"] is False
+    assert gate["summary"] == diagnostics[0]
+    assert gate["failure_lines"] == diagnostics
+    assert gate["output"] == output
+    assert "exit 1" in gate["checks"][0]["detail"]
+    comment = replay.gate_evidence_comment(SimpleNamespace(), gate, stage="recorded check")
+    assert "Executed check: **FAILED**" in comment
+    assert exception in comment
+
+
 @pytest.mark.parametrize(
     ("output", "code", "diagnostics"),
     [
@@ -246,6 +282,8 @@ def test_existing_failure_styles_remain_quotations_not_a_new_check_format(tmp_pa
         ("", 1, []),
         ("all probes completed\n", 0, []),
         ("FAIL expected negative case\n", 0, []),
+        ("FAIL expected negative case\nTypeError: expected invalid input\n"
+         "Node.js v22.23.2\n", 0, []),
         ("no matchable diagnostic format\n", 3, []),
         ("ERROR: missing input\n", 2, ["ERROR: missing input"]),
     ],

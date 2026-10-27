@@ -2,17 +2,17 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "TradeSourceArchives",
+      "Sid": "ReadCoordinatorArchives",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
-      "Resource": "arn:aws:s3:::coding-agents-*/agents/runtime-exchange/*"
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::coding-agents-*/runtime-exchange/coordinator/*"]
     },
     {
-      "Sid": "SeeTheExchangePrefix",
+      "Sid": "CreateOwnArchives",
       "Effect": "Allow",
-      "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::coding-agents-*",
-      "Condition": {"StringLike": {"s3:prefix": ["agents/runtime-exchange/*"]}}
+      "Action": ["s3:PutObject"],
+      "Resource": ["arn:aws:s3:::coding-agents-*/runtime-exchange/roles/claude-code/*"],
+      "Condition": {"StringEquals": {"s3:if-none-match": "*"}}
     }
   ]
 }

@@ -69,7 +69,8 @@ def _load_deploy_module_mountless(role: str, tmp_path, monkeypatch, *, ecr_uri=N
     role_dir.mkdir(parents=True, exist_ok=True)
     deploy_py = role_dir / "deploy.py"
     shutil.copy2(source, deploy_py)
-    for shared in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+    for shared in ("runtime_deploy.py", "team_exchange_policy.py",
+                   "cli_versions.py", "cli-versions.json"):
         shutil.copy2(_CODING_AGENTS / shared, config_root / shared)
 
     # These valid-configuration tests are not region-mismatch tests. Pin their

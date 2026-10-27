@@ -28,7 +28,8 @@ def run_wrapper(directory, relative, arguments, platform=None, fail_at=""):
     checkout = directory / "checkout with spaces"
     coding = checkout / "coding-agents"
     coding.mkdir(parents=True)
-    for name in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+    for name in ("runtime_deploy.py", "team_exchange_policy.py",
+                 "cli_versions.py", "cli-versions.json"):
         shutil.copy2(ROOT / "coding-agents" / name, coding / name)
     script = checkout / relative
     script.parent.mkdir(parents=True, exist_ok=True)

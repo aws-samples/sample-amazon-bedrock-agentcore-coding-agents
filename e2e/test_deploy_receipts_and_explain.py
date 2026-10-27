@@ -311,7 +311,8 @@ def test_prebuilt_explain_never_builds_or_deploys(tmp_path):
     coding = tmp_path / "coding-agents"
     role = coding / "claude-code"
     role.mkdir(parents=True)
-    for name in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json", "deploy-prebuilt.sh"):
+    for name in ("runtime_deploy.py", "team_exchange_policy.py", "cli_versions.py",
+                 "cli-versions.json", "deploy-prebuilt.sh"):
         shutil.copy2(ROOT / "coding-agents" / name, coding / name)
     (coding / "infra.config").write_text(f"INFRA_S3FILES_AP_ARN={AP}\n")
     log = tmp_path / "log.jsonl"

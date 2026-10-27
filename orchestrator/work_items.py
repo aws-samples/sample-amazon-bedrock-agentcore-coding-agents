@@ -63,6 +63,11 @@ class WorkItem:
     depends_on: list[str] = field(default_factory=list)
     state: str = "pending"
     attempt: int = 0
+    # -1 distinguishes missing counters in an old serialized item from an
+    # explicit unused allowance in a new item. __post_init__ always resolves it.
+    repair_attempts: int = -1
+    refresh_attempts: int = -1
+    retry_budget_inferred: bool = False
     pr: dict[str, Any] | None = None
     review_rounds: list[dict[str, Any]] = field(default_factory=list)
     merge_state: str | None = None
@@ -76,6 +81,31 @@ class WorkItem:
     refreshes: int = 0
     dependency_refreshes: int = 0
     _patch: "TreePatch | None" = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        missing_repair = self.repair_attempts < 0
+        missing_refresh = self.refresh_attempts < 0
+        if not (missing_repair or missing_refresh):
+            return
+        # Old records cannot distinguish a repair from a conflict refresh:
+        # attempt counts both, refreshes includes mechanical rebases, and a
+        # review's round is run-wide. Reserve ambiguous allowances rather than
+        # restoring a spent one. This does not resume or rewrite a saved run.
+        later_work = (
+            self.attempt > 1 or len(self.review_rounds) > 1
+            or any(int(row.get("round") or 0) > 1 for row in self.review_rounds)
+            or (self.merge_state == "blocked" and bool(self.attempt or self.review_rounds))
+        )
+        prior_refresh = self.refreshes > 0 or self.dependency_refreshes > 0
+        reserve_repair = self.kind == "builder" and later_work
+        reserve_refresh = self.kind == "builder" and (later_work or prior_refresh)
+        if missing_repair:
+            self.repair_attempts = int(reserve_repair)
+        if missing_refresh:
+            self.refresh_attempts = int(reserve_refresh)
+        if (missing_repair and reserve_repair) or (missing_refresh and reserve_refresh):
+            # These are conservative reservations, not invented execution counts.
+            self.retry_budget_inferred = True
 
     @classmethod
     def create(cls, run_id: str, agent: str, role: str, capability: str,
@@ -118,6 +148,9 @@ class WorkItem:
             "depends_on": list(self.depends_on),
             "state": self.state,
             "attempt": self.attempt,
+            "repair_attempts": self.repair_attempts,
+            "refresh_attempts": self.refresh_attempts,
+            "retry_budget_inferred": self.retry_budget_inferred,
             "pr": dict(self.pr or {}),
             "review_rounds": list(self.review_rounds),
             "merge_state": self.merge_state,

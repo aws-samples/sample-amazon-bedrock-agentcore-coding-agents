@@ -17,8 +17,9 @@ Git data stays on local disk, where Git is fast. The only Git data on the S3 Fil
 is one bare repository (``/mnt/s3files/lid.git``), and only ``clone``, ``fetch``, and
 ``push`` touch it. Each session clones it to its own /tmp, Claude Code creates its
 worktree there (``.claude/worktrees/feature-07`` on branch ``worktree-feature-07``), and
-the session commits what the agent left and pushes that one branch. The push is the only
-thing that leaves the microVM. On the host, the script fetches each branch into your
+the session commits what the agent left and pushes that one branch. The local worktree
+is exchanged through Git; the sessions still share the mounted storage and IAM role.
+On the host, the script fetches each branch into your
 repository and checks it out as a linked worktree under ~/arcade (``git worktree list``),
 where you review, play, and merge.
 
@@ -61,6 +62,7 @@ BACKLOG_SOURCE = HERE / "game-backlog.md"
 NAME = "feature"
 OUT = Path.home() / "arcade"
 TIMEOUT_S = 900
+COLLECT_TIMEOUT_S = 60
 
 TASK = (
     "You are agent {n} of {agents}, working in your own git worktree of this game, on your own "
@@ -79,9 +81,13 @@ class GitError(RuntimeError):
     pass
 
 
-def git(repo: Path | str, *args: str, env: dict | None = None, check: bool = True) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                            env={**os.environ, **(env or {})})
+def git(repo: Path | str, *args: str, env: dict | None = None, check: bool = True,
+        timeout: float | None = None) -> str:
+    try:
+        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                                env={**os.environ, **(env or {})}, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {' '.join(args[:3])}: timed out after {timeout:.1f}s") from exc
     if check and result.returncode != 0:
         raise GitError(f"git {' '.join(args[:3])}: {(result.stderr or result.stdout).strip()[:300]}")
     return result.stdout.strip()
@@ -252,7 +258,7 @@ def agent_command(index: int, name: str, clone_url: str, task: str, *, agents: i
         f"if [ -d {q(worktree)} ]; then git -C {q(worktree)} add -A; git -C {q(worktree)} diff --cached --quiet"
         f" || git -C {q(worktree)} commit -q -m \"{name}: ${{done:-the changes its agent left}}\"; fi",
         f"git push -q -f origin {q(branch)} || {{ echo \"PUSH_FAILED agent exit $code\"; exit 91; }}",
-        f"echo PUSHED {branch} $(git rev-parse --short {q(branch)})",
+        f"echo PUSHED {branch} $(git rev-parse {q(branch)})",
         "exit $code",
     ]
     return "sh -c " + q("\n".join(lines))
@@ -270,6 +276,7 @@ class Tile:
     last: str = ""
     done_line: str = ""
     pushed: str = ""   # the commit the session pushed
+    collected: bool = False  # the host actually prepared the worktree
     lines: str = ""    # +insertions -deletions against the base branch
     title: str = ""    # the <title> the branch's index.html serves
     note: str = ""
@@ -361,6 +368,7 @@ def run_tile_with_one_retry(tile: Tile, arn: str, region: str, command: str,
         with lock:
             tile.retried, tile.session = True, str(uuid.uuid4())
             tile.state, tile.error, tile.last = "starting", "", ""
+            tile.finished = 0.0
         run(tile, arn, region, command, lock)
 
 
@@ -409,21 +417,47 @@ def page_title(repo: Path, ref: str, page: str = "index.html") -> str:
     return html.unescape(" ".join(match.group(1).split()))[:60] if match else ""
 
 
-def collect(tile: Tile, repo: Path, remote: str, base: str, out: Path, tries: int = 5) -> None:
-    """Fetch one agent's branch into your repository and check it out under out/."""
+def collect(tile: Tile, repo: Path, remote: str, base: str, out: Path, tries: int = 31) -> None:
+    """Wait at most a minute for the pushed Git objects to become readable on this
+    mount, then prepare the worktree. A push receipt alone is not a ready worktree.
+
+    A fresh event returned ``upload-pack: not our ref`` through all five old retries
+    (eight seconds), although the exact pushed commit became readable later. Retrying
+    this host-side transfer never starts another agent or changes the pushed branch.
+    """
     ref = f"{remote}/{tile.branch}"
+    deadline = time.monotonic() + COLLECT_TIMEOUT_S
+    last_error = GitError(f"Timed out collecting {tile.branch}")
+    for attempt in range(tries):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise last_error
+        try:
+            with GIT_LOCK:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise last_error
+                git(repo, "fetch", "-q", remote, f"+refs/heads/{tile.branch}:refs/remotes/{ref}",
+                    timeout=min(10.0, remaining))
+            break
+        except GitError as exc:
+            last_error = exc
+            remaining = deadline - time.monotonic()
+            if attempt == tries - 1 or remaining <= 0:
+                raise
+            # Do not hold up the other agents' Git operations while this branch waits.
+            time.sleep(min(2.0, remaining))
+    else:
+        raise last_error
     with GIT_LOCK:
-        for attempt in range(tries):
-            try:
-                git(repo, "fetch", "-q", remote, f"+refs/heads/{tile.branch}:refs/remotes/{ref}")
-                break
-            except GitError:
-                if attempt == tries - 1:
-                    raise
-                time.sleep(2)
+        fetched = git(repo, "rev-parse", f"{ref}^{{commit}}")
+        if tile.pushed and not fetched.startswith(tile.pushed):
+            raise GitError(f"{tile.branch} moved: session pushed {tile.pushed}, fetched {fetched}; "
+                           "leaving its worktree unchanged")
         tile.note = add_worktree(repo, tile.branch, ref, out / tile.name)
         tile.lines = shortstat(repo, base, ref)
         tile.title = page_title(repo, ref)
+        tile.collected = True
 
 
 def agent_job(tile: Tile, arn: str, region: str, command: str, lock: threading.Lock,
@@ -431,16 +465,22 @@ def agent_job(tile: Tile, arn: str, region: str, command: str, lock: threading.L
     run_tile_with_one_retry(tile, arn, region, command, lock)
     if not tile.pushed:
         return
+    agent_state = tile.state
+    if agent_state == "done":
+        with lock:
+            tile.state = "collecting"
     try:
         collect(tile, repo, remote, base, out)
+        with lock:
+            tile.state = agent_state
     except GitError as exc:
         with lock:
             tile.state, tile.error = "failed", f"host: {exc}"[:120]
             tile.errors.append(f"host: {exc}"[:600])
 
 
-COLORS = {"queued": "90", "starting": "33", "working": "36", "done": "32", "failed": "31"}
-DOTS = {"queued": "·", "starting": "◌", "working": "●", "done": "✓", "failed": "✗"}
+COLORS = {"queued": "90", "starting": "33", "working": "36", "collecting": "33", "done": "32", "failed": "31"}
+DOTS = {"queued": "·", "starting": "◌", "working": "●", "collecting": "◌", "done": "✓", "failed": "✗"}
 
 
 def render(tiles: list[Tile], started: float, color: bool = True, base: str = "main",
@@ -478,9 +518,12 @@ def write_index(out: Path, tiles: list[Tile], heading: str) -> Path | None:
         name = html.escape(t.name)
         title = html.escape(t.title or t.name)
         meta = html.escape(" · ".join(x for x in (t.branch, t.lines) if x))
-        note = html.escape(t.done_line or t.error or t.state)
-        cards.append(f'<a class="card {t.state}" href="{name}/"><b>{title}</b><small>{meta}</small>'
-                     f'<span>{note}</span></a>')
+        note = html.escape(t.error or t.done_line or t.state)
+        body = f'<b>{title}</b><small>{meta}</small><span>{note}</span>'
+        if t.collected:
+            cards.append(f'<a class="card {t.state}" href="{name}/">{body}</a>')
+        else:
+            cards.append(f'<div class="card {t.state}">{body}<span>Worktree unavailable</span></div>')
     page = ("<!doctype html><meta charset=utf-8><title>Arcade</title><style>"
             "body{font:16px system-ui;background:#0b1020;color:#e8ecff;margin:2rem}"
             "main{display:grid;grid-template-columns:repeat(auto-fill,minmax(16.5rem,1fr));gap:1rem}"
@@ -588,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     wall = time.time() - started
     serial = sum(t.elapsed(time.time()) for t in tiles)
     pushed = [t for t in tiles if t.pushed]
+    collected = [t for t in tiles if t.collected]
     print(f"\n  Wall clock {wall:.0f}s for {len(tiles)} agents. One after another, the same work "
           f"would have taken about {serial / 60:.0f} min.")
     counts = sorted({t.siblings for t in tiles if t.siblings})
@@ -600,21 +644,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {t.branch}: {err}")
         if t.note:
             print(f"  {t.branch}: {t.note}")
-    print(f"  {len(pushed)} branches pushed to {show(bare)}, each checked out as a worktree in {show(a.out)}:")
+    print(f"  {len(pushed)} branches pushed to {show(bare)}; "
+          f"{len(collected)} worktrees prepared in {show(a.out)}:")
     print(f"    git -C {show(repo)} worktree list")
     if write_index(a.out, tiles, f"Arcade: {len(tiles)} branches of {repo.name}, one microVM each"):
         print(f"  One page for all of them: {show(a.out)}/index.html")
     else:
         print(f"  Left {show(a.out)}/index.html alone: fanout did not write it.")
-    if pushed:
-        print(f"  Merge the one you like:  cd {show(repo)} && git merge {pushed[0].branch}")
+    if collected:
+        print(f"  Merge the one you like:  cd {show(repo)} && git merge {collected[0].branch}")
+    if len(collected) < len(pushed):
+        print("  A pushed branch could not be collected. Keep this result; retry the Git fetch "
+              "for that branch instead of running all agents again.")
     # A record of this run for progress.py; it describes the run and judges nothing.
     summary = {"at": int(time.time()), "agents": len(tiles), "repo": str(repo), "bare": str(bare),
                "base": base, "finished": sum(t.state == "done" for t in tiles), "pushed": len(pushed),
+               "collected": len(collected),
                "microvms": sum(bool(t.up) for t in tiles), "sibling_counts": counts, "peer_counts": peers,
                "wall_s": round(wall), "serial_s": round(serial), "retried": sum(t.retried for t in tiles),
                "branches": [{"branch": t.branch, "session": t.session, "state": t.state, "commit": t.pushed,
-                             "lines": t.lines, "title": t.title, "done": t.done_line} for t in tiles],
+                             "collected": t.collected, "lines": t.lines,
+                             "title": t.title, "done": t.done_line} for t in tiles],
                "errors": {t.branch: t.errors for t in tiles if t.errors}}
     try:
         (a.out / "fanout-summary.json").write_text(json.dumps(summary, indent=2) + "\n")

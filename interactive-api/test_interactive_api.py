@@ -422,8 +422,10 @@ def test_pty_keeps_streaming_after_scrollback_rolls_over():
         else:
             pytest.fail("The real shell did not finish its scrollback output.")
         offset = first["offset"]
+        # Bash can emit its bracketed-paste control sequence after the echoed
+        # command's newline. Print the marker's leading newline ourselves.
         ia.dispatch("POST", f"/api/sessions/{sid}/pty", {
-            "input": "printf 'AFTER_%s\\n' SCROLLBACK\n", "offset": offset})
+            "input": "printf '\\nAFTER_%s\\n' SCROLLBACK\n", "offset": offset})
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             _, following = ia.dispatch("POST", f"/api/sessions/{sid}/pty", {"offset": offset})
@@ -479,6 +481,8 @@ def test_pty_env_reaches_aws_credentials_through_the_home_jail(tmp_path, monkeyp
     (real_home / ".aws" / "credentials").touch()
     monkeypatch.setenv("HOME", str(real_home))
     monkeypatch.delenv("AWS_SHARED_CREDENTIALS_FILE", raising=False)
+    # This credential-path test must not depend on the developer's AWS region.
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
     real_creds = os.path.join(os.path.expanduser("~"), ".aws", "credentials")
     sid = _open_session()
     _, opened = ia.dispatch("POST", f"/api/sessions/{sid}/pty", {"open": True})

@@ -21,6 +21,7 @@ import time
 import uuid
 
 import cli_versions
+import team_exchange_policy
 
 
 PLATFORM_ENV = "WORKSHOP_RUNTIME_PLATFORM_VERSION"
@@ -480,7 +481,8 @@ _POLICY_WHY = {
     "ECRPull": "pull its own container image",
     "S3Files": "mount and write the shared S3 Files workspace",
     "EFS": "use the NFS client the mount is built on",
-    "S3Bucket": "exchange source archives with the coordinator",
+    "ReadCoordinatorArchives": "read source archives owned by the coordinator",
+    "CreateOwnArchives": "create its own immutable results outside the shared mount",
     "AgentCoreGateway": "call the GitHub tools behind the Gateway",
     "AgentCoreIdentity": "read its API key from the AgentCore Token Vault",
     "SecretsManagerForTokenVault": "read only the Token Vault's own secrets",
@@ -885,9 +887,14 @@ def ecr_statements(ecr_uri: str, *, default_repo: str, account_id: str, region: 
 
 
 def storage_statements(s3files_resources: list, *, region: str, account_id: str,
-                       bucket: str) -> list:
-    """The shared /mnt/s3files workspace: S3 Files client access, the EFS-compatible
-    mount calls, and the backing bucket."""
+                       bucket: str, role_id: str) -> list:
+    """Mount the workspace and exchange source archives, without access to the
+    coordinator's run records or saved check evidence.
+
+    S3 Files handles the mounted workspace through its own data-access role. The
+    coding-agent role may read coordinator archives and create its own outputs.
+    Both prefixes are outside agents/, the shared mount's writable namespace.
+    """
     return [
         {
             "Sid": "S3Files",
@@ -918,22 +925,7 @@ def storage_statements(s3files_resources: list, *, region: str, account_id: str,
                 f"arn:aws:elasticfilesystem:{region}:{account_id}:access-point/*",
             ],
         },
-        {
-            "Sid": "S3Bucket",
-            "Effect": "Allow",
-            "Action": [
-                "s3:ListBucket",
-                "s3:ListBucketVersions",
-                "s3:GetObject*",
-                "s3:PutObject*",
-                "s3:DeleteObject*",
-                "s3:AbortMultipartUpload",
-            ],
-            "Resource": [
-                f"arn:aws:s3:::{bucket}",
-                f"arn:aws:s3:::{bucket}/*",
-            ],
-        },
+        *team_exchange_policy.statements(bucket, role_id),
     ]
 
 
@@ -1104,7 +1096,7 @@ def console_sheet(*, name: str, platform: str, image: str, role_name: str, names
     """Each console field to set, in the order the Create runtime form shows them."""
     mount_leaf = mount_path.removeprefix("/mnt/")
     lines = [
-        "Create it in the console: Amazon Bedrock AgentCore > Agents > Bring your own code",
+        "Create it in the console: Amazon Bedrock AgentCore > Agents > More > Host agent",
         "",
         "  Runtime details",
         f"    Name                          {name}   (replace the suggested name)",
@@ -1158,7 +1150,7 @@ def check_console_runtime(current: dict | None, *, image: str, role_name: str,
 
     status = current.get("status", "UNKNOWN")
     check(status == "READY", f"status READY (now {status})",
-          "wait until the console shows Ready, then run --adopt again")
+          "wait until the console shows Active, then run --adopt again")
     actual_platform = current.get("platformVersion")
     if platform and actual_platform is not None:
         check(actual_platform == platform, f"platform {platform}",

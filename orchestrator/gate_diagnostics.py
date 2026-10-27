@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import re
+
 MAX_FAILURE_LINES = 25
 MAX_FAILURE_LINE_CHARS = 300
+_EXCEPTION_LINE = re.compile(
+    r"^[\w.]*(?:Error|Exception)(?:\s*\[[^\]]+\])?\s*:", re.IGNORECASE)
 
 
 def extract_failure_lines(output: str) -> list[str]:
@@ -17,8 +21,9 @@ def extract_failure_lines(output: str) -> list[str]:
         upper = raw.strip().upper()
         if not upper or upper.startswith(("PASS", "OK", "INFO", "SKIP")):
             continue
-        if upper.startswith(("FAIL", "ASSERT", "ERROR", "NOT OK", "✗", "×")) or (
-                "FAILED" in upper and "0 FAILED" not in upper):
+        if (upper.startswith(("FAIL", "ASSERT", "ERROR", "NOT OK", "✗", "×"))
+                or ("FAILED" in upper and "0 FAILED" not in upper)
+                or _EXCEPTION_LINE.match(raw.strip())):
             hits.append(raw[:MAX_FAILURE_LINE_CHARS])
         if len(hits) >= MAX_FAILURE_LINES:
             break

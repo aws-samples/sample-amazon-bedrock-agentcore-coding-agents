@@ -37,6 +37,8 @@ from typing import Callable
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "coding-agents"))
+import team_exchange_policy  # noqa: E402
 
 # A laptop has no instance metadata service; do not let the SDK spend its default
 # retries looking for one. The workshop host answers well inside these limits.
@@ -100,7 +102,7 @@ CMD_TEAM_CHECKER = CMD_CD + ["./deploy-prebuilt.sh claude-code-validator"]
 _TEAM_RUNTIME_CMDS = {"codex": CMD_TEAM_CODEX, "kiro": CMD_TEAM_KIRO,
                       "claude_code_validator": CMD_TEAM_CHECKER}
 # Only claude_code needs it: Lab 1's console role. The roles deploy.py made for codex
-# and kiro already read and write the bucket and, for kiro, the Token Vault.
+# and kiro already have their own archive grant and, for kiro, the Token Vault.
 CMD_GRANTS = [
     "cd ~/sample-amazon-bedrock-agentcore-coding-agents/coding-agents && . infra.config",
     'role() { basename "$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id '
@@ -109,7 +111,7 @@ CMD_GRANTS = [
     '--query roleArn --output text)"; }',
     'aws iam put-role-policy --role-name "$(role claude_code)" '
     '--policy-name TeamRunExchange --policy-document '
-    '"$(sed "s/coding-agents-\\*/$INFRA_BUCKET/" team-exchange-policy.json)"']
+    '"$(python3 team_exchange_policy.py --role claude-code --bucket "$INFRA_BUCKET")"']
 CONSOLE_ROLE = "AmazonBedrockAgentCoreRuntimeDefaultServiceRole-"
 CMD_KIRO_KEY = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents && python3 orchestrator/kiro_config.py save"]
 CMD_COORDINATOR = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent",
@@ -454,11 +456,11 @@ def check_team_runtimes() -> dict:
 
 
 def check_team_grants() -> dict:
-    """Claude Code's console role may trade archives under agents/runtime-exchange/.
+    """Console roles must have the current producer-specific archive grant.
 
     Only a console default role needs the TeamRunExchange grant, and in the workshop
     that is claude_code from Lab 1. The stack's codex and kiro (or the no-key checker)
-    run on roles deploy.py made, which already read and write the bucket, and Kiro's
+    run on roles deploy.py made, which already carry their own grants, and Kiro's
     also reads its key from the Token Vault, so neither is asked for a grant. A team
     Runtime someone made in the console instead is still checked, by name, for both
     grants it lacks: TeamRunExchange, and for kiro also ReadKiroKey
@@ -466,7 +468,7 @@ def check_team_grants() -> dict:
     """
     roles = [r.strip() for r in _coordinator_roles().split(",") if r.strip()]
     checker = NO_KEY_CHECKER if NO_KEY_CHECKER in roles and "kiro" not in roles else "kiro"
-    missing, key_missing = [], False
+    missing, stale, key_missing = [], [], False
     try:
         control, iam = _client("bedrock-agentcore-control"), _client("iam")
         for name in ("claude_code", "codex", checker.replace("-", "_")):
@@ -476,10 +478,14 @@ def check_team_grants() -> dict:
             role = control.get_agent_runtime(agentRuntimeId=arn.rsplit("/", 1)[-1])["roleArn"]
             role = role.rsplit("/", 1)[-1]
             if not role.startswith(CONSOLE_ROLE):
-                continue  # a role from deploy.py already reads and writes the bucket
+                continue  # deploy.py gives this producer its own archive grant
             for policy in ("TeamRunExchange",) + (("ReadKiroKey",) if name == "kiro" else ()):
                 try:
-                    iam.get_role_policy(RoleName=role, PolicyName=policy)
+                    saved = iam.get_role_policy(RoleName=role, PolicyName=policy)
+                    if (policy == "TeamRunExchange"
+                            and not team_exchange_policy.is_current(
+                                saved.get("PolicyDocument", {}), name.replace("_", "-"))):
+                        stale.append(name)
                 except Exception as exc:  # noqa: BLE001
                     if _error_code(exc) != "NoSuchEntity":
                         raise
@@ -494,9 +500,16 @@ def check_team_grants() -> dict:
     gaps = []
     if missing:
         others = [n for n in missing if n != "claude_code"]
-        hint = (f" ({', '.join(others)} also has a console role: run the last line again "
-                "with its name in place of claude_code)") if others else ""
+        hint = (f" ({', '.join(others)} also has a console role: set role() to its "
+                "Runtime name and --role to its name with hyphens, "
+                "not the Claude Code policy)") if others else ""
         gaps.append("no TeamRunExchange grant yet for " + ", ".join(missing) + hint)
+    if stale:
+        gaps.append("outdated or wrong-producer TeamRunExchange grant for "
+                    + ", ".join(stale)
+                    + ": replace it using team_exchange_policy.py --role "
+                    "<role-id> --bucket \"$INFRA_BUCKET\"; the Runtime name uses "
+                    "underscores and --role uses hyphens")
     if key_missing:
         # Its check reads the key at session start; without this the gate dies later.
         gaps.append("no ReadKiroKey grant yet for kiro, whose console role cannot read its key "
@@ -506,8 +519,9 @@ def check_team_grants() -> dict:
                     "./deploy-prebuilt.sh kiro")
     if gaps:
         return _outcome(TODO, "; ".join(gaps))
-    return _outcome(DONE, "Claude Code's role may trade archives under agents/runtime-exchange/; "
-                          "the team's other roles already can")
+    return _outcome(DONE, "Claude Code's role may read coordinator inputs and create "
+                          "its own archives outside the shared mount; the team's "
+                          "other roles already have their own grants")
 
 
 def check_coordinator() -> dict:
@@ -559,7 +573,7 @@ SPECS = [
     Spec(PART1, "Claude Code image", check_image, CMD_BUILD,
          note="First time? Create the repository and sign in to it first (Lab 1, Build the Container Image, steps 1 and 2)."),
     Spec(PART1, "Claude Code Runtime", check_runtime,
-         note="Create it in the AgentCore console: Agents > Bring your own code, named claude_code, "
+         note="Create it in the AgentCore console: Agents > More > Host agent, named claude_code, "
               "with your image and Create default role (Lab 1, Create the Runtime and Open a Session, step 1). "
               "That step's first expand creates the same Runtime from the terminal instead."),
     Spec(PART1, "The work it finished", check_lid_work, CMD_CONNECT + CMD_START,

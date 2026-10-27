@@ -236,7 +236,8 @@ def _deploy_module(tmp_path, monkeypatch, control):
     backend.mkdir(parents=True)
     source = backend / "deploy.py"
     shutil.copyfile(HARNESS / "deploy.py", source)
-    for shared in ("runtime_deploy.py", "cli_versions.py", "cli-versions.json"):
+    for shared in ("runtime_deploy.py", "team_exchange_policy.py",
+                   "cli_versions.py", "cli-versions.json"):
         shutil.copyfile(ROOT / "coding-agents" / shared, agents / shared)
     (agents / "infra.config").write_text(
         "INFRA_REGION=us-west-2\nINFRA_ACCOUNT_ID=123456789012\n"

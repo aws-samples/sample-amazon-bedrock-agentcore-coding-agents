@@ -207,6 +207,20 @@ def test_first_attempt_success_does_not_retry(dispatch):
     assert not result.saved["events"]
 
 
+def test_unconfirmed_remote_completion_is_never_redispatched(dispatch):
+    failure = runtime_exec.RemoteExecutionUnsettled(
+        "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/offline-test",
+        "owned-unknown-session-00000000000000000000", "shell disconnected")
+    result = dispatch([failure, "success"])
+    _assert_dispatch_contract(result, 1)
+    assert result.error is failure and result.result is None
+    assert result.saved["unsettled_runtime_sessions"] == [{
+        "agent": "claude-code", "runtime_arn": failure.runtime_arn,
+        "session_id": failure.session_id,
+    }]
+    assert all("re-dispatching" not in cmd for cmd in result.commands)
+
+
 def test_reason_is_stripped_of_terminal_controls_and_outer_whitespace(dispatch):
     detail = "\n \t\x1b[31msynthetic failure\x1b[0m\x00 \t\n"
     result = dispatch([runtime_exec.RoleExecutionError(detail), "success"])

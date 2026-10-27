@@ -2,8 +2,8 @@
 
 GitHub calls this function's HTTP endpoint for every event of the workshop App. The
 function checks GitHub's signature, acts on each signed body once and only while it is
-fresh (the signature carries no time), answers within a second, and hands the work to an
-asynchronous copy of itself, which is never retried. Three events start work:
+fresh (the signature carries no time), queues the work in an asynchronous copy of itself,
+which is never retried, then acknowledges the delivery. Three events start work:
 
 * A pull request is opened, reopened, updated, or marked ready: a **reviewer** session.
 * A trusted person comments ``/fix`` on a pull request: a **fixer** session, which opens

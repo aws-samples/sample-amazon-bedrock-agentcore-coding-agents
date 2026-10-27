@@ -548,6 +548,18 @@ _HINTS = {
 
 def error_json(exc: UserRequestError) -> str:
     code = str(exc)
+    if code.startswith("BUILD_ALREADY_RUNNING:"):
+        return json.dumps({
+            "error": "BUILD_ALREADY_RUNNING", "running_run_id": code.split(":", 1)[1],
+            "hint": "Nothing was started. Another build owns this repository. "
+                    "Follow that run; do not submit the request again automatically. "
+                    "If it was interrupted, an operator must confirm its execution "
+                    "has stopped before releasing its repository claim."})
+    if code.startswith("RUN_STATE_UNAVAILABLE:"):
+        return json.dumps({
+            "error": "RUN_STATE_UNAVAILABLE",
+            "hint": f"Repository admission could not be established "
+                    f"({code.split(':', 1)[1]}). Nothing was started."})
     if code.startswith("DUPLICATE_OF_ACTIVE_BUILD:"):
         return json.dumps({"error": "DUPLICATE_OF_ACTIVE_BUILD",
                            "running_run_id": code.split(":", 1)[1],

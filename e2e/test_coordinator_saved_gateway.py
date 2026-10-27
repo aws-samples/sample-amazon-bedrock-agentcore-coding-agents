@@ -27,6 +27,7 @@ def run_preflight(tmp_path, settings, state, overrides=None):
         "orchestrator/github.py",
         "orchestrator/roles.py",
         "coding-agents/runtime_deploy.py",
+        "coding-agents/team_exchange_policy.py",
         "coding-agents/cli_versions.py",
         "coding-agents/cli-versions.json",
     ):

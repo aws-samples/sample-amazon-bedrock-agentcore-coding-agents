@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -53,18 +54,27 @@ if tool == "tar":
         a = [arg for arg in a if arg != "--touch"]
     os.execv(c["tar"], [c["tar"], *a])
 if tool == "aws":
-    assert a[:2] == ["s3", "cp"], a
-    src, dst = a[2:4]
-    assert a[4:] == ["--region", "us-west-2", "--only-show-errors"], a
-    if src == c["archive_uri"]:
+    if a[:2] == ["s3", "cp"]:
+        src, dst = a[2:4]
+        assert a[4:] == ["--region", "us-west-2", "--only-show-errors"], a
+        assert src == c["archive_uri"], a
         if c["hydrate_fd"]:
             os.write(c["hydrate_fd"], b"fixture hydration error")
             sys.exit(19)
         assert dst.startswith("/tmp/workshop-source-")
         shutil.copyfile(c["seed"], dst)
     else:
-        assert dst == c["archive_uri"] and src.startswith("/tmp/workshop-result-"), a
-        shutil.copyfile(src, c["result"])
+        assert a[:2] == ["s3api", "put-object"], a
+        opts = dict(zip(a[2::2], a[3::2]))
+        assert opts["--bucket"] == "offline-fixture"
+        assert opts["--key"].startswith(
+            "runtime-exchange/roles/claude-code/run_framing/work/backend/")
+        assert opts["--if-none-match"] == "*"
+        assert opts["--checksum-algorithm"] == "SHA256"
+        assert opts["--region"] == "us-west-2"
+        assert opts["--body"].startswith("/tmp/workshop-result-")
+        Path(c["result_key"]).write_text(opts["--key"])
+        shutil.copyfile(opts["--body"], c["result"])
     sys.exit(0)
 assert tool == "claude", tool
 Path(c["argv"]).write_text(json.dumps(a))
@@ -214,6 +224,25 @@ def dispatch(tmp_path, monkeypatch):
     monkeypatch.delenv("PERUSER_ROLE_ARN", raising=False)
     monkeypatch.setattr(runtime_stage, "archive_uri", lambda *a: "s3://offline-fixture/source.tar.gz")
     monkeypatch.setattr(runtime_stage, "skills_archive_uri", lambda *a: None)
+    monkeypatch.setenv("WORKSHOP_RUNTIME_BUCKET", "offline-fixture")
+
+    class ArchiveStore:
+        def get_object(self, **kwargs):
+            assert kwargs == {
+                "Bucket": "offline-fixture", "ChecksumMode": "ENABLED",
+                "Key": (tmp_path / "result-key").read_text(),
+            }
+            payload = (tmp_path / "result.tar.gz").read_bytes()
+            return {"Body": io.BytesIO(payload), "ChecksumType": "FULL_OBJECT",
+                    "ChecksumSHA256": base64.b64encode(
+                        hashlib.sha256(payload).digest()).decode("ascii")}
+
+        def put_object(self, **kwargs):
+            assert kwargs["Key"] == runtime_stage.archive_key("run_framing/work/backend")
+            (tmp_path / "sealed.tar.gz").write_bytes(kwargs["Body"])
+            return {}
+
+    monkeypatch.setattr(runtime_stage, "_client", lambda _region: ArchiveStore())
 
     def forbid_network(*args, **kwargs):
         raise AssertionError("Framing tests must not use a network client")
@@ -230,6 +259,7 @@ def dispatch(tmp_path, monkeypatch):
             "stderr": base64.b64encode(stderr).decode(), "exit": exit_code,
             "interrupt": interrupt, "hydrate_fd": hydrate_fd,
             "seed": str(seed), "result": str(tmp_path / "result.tar.gz"),
+            "result_key": str(tmp_path / "result-key"),
             "archive_uri": "s3://offline-fixture/source.tar.gz",
             "argv": str(tmp_path / "cli-argv.json"),
             "stdout_ack": str(tmp_path / "stdout-ack"), "tar": real_tar,

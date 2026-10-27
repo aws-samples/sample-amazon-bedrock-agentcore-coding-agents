@@ -26,7 +26,7 @@ vendors that check it. This repository is a complete, working example.
 ## The three labs
 
 **Lab 1. Run Claude Code on AgentCore Runtime.** Build Claude Code's image, create its
-Runtime in the AgentCore console (**Agents > Bring your own code**, an ECR image,
+Runtime in the AgentCore console (**Agents > More > Host agent**, an ECR image,
 **Create default role**, an S3 Files mount, then **Create runtime**), and open a
 terminal inside a new session, a microVM of its own. Give it a task, press **Enter**,
 then press **Ctrl+]** right away to disconnect while it works, and reconnect later to

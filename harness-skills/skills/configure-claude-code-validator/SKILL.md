@@ -108,6 +108,17 @@ application modules, instrumenting its entry point, or starting it. A missing mo
 before setup is complete is not evidence that the application is broken. Report a
 failed setup separately; do not turn it into an invented application assertion.
 
+Keep test doubles local to the probe that needs them. Control time or randomness
+in an isolated context, or restore replaced values in a `finally` block before
+other probes. Preserve the runtime APIs used by the application and its dependencies.
+Report a failure caused by the checking environment as such.
+
+Observe the precondition before asserting the outcome. When timing or randomness
+matters, use controlled inputs or observed state to reach the required condition.
+A fixed input sequence alone does not prove it occurred. If the precondition remains
+unverified, report that limitation and fail; do not attribute an unproven defect to
+the application.
+
 Size any readiness poll against that budget, and **never below 60 seconds**. A
 deliverable's first start may install dependencies and take much longer than a
 warm restart. Checks that allowed 15-20s produced red gates on services that were

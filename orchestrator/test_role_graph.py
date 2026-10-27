@@ -51,6 +51,121 @@ def _run(agent_ids, dispatch_for):
     return role_graph.run_graph(graph), nodes
 
 
+def test_cancelled_graph_does_not_return_while_its_role_thread_still_runs():
+    """Cancelling a to_thread future is not completion of its real execution."""
+    import asyncio
+    started, finish, returned, cancelled = (
+        threading.Event(), threading.Event(), threading.Event(), threading.Event())
+    outcomes = []
+
+    def role():
+        started.set()
+        assert finish.wait(10)
+        outcomes.append("role finished")
+
+    node = role_graph._role_node_cls()("claude-code", role)
+
+    class Graph:
+        async def invoke_async(self, _task):
+            task = asyncio.create_task(node.invoke_async(""))
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+            task.cancel()
+            results = await asyncio.gather(task, return_exceptions=True)
+            assert isinstance(results[0], asyncio.CancelledError)
+            cancelled.set()
+            raise TimeoutError("graph deadline")
+
+    def drive():
+        try:
+            role_graph.run_graph(Graph())
+        except TimeoutError:
+            outcomes.append("timeout reported")
+        finally:
+            returned.set()
+
+    worker = threading.Thread(target=drive)
+    worker.start()
+    try:
+        assert cancelled.wait(5)
+        assert not returned.wait(0.1)
+        finish.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert outcomes == ["role finished", "timeout reported"]
+        assert isinstance(node.error, asyncio.CancelledError)
+    finally:
+        finish.set()
+        worker.join(5)
+
+
+def test_partial_chain_preserves_the_repository_binding_in_child_threads():
+    import github
+    observed = []
+    lock = threading.Lock()
+
+    def factory(agent_id):
+        def work():
+            with lock:
+                observed.append((agent_id, github.configured_repository()))
+        return work
+
+    with github.bind_repository("original/application"):
+        graph, _ = role_graph.build_graph(
+            ["claude-code", "opencode", "kiro"], factory,
+            checker_waits_for={"claude-code"})
+        role_graph.run_graph(graph)
+    assert {role for role, _ in observed} == {"claude-code", "opencode", "kiro"}
+    assert {repo for _, repo in observed} == {"original/application"}
+
+
+def test_partial_chain_joins_started_children_when_a_later_thread_cannot_start(monkeypatch):
+    started, finish, returned, rejected = (
+        threading.Event(), threading.Event(), threading.Event(), threading.Event())
+    original_start = threading.Thread.start
+    completed = []
+
+    def sometimes_start(thread):
+        if thread.name == "role-codex":
+            assert started.wait(5)
+            rejected.set()
+            raise RuntimeError("cannot create the next child")
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", sometimes_start)
+
+    def factory(agent_id):
+        def work():
+            if agent_id == "claude-code":
+                started.set()
+                assert finish.wait(10)
+                completed.append(agent_id)
+        return work
+
+    graph, _ = role_graph.build_graph(
+        ["claude-code", "codex", "opencode", "kiro"], factory,
+        checker_waits_for={"claude-code", "codex"})
+
+    def drive():
+        try:
+            role_graph.run_graph(graph)
+        finally:
+            returned.set()
+
+    worker = threading.Thread(target=drive)
+    worker.start()
+    try:
+        assert rejected.wait(5)
+        assert not returned.wait(0.1)
+        finish.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert completed == ["claude-code"]
+    finally:
+        finish.set()
+        worker.join(5)
+
+
 def test_checker_waits_for_every_builder_including_the_slowest():
     """The AND join. Strands starts a node as soon as ONE incoming edge is satisfied,
     so without the explicit condition the checker would begin after the FASTEST builder
@@ -80,11 +195,29 @@ def test_a_failed_builder_never_hangs_the_checker():
 def test_all_builders_failing_still_reaches_the_checker():
     """Even a total builder failure gets a verdict: the checker looks at the (empty or
     partial) tree and the gate decides. Nothing is fabricated and nothing hangs."""
+    from strands.multiagent.base import Status
     order, factory = _recorder()
     spec = {"claude-code": True, "opencode": True, "kiro": False}
-    _, nodes = _run(spec, lambda a: factory(a, boom=spec[a]))
+    result, nodes = _run(spec, lambda a: factory(a, boom=spec[a]))
     assert order[-1] == "kiro", order
     assert all(nodes[b].error is not None for b in ("claude-code", "opencode"))
+    assert result.status == Status.FAILED
+    assert all(result.results[b].status == Status.FAILED
+               for b in ("claude-code", "opencode"))
+    assert result.results["kiro"].status == Status.COMPLETED
+
+
+def test_a_failed_sole_builder_still_reaches_the_checker_without_changing_its_failure():
+    from strands.multiagent.base import Status
+    order, factory = _recorder()
+    result, nodes = _run(
+        ["claude-code", "kiro"],
+        lambda a: factory(a, boom=(a == "claude-code")))
+    assert order == ["claude-code", "kiro"]
+    assert isinstance(nodes["claude-code"].error, RuntimeError)
+    assert result.status == Status.FAILED
+    assert result.results["claude-code"].status == Status.FAILED
+    assert result.results["kiro"].status == Status.COMPLETED
 
 
 def test_two_role_roster_schedules_without_a_special_case():
