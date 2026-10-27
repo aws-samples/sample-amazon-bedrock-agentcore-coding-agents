@@ -82,10 +82,10 @@ export function Checks({ gates }: { gates: GateRecord[] }) {
         {!gate.passed && !!gate.failure_lines?.length && <ExpandableSection headerText="Failure diagnostics">
           <pre className="console-record">{gate.failure_lines.join('\n')}</pre>
         </ExpandableSection>}
-        {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded assertion${gate.checks.length === 1 ? '' : 's'}`}>
+        {!!gate.checks?.length && <ExpandableSection headerText={`${gate.checks.length} recorded detail${gate.checks.length === 1 ? '' : 's'}`}>
           <SpaceBetween size="s">{gate.checks.map((check, i) => <div key={i}>
             <StatusIndicator type={check.passed === true ? 'success' : check.passed === false ? 'error' : 'pending'}>
-              {check.check || `Assertion ${i + 1}`}
+              {check.check || `Detail ${i + 1}`}
             </StatusIndicator>
             {check.detail && <Box color="text-body-secondary">{check.detail}</Box>}
           </div>)}</SpaceBetween>

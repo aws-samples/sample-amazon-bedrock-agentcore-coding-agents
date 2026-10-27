@@ -87,7 +87,7 @@ test('each check execution keeps its own recorded failure in order', () => {
   assert.equal((html.match(/>Failed</g) ?? []).length, 2);
 });
 
-test('one or several recorded assertions keep their individual outcomes', () => {
+test('one or several recorded details preserve their notes and outcomes', () => {
   const checks = [
     { check: 'timer stays paused', passed: true },
     { check: 'saved score survives reload', passed: false },
@@ -96,13 +96,30 @@ test('one or several recorded assertions keep their individual outcomes', () => 
     const record = gate({ checks: checks.slice(0, count) });
     const before = structuredClone(record);
     const html = renderChecks([record]);
-    assert.ok(html.includes(`${count} recorded assertion${count === 1 ? '' : 's'}`));
-    assert.match(html, />Failed</); // The gate result remains independent of its assertions.
+    assert.ok(html.includes(`${count} recorded detail${count === 1 ? '' : 's'}`));
+    assert.match(html, />Failed</); // The gate result remains independent of its entries.
     assert.match(html, /timer stays paused/);
     if (count === 2) assert.match(html, /saved score survives reload/);
-    else assert.doesNotMatch(html, /1 recorded assertions|saved score survives reload/);
+    else assert.doesNotMatch(html, /1 recorded details|saved score survives reload/);
     assert.deepEqual(record, before);
   }
+
+  const record = gate({
+    passed: true,
+    summary: 'NOTE: run in jsdom with real shipped bundle; real-browser rendering/OS IME delivery not verified.',
+    checks: [{
+      check: 'acceptance_check_authored', passed: true,
+      detail: "the validator's authored check passed against the live deliverable",
+    }],
+  });
+  const before = structuredClone(record);
+  const html = renderChecks([record]);
+  assert.match(html, /1 recorded detail/);
+  assert.match(html, /NOTE: run in jsdom with real shipped bundle; real-browser rendering\/OS IME delivery not verified\./);
+  assert.match(html, /acceptance_check_authored/);
+  assert.match(html, />Passed</);
+  assert.doesNotMatch(html, /recorded assertion|>Failed</);
+  assert.deepEqual(record, before);
 });
 
 test('review panels format Markdown without changing the verdict or its evidence limits', () => {
