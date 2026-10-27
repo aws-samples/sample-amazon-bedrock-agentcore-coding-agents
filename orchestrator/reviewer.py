@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from gate_diagnostics import extract_failure_lines
+from review_build_outputs import declared_outputs
 
 
 LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
@@ -879,7 +880,8 @@ _MAX_OMITTED_LISTED = 60
 _AUTHORED_CHECK_LABEL = "the validator's authored acceptance check"
 
 
-def _review_omission(rel: str, full: str) -> str:
+def _review_omission(rel: str, full: str,
+                     generated: dict[str, str] | None = None) -> str:
     """Why a file stays out of the review context, or "" when it is source to read.
 
     By path first (generated bundles, binary extensions), then by content: a NUL
@@ -890,6 +892,9 @@ def _review_omission(rel: str, full: str) -> str:
     if (any(part.lower() in _GENERATED_DIRS for part in parts[:-1])
             or name.endswith(_GENERATED_SUFFIXES)):
         return "generated build output"
+    declared = (generated or {}).get(os.path.normpath(rel).replace("\\", "/"))
+    if declared:
+        return declared
     if os.path.splitext(name)[1] in _BINARY_EXTENSIONS:
         return "binary file"
     try:
@@ -913,6 +918,20 @@ def _file_size(path: str) -> int:
         return os.path.getsize(path)
     except OSError:
         return 0
+
+
+def _reviewable_entry(root: str, rel: str) -> bool:
+    """A declaration cannot hide output when its source entry is unavailable."""
+    path = os.path.join(root, rel)
+    if _review_omission(rel, path):
+        return False
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(4 * _MAX_JUDGE_CONTENT_CHARS + 1)
+        return (b"\0" not in raw
+                and len(raw.decode("utf-8")) <= _MAX_JUDGE_CONTENT_CHARS)
+    except (OSError, UnicodeError):
+        return False
 
 
 def _omitted_section(omitted: list[tuple[str, int, str]]) -> str:
@@ -964,6 +983,13 @@ def _artifact_files(run: Any, subject: Any = None,
         root = getter(subject.work_id) if callable(getter) else ""
     if not os.path.isdir(root):
         return files
+    # A file need not live under dist/ or end in .min.js to be generated. Read
+    # explicit build declarations from this exact gate tree, never run a project
+    # command here, and keep the declaration's source entry in the review.
+    generated = {
+        output: claim.reason for output, claim in declared_outputs(root).items()
+        if _reviewable_entry(root, claim.source)
+    }
 
     # This pull request's OWN changed paths first, then the rest of the tree if the
     # budget allows: the reviewer must see what this change does before it sees the
@@ -975,7 +1001,7 @@ def _artifact_files(run: Any, subject: Any = None,
             continue
         label = (f"{subject.work_id} ({subject.capability}) changed {rel}"
                  if subject is not None else rel)
-        reason = _review_omission(rel, full)
+        reason = _review_omission(rel, full, generated)
         if reason:
             seen.add(os.path.abspath(full))
             omitted.append((label, _file_size(full), reason))
@@ -1000,7 +1026,7 @@ def _artifact_files(run: Any, subject: Any = None,
             if os.path.abspath(full) in seen:
                 continue
             rel = os.path.relpath(full, root)
-            reason = _review_omission(rel, full)
+            reason = _review_omission(rel, full, generated)
             if reason:
                 seen.add(os.path.abspath(full))
                 omitted.append((f"on the base branch: {rel}", _file_size(full), reason))

@@ -282,7 +282,9 @@ def test_the_team_game_checkout_points_at_the_gallery_as_part_4_does(
     _checkout_fixture(monkeypatch, tmp_path)
     assert github._main(["checkout", str(tmp_path / "team-game")]) == 0
     out = capsys.readouterr().out
-    assert "cd ~/team-game && npm install" in out, out
+    assert "read ~/team-game/README.md and run only its setup commands" in out, out
+    assert "If none are required, skip installation." in out
+    assert "npm install" not in out
     assert "gallery.py publish --project ~/team-game --port 8000 -- npm start" in out
     assert "claude" not in out.split("Next:", 1)[1]
 

@@ -1138,8 +1138,9 @@ def _print_play_hint(destination: str) -> None:
             shown = "~/" + destination[len(home.rstrip("/")) + 1:]
         name = os.path.basename(destination.rstrip("/"))
         if name in _GALLERY_PORTS:
-            print(f"\nNext: run the setup its README names (for a Node game, cd {shown} && "
-                  "npm install), then publish it with its start command after --:")
+            print(f"\nNext: read {shown}/README.md and run only its setup commands. "
+                  "If none are required, skip installation. Then publish with its "
+                  "start command after --:")
             print("  cd ~/sample-amazon-bedrock-agentcore-coding-agents && python3 "
                   f"orchestrator/gallery.py publish --project {shown} --port "
                   f"{_GALLERY_PORTS[name]} -- npm start")
