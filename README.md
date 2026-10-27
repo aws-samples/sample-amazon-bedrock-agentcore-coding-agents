@@ -8,7 +8,7 @@ It keeps working when you close the lid, it runs twenty at once,<br>
 it wakes up on its own when your repository changes,<br>
 and it works in a team where the maker is never the checker.
 
-[Get started](#get-started) · [The four labs](#the-four-labs) · [How the team works](#how-the-team-checks-its-own-work) · [Operator notes](docs/operators.md)
+[Get started](#get-started) · [The three labs](#the-three-labs) · [How the team works](#how-the-team-checks-its-own-work) · [Operator notes](docs/operators.md)
 
 <sub>The code behind the AWS re:Invent 2026 workshop <b>AIM416: Scale your coding agents beyond the laptop with AgentCore</b></sub>
 
@@ -16,24 +16,31 @@ and it works in a team where the maker is never the checker.
 
 ## Why this exists
 
-Claude Code, Codex, and Kiro feel best in your own terminal, and that terminal is
-the limit. The agent stops when the laptop sleeps, runs one task at a time, and
-waits for you to type, and it grades its own work. Amazon Bedrock AgentCore Runtime
-gives every session its own microVM, so the same agent can outlive the laptop, run in
-parallel, start from an event, and work beside agents from other vendors that check
-it. This repository is a complete, working example.
+Coding agents such as Claude Code, Codex, and Kiro usually run on a laptop. On a
+laptop they stop when it sleeps, can run only as many tasks as its CPU and memory
+allow, and wait for someone to type. Each one also grades its own work. Amazon Bedrock
+AgentCore Runtime gives every session its own microVM, so the same agent can outlive
+the laptop, run in parallel, start from an event, and work beside agents from other
+vendors that check it. This repository is a complete, working example.
 
-## The four labs
+## The three labs
 
 **Lab 1. Run Claude Code on AgentCore Runtime.** Build Claude Code's image, create its
-Runtime in the AgentCore console (**Create runtime**, an ECR image, **Create default
-role**, an S3 Files mount), and open a terminal inside a new session, a microVM of its
-own. Give it a task, press **Ctrl+]** to disconnect, and reconnect later to the same
-conversation with the work done. Files live on the S3 Files mount, so they outlive the
-session. The image's
-health server (`coding-agents/healthcheck.py`) answers `/ping` with `HealthyBusy` while
-the agent CLI runs, which keeps the session alive while you are disconnected; once the
-CLI exits, the idle timeout applies.
+Runtime in the AgentCore console (**Agents > Bring your own code**, an ECR image,
+**Create default role**, an S3 Files mount, then **Create runtime**), and open a
+terminal inside a new session, a microVM of its own. Give it a task, press **Enter**,
+then press **Ctrl+]** right away to disconnect while it works, and reconnect later to
+the same conversation with the work done. The AgentCore CLI detaches only on the raw
+Ctrl+] byte, so the workshop stack turns off VS Code's kitty keyboard protocol, which
+would send Ctrl+] to Claude Code in a newer format. Closing the terminal also leaves
+the session running, with the first Claude Code still open in it. From a new shell,
+`/app/run.sh --continue` in the same folder opens that conversation: run it once the
+files show the task finished, or add `--fork-session` to continue in a copy, so two
+Claude Code processes never write one conversation at once. Files live on the S3 Files
+mount, so they outlive the session. The image's health server (`coding-agents/healthcheck.py`)
+answers `/ping` with `HealthyBusy` while the agent CLI runs, including an open Claude
+Code whose task has ended, which keeps the session alive while you are disconnected;
+once the CLI exits, the idle timeout applies.
 
 ```bash
 docker buildx bake claude-code --push      # REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com
@@ -58,37 +65,36 @@ python3 coding-agents/fanout.py --init && python3 coding-agents/fanout.py --agen
 python3 coding-agents/fanout.py --repo ~/your-repo --init   # then --repo ~/your-repo --task "... {n} ..."
 ```
 
-**Lab 3. Run an Agent on Every Pull Request.** Connect a GitHub repository and open a
-pull request. GitHub's
-event reaches the endpoint you deploy, which checks its signature, acts on each signed
-event once within an hour, and starts a new session that reviews the change, runs the
-code to prove what it finds, and posts the review on the pull request. Only pull
-requests from people the repository trusts are reviewed, because the review runs the
-code. Add `REVIEW.md` to the default branch to set your team's rules; comment
-`/fix` and a fixer session opens a fix pull request that a different session
-reviews. No agent ever holds a GitHub token: every write goes through AgentCore
-Gateway.
+**Lab 3. Build with a Team of Agents from GitHub.** Deploy the endpoint GitHub calls and
+connect a private repository; from then on, GitHub events start the work, and the
+endpoint checks each event's signature and acts on each signed event once within an
+hour. A pull request wakes a reviewer: a new session reviews the change, runs the code
+to prove what it finds, and posts the review on the pull request. A `/develop <idea>`
+comment on an issue wakes the coordinator in its own Runtime and its team. Claude Code
+builds the service and Codex the page, one pull request each; Kiro writes and runs a
+check for each; an independent review reads each; a red result goes back to its
+builder once. Green, approved work merges in order, anything still red waits for you,
+and the coordinator posts a summary on the issue. A `/develop` comment starts nothing
+while another build is running. The stack already created the Codex and Kiro Runtimes.
+The agents run the code, so a pull request is reviewed only when its branch is in the
+repository or GitHub associates its author with it, and only the repository owner can
+start a team, never a bot, because the coordinator merges green work. No agent ever
+holds a GitHub token: every write goes through AgentCore Gateway.
 
 ```bash
 aws cloudformation deploy --template-file /tmp/pr-review.yaml --stack-name coding-agents-pr-review \
   --capabilities CAPABILITY_NAMED_IAM   # after cloudformation package of coding-agents/pr_review/template.yaml
-./connect-github.sh owner/repository   # two clicks on GitHub: Create, Install
+coding-agents/connect-github.sh owner/repository   # two clicks on GitHub: Create, Install
+WORKSHOP_MERGE_POLICY=auto orchestrator-agent/deploy-coordinator.sh   # wired to the team's Runtimes and your repository
+python3 orchestrator/watch_run.py --plain   # after you comment "/develop <your idea>" on an issue
 ```
 
-The reviewer is one file, [`coding-agents/pr_review/handler.py`](coding-agents/pr_review/handler.py);
-its prompt is where your team's checklist goes.
-
-**Lab 4. Build with a Team of Agents.** The same Runtime pattern serves Codex and Kiro,
-and a coordinator in its own Runtime turns them into a team. One request: Claude Code builds
-the service and Codex the page, one pull request each; Kiro writes and runs a check
-for each; an independent review reads each; a red result goes back to its builder
-once. Green, approved work merges in order, and anything still red waits for you.
-
-```bash
-cd orchestrator-agent
-WORKSHOP_MERGE_POLICY=auto ./deploy-coordinator.sh   # wired to the three Runtimes and your repository
-./ask.sh "Use preset=team-game. Creative direction: <your idea>"   # then: python3 ../orchestrator/watch_run.py
-```
+The endpoint is one file, [`coding-agents/pr_review/handler.py`](coding-agents/pr_review/handler.py):
+it reviews pull requests and starts the team on a `/develop` comment. Its review prompt
+is where your team's checklist goes. To try more, add `REVIEW.md` to
+the default branch to set your team's review rules, or comment `/fix` on a reviewed
+pull request and a fixer session opens a fix pull request that a different session
+reviews. `orchestrator-agent/ask.sh` sends the same team request from a terminal.
 
 ## How the team checks its own work
 
@@ -156,9 +162,10 @@ browser, with usage and controls per person.
 ## Get started
 
 **At AWS re:Invent 2026 (AIM416) or another AWS event:** your account and a
-browser-based VS Code are ready, with an empty home folder. Open the workshop and start
-with Getting Started (At an AWS Guided Event), where you clone this repository at the
-commit the workshop was tested with:
+browser-based VS Code are ready, and the stack has cloned this repository into your
+home folder at the commit the workshop was tested with. Open the workshop and start
+with Getting Started (At an AWS Guided Event). If the folder is missing, clone it and
+record the stack's resource IDs yourself:
 
 ```bash
 git clone --depth 1 --revision <commit> https://github.com/aws-samples/sample-amazon-bedrock-agentcore-coding-agents.git
@@ -166,8 +173,8 @@ cd sample-amazon-bedrock-agentcore-coding-agents && coding-agents/infra/setup.sh
 ```
 
 **In your own AWS account:** launch the workshop stack in one region, then follow
-the same pages. You need Amazon Bedrock access to Claude Sonnet 5.5 (and, for Lab 4,
-Claude Opus 5.5 and GPT-6.1 Sol), and a GitHub account for Labs 3 and 4.
+the same pages. You need Amazon Bedrock access to Claude Sonnet 5.5 (and, for Lab 3,
+Claude Opus 5.5 and GPT-6.1 Sol), and a GitHub account for Lab 3.
 
 <p>
   <a href="https://us-west-2.console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/create/review?templateURL=https://ws-assets-prod-iad-r-pdx-f3b3f9f1a7d6a3d0.s3.us-west-2.amazonaws.com/7b1cc169-b7a2-4a64-b215-df050bd8c8f1/cfn.yaml&stackName=coding-agents-workshop&param_AssetsBucketName=ws-assets-prod-iad-r-pdx-f3b3f9f1a7d6a3d0&param_AssetsBucketPrefix=7b1cc169-b7a2-4a64-b215-df050bd8c8f1"><img src="docs/assets/launch-stack.svg" alt="Launch Stack"></a>&nbsp; US West (Oregon), recommended<br>
@@ -178,8 +185,7 @@ Claude Opus 5.5 and GPT-6.1 Sol), and a GitHub account for Labs 3 and 4.
 |---|---|---|
 | **Lab 1. Run Claude Code on AgentCore Runtime** | Build Claude Code's image, create its Runtime, give it a task, disconnect, reconnect | A session is a microVM in the cloud, so it keeps running after you disconnect |
 | **Lab 2. Run Many Agents in Parallel** | Run twenty agents on one repository, a branch and worktree each, then merge the one you like | Each new session is a new isolated microVM, so running more agents is a loop over session IDs |
-| **Lab 3. Run an Agent on Every Pull Request** | Deploy the endpoint, connect a repository, open a pull request | A GitHub event can start a session, and the agent never holds a GitHub token |
-| **Lab 4. Build with a Team of Agents** | Set up Kiro, then send one request to a coordinator | A separate agent writes the check, its exit code decides, and a person merges |
+| **Lab 3. Build with a Team of Agents from GitHub** | Deploy the endpoint, connect a repository, deploy the coordinator, open a pull request, then comment `/develop` on an issue | A GitHub event starts the work without the agents holding a GitHub token, a separate agent's check decides, and anything still failing waits for you |
 
 Lost at any point? One read-only command says where you are and what to run next:
 

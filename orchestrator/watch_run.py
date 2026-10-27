@@ -8,7 +8,7 @@
 
 Why this exists. The console renders the live per-role feed in-process, and
 ``watch_agents.py`` attaches to the console's multiplexed Runtime PTYs -- but the SERVED
-Lab 4 path is a coordinator deployed into its own AgentCore Runtime. Its engine runs
+Lab 3 path is a coordinator deployed into its own AgentCore Runtime. Its engine runs
 somewhere the attendee cannot attach to, so the only window used to be a chat turn per
 poll: about a minute of model time to learn one line of state, which is the opposite of
 watching. Meanwhile the engine was already recording exactly the right thing.
@@ -268,9 +268,9 @@ def _what_now(rec: dict, ink: _Ink, width: int) -> list[str]:
                           "evidence, and ask your facilitator if the check itself looks "
                           "wrong.", lead="  b. ")
         else:
-            lines += para("Or rerun Build and Run the Team step 6 with a simpler direction: one core "
-                          "mechanic, one short round. It creates a NEW session ID; this "
-                          "run stays recorded.", lead="  b. ")
+            lines += para("Or send a new request with a simpler direction (Go Further, "
+                          "Improve Your Game, step 2): one core mechanic, one short round. "
+                          "It creates a NEW session ID; this run stays recorded.", lead="  b. ")
         lines += para("Do not resubmit the same request to retry a red pull request.")
         return lines
     head = "BUILD PASSED, but no pull request opened" if status == "passed" \
@@ -278,9 +278,18 @@ def _what_now(rec: dict, ink: _Ink, width: int) -> list[str]:
     lines.append("  " + ink.red(head) + (f": {reason}" if reason else "."))
     if rec.get("next_action"):
         lines += para(" ".join(str(rec["next_action"]).split()))
+    # The same rule as the summary the engine posts on a /develop issue: resubmit once,
+    # from the terminal, never with another /develop comment. A Chat build (Agent
+    # Studio) is resubmitted from Chat, so it gets neither line.
     if reason == "COORDINATOR_SESSION_INTERRUPTED" and not chat:
-        lines += para("Submit it again with Build and Run the Team step 6, which creates a new "
-                      "session ID.")
+        if run_advice.is_github_build(rec) or run_advice.is_team_build(rec):
+            lines += para("Submit it again once, with ./ask.sh and the same idea (Lab 3, "
+                          "Start the Team from GitHub, step 2), which creates a new "
+                          "session ID. Do not comment /develop again.")
+        else:
+            lines += para("Send the same request again once, with ./ask.sh --new (Go "
+                          "Further, Improve Your Game, step 2), which creates a new "
+                          "session ID.")
     lines += para("For help, send this output and the read-only progress check to a "
                   "helper:")
     lines += [f"    python3 {_REPO_DIR}/orchestrator/progress.py"]

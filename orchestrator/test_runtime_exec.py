@@ -16,6 +16,7 @@ so they run with no AWS, no runtime, no network.
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import pytest
@@ -510,6 +511,70 @@ def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
         subshell_end,
     )
     assert download < worktree < assume < subshell_end < upload
+
+
+# A `/develop` comment's build carries the identity ``github:<login>`` (chat.py), and
+# the deployed coordinator always has PERUSER_ROLE_ARN (configure_deploy). That login
+# labels the run and its telemetry only: no role command may change because of it.
+# The headless prefix runs BEFORE the Kiro key fetch, so an assume-role there would
+# fetch Kiro's key with the per-user role, which has no Token Vault grant.
+_PERUSER = "arn:aws:iam::123456789012:role/cca-peruser"
+
+
+def _dispatched(agent_id, monkeypatch, identity, peruser=_PERUSER):
+    import identity_baggage
+    identity_baggage.set_current_identity(identity)
+    if peruser:
+        monkeypatch.setenv("PERUSER_ROLE_ARN", peruser)
+    else:
+        monkeypatch.delenv("PERUSER_ROLE_ARN", raising=False)
+    headless = runtime_exec._build_command(
+        agent_id, "check the work", "run_1/work/validate", None, "m", "us-west-2", "n1",
+        archive_uri="s3://bucket/run_1/work/validate.tar.gz")
+    tui = runtime_exec._interactive_dispatch_commands(
+        agent_id, "run_1/work/validate", "m", "us-west-2", "n1",
+        "s3://bucket/run_1/work/validate.tar.gz")["launch"]
+    return headless, tui
+
+
+@pytest.mark.parametrize("agent_id", ["kiro", "claude-code", "codex"])
+def test_a_github_identity_labels_the_dispatch_but_never_assumes_a_role(
+        monkeypatch, agent_id):
+    from identity_baggage import ANONYMOUS, UserIdentity
+    github = UserIdentity(user_id="github:octocat", name="octocat")
+    headless, tui = _dispatched(agent_id, monkeypatch, github)
+    for cmd in (headless, tui):
+        assert "sts assume-role" not in cmd and "cca-peruser" not in cmd
+        assert "AGENTCORE_USER_ID=github:octocat" in cmd
+        assert "user.id=github:octocat" in cmd
+    # Apart from those labels, the command is exactly the one ./ask.sh's anonymous
+    # build dispatches: same order, same credentials, same Kiro key fetch.
+    plain_headless, plain_tui = _dispatched(agent_id, monkeypatch, ANONYMOUS, peruser="")
+
+    def unlabeled(cmd):
+        cmd = re.sub(r"AGENTCORE_USER_(ID|EMAIL|NAME)=\S* ", "", cmd)
+        return cmd.replace("user.id=github:octocat,team.id=workshop,", "")
+    assert unlabeled(headless) == plain_headless
+    assert unlabeled(tui) == plain_tui
+
+
+def test_a_github_identity_keeps_kiro_s_key_fetch_on_the_runtime_role(monkeypatch):
+    from identity_baggage import UserIdentity
+    headless, _tui = _dispatched(
+        "kiro", monkeypatch, UserIdentity(user_id="github:mona_acme", name="mona_acme"))
+    fetch = headless.index("export KIRO_API_KEY")
+    cli = headless.index("); __rc=$?", fetch)
+    assert "AWS_ACCESS_KEY_ID" not in headless[:cli]
+    assert "get_resource_api_key" in headless
+
+
+def test_a_signed_in_user_still_runs_under_the_per_user_role(monkeypatch):
+    # The exception is scoped to label-only identities; Stage 3 attribution remains.
+    from identity_baggage import UserIdentity
+    cognito = UserIdentity(user_id="attendee-sub", email="attendee@workshop.aws")
+    headless, tui = _dispatched("claude-code", monkeypatch, cognito)
+    assert "sts assume-role" in headless and "sts assume-role" in tui
+    assert "--role-session-name attendee-sub" in headless
 
 
 def test_every_api_key_role_materializes_its_credential_on_dispatch():

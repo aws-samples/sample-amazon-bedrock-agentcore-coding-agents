@@ -292,13 +292,39 @@ def _vault_key_prelude(role: "_roles.Role", region: str) -> str:
         "__workshop_vault_python=python3; fi; "
         f'"$__workshop_vault_python" -W ignore -c {shlex.quote(py)}'
     )
+    missing = (
+        f"[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential "
+        f"provider {provider!r} on workload identity {workload!r} returned no key. "
+        "Save it with the hidden key prompt (Lab 3, Check Kiro's API Key, In your "
+        "account; Agent Studio: Settings > Kiro access); no redeploy is needed, then "
+        "submit again.")
     return (
         f'{key_env}="$({fetch_command})"; '
         f"export {key_env}; "
         f"if [ -z \"${key_env}\" ]; then "
-        f"echo {shlex.quote(f'[auth] ERROR: no {key_env} for role {role.id}: the Token Vault credential provider {provider!r} on workload identity {workload!r} returned no key. Save it with the hidden key prompt in Lab 1, Read a Harness and Store the Kiro Key, step 2 (Agent Studio: Settings > Kiro access); no redeploy is needed, then submit again.')} >&2; "
+        f"echo {shlex.quote(missing)} >&2; "
         "exit 1; fi; "
     )
+
+
+def _peruser_prefix(identity: Any, region: str) -> str:
+    """The per-user role assumption to run before a role's CLI, or "".
+
+    "" unless a per-user role is wired (``PERUSER_ROLE_ARN``) AND the submitter is a
+    signed-in workshop user (``UserIdentity.attributes_cost``). A GitHub login from
+    the `/develop` event path labels the run and its telemetry but never selects
+    credentials, so that dispatch is the one ``./ask.sh`` would make: no
+    ``sts assume-role`` before the CLI, and the Kiro key fetched with the Runtime's
+    own role. The assumption itself is ``peruser.assume_as_user``.
+    """
+    role_arn = os.environ.get("PERUSER_ROLE_ARN", "")
+    try:
+        if not role_arn or identity is None or not identity.attributes_cost():
+            return ""
+        from peruser import assume_as_user  # noqa: PLC0415
+        return assume_as_user(identity.user_id, role_arn, region)
+    except Exception:  # noqa: BLE001 (attribution never blocks a dispatch)
+        return ""
 
 
 def worktree_branch(run_subdir: str) -> str:
@@ -367,19 +393,10 @@ def _build_command(agent_id: str, prompt: str, run_subdir: str,
     cred_prelude += _vault_key_prelude(role, cli_region)
 
     # Per-user cost attribution (Stage 3): when a per-user role is wired
-    # (PERUSER_ROLE_ARN) and we know the user, run the agent's CLI under a session
-    # named for that user, so its Bedrock calls are logged as the user rather than
-    # the shared runtime role. The session-name assumption itself lives in
-    # peruser.assume_as_user (attendees build it in Stage 3); it returns "" until
-    # then, so the default dispatch is unchanged and runs as the runtime role.
-    peruser_prefix = ""
-    _peruser_role = os.environ.get("PERUSER_ROLE_ARN", "")
-    if _peruser_role and identity is not None and not identity.is_anonymous():
-        try:
-            from peruser import assume_as_user
-            peruser_prefix = assume_as_user(identity.user_id, _peruser_role, cli_region)
-        except Exception:
-            peruser_prefix = ""
+    # (PERUSER_ROLE_ARN) and a signed-in user asked, run the agent's CLI under a
+    # session named for that user, so its Bedrock calls are logged as the user rather
+    # than the shared runtime role. A label-only identity (a GitHub login) gets none.
+    peruser_prefix = _peruser_prefix(identity, cli_region)
     tar_excludes = " ".join(
         f"--exclude={shlex.quote(name)} --exclude={shlex.quote('*/' + name)}"
         for name in _TREE_EXCLUDES
@@ -491,14 +508,7 @@ def _interactive_dispatch_commands(agent_id: str, run_subdir: str,
     # is assumed. run.sh then sees KIRO_API_KEY already in memory and does not need
     # Token Vault permission on the attribution role.
     credential_prelude = _vault_key_prelude(role, region)
-    peruser_prefix = ""
-    peruser_role = os.environ.get("PERUSER_ROLE_ARN", "")
-    if peruser_role and identity is not None and not identity.is_anonymous():
-        try:
-            from peruser import assume_as_user
-            peruser_prefix = assume_as_user(identity.user_id, peruser_role, region)
-        except Exception:
-            peruser_prefix = ""
+    peruser_prefix = _peruser_prefix(identity, region)
 
     steering = role.steering_file.replace("\\", "/")
     steering_source = f"$HOME/{steering}"

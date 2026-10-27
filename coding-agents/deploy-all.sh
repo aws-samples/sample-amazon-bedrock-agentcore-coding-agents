@@ -33,12 +33,12 @@ for agent in "${AGENTS[@]}"; do
   # subscription; the key is per-attendee and comes after). Without a key its
   # setup.sh prompts on a TTY and FAILS LOUD without one, which would abort this
   # whole batch. So build it keyless and let the attendee save the key later with
-  # Lab 1's hidden key prompt; run.sh reads it from the Token Vault at session
-  # start. Pass KIRO_API_KEY to provision the vault here instead.
+  # the hidden key prompt (Lab 3, Check Kiro's API Key); run.sh reads it from the
+  # Token Vault at session start. Pass KIRO_API_KEY to provision the vault here instead.
   if [ "$agent" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
     echo "  No KIRO_API_KEY set; building kiro WITHOUT its Token Vault identity"
     echo "  (--skip-identity). Save your ksk_ key afterwards with the hidden key"
-    echo "  prompt (Lab 4, Check Kiro's API Key, In your account); no redeploy is needed."
+    echo "  prompt (Lab 3, Check Kiro's API Key, In your account); no redeploy is needed."
     (cd "$AGENT_DIR" && ./setup.sh --skip-identity)
   else
     (cd "$AGENT_DIR" && ./setup.sh)

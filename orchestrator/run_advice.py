@@ -65,13 +65,24 @@ def pr_rows(rec: dict) -> list[dict]:
     return [{**known.get(url, {}), "url": url} for url in pr_urls(rec)]
 
 
+def is_github_build(rec: dict) -> bool:
+    """A build a ``/develop`` comment started: its recorded origin issue, or the
+    ``github:<login>`` submitter that path records."""
+    options = rec.get("options") if isinstance(rec.get("options"), dict) else {}
+    origin = options.get("origin")
+    return (isinstance(origin, dict) and bool(origin)) or \
+        str(rec.get("submitted_by") or "").strip().startswith("github:")
+
+
 def is_chat_build(rec: dict) -> bool:
-    """Agent Studio Chat records its signed-in submitter; the Lab 2 CLI path does not."""
-    return bool(str(rec.get("submitted_by") or "").strip())
+    """Agent Studio Chat records its signed-in submitter; ``./ask.sh`` records none, and
+    a ``/develop`` build records ``github:<login>``, which is not a Chat sign-in."""
+    return bool(str(rec.get("submitted_by") or "").strip()) and not is_github_build(rec)
 
 
 def is_team_build(rec: dict) -> bool:
-    """Part 4's two-builder request; its page checks the game out to ``~/team-game``."""
+    """Lab 3's two-builder request (a `/develop` comment or ``./ask.sh``); its pages
+    check the game out to ``~/team-game``."""
     return str(rec.get("preset") or "") == "team-game"
 
 
@@ -103,8 +114,9 @@ def holds_app(directory: str) -> tuple[bool | None, int]:
 def checkout_target(rec: dict, home: str) -> tuple[str, bool]:
     """(``~/<dir>``, already) for this run's checkout.
 
-    The pages name the folder by lab: ``~/game`` for the Lab 2 build,
-    ``~/game-lab3`` for the Lab 3 fix, and ``~/team-game`` for Lab 4's team build.
+    The folder follows the kind of build: ``~/team-game`` for Lab 3's team
+    build, ``~/game-lab3`` for an Agent Studio Chat build, and ``~/game`` for any
+    other single-builder build.
     ``github.py checkout`` REPLACES its destination, so a folder that already holds
     an app is never suggested: the caller says it is already checked out and offers
     a separate, unused folder.

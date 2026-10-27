@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Connect one GitHub repository so an agent wakes up on every pull request.
+# Connect one GitHub repository so an agent wakes up on every pull request, and the
+# coordinator's team on a /develop comment on an issue.
 #
 #   ./connect-github.sh owner/repository
 #   ./connect-github.sh --restart          # start the GitHub App setup over (e.g. after Confirm access)
 #
 # 1. Registers a GitHub App for this workshop (two clicks on GitHub: Create, Install).
-#    It subscribes to pull request events and sends them to this stack's endpoint.
+#    It subscribes to pull request and issue comment events and sends them to the
+#    endpoint you deployed.
 # 2. Stores the App's credential and deploys the GitHub tools the review uses. The
 #    credential stays with those tools; no agent session ever receives it.
 # 3. Prints the one thing left to do: open a pull request.
@@ -36,7 +38,8 @@ fi
 ./deploy-all.sh
 
 # Save the repository and the Gateway for every later terminal. This script's export
-# ends with it, and github.py doctor and Lab 4's coordinator read the saved values.
+# ends with it, and github.py doctor and the coordinator (Lab 3, Deploy the Coordinator)
+# read the saved values.
 GATEWAY_URL="$(jq -r '.gateway_url // empty' .deployed-state.json)" \
 PYTHONPATH="$here/../orchestrator${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
 import os

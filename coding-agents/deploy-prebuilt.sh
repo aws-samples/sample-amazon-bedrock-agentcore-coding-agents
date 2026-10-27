@@ -18,6 +18,12 @@
 # validator is the Bedrock-native, no-key checker for an account with no Kiro
 # subscription, and opencode is the alternate native Bedrock frontend.
 #
+# At an event the stack also creates the codex, kiro and claude_code_validator
+# Runtimes itself, so for those roles this is the fallback (Lab 3, Deploy the
+# Coordinator, step 1). The attendee's clone has no agent.config for them, so it
+# builds the image first, then deploy.py reuses the role's own agentcore-<name>-
+# <region>-role and updates the existing Runtime of that name (or creates it).
+#
 # claude-code is accepted for the same reason, from the other direction: the stack
 # pre-builds its IMAGE but deliberately does NOT create its Runtime, so this is the
 # one command that turns that image into the attendee's own mounted backend Runtime.
@@ -93,12 +99,13 @@ if ! grep -q '^ECR_URI=.\+' "${SCRIPT_DIR}/${AGENT}/agent.config" 2>/dev/null; t
   # Kiro subscription, and the attendee then mints their OWN ksk_ at app.kiro.dev
   # afterwards. So build the image WITHOUT identity via --skip-identity, exactly like
   # the bootstrap does; deploy.py still creates the Runtime + ARN, and the attendee
-  # saves their key with Lab 1's hidden key prompt later (run.sh reads it from the
-  # Token Vault at session start). This keeps the ONE command working keyless.
+  # saves their key with the hidden key prompt later (Lab 3, Check Kiro's API Key;
+  # run.sh reads it from the Token Vault at session start). This keeps the ONE
+  # command working keyless.
   if [ "$AGENT" = "kiro" ] && [ -z "${KIRO_API_KEY:-}" ]; then
     echo "  No KIRO_API_KEY set; building kiro without its Token Vault identity"
     echo "  (--skip-identity). Save your ksk_ key afterwards with the hidden key"
-    echo "  prompt (Lab 4, Check Kiro's API Key, In your account); no redeploy is needed."
+    echo "  prompt (Lab 3, Check Kiro's API Key, In your account); no redeploy is needed."
     ( cd "${SCRIPT_DIR}/${AGENT}" && bash ./setup.sh --skip-identity )
   else
     ( cd "${SCRIPT_DIR}/${AGENT}" && bash ./setup.sh )

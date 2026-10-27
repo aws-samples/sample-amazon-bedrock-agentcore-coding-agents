@@ -1,4 +1,4 @@
-"""The pull request endpoint attendees deploy themselves in part 3.
+"""The GitHub endpoint attendees deploy themselves in Lab 3.
 
 `aws cloudformation package` zips coding-agents/pr_review/ (handler.py) and `deploy`
 creates the stack from the host. Its names must fit what the host role may create
@@ -83,3 +83,34 @@ def test_each_event_is_recorded_in_a_table_the_host_may_create():
     function = _template()["Resources"]["PrReviewFunction"]["Properties"]
     assert function["Environment"]["Variables"]["DELIVERIES_TABLE"] == {"Ref": "PrReviewDeliveries"}
     assert _statements()["OnceEach"]["Action"] == ["dynamodb:PutItem", "dynamodb:DeleteItem"]
+
+
+def _arn(suffix):
+    return {"Sub": "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:" + suffix}
+
+
+def test_the_review_session_statement_is_unchanged():
+    assert _statements()["OneReviewSession"] == {
+        "Sid": "OneReviewSession", "Effect": "Allow",
+        "Action": ["bedrock-agentcore:InvokeAgentRuntimeCommand", "bedrock-agentcore:StopRuntimeSession"],
+        "Resource": [_arn("runtime/claude_code-*")]}
+
+
+def test_develop_may_start_the_coordinator_and_nothing_more():
+    """One invocation of the coordinator Runtime the CLI names CodingAgents_orchestrator,
+    on the Runtime and on its endpoint resource form."""
+    assert _statements()["StartTheTeam"] == {
+        "Sid": "StartTheTeam", "Effect": "Allow", "Action": "bedrock-agentcore:InvokeAgentRuntime",
+        "Resource": [_arn("runtime/CodingAgents_orchestrator-*"),
+                     _arn("runtime/CodingAgents_orchestrator-*/runtime-endpoint/*")]}
+    handler = (FOLDER / "handler.py").read_text()
+    assert 'COORDINATOR_NAME = "CodingAgents_orchestrator"' in handler
+
+
+def test_no_statement_may_stop_a_coordinator_session():
+    """The team's build runs in the coordinator session after the invocation returns;
+    stopping that session would end the build."""
+    for statement in _statements().values():
+        actions = statement["Action"] if isinstance(statement["Action"], list) else [statement["Action"]]
+        if any(a in ("bedrock-agentcore:StopRuntimeSession", "bedrock-agentcore:*", "*") for a in actions):
+            assert "orchestrator" not in str(statement["Resource"]), statement["Sid"]

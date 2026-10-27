@@ -171,6 +171,31 @@ def test_interactive_launcher_honors_settings_without_switching_to_print_mode(la
     assert arguments[arguments.index("--effort") + 1] == ("max" if args else "medium")
 
 
+@pytest.mark.parametrize("args", [
+    ("--continue",), ("-c",), ("--resume",), ("-r",), ("--resume", "4f3c2a10"),
+    ("--effort", "high", "--continue"),
+])
+def test_returning_to_a_conversation_stays_interactive(launcher, args):
+    """Lab 1's way back: `/app/run.sh --continue` in the same folder. Any argument used
+    to mean --print, which made it a one-shot with no prompt instead of the conversation."""
+    result, record = launcher(args=args, prompt=None)
+    assert result.returncode == 0, result.stderr
+    arguments = record["argv"]
+    assert "--print" not in arguments
+    flags = [a for a in args if a not in ("--effort", "high")]
+    assert arguments[-len(flags):] == flags
+    assert arguments[arguments.index("--model") + 1] == "global.anthropic.claude-sonnet-5-5"
+    assert arguments[arguments.index("--effort") + 1] == ("high" if "high" in args else "medium")
+
+
+def test_a_prompt_argument_is_still_a_one_shot(launcher):
+    result, record = launcher(args=("--effort", "low"), prompt="Inspect the task")
+    assert result.returncode == 0, result.stderr
+    arguments = record["argv"]
+    assert arguments.count("--print") == 1 and arguments[-1] == "Inspect the task"
+    assert arguments[arguments.index("--effort") + 1] == "low"
+
+
 @pytest.mark.parametrize("prompt", [None, "Inspect the task"], ids=["interactive", "headless"])
 @pytest.mark.parametrize("updater", [None, "0"], ids=["missing", "enabled"])
 def test_direct_launcher_enforces_pinned_update_policy(launcher, prompt, updater):

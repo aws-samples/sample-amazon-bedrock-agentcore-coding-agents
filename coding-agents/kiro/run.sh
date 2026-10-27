@@ -218,11 +218,11 @@ fi
 
 # ── Require an API key for non-interactive use ───────────────
 # Without KIRO_API_KEY the CLI would drop into an interactive "Select login
-# method" picker and hang the headless PTY. The attendee updates Token Vault
-# through the hidden prompt in Lab 1; never recommend putting a plaintext key
-# in Runtime settings.
+# method" picker and hang the headless PTY. The attendee stores the key in Token
+# Vault with kiro_config.py save (Lab 3, Check Kiro's API Key); never recommend
+# putting a plaintext key in Runtime settings.
 if [ -z "$KIRO_API_KEY" ]; then
-  echo "[auth] ERROR: no Kiro API key in Token Vault. Re-run Lab 1's hidden key prompt to update the kiro-api-key credential provider, then open a new session. Do not put the key in Runtime environment variables." >&2
+  echo "[auth] ERROR: no Kiro API key in Token Vault. Store it with python3 orchestrator/kiro_config.py save (Lab 3, Check Kiro's API Key, In your account), or at an event check kiro_config.py status, then open a new session. Do not put the key in Runtime environment variables." >&2
   exit 1
 fi
 

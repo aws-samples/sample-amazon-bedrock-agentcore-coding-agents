@@ -26,6 +26,10 @@ run to that role's DEPLOYED Runtime. Each builder's pull request is checked agai
 the current default branch by a validator-authored executable and an independent
 read-only review covering adversarial and design/integration lenses.
 
+One payload skips the model: ``{"github_event": ...}``, sent by the PR-review
+endpoint when the repository owner (never a bot) comments ``/develop <idea>`` on an issue, starts the
+team build directly (see ``invoke``), and the engine reports its result on that issue.
+
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs
     agentcore dev --stream "List the preset starting points. Do not dispatch anything."
@@ -38,6 +42,7 @@ Deploy it from CodingAgents/ (pinned @aws/agentcore CLI, container, CDK):
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from contextlib import aclosing
@@ -103,7 +108,29 @@ async def invoke(payload: dict[str, Any], context: Any = None):
     Identity propagation: when ``user_identity`` is in the payload (set by the
     console from its Cognito session), we set it as the current identity so the
     engine tags the run and the runtime dispatch carries the OBO headers.
+
+    A GitHub event: ``{"github_event": {"kind": "develop", ...}}`` comes from the
+    PR-review endpoint when the repository owner (never a bot) comments ``/develop <idea>`` on an
+    issue. It is answered with NO model turn: ``chat.start_event_build`` admits the
+    same task ``./ask.sh`` would and yields one JSON object, ``{"run_id", "status",
+    "agents", "preset"}`` or ``{"error", "detail"}``. The build then runs in this
+    session's microVM after the caller disconnects, registered as an async task.
     """
+    if isinstance(payload, dict) and "github_event" in payload:
+        event = payload.get("github_event")
+        log.info("orchestrator github event: %s", json.dumps(
+            {k: (event or {}).get(k) for k in ("kind", "owner", "repo", "issue_number", "author")}
+            if isinstance(event, dict) else {"type": type(event).__name__}))
+        _activity.ensure_started()
+        try:
+            # Deterministic and model-free: the event already names what to build, and
+            # the pull requests, not a model's summary, are the record.
+            yield json.dumps(_chat.start_event_build(event))
+        finally:
+            # The build outlives this response; register it before the response closes.
+            _activity.observe()
+        return
+
     prompt = (payload or {}).get("prompt") or ""
     if not prompt:
         yield "No prompt found. Send {\"prompt\": \"<your task>\"}."

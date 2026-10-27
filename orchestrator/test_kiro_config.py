@@ -369,3 +369,29 @@ def test_a_pasted_kak_key_is_not_rejected_as_a_wrong_paste():
     assert "not a Kiro API key" in out["error"]
     import re as _re
     assert _re.findall(r"(?:ksk|kak)_[A-Za-z0-9_\-]+", "KIRO_API_KEY=kak_abcdef0123456789") == ["kak_abcdef0123456789"]
+
+
+# The KiroKeyStatus output and /workshop/kiro/key-status carry whichever FALLBACK wrote
+# the status: this module's (the usual failure paths of import-secret) or the
+# template's own (the import never ran). Both must name the same page and step.
+_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                         "static", "aws", "cfn.yaml")
+
+
+def test_the_fallback_names_the_page_that_has_the_no_key_checker():
+    assert kiro_config.FALLBACK == (
+        "Fallback: use the checker that needs no key (claude_code_validator, Deploy the "
+        "Coordinator, step 1), or ask a facilitator to rerun the team's Kiro key import.")
+
+
+@pytest.mark.skipif(not os.path.isfile(_TEMPLATE),
+                    reason="the event template ships in the content repository")
+def test_the_fallback_matches_the_template_byte_for_byte():
+    import re as _re
+    text = open(_TEMPLATE, encoding="utf-8").read()
+    shell = _re.findall(r'^\s*FALLBACK="([^"]*)"\s*$', text, _re.M)
+    # Implicit concatenation joins the pieces with nothing in between.
+    python = ["".join(_re.findall(r'"([^"]*)"', block))
+              for block in _re.findall(r'^\s*FALLBACK = \(((?:\s*"[^"]*"\s*)+)\)', text, _re.M)]
+    assert shell and python, "the template no longer defines both FALLBACK texts"
+    assert set(shell) | set(python) == {kiro_config.FALLBACK}

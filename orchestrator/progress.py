@@ -4,13 +4,12 @@
     python3 orchestrator/progress.py            # every checkpoint, then NEXT
     python3 orchestrator/progress.py --json     # the same, as JSON
 
-The workshop has four parts: close the lid, twenty at once, it wakes up, and a team of
-agents. This
-walks their end states IN ORDER against real local state and a few cheap, read-only
-AWS reads, prints one line per checkpoint, and ends with ONE next step: the page as
-the content titles it and the exact command that page teaches. An attendee who fell
-behind runs it to catch up; a facilitator asks for its output instead of holding the
-room.
+The workshop has three labs: close the lid, twenty at once, and a team of agents that
+GitHub wakes up. This walks their end states IN ORDER against real local state and a
+few cheap, read-only AWS reads, prints one line per checkpoint, and ends with ONE next
+step: the page as the content titles it and the exact command that page teaches. An
+attendee who fell behind runs it to catch up; a facilitator asks for its output instead
+of holding the room.
 
 It is strictly READ-ONLY, which is what makes it safe to run at any moment and to
 paste anywhere. It invokes no model, opens no Runtime session, makes no GitHub call,
@@ -51,8 +50,7 @@ _MARK = {DONE: "✓", TODO: "✗", UNKNOWN: "?"}
 GET_IN = "Getting Started"
 PART1 = "Lab 1. Run Claude Code on AgentCore Runtime"
 PART2 = "Lab 2. Run Many Agents in Parallel"
-PART3 = "Lab 3. Run an Agent on Every Pull Request"
-PART4 = "Lab 4. Build with a Team of Agents"
+PART3 = "Lab 3. Build with a Team of Agents from GitHub"
 
 SECRET_ID = "agentcore/github-mcp/github-app"
 GATEWAY_NAME = "github-mcp-gateway"
@@ -91,17 +89,27 @@ CMD_ENDPOINT = [
     '/tmp/pr-review.yaml --s3-bucket "$INFRA_BUCKET"',
     "aws cloudformation deploy --template-file /tmp/pr-review.yaml --stack-name "
     "coding-agents-pr-review --capabilities CAPABILITY_NAMED_IAM"]
-CMD_TEAM_IMAGES = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents"] + CMD_REGISTRY + [
-    "docker buildx bake codex kiro --push"]
+# The stack creates codex and kiro; this is the fallback for a missing one. Without a
+# pre-built image in this clone, deploy-prebuilt.sh builds it first, then updates (or
+# creates) the Runtime of that name with its own deploy.py role.
+# One block per missing team Runtime, as the page's expand has them: pasting both would
+# rebuild and update a Runtime that is already READY.
+CMD_TEAM_CODEX = CMD_CD + ["./deploy-prebuilt.sh codex"]
+CMD_TEAM_KIRO = CMD_CD + ["./deploy-prebuilt.sh kiro"]
+CMD_TEAM_CHECKER = CMD_CD + ["./deploy-prebuilt.sh claude-code-validator"]
+_TEAM_RUNTIME_CMDS = {"codex": CMD_TEAM_CODEX, "kiro": CMD_TEAM_KIRO,
+                      "claude_code_validator": CMD_TEAM_CHECKER}
+# Only claude_code needs it: Lab 1's console role. The roles deploy.py made for codex
+# and kiro already read and write the bucket and, for kiro, the Token Vault.
 CMD_GRANTS = [
     "cd ~/sample-amazon-bedrock-agentcore-coding-agents/coding-agents && . infra.config",
     'role() { basename "$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id '
     '"$(aws bedrock-agentcore-control list-agent-runtimes --query '
     '"agentRuntimes[?agentRuntimeName==\'$1\'].agentRuntimeId" --output text)" '
     '--query roleArn --output text)"; }',
-    'for n in claude_code codex kiro; do aws iam put-role-policy --role-name "$(role $n)" '
+    'aws iam put-role-policy --role-name "$(role claude_code)" '
     '--policy-name TeamRunExchange --policy-document '
-    '"$(sed "s/coding-agents-\\*/$INFRA_BUCKET/" team-exchange-policy.json)"; done']
+    '"$(sed "s/coding-agents-\\*/$INFRA_BUCKET/" team-exchange-policy.json)"']
 CONSOLE_ROLE = "AmazonBedrockAgentCoreRuntimeDefaultServiceRole-"
 CMD_KIRO_KEY = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents && python3 orchestrator/kiro_config.py save"]
 CMD_COORDINATOR = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent",
@@ -200,7 +208,12 @@ def check_host() -> dict:
 
 
 def check_infra() -> dict:
-    """The fresh clone records the stack's IDs with coding-agents/infra/setup.sh."""
+    """The stack copies its verified infra.config into the home clone when bootstrap ends.
+
+    Until then this is TODO, which usually means the stack is still finishing. The same
+    file can also be recorded by hand with coding-agents/infra/setup.sh, which reads the
+    stack's resource IDs and creates nothing.
+    """
     if not os.path.isfile(os.path.join(_agents_dir(), "infra.config")):
         return _outcome(TODO, "this clone has no coding-agents/infra.config yet")
     return _outcome(DONE, "coding-agents/infra.config records the stack's network and storage")
@@ -260,7 +273,8 @@ def check_runtime() -> dict:
 
 
 def check_lid_work() -> dict:
-    # Step 5's house rules are the attendee's own file, not work the agent finished.
+    # Lab 1's house rules (Build the Container Image, step 3) are the attendee's own
+    # file, not work the agent finished.
     files = [f for f in _visible_files(os.path.join(_mount(), LID)) if f != "CLAUDE.md"]
     if not files:
         return _outcome(TODO, f"nothing built in {_mount()}/{LID} yet")
@@ -289,7 +303,7 @@ def check_fanout() -> dict:
     return _outcome(DONE if agents and pushed == agents else TODO, detail)
 
 
-# ---------------------------------------------------------------- 3. It wakes up
+# ---------------------------------------------------------------- 3. A team from GitHub
 def check_github() -> dict:
     try:
         _client("secretsmanager").describe_secret(SecretId=SECRET_ID)
@@ -316,14 +330,14 @@ def check_github() -> dict:
 
 
 def check_endpoint() -> dict:
-    """The review endpoint the attendee deployed from pr_review/template.yaml."""
+    """The endpoint GitHub calls, which the attendee deployed from pr_review/template.yaml."""
     try:
         url = _client("ssm").get_parameter(Name=WEBHOOK_PARAM)["Parameter"]["Value"]
     except ImportError:
         return _outcome(UNKNOWN, "boto3 is not installed")
     except Exception as exc:  # noqa: BLE001
         if _error_code(exc) == "ParameterNotFound":
-            return _outcome(TODO, "the review endpoint is not deployed yet")
+            return _outcome(TODO, "the endpoint is not deployed yet")
         return _outcome(UNKNOWN, f"webhook endpoint unreadable ({_error_code(exc)})")
     host = url.split("/")[2] if url.count("/") >= 2 else url
     return _outcome(DONE, f"deployed ({host.split('.')[0]}...)")
@@ -336,7 +350,7 @@ def check_review() -> dict:
         return _outcome(UNKNOWN, "boto3 is not installed")
     except Exception as exc:  # noqa: BLE001
         if _error_code(exc) == "ParameterNotFound":
-            return _outcome(TODO, "no review endpoint yet, so nothing can wake up")
+            return _outcome(TODO, "no endpoint yet, so nothing can wake up")
         return _outcome(UNKNOWN, f"webhook endpoint unreadable ({_error_code(exc)})")
     try:
         logs = _client("logs")
@@ -356,7 +370,6 @@ def check_review() -> dict:
     return _outcome(TODO, f"endpoint ready ({host.split('.')[0]}...); no review posted yet")
 
 
-# ---------------------------------------------------------------- 4. A team of agents
 def _project_json() -> dict:
     return _read_json(os.path.join(_repo_root(), "CodingAgents", "agentcore", "agentcore.json"))
 
@@ -418,6 +431,9 @@ def _runtime_arns(node) -> list[str]:
 
 
 def check_team_runtimes() -> dict:
+    """codex and the checker in use, by name. The stack creates codex, kiro and the
+    no-key checker (the last is optional there: a failed build does not fail the stack).
+    A missing one gets its own deploy block, never the others'."""
     roles = [r.strip() for r in _coordinator_roles().split(",") if r.strip()]
     checker = NO_KEY_CHECKER if NO_KEY_CHECKER in roles and "kiro" not in roles else "kiro"
     states = []
@@ -431,16 +447,26 @@ def check_team_runtimes() -> dict:
         except Exception as exc:  # noqa: BLE001
             return _outcome(UNKNOWN, f"Runtime list unreadable ({_error_code(exc)})")
         if status != "READY":
-            return _outcome(TODO, f"no READY Runtime named {name} yet" + (f" ({status})" if status else ""))
+            detail = f"no READY Runtime named {name} yet" + (f" ({status})" if status else "")
+            return _outcome(TODO, detail, commands=_TEAM_RUNTIME_CMDS[name])
         states.append(name)
     return _outcome(DONE, " and ".join(states) + " are READY")
 
 
 def check_team_grants() -> dict:
-    """Each team Runtime's console role may trade archives under agents/runtime-exchange/."""
+    """Claude Code's console role may trade archives under agents/runtime-exchange/.
+
+    Only a console default role needs the TeamRunExchange grant, and in the workshop
+    that is claude_code from Lab 1. The stack's codex and kiro (or the no-key checker)
+    run on roles deploy.py made, which already read and write the bucket, and Kiro's
+    also reads its key from the Token Vault, so neither is asked for a grant. A team
+    Runtime someone made in the console instead is still checked, by name, for both
+    grants it lacks: TeamRunExchange, and for kiro also ReadKiroKey
+    (kiro/token-vault-policy.json), without which its check cannot read its key.
+    """
     roles = [r.strip() for r in _coordinator_roles().split(",") if r.strip()]
     checker = NO_KEY_CHECKER if NO_KEY_CHECKER in roles and "kiro" not in roles else "kiro"
-    missing = []
+    missing, key_missing = [], False
     try:
         control, iam = _client("bedrock-agentcore-control"), _client("iam")
         for name in ("claude_code", "codex", checker.replace("-", "_")):
@@ -451,19 +477,37 @@ def check_team_grants() -> dict:
             role = role.rsplit("/", 1)[-1]
             if not role.startswith(CONSOLE_ROLE):
                 continue  # a role from deploy.py already reads and writes the bucket
-            try:
-                iam.get_role_policy(RoleName=role, PolicyName="TeamRunExchange")
-            except Exception as exc:  # noqa: BLE001
-                if _error_code(exc) != "NoSuchEntity":
-                    raise
-                missing.append(name)
+            for policy in ("TeamRunExchange",) + (("ReadKiroKey",) if name == "kiro" else ()):
+                try:
+                    iam.get_role_policy(RoleName=role, PolicyName=policy)
+                except Exception as exc:  # noqa: BLE001
+                    if _error_code(exc) != "NoSuchEntity":
+                        raise
+                    if policy == "TeamRunExchange":
+                        missing.append(name)
+                    else:
+                        key_missing = True
     except ImportError:
         return _outcome(UNKNOWN, "boto3 is not installed")
     except Exception as exc:  # noqa: BLE001
         return _outcome(UNKNOWN, f"role grants unreadable ({_error_code(exc)})")
+    gaps = []
     if missing:
-        return _outcome(TODO, "no TeamRunExchange grant yet for " + ", ".join(missing))
-    return _outcome(DONE, "every team role may trade archives under agents/runtime-exchange/")
+        others = [n for n in missing if n != "claude_code"]
+        hint = (f" ({', '.join(others)} also has a console role: run the last line again "
+                "with its name in place of claude_code)") if others else ""
+        gaps.append("no TeamRunExchange grant yet for " + ", ".join(missing) + hint)
+    if key_missing:
+        # Its check reads the key at session start; without this the gate dies later.
+        gaps.append("no ReadKiroKey grant yet for kiro, whose console role cannot read its key "
+                    "from the Token Vault: in the same terminal, run aws iam put-role-policy "
+                    '--role-name "$(role kiro)" --policy-name ReadKiroKey --policy-document '
+                    "file://kiro/token-vault-policy.json, or give kiro its own role with "
+                    "./deploy-prebuilt.sh kiro")
+    if gaps:
+        return _outcome(TODO, "; ".join(gaps))
+    return _outcome(DONE, "Claude Code's role may trade archives under agents/runtime-exchange/; "
+                          "the team's other roles already can")
 
 
 def check_coordinator() -> dict:
@@ -509,44 +553,53 @@ SPECS = [
          note="The host is still setting up or the shared folder is missing. Wait a minute and "
               "run progress.py again; if it persists, ask a facilitator."),
     Spec(GET_IN, "Your clone's infra.config", check_infra, CMD_INFRA,
-         note="Record the stack's IDs in your clone (At an AWS Guided Event, step 3)."),
+         note="The stack copies it into your clone when it finishes. Run progress.py again "
+              "shortly, or record the stack's IDs yourself with the command below (Getting "
+              "Started, At an AWS Guided Event, step 3)."),
     Spec(PART1, "Claude Code image", check_image, CMD_BUILD,
          note="First time? Create the repository and sign in to it first (Lab 1, Build the Container Image, steps 1 and 2)."),
     Spec(PART1, "Claude Code Runtime", check_runtime,
-         note="Create it in the AgentCore console: Runtime > Create runtime, named claude_code, "
-              "with your image and Create default role (Lab 1, Create the Runtime and Open a Session, step 1)."),
+         note="Create it in the AgentCore console: Agents > Bring your own code, named claude_code, "
+              "with your image and Create default role (Lab 1, Create the Runtime and Open a Session, step 1). "
+              "That step's first expand creates the same Runtime from the terminal instead."),
     Spec(PART1, "The work it finished", check_lid_work, CMD_CONNECT + CMD_START,
-         note="Connect, start Claude Code in the shared folder, give it the task on the page, "
-              "then press Ctrl+] while it works. The 'Shell connection closed unexpectedly' "
-              "line after the reconnect command is expected: the session keeps running."),
+         note="Connect, start Claude Code in the shared folder, and paste the task on the page. "
+              "Press Enter, then press Ctrl+] right away, while it works; if Ctrl+] does "
+              "nothing, the page says why and how to get back. The 'Shell connection closed "
+              "unexpectedly' line after the reconnect command is expected: the session keeps "
+              "running."),
     Spec(PART2, "The shared repository", check_shared_repo, CMD_SHARE,
          note="This makes ~/lid-game a Git repository and pushes it to a bare repository on the "
               "mount, which every agent clones."),
     Spec(PART2, "Twenty agents", check_fanout, CMD_FANOUT,
          note="Add your rule to ~/lid-game/CLAUDE.md, then commit and push it first (step 3)."),
-    Spec(PART3, "The review endpoint", check_endpoint, CMD_ENDPOINT,
-         note="Package and deploy template.yaml from that folder (Lab 3, Deploy the Review Endpoint, step 1)."),
-    Spec(PART3, "GitHub connected", check_github, CMD_GITHUB),
-    Spec(PART3, "An agent woke up", check_review,
-         note="Open a pull request in your connected repository on GitHub, then watch its "
-              "conversation."),
-    Spec(PART4, "The checker's key", check_checker, CMD_KIRO_KEY,
+    Spec(PART3, "The endpoint", check_endpoint, CMD_ENDPOINT,
+         note="Package and deploy template.yaml from that folder (Lab 3, Deploy the Endpoint, step 1)."),
+    Spec(PART3, "GitHub connected", check_github, CMD_GITHUB,
+         note="Create the private repository first (Lab 3, Deploy the Endpoint, step 2), then "
+              "connect it (Lab 3, Connect GitHub, step 1)."),
+    Spec(PART3, "The checker's key", check_checker, CMD_KIRO_KEY,
          note="At an AWS event the key arrives on its own (KiroKeyStatus in Event outputs); if "
               "the line above says it did not, use the fallback it names. In your own account, "
               "create a key at app.kiro.dev, then paste it at the hidden prompt of the command "
-              "below (Lab 4, Check Kiro's API Key). No key at all? Step 2 of Build and Run the "
-              "Team uses a checker that needs none."),
-    Spec(PART4, "Codex and the checker", check_team_runtimes, CMD_TEAM_IMAGES,
-         note="Create their repositories, build both images, then create the Runtimes codex "
-              "and kiro in the AgentCore console (Build and Run the Team, steps 1 and 2)."),
-    Spec(PART4, "The coordinator", check_coordinator, CMD_COORDINATOR,
-         note="Add your rule to a SKILL.md first (step 3): the coordinator image carries it."),
-    Spec(PART4, "The team's grants", check_team_grants, CMD_GRANTS,
-         note="Let each team Runtime trade its source archive through the bucket, and Kiro's "
-              "role read its key (step 5). No Kiro key? Put claude_code_validator in place "
-              "of kiro."),
-    Spec(PART4, "A team build", check_team_build, CMD_ASK + [""] + CMD_WATCH,
-         note="Send the request once, then watch it from a second terminal."),
+              "below (Lab 3, Check Kiro's API Key). No key at all? Step 1 of Deploy the "
+              "Coordinator has a checker that needs none."),
+    Spec(PART3, "The team's Runtimes", check_team_runtimes, CMD_TEAM_CODEX,
+         note="The stack creates codex and kiro, and the no-key checker. Deploy the missing "
+              "one with the commands below (Lab 3, Deploy the Coordinator, step 1); it builds "
+              "its image first if this clone has none."),
+    Spec(PART3, "The coordinator", check_coordinator, CMD_COORDINATOR,
+         note="Add your rule to a SKILL.md first (step 2): the coordinator image carries it."),
+    Spec(PART3, "Claude Code's grant", check_team_grants, CMD_GRANTS,
+         note="Let Claude Code's console role trade its source archive through the bucket "
+              "(Lab 3, Deploy the Coordinator, step 4). The stack's codex and kiro roles "
+              "already can."),
+    Spec(PART3, "An agent woke up", check_review,
+         note="Open a pull request in your connected repository on GitHub, then watch its "
+              "conversation (Lab 3, Deploy the Coordinator, step 5)."),
+    Spec(PART3, "A team build", check_team_build, CMD_WATCH,
+         note="Comment /develop <your idea, in one sentence> on an issue in your repository "
+              "(Lab 3, Start the Team from GitHub, step 1), then watch it."),
 ]
 
 
@@ -568,8 +621,10 @@ def _run_all(specs: list[Spec], budget_s: float = BUDGET_S) -> list[Check]:
     checks = []
     for i, spec in enumerate(specs):
         outcome = results.get(i) or _outcome(UNKNOWN, "no answer within the time limit")
+        # A check may name the exact block for what it found missing (a page block too).
+        commands = outcome.get("commands") or spec.commands
         checks.append(Check(spec.part, spec.name, outcome["state"], _mask(outcome["detail"]),
-                            list(spec.commands), spec.note))
+                            list(commands), spec.note))
     return checks
 
 
@@ -588,7 +643,7 @@ def render(checks: list[Check]) -> str:
     step = next_step(checks)
     lines.append("")
     if step is None:
-        lines.append("All four labs are done. Share your Play link (gallery.py status), then read Summary and Next Steps.")
+        lines.append("All three labs are done. Share your Play link (gallery.py status), then read Summary and Next Steps.")
         return "\n".join(lines)
     lines.append(f"NEXT ({step.part} > {step.name}):")
     if step.note:

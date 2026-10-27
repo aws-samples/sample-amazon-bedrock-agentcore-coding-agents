@@ -177,9 +177,9 @@ _CLAUDE_TELEMETRY = {
     "OTEL_METRIC_EXPORT_INTERVAL": "5000",
     "OTEL_LOGS_EXPORT_INTERVAL": "2000",
 }
-# The Lab 4 backend builder runs at low effort, passed EXPLICITLY on every dispatch
-# (the headless `--effort` flag and the interactive launcher's env below), because
-# the image's own launcher defaults to medium for the attendee's Labs 1 to 3
+# The Lab 3 team build's backend builder runs at low effort, passed EXPLICITLY on
+# every dispatch (the headless `--effort` flag and the interactive launcher's env
+# below), because the image's own launcher defaults to medium for the attendee's own
 # sessions. On 2026-10-19/20 Sonnet 5.5 at low wrote the backend in 31-50 s of a
 # team build that finished in 482-585 s; in a hand-run Lab 1 game, low crashed 3 of
 # 4 games on their first frame where medium worked 2 of 2. The executable, not the

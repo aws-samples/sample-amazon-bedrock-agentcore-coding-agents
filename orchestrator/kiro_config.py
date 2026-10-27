@@ -296,8 +296,11 @@ def clear_api_key() -> dict[str, Any]:
 # goes from the secret into the Token Vault without passing through the attendee's
 # terminal. It reuses ``_provision_vault``: the same workload identity, the same
 # credential provider, and the same get -> update / create calls as ``save``.
-FALLBACK = ("Fallback: use the checker that needs no key (claude_code_validator, Build "
-            "and Run the Team, step 2), or ask a facilitator to rerun the team's Kiro key "
+# Byte for byte the FALLBACK the template's KiroKeyImport build and status function
+# carry (static/aws/cfn.yaml in the content repository): the status an attendee reads
+# names the same page and step whichever side wrote it.
+FALLBACK = ("Fallback: use the checker that needs no key (claude_code_validator, Deploy "
+            "the Coordinator, step 1), or ask a facilitator to rerun the team's Kiro key "
             "import.")
 _SECRET_NOT_READY = ("ResourceNotFoundException", "InvalidRequestException")
 

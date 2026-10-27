@@ -10,6 +10,14 @@
 # reconnect command. This script keeps that command in ~/.agentcore/last-<role> so
 # `--resume` works from any new terminal on this host. The same command works from any
 # machine with the AWS CLI credentials for this account and the AgentCore CLI.
+#
+# The CLI detaches only on the raw Ctrl+] byte. A terminal with the kitty keyboard
+# protocol on (browser VS Code's default, which Claude Code switches on while it runs)
+# sends Ctrl+] as an escape sequence instead, so it reaches the agent and nothing
+# detaches. The workshop stack turns that VS Code setting off; in another VS Code,
+# clear Terminal > Integrated: Enable Kitty Keyboard Protocol. Closing the terminal
+# also leaves the session running, but then no reconnect command is recorded for
+# --resume.
 set -euo pipefail
 
 role="claude-code"

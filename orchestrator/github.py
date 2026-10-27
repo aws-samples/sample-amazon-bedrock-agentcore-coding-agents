@@ -962,6 +962,42 @@ def comment_on_work_item(item: Any, body_md: str) -> dict[str, Any]:
     }
 
 
+def comment_on_origin(origin: dict | None, body_md: str) -> dict[str, Any]:
+    """Post a run's result on the issue whose `/develop` comment started it.
+
+    Reporting only, through the same Gateway ``comment_on_issue`` tool as the PR
+    evidence. The issue must be in the configured repository: the coordinator was
+    deployed for one repository, so an origin anywhere else is refused, never
+    posted to. Returns {commented} | {skipped} | {error}; never raises a Gateway
+    failure and never fakes success."""
+    if not isinstance(origin, dict) or not origin:
+        return {"skipped": "no origin issue recorded"}
+    cfg = _gateway_config()
+    if not cfg:
+        return {"skipped": "local mode (no gateway wired)"}
+    where = f"{origin.get('owner') or ''}/{origin.get('repo') or ''}"
+    if where.lower() != cfg["repo"].lower():
+        return {"error": f"ORIGIN_REPOSITORY_MISMATCH: the run was asked for from "
+                         f"{where}, but this coordinator reports to {cfg['repo']}"}
+    number = origin.get("issue_number")
+    if isinstance(number, str) and number.isdigit():
+        number = int(number)
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return {"error": f"ORIGIN_INVALID: issue number {number!r}"}
+    owner, repo_name = _repo_parts(cfg)
+    try:
+        response = _tool(
+            cfg, "comment_on_issue",
+            {"owner": owner, "repo": repo_name, "issue_number": number, "body": body_md},
+        )
+    except GatewayError as exc:
+        return {"error": f"gateway comment failed: {exc}"}
+    return {
+        "commented": True,
+        "comment_url": response.get("url", "") if isinstance(response, dict) else "",
+    }
+
+
 def merge_work_item(run: Any, item: Any) -> dict[str, Any]:
     """Squash one reviewed role PR into the repository's default branch.
 
@@ -1050,11 +1086,12 @@ def post_review(run: Any, body_md: str) -> dict[str, Any]:
 
 # --- CLI ----------------------------------------------------------------------
 
-# The ports the pages start each checkout on: Lab 2 plays ~/game on 8000, and Lab 3
-# starts ~/game-lab3 on 8001 so the original keeps running beside it.
+# The ports a single-builder checkout starts on: ~/game on 8000, and ~/game-lab3 (an
+# Agent Studio Chat build) on 8001 so the original keeps running beside it.
 _PLAY_PORTS = {"game": 8000, "game-lab3": 8001}
-# Part 4 (and its Go further follow-up) publish the team's game to the event gallery
-# straight from the checkout, so the hint is the Share What You Built page, not a local play port.
+# Lab 3 (Share What You Built) and its Go Further follow-up publish the team's game to
+# the event gallery straight from the checkout, so the hint is the Share What You Built
+# page, not a local play port.
 # October 13 live walk: the old hint told the room to ask Claude Code to start it.
 _GALLERY_PORTS = {"team-game": 8000, "team-game-v2": 8001}
 

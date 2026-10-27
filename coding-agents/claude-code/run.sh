@@ -16,9 +16,11 @@
 #   permissionMode=dontAsk in settings.json auto-accepts the MCP server.
 #
 # Usage (from connect.py):
-#   /app/run.sh                          # interactive claude (--continue)
+#   /app/run.sh                          # interactive claude, a new conversation
+#   /app/run.sh --continue               # interactive, the latest conversation in this folder
+#   /app/run.sh --resume [<id>]          # interactive, a conversation you pick (-c and -r too)
 #   /app/run.sh --print "fix the bug"   # non-interactive one-shot
-#   /app/run.sh <any claude args>        # pass-through
+#   /app/run.sh <any claude args>        # pass-through, one-shot (--print)
 # ============================================================
 set -euo pipefail
 
@@ -127,9 +129,9 @@ fi
 # override, then the stack's backend default. Explicit CLI flags win over all
 # environment settings. ANTHROPIC_MODEL remains a fallback for native CLI users.
 # Medium effort when nothing sets one: this launcher is the attendee's own session
-# (Labs 1 to 3, the fan-out, the webhook review). On October 19-20, Sonnet 5.5 at
-# low crashed 3 of 4 Lab 1 games on their first frame; at medium 2 of 2 worked.
-# The Lab 4 coordinator passes low explicitly (WORKSHOP_CLAUDE_EFFORT or --effort).
+# (Lab 1, the Lab 2 fan-out, the Lab 3 pull request review). On October 19-20, Sonnet
+# 5.5 at low crashed 3 of 4 Lab 1 games on their first frame; at medium 2 of 2 worked.
+# The Lab 3 coordinator passes low explicitly (WORKSHOP_CLAUDE_EFFORT or --effort).
 CLAUDE_EFFORT="${WORKSHOP_CLAUDE_EFFORT-medium}"
 MODEL="${WORKSHOP_MODEL_CLAUDE_CODE:-${WORKSHOP_MODEL:-${WORKSHOP_CLAUDE_MODEL:-${ANTHROPIC_MODEL:-global.anthropic.claude-sonnet-5-5}}}}"
 ARGS=()
@@ -172,6 +174,15 @@ fi
 cd "$RUN_DIR"
 
 # ── Run ──────────────────────────────────────────────────────
+# Back to an earlier conversation stays INTERACTIVE: Lab 1 can open a new shell and
+# run `/app/run.sh --continue` in the same folder. Before this, any argument meant
+# --print, so that became a one-shot with no prompt instead of the conversation.
+case "${1:-}" in
+  -c|--continue|-r|--resume)
+    exec claude --dangerously-skip-permissions \
+      ${CLAUDE_EFFORT:+--effort "$CLAUDE_EFFORT"} --model "$MODEL" "$@"
+    ;;
+esac
 if [ $# -gt 0 ]; then
   # --effort: reasoning budget, medium by default and wirable. `claude --effort`
   # accepts low|medium|high|xhigh|max and WARNS-and-ignores anything else, so a

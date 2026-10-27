@@ -1,11 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  The pull request endpoint of the workshop's Lab 3: GitHub calls it, and an agent
-  wakes in its own AgentCore Runtime session to review the change. Deploy it from
-  this folder with aws cloudformation package, then aws cloudformation deploy.
+  The GitHub endpoint of the workshop's Lab 3: GitHub calls it. A pull request wakes
+  an agent in its own AgentCore Runtime session to review the change, and the
+  repository owner's /develop comment on an issue starts the deployed coordinator's
+  team. Deploy it from this folder with aws cloudformation package, then aws
+  cloudformation deploy.
 Resources:
-  # Pull request reviews: GitHub calls this endpoint for every pull request event of the workshop
-  # App, and an agent wakes in its own Runtime session to review the change.
+  # GitHub calls this endpoint for every event of the workshop App: a pull request wakes an
+  # agent in its own Runtime session to review the change, and the repository owner's
+  # /develop comment on an issue starts one session of the deployed coordinator, which
+  # builds with its team. Only the owner can start a team, never a bot (handler.py).
   PrReviewLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -66,11 +70,19 @@ Resources:
                   - bedrock-agentcore:StopRuntimeSession
                 Resource:
                   - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/claude_code-*
+              # /develop: one invocation of a new coordinator session. The build runs in
+              # that session after the invocation returns, so the function may not stop it.
+              - Sid: StartTheTeam
+                Effect: Allow
+                Action: bedrock-agentcore:InvokeAgentRuntime
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/CodingAgents_orchestrator-*
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/CodingAgents_orchestrator-*/runtime-endpoint/*
   PrReviewFunction:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Ref AWS::StackName
-      Description: Wakes a Claude Code session on AgentCore Runtime to review a pull request
+      Description: Wakes a Claude Code session to review a pull request, or the coordinator for /develop
       Handler: handler.handler
       Runtime: python3.13
       Architectures:

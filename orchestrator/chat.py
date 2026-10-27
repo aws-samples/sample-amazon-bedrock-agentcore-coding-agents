@@ -19,6 +19,7 @@ streaming while the build proceeds and the UI polls the run for live status.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from contextlib import aclosing, contextmanager
@@ -387,7 +388,8 @@ def _active_duplicate(task: str) -> str | None:
 def _kick(agent_id: str | None, task: str, preset: str | None = None,
           *, request_provenance: dict | None = None,
           resolved_agents: list[str] | None = None,
-          resubmission_of: str | None = None) -> str:
+          resubmission_of: str | None = None,
+          origin: dict | None = None) -> str:
     """Submit a run (focused on one builder when agent_id is set, else routed)
     WITHOUT blocking, and return its id immediately. The chat keeps streaming; the
     console polls the run for live status. The 'a run started' UI signal is NOT
@@ -401,7 +403,11 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
 
     The dispatch is recorded in the conversation's ledger inside the same admission
     lock, before the tool result exists, so a disconnect cannot erase it and one
-    turn can never start two builds."""
+    turn can never start two builds.
+
+    ``origin`` is where a GitHub event asked for the build (the issue a `/develop`
+    comment was on). It rides in the run's options so the engine can report the
+    result there once; it never changes what is built or how it is judged."""
     request = _request.current()
     agents = resolved_agents
     checkers = list(_roles.checker_ids())
@@ -424,8 +430,10 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
         duplicate = _active_duplicate(task)
         if duplicate:
             raise UserRequestError(f"DUPLICATE_OF_ACTIVE_BUILD:{duplicate}")
-        run = ENGINE.submit(task, agents=agents, preset=preset,
-                            options={"chat_request": request_provenance or {}})
+        options: dict[str, Any] = {"chat_request": request_provenance or {}}
+        if origin:
+            options["origin"] = dict(origin)
+        run = ENGINE.submit(task, agents=agents, preset=preset, options=options)
         if request.ledger is not None:
             request.ledger.record_dispatch(request, run.run_id, {
                 "task": task, "preset": preset, "agent": agent_id,
@@ -433,6 +441,217 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
         else:
             request.started.append(run.run_id)
     return run.run_id
+
+
+def _run_build_impl(task: str, preset: str = "", creative_direction: str = "",
+                    request_turns: list[int] | None = None, standalone: bool = False,
+                    revise_run: str = "", *, origin: dict | None = None) -> str:
+    """The body of the ``run_build`` tool, shared with the GitHub event path.
+
+    One implementation, so a `/develop` comment admits exactly the task the same
+    words typed into ``./ask.sh`` admit: the same ledger rules, preset text, routing,
+    and duplicate guard. The tool is a thin wrapper around this."""
+    try:
+        task, provenance = _request.admit(
+            task, preset=preset, creative_direction=creative_direction,
+            request_turns=request_turns, standalone=standalone, revise_run=revise_run)
+    except UserRequestError as exc:
+        return _request.error_json(exc)
+    # A revision keeps the revised run's own preset, whatever the model passed.
+    preset = provenance.get("preset") or ""
+    # Routing is the MODEL's decision when the attendee typed their own request:
+    # `resolve` asks which capabilities the request needs. It used to hand back
+    # the whole roster here, which dispatched a frontend builder for a command
+    # line tool. A preset carries its own declared capabilities, so it skips the
+    # model turn.
+    route = _presets.resolve(task=task, preset=preset or None)
+    try:
+        run_id = _kick(None, task, preset=preset or None, request_provenance=provenance,
+                       # Keep preset admission (including read-only) intact.
+                       # Custom routes, including "your-own", retain their
+                       # single model-selected roster.
+                       resolved_agents=(list(route.agents)
+                                        if route.preset == "routed" else None),
+                       origin=origin)
+    except UserRequestError as exc:
+        return _request.error_json(exc)
+    # Preset admission happens asynchronously. Before it fills the run,
+    # report that preset's declared roster, not an empty schedule.
+    agents = list(ENGINE.get(run_id).agents) or list(route.agents)
+    return json.dumps({
+        "run_id": run_id,
+        "kind": "build",
+        "status": "started",
+        "agents": agents,
+        "routing": route.rule,
+        "schedule": _schedule(agents),
+        "request_source": "server_user_turn",
+    })
+
+
+# --------------------------------------------------------------------------- #
+# The GitHub event path. A trusted `/develop <idea>` comment on an issue reaches the
+# PR-review endpoint, which starts a NEW coordinator session with
+# {"github_event": {...}}. main.py hands that event here with no model turn: the
+# event already says what to build, and a model summarizing it could only add
+# words nobody typed. Everything below either starts exactly the build that
+# `./ask.sh "Use preset=team-game. Creative direction: <idea>"` would start, or
+# refuses with a code; it never retries, and a refusal starts nothing.
+# --------------------------------------------------------------------------- #
+EVENT_PRESET = "team-game"
+MAX_EVENT_IDEA_CHARS = 1000      # the endpoint's limit too (pr_review/handler.py)
+# A person's GitHub login: letters, digits and hyphens, plus the underscore that every
+# Enterprise Managed User login carries (`handle_shortcode`). A bot login
+# ("name[bot]") never matches, so the team's own comments cannot start a build.
+_GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$")
+_GITHUB_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+_event_log = logging.getLogger("orchestrator.chat.event")
+
+
+def event_prompt(idea: str) -> str:
+    """The `./ask.sh` line the same idea would be typed as; the event admits it."""
+    return f"Use preset={EVENT_PRESET}. Creative direction: {idea}"
+
+
+def _event_error(code: str, detail: str, **extra: Any) -> dict:
+    return {"error": code, "detail": detail, **extra}
+
+
+def _event_idea_problem(idea: str) -> str | None:
+    """Why this idea cannot start a team, or None. The endpoint uses the same codes."""
+    if not idea:
+        return "IDEA_MISSING"
+    lowered = idea.casefold()
+    if (re.fullmatch(r"<[^<>]*>", idea) or "<your idea" in lowered
+            or any(marker.casefold() in lowered for marker in _request._PLACEHOLDERS)):
+        return "IDEA_PLACEHOLDER"
+    if len(idea) > MAX_EVENT_IDEA_CHARS:
+        return "IDEA_TOO_LONG"
+    return None
+
+
+def _running_build() -> str | None:
+    """Any build this coordinator still has queued or running, live or saved.
+
+    The coordinator is deployed for ONE repository, so any active build is on it, and
+    two team builds on one repository fight over its default branch. Unlike
+    ``_active_duplicate`` (one submitter, one identical request, fail-open), this
+    counts every submitter and request, and it FAILS CLOSED: an event nobody is
+    watching must not start a second build because a record could not be read.
+
+    Every `/develop` gets a NEW coordinator session, a fresh microVM, so this
+    session's ENGINE knows only its own runs and the S3 mirror is the only place a
+    sibling session's build is visible. ``run_store.active_runs`` therefore requires
+    that mirror and raises ``RunStateUnavailable`` on any list or get failure, which
+    the caller answers as RUN_STATE_UNAVAILABLE. This is a check, not a lock: two
+    comments seconds apart can both see nothing and both start."""
+    for run in ENGINE.list():
+        if getattr(run, "status", None) in ("queued", "running"):
+            return run.run_id
+    for saved in _run_store.active_runs(_engine._RUNS_DIR, require_mirror=True):
+        return str(saved.get("run_id") or "an earlier run")
+    return None
+
+
+def start_event_build(event: Any) -> dict:
+    """Start the team build a GitHub event asked for, with no model call.
+
+    Returns ``{"run_id", "status", "agents", "preset"}`` or ``{"error", "detail"}``.
+    The admitted task is exactly what ``./ask.sh`` admits for
+    ``Use preset=team-game. Creative direction: <idea>``; the submitter is
+    ``github:<login>``; ``options["origin"]`` records the issue so the engine can
+    post the result there once. One attempt, never a retry: a refusal is the answer.
+    """
+    try:
+        if not isinstance(event, dict):
+            return _event_error("EVENT_INVALID", "github_event must be a JSON object.")
+        kind = str(event.get("kind") or "")
+        if kind != "develop":
+            return _event_error(
+                "NOT_DEVELOP", f"This coordinator starts builds only for a /develop "
+                f"comment on an issue, not {kind or 'an unnamed event'!r}.")
+        owner, repo = str(event.get("owner") or ""), str(event.get("repo") or "")
+        author = str(event.get("author") or "")
+        number = event.get("issue_number")
+        if isinstance(number, str) and number.isdigit():
+            number = int(number)
+        if (not _GITHUB_NAME_RE.match(owner) or not _GITHUB_NAME_RE.match(repo)
+                or not isinstance(number, int) or isinstance(number, bool) or number <= 0):
+            return _event_error("EVENT_INVALID",
+                                "The event needs owner, repo, and a positive issue_number.")
+        if not _GITHUB_LOGIN_RE.match(author):
+            # A bot login ("name[bot]") fails here too: an agent's own comment, the
+            # engine's report included, can never start another build.
+            return _event_error("EVENT_INVALID",
+                                "The event needs the GitHub login of the person who asked.")
+        idea = str(event.get("idea") or "").strip()
+        problem = _event_idea_problem(idea)
+        if problem:
+            return _event_error(problem, {
+                "IDEA_MISSING": "There is no idea after /develop.",
+                "IDEA_PLACEHOLDER": "The idea is still the page's placeholder.",
+                "IDEA_TOO_LONG": f"The idea is longer than {MAX_EVENT_IDEA_CHARS} characters.",
+            }[problem])
+        configured = _github.configured_repository()
+        if f"{owner}/{repo}".lower() != configured.lower():
+            return _event_error(
+                "REPOSITORY_MISMATCH",
+                f"This coordinator builds {configured or 'no configured repository'}; "
+                f"the event came from {owner}/{repo}. Nothing was started.")
+        try:
+            running = _running_build()
+        except Exception as exc:  # noqa: BLE001 - fail closed: unknown means busy
+            # The detail reaches only the endpoint's DEVELOP_REFUSED log line, never
+            # GitHub; it still names a code, never the raw message (an AWS error
+            # carries ARNs and the account id). This process's log has the message.
+            code = (exc.code if isinstance(exc, _run_store.RunStateUnavailable)
+                    else _run_store._error_code(exc))
+            _event_log.warning("RUN_STATE_UNAVAILABLE %s: %r (cause: %r)",
+                               code, exc, exc.__cause__)
+            return _event_error(
+                "RUN_STATE_UNAVAILABLE",
+                f"The coordinator could not read its saved run state ({code}), so it "
+                "could not confirm that no other build is running. Nothing was started.")
+        if running:
+            return _event_error(
+                "BUILD_ALREADY_RUNNING",
+                f"{running} is still building {configured}. A /develop comment starts "
+                "nothing while another build is running.", running_run_id=running)
+        comment_url = str(event.get("comment_url") or "")
+        origin = {"owner": owner, "repo": repo, "issue_number": number, "author": author,
+                  "comment_url": comment_url if comment_url.startswith("https://") else ""}
+        import contextvars  # noqa: PLC0415
+        # The identity and the request binding live in a copied context, so neither
+        # can leak into a later invocation this process serves.
+        return contextvars.copy_context().run(_admit_event_build, idea, origin)
+    except Exception as exc:  # noqa: BLE001 - the caller is a webhook; answer, never raise
+        # The endpoint posts only the error code on GitHub; this detail goes to its
+        # log line. The full message stays in this process's log.
+        _event_log.warning("BUILD_NOT_STARTED: %r", exc, exc_info=True)
+        return _event_error(
+            "BUILD_NOT_STARTED",
+            f"{_run_store._error_code(exc)}; the coordinator's log has the details.")
+
+
+def _admit_event_build(idea: str, origin: dict) -> dict:
+    from identity_baggage import UserIdentity, set_current_identity  # noqa: PLC0415
+    login = origin["author"]
+    # Who asked, for the run's labels and audit only. A GitHub login is not a signed-in
+    # workshop user, so dispatch never assumes the per-user cost role for it
+    # (UserIdentity.attributes_cost): each role's commands run exactly as for ./ask.sh.
+    set_current_identity(UserIdentity(user_id=f"github:{login}", name=login))
+    with bind_user_request(event_prompt(idea), ledger=RequestLedger()):
+        result = json.loads(_run_build_impl(
+            task="", preset=EVENT_PRESET, creative_direction=idea, origin=origin))
+    if result.get("error"):
+        code = {"PLACEHOLDER_NOT_REPLACED": "IDEA_PLACEHOLDER",
+                "DUPLICATE_OF_ACTIVE_BUILD": "BUILD_ALREADY_RUNNING"}.get(
+                    result["error"], result["error"])
+        extra = ({"running_run_id": result["running_run_id"]}
+                 if result.get("running_run_id") else {})
+        return _event_error(code, str(result.get("hint") or ""), **extra)
+    return {"run_id": result["run_id"], "status": result["status"],
+            "agents": list(result.get("agents") or []), "preset": EVENT_PRESET}
 
 
 # --------------------------------------------------------------------------- #
@@ -536,41 +755,10 @@ def build_tools() -> list:
         An approval alone, or a dispatch that ignores unbuilt earlier turns, is
         refused with a hint. `task` is ignored: pass the participant's words for
         the record."""
-        try:
-            task, provenance = _request.admit(
-                task, preset=preset, creative_direction=creative_direction,
-                request_turns=request_turns, standalone=standalone, revise_run=revise_run)
-        except UserRequestError as exc:
-            return _request.error_json(exc)
-        # A revision keeps the revised run's own preset, whatever the model passed.
-        preset = provenance.get("preset") or ""
-        # Routing is the MODEL's decision when the attendee typed their own request:
-        # `resolve` asks which capabilities the request needs. It used to hand back
-        # the whole roster here, which dispatched a frontend builder for a command
-        # line tool. A preset carries its own declared capabilities, so it skips the
-        # model turn.
-        route = _presets.resolve(task=task, preset=preset or None)
-        try:
-            run_id = _kick(None, task, preset=preset or None, request_provenance=provenance,
-                           # Keep preset admission (including read-only) intact.
-                           # Custom routes, including "your-own", retain their
-                           # single model-selected roster.
-                           resolved_agents=(list(route.agents)
-                                            if route.preset == "routed" else None))
-        except UserRequestError as exc:
-            return _request.error_json(exc)
-        # Preset admission happens asynchronously. Before it fills the run,
-        # report that preset's declared roster, not an empty schedule.
-        agents = list(ENGINE.get(run_id).agents) or list(route.agents)
-        return json.dumps({
-            "run_id": run_id,
-            "kind": "build",
-            "status": "started",
-            "agents": agents,
-            "routing": route.rule,
-            "schedule": _schedule(agents),
-            "request_source": "server_user_turn",
-        })
+        # Thin wrapper: the GitHub event path (start_event_build) shares the body.
+        return _run_build_impl(
+            task, preset=preset, creative_direction=creative_direction,
+            request_turns=request_turns, standalone=standalone, revise_run=revise_run)
 
     @tool
     def resubmit_run(run_id: str) -> str:

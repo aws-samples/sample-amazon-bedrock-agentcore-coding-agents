@@ -720,6 +720,9 @@ class Run:
     # host-side plumbing (harness staging, module probes, the acceptance gate) is
     # recorded under a separate ``orchestrator`` lane, never mixed into the agent tab.
     _executor_name: str = "fixture"
+    # A run a GitHub event started (options["origin"]) reports its terminal result on
+    # that issue exactly once; this records that the one attempt was made.
+    _origin_reported: bool = field(default=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -1031,6 +1034,44 @@ class Engine:
         import runtime_stage  # noqa: PLC0415 (AgentCore-only lifecycle seam)
         runtime_stage.cleanup_run(run.run_id)
 
+    def _report_origin(self, run: Run) -> None:
+        """Post the terminal result ONCE on the issue a GitHub event started it from.
+
+        Best-effort reporting after the verdict is persisted: a Gateway failure is
+        logged and dropped, never retried and never raised, and nothing here can
+        change the run's status. A run with no origin (Chat, ``./ask.sh``) is
+        untouched. The comment never invites a retry (``replay.origin_comment``),
+        because a red pull request already spent its one bounded repair.
+        """
+        try:
+            origin = (run.options or {}).get("origin")
+            if (not isinstance(origin, dict) or not origin or run._origin_reported
+                    or run.status not in TERMINAL):
+                return
+            run._origin_reported = True
+            if self.executor.name == "fixture":
+                # Same rule as the PR evidence comments: the offline double has no
+                # GitHub side effect.
+                run.log("origin issue report skipped (offline fixture)")
+                return
+            number = origin.get("issue_number")
+            posted = github.comment_on_origin(origin, replay.origin_comment(run))
+            if posted.get("error") or posted.get("skipped"):
+                run.log(f"result not reported on issue #{number}: "
+                        f"{posted.get('error') or posted.get('skipped')}", "warn")
+            else:
+                run.log(f"result reported on issue #{number} "
+                        f"{posted.get('comment_url') or ''}".rstrip())
+            try:
+                self._persist_run(run)  # so the record shows whether the report landed
+            except Exception:  # noqa: BLE001 (history is not the verdict)
+                pass
+        except Exception as exc:  # noqa: BLE001 (reporting can never fail a run)
+            try:
+                run.log(f"result not reported on its origin issue: {exc}", "warn")
+            except Exception:  # noqa: BLE001
+                pass
+
     # ----------------------------------------------------------- the blueprint
     def _drive(self, run: Run) -> None:
         """One task in -> five phases -> terminal state. Always terminal."""
@@ -1084,6 +1125,10 @@ class Engine:
                     self._persist_run(run)
                 except Exception:
                     pass
+            # Only now, with the verdict durable, tell the issue that asked for this
+            # run (a `/develop` comment) how it ended. Reporting, never the verdict
+            # path: it reads the settled run and cannot raise.
+            self._report_origin(run)
             # The engine starts NOTHING, so there is nothing here to stop. If the
             # deliverable needs to run, the validator's authored check starts it, and
             # `reviewer.run_gate` tears that whole process group down when the check

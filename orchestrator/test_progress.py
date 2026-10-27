@@ -50,13 +50,25 @@ class FakeAws:
     def get_agent_runtime(self, agentRuntimeId):
         if self.box.runtime_status is None:
             raise NotFound()
+        name = agentRuntimeId.rsplit("-", 1)[0]
+        if name in self.box.console_roles:
+            # Lab 1's claude_code: the role the console's Create default role made. The
+            # console's suffix is random; the Runtime's name keeps each one apart here.
+            role = f"service-role/{progress.CONSOLE_ROLE}{name}"
+        else:
+            role = f"agentcore-{name}-us-west-2-role"   # what the stack's deploy.py made
         return {"status": self.box.runtime_status,
-                "roleArn": "arn:aws:iam::123456789012:role/service-role/"
-                           "AmazonBedrockAgentCoreRuntimeDefaultServiceRole-abc12"}
+                "roleArn": f"arn:aws:iam::123456789012:role/{role}"}
 
     # iam
     def get_role_policy(self, RoleName, PolicyName):
-        if not self.box.grants:
+        """Per role: only a console role holds what the page's commands put on it."""
+        self.box.policy_reads.append((RoleName, PolicyName))
+        name = RoleName[len(progress.CONSOLE_ROLE):] if RoleName.startswith(progress.CONSOLE_ROLE) else ""
+        held = name in self.box.console_roles and (
+            (PolicyName == "TeamRunExchange" and self.box.grants)
+            or (PolicyName == "ReadKiroKey" and name == "kiro" and self.box.kiro_read))
+        if not held:
             raise NoSuchEntity()
         return {"PolicyName": PolicyName}
 
@@ -127,10 +139,13 @@ class Box:
         self.gateway = self.secret = self.reviewed = self.kiro_key = self.console_runtime = False
         self.image = False
         self.endpoint = False
-        self.grants = False
+        self.grants = False      # every console role holds TeamRunExchange
+        self.kiro_read = False   # a console kiro role also holds ReadKiroKey
+        self.policy_reads: list[tuple[str, str]] = []
         self.kiro_status = None  # the event key import's record, absent outside an event
         self.runs: list[dict] = []
         self.team_runtimes: list[str] = []
+        self.console_roles = {"claude_code"}
         monkeypatch.setattr(run_store, "attach_reader_mirror", lambda: "")
         monkeypatch.setattr(run_store, "recent", lambda runs_dir, limit=10: list(self.runs))
         for key, value in {"WORKSHOP_REPO_ROOT": self.repo, "WORKSHOP_CODING_AGENTS_DIR": self.agents,
@@ -208,12 +223,16 @@ def test_a_ready_host_is_told_to_build_then_create_the_runtime(box):
     step = _next(box)
     assert step.name == "Claude Code Runtime" and not step.commands
     assert "console" in step.note and "Create default role" in step.note
+    assert "Agents > Bring your own code" in step.note and "Runtime > Create runtime" not in step.note
 
 
 def test_a_fresh_clone_is_told_to_record_the_stack_ids(box):
     box.mounted = True
     step = _next(box)
     assert step.name == "Your clone's infra.config" and step.commands == progress.CMD_INFRA
+    # The stack copies it when bootstrap ends; the page's step 3 expand records it by hand.
+    assert "stack copies it" in step.note and "again" in step.note
+    assert "At an AWS Guided Event, step 3" in step.note
 
 
 def test_get_in_is_the_host_and_the_clone_because_the_attendee_builds_the_image(box):
@@ -241,11 +260,12 @@ def test_a_recorded_runtime_that_is_gone_is_not_done(box):
     assert runtime.state == progress.TODO and "no longer exists" in runtime.detail
 
 
-def test_the_walk_follows_the_four_parts_in_order(box):
+def test_the_walk_follows_the_three_labs_in_order(box):
     box.host().runtime()
     box.image = True
     step = _next(box)
     assert step.name == "The work it finished" and progress.CMD_START[0] in step.commands
+    assert "Ctrl+]" in step.note and "right away" in step.note
     box.lid()
     step = _next(box)
     assert step.name == "The shared repository" and step.commands == progress.CMD_SHARE
@@ -257,7 +277,10 @@ def test_the_walk_follows_the_four_parts_in_order(box):
     assert _next(box).part == progress.PART2, "a run where some branches never arrived is not done"
     box.fanout()
     step = _next(box)
-    assert step.name == "The review endpoint" and step.commands == progress.CMD_ENDPOINT
+    # Lab 3 opens with the endpoint GitHub calls.
+    assert step.part == progress.PART3
+    assert step.name == "The endpoint" and step.commands == progress.CMD_ENDPOINT
+    assert "Deploy the Endpoint, step 1" in step.note
     review = next(c for c in progress._run_all(progress.SPECS) if c.name == "An agent woke up")
     assert review.state == progress.TODO, "a missing endpoint is a step to do, not unknown"
     box.endpoint = True
@@ -267,39 +290,124 @@ def test_the_walk_follows_the_four_parts_in_order(box):
                                   if c.name == "GitHub connected").detail
     box.gateway = True
     step = _next(box)
-    assert step.name == "An agent woke up" and "pull request" in step.note
-    box.reviewed = True
-    step = _next(box)
-    # Part 4 opens with its prerequisite: the checker's key, before any image.
-    assert step.part == progress.PART4 and step.commands == progress.CMD_KIRO_KEY
+    # Then the checker's key, before the team's Runtimes and the coordinator.
+    assert step.part == progress.PART3 and step.commands == progress.CMD_KIRO_KEY
     assert "Check Kiro's API Key" in step.note and "KiroKeyStatus" in step.note
+    assert "Deploy the Coordinator" in step.note, "the no-key checker is named there"
     box.kiro_key = True
     step = _next(box)
-    assert step.part == progress.PART4 and step.commands == progress.CMD_TEAM_IMAGES
+    # Only the missing Runtime's block: pasting both would update a READY one.
+    assert step.name == "The team's Runtimes" and step.commands == progress.CMD_TEAM_CODEX
+    assert "stack creates codex and kiro" in step.note
     box.team_runtimes = ["codex"]
-    assert "kiro" in next(c for c in progress._run_all(progress.SPECS)
-                          if c.name == "Codex and the checker").detail
+    kiro_missing = next(c for c in progress._run_all(progress.SPECS) if c.name == "The team's Runtimes")
+    assert kiro_missing.commands == progress.CMD_TEAM_KIRO
+    detail = kiro_missing.detail
+    assert detail == "no READY Runtime named kiro yet", "the kiro line of the block deploys it"
     box.team_runtimes = ["codex", "kiro"]
     step = _next(box)
     assert step.commands == progress.CMD_COORDINATOR and "SKILL.md" in step.note
+    assert "step 2" in step.note
     box.coordinator()
     box.console_runtime = True
     step = _next(box)
-    assert step.commands == progress.CMD_GRANTS, "the grants are step 5, during the deploy"
+    assert step.name == "Claude Code's grant" and step.commands == progress.CMD_GRANTS
+    assert "step 4" in step.note
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.detail == "no TeamRunExchange grant yet for claude_code", \
+        "the stack's codex and kiro roles already trade archives; only claude_code is asked"
     box.grants = True
     step = _next(box)
-    assert step.name == "A team build" and progress.CMD_ASK[-1] in step.commands and "Creative direction" in progress.CMD_ASK[-1]
+    assert step.name == "An agent woke up" and "pull request" in step.note
+    assert "Deploy the Coordinator, step 5" in step.note
+    box.reviewed = True
+    step = _next(box)
+    assert step.name == "A team build" and step.commands == progress.CMD_WATCH
+    assert "/develop" in step.note and "Start the Team from GitHub, step 1" in step.note
     box.runs = [{"run_id": "run_1", "status": "running", "role_prs": [{"pr_url": "https://x/1"}]}]
     assert _next(box).name == "A team build", "a build still running is not done"
     box.runs[0]["status"] = "needs_human"
     assert _next(box) is None
-    assert "All four labs are done" in progress.render(progress._run_all(progress.SPECS))
+    out = progress.render(progress._run_all(progress.SPECS))
+    assert "All three labs are done" in out and "Lab 4" not in out
+
+
+def test_only_lab3_follows_lab2_and_no_fourth_lab_remains():
+    parts = []
+    for spec in progress.SPECS:
+        if spec.part not in parts:
+            parts.append(spec.part)
+    assert parts == [progress.GET_IN, progress.PART1, progress.PART2, progress.PART3]
+    assert progress.PART3 == "Lab 3. Build with a Team of Agents from GitHub"
+    assert not hasattr(progress, "PART4") and not hasattr(progress, "CMD_TEAM_IMAGES")
+    assert [s.name for s in progress.SPECS if s.part == progress.PART3] == [
+        "The endpoint", "GitHub connected", "The checker's key", "The team's Runtimes",
+        "The coordinator", "Claude Code's grant", "An agent woke up", "A team build"]
+
+
+def test_the_grant_is_for_claude_code_alone(box):
+    """One put-role-policy, on the role Lab 1's console made; nothing for codex or kiro."""
+    grant = progress.CMD_GRANTS[-1]
+    assert '"$(role claude_code)"' in grant and "TeamRunExchange" in grant
+    assert "for n in" not in grant and "codex" not in grant and "kiro" not in grant
+    assert "ReadKiroKey" not in " ".join(progress.CMD_GRANTS)
+    assert progress.CMD_TEAM_CODEX[1:] == ["./deploy-prebuilt.sh codex"]
+    assert progress.CMD_TEAM_KIRO[1:] == ["./deploy-prebuilt.sh kiro"]
+
+
+def test_a_kiro_runtime_from_deploy_py_needs_neither_grant(box):
+    """The stack's kiro role already reads the bucket and its key: no TeamRunExchange or
+    ReadKiroKey is expected, and Lab 1's claude_code with its grant is enough."""
+    box.console_runtime, box.grants = True, True
+    box.team_runtimes = ["codex", "kiro"]
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.DONE and "Claude Code's role" in check.detail
+    # Only the console role is asked, and only for its one grant: a check that also read
+    # the deploy.py roles of codex or kiro would see NoSuchEntity there and fail above.
+    assert box.policy_reads == [(progress.CONSOLE_ROLE + "claude_code", "TeamRunExchange")]
+
+
+def test_a_kiro_runtime_made_in_the_console_also_needs_its_key_read(box):
+    """A console role for kiro trades archives with TeamRunExchange, but its check reads
+    its key from the Token Vault at session start: without ReadKiroKey the gate dies."""
+    box.console_runtime, box.grants = True, True
+    box.team_runtimes = ["codex", "kiro"]
+    box.console_roles = {"claude_code", "kiro"}
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.TODO
+    assert "no ReadKiroKey grant yet for kiro" in check.detail
+    assert "kiro/token-vault-policy.json" in check.detail and "TeamRunExchange" not in check.detail
+    assert "./deploy-prebuilt.sh kiro" in check.detail
+    box.kiro_read = True
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.DONE
+
+
+def test_a_team_runtime_made_in_the_console_is_still_named_with_its_fix(box):
+    box.console_runtime = True
+    box.team_runtimes = ["codex", "kiro"]
+    box.console_roles = {"claude_code", "codex"}
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.TODO
+    assert "claude_code, codex" in check.detail and "in place of claude_code" in check.detail
+    assert "kiro" not in check.detail
+
+
+def test_the_no_key_checker_grant_is_looked_up_by_its_own_runtime_name(box):
+    box.coordinator(roles="claude-code,codex,claude-code-validator")
+    box.console_runtime, box.grants = True, True
+    box.team_runtimes = ["codex", "kiro"]
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.TODO and "claude_code_validator" in check.detail
+    box.team_runtimes = ["codex", "claude_code_validator"]
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.DONE
 
 
 def test_the_event_key_that_did_not_arrive_names_its_reason_and_fallback(box):
     box.kiro_status = ("UNAVAILABLE: the secret does not exist after 420 s, so the central account "
                        "delivered no key. Fallback: use the checker that needs no key "
-                       "(claude_code_validator, Build and Run the Team, step 2), or ask a facilitator "
+                       "(claude_code_validator, Deploy the Coordinator, step 1), or ask a facilitator "
                        "to rerun the team's Kiro key import.")
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The checker's key")
     assert check.state == progress.TODO
@@ -321,15 +429,17 @@ def test_a_coordinator_deployed_with_the_no_key_checker_needs_no_kiro_key(box):
 def test_the_no_key_checker_is_looked_up_by_its_own_runtime_name(box):
     box.coordinator(roles="claude-code,codex,claude-code-validator")
     box.team_runtimes = ["codex", "kiro"]
-    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Codex and the checker")
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The team's Runtimes")
     assert check.state == progress.TODO and "claude_code_validator" in check.detail
+    # Optional in the stack: its own block, never codex's or kiro's.
+    assert check.commands == progress.CMD_TEAM_CHECKER
     box.team_runtimes = ["codex", "claude_code_validator"]
-    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Codex and the checker")
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The team's Runtimes")
     assert check.state == progress.DONE
 
 
 def test_every_build_next_step_names_its_registry_for_a_new_terminal():
-    for commands in (progress.CMD_BUILD, progress.CMD_TEAM_IMAGES):
+    for commands in (progress.CMD_BUILD,):
         assert any(line.startswith("export REGISTRY=") for line in commands)
         assert commands.index(next(l for l in commands if l.startswith("export REGISTRY="))) < \
             commands.index(next(l for l in commands if l.startswith("docker buildx bake")))

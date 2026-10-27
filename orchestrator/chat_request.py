@@ -57,8 +57,10 @@ MAX_LISTED_BYTES = 48 * 1024   # what get_user_request shows at once
 # one environment variable, both under Linux's 128 KiB per-string limit; revising a
 # revision could otherwise grow past it and fail as a red gate on working code.
 MAX_EFFECTIVE_TASK_BYTES = 96 * 1024
-# The Lab 2 page's placeholder, sent unedited, is not anyone's creative direction.
-_PLACEHOLDERS = ("<your team's setting, mood, or play idea>",)
+# A page's placeholder, sent unedited, is not anyone's creative direction: the Lab 2
+# preset line, and the team build's `./ask.sh` line and `/develop` comment.
+_PLACEHOLDERS = ("<your team's setting, mood, or play idea>",
+                 "<your idea, in one sentence>")
 
 LATEST_HEADER = ("\n\nLatest participant message (it takes precedence where it adds to "
                  "or changes the request above):\n")
@@ -524,7 +526,8 @@ _HINTS = {
         "empty: the participant's whole message is kept either way.",
     "PLACEHOLDER_NOT_REPLACED":
         "The message still contains the page's placeholder text. Ask the participant "
-        "for their own setting, mood, or play idea, or to send preset=<id> alone.",
+        "for their own idea (a setting, mood, or play idea) in its place, or to send "
+        "preset=<id> alone.",
     "REQUEST_TOO_LARGE_TO_BUILD":
         "The combined request is too large to hand to a builder. Ask the participant "
         "for a shorter request, or start a new one instead of revising a revision.",

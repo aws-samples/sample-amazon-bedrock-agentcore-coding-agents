@@ -22,7 +22,9 @@ seams rather than new infrastructure:
 
 Failure to persist is logged and never raised. A status file is a convenience for
 reading history; it is not on the verdict path, and a run must not fail because a
-bucket was unreachable.
+bucket was unreachable. Reading history is best effort for the same reason, with
+one exception: ``active_runs`` answers "is a build active?" for a caller that must
+fail closed, so it raises ``RunStateUnavailable`` on anything it cannot read.
 """
 
 from __future__ import annotations
@@ -348,6 +350,164 @@ def recent(runs_dir: str, limit: int | None = 10) -> list[dict[str, Any]]:
         if limit is not None and len(out) >= limit:
             break
     return out
+
+
+class RunStateUnavailable(RuntimeError):
+    """The saved run state could not be read, so "no build is active" is unknown.
+
+    ``code`` is short and safe to show anywhere (an operation and an AWS error code,
+    never a bucket, ARN, or account); the original exception is chained as
+    ``__cause__`` for the log."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _error_code(exc: BaseException) -> str:
+    """An AWS error code (``AccessDenied``) or the exception type; never its message."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = str((response.get("Error") or {}).get("Code") or "")
+        if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code):
+            return code
+    return type(exc).__name__
+
+
+# A mirrored record last written longer ago than this cannot belong to a live run:
+# an active run rewrites it every heartbeat, and ``active_snapshot_is_stale`` gives up
+# on it after ACTIVE_STALE_AFTER_S. The slack covers clock skew between the writer,
+# S3's LastModified, and the reader, so a fresh record is never skipped unread.
+_ACTIVE_SKEW_SLACK_S = 600
+
+
+def active_runs(runs_dir: str, *, require_mirror: bool = False,
+                now: float | None = None) -> list[dict[str, Any]]:
+    """Every saved run still queued or running with a fresh heartbeat, newest first.
+
+    The STRICT reader, for a decision that must fail closed: the `/develop` event
+    path refuses to start a build while it can see another one. ``recent`` is a
+    history view and skips what it cannot read; read here, a skipped record would be
+    "nothing is running", so every doubt raises ``RunStateUnavailable`` instead: an
+    S3 list or get failure, an S3 client that cannot be built, an unreadable local
+    record, and, with ``require_mirror``, no mirror bucket at all. That last one is
+    the deployed coordinator's case: each `/develop` gets a NEW session, a fresh
+    microVM whose local disk holds only its own runs, so without the mirror it
+    cannot see a build another session started.
+
+    Only records written recently enough to be live are fetched. This is a check,
+    not a lock: two sessions reading at the same moment can both see nothing.
+    """
+    stamp_now = now if now is not None else time.time()
+    horizon = stamp_now - ACTIVE_STALE_AFTER_S - _ACTIVE_SKEW_SLACK_S
+    # run_id -> (modified timestamp, local path or None, S3 key or None)
+    candidates: dict[str, tuple[float, str | None, str | None]] = {}
+
+    d = _local_dir(runs_dir)
+    try:
+        names = os.listdir(d)
+    except FileNotFoundError:
+        names = []
+    except OSError as exc:
+        raise RunStateUnavailable(
+            f"LocalList:{_error_code(exc)}",
+            f"listing the local run state failed ({_error_code(exc)})") from exc
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            modified = os.path.getmtime(path)
+        except FileNotFoundError:
+            continue  # pruned or replaced between the listing and here
+        except OSError as exc:
+            raise RunStateUnavailable(
+                f"LocalStat:{_error_code(exc)}",
+                f"reading the local run state failed ({_error_code(exc)})") from exc
+        if modified >= horizon:
+            candidates[name[:-5]] = (modified, path, None)
+
+    bucket = os.environ.get("WORKSHOP_RUNTIME_BUCKET", "").strip()
+    hit = None
+    if not bucket:
+        if require_mirror:
+            raise RunStateUnavailable(
+                "NoRunStateMirror",
+                "no run-state mirror is configured (WORKSHOP_RUNTIME_BUCKET is unset), "
+                "so builds started by other coordinator sessions cannot be seen")
+    else:
+        hit = _s3()
+        if hit is None:
+            raise RunStateUnavailable(
+                "S3ClientUnavailable", "the S3 client for the run-state mirror could "
+                "not be created")
+    if hit is not None:
+        s3, bucket = hit
+        token: str | None = None
+        while True:
+            args: dict[str, Any] = {"Bucket": bucket, "Prefix": _STATE_PREFIX + "/",
+                                    "MaxKeys": 1000}
+            if token:
+                args["ContinuationToken"] = token
+            try:
+                page = s3.list_objects_v2(**args)
+            except Exception as exc:  # noqa: BLE001 (unknown means busy, never idle)
+                raise RunStateUnavailable(
+                    f"ListObjectsV2:{_error_code(exc)}",
+                    f"listing the run-state mirror failed ({_error_code(exc)})") from exc
+            for obj in page.get("Contents", []):
+                key = str(obj.get("Key") or "")
+                if not key.endswith(".json"):
+                    continue
+                stamp = obj.get("LastModified")
+                # No timestamp: it cannot be ruled out, so it is read.
+                modified = (float(stamp.timestamp()) if hasattr(stamp, "timestamp")
+                            else stamp_now)
+                if modified < horizon:
+                    continue
+                run_id = os.path.basename(key)[:-5]
+                current = candidates.get(run_id)
+                if current is None or modified > current[0]:
+                    candidates[run_id] = (modified, None, key)
+            if not page.get("IsTruncated"):
+                break
+            token = page.get("NextContinuationToken")
+            if not token:
+                raise RunStateUnavailable(
+                    "ListObjectsV2:NoContinuationToken",
+                    "the run-state mirror listing was truncated with no continuation token")
+
+    out: list[tuple[float, dict[str, Any]]] = []
+    for modified, path, key in candidates.values():
+        if path is not None:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    payload = json.load(f)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as exc:
+                raise RunStateUnavailable(
+                    f"LocalRead:{_error_code(exc)}",
+                    f"a local run-state record could not be read ({_error_code(exc)})"
+                ) from exc
+        else:
+            s3, bucket = hit  # type: ignore[misc]  (a key implies a mirror)
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=key)
+                payload = json.loads(obj["Body"].read().decode("utf-8"))
+            except Exception as exc:  # noqa: BLE001 (an unread record may be running)
+                raise RunStateUnavailable(
+                    f"GetObject:{_error_code(exc)}",
+                    f"a mirrored run-state record could not be read ({_error_code(exc)})"
+                ) from exc
+        if not isinstance(payload, dict):
+            raise RunStateUnavailable("RecordNotAnObject",
+                                      "a run-state record is not a JSON object")
+        if (payload.get("status") in ("queued", "running")
+                and not active_snapshot_is_stale(payload, now=stamp_now)):
+            out.append((modified, payload))
+    return [payload for _modified, payload in sorted(out, key=lambda row: row[0],
+                                                       reverse=True)]
 
 
 # Cap how many status files accumulate. Each is a couple of KB, but nothing ever

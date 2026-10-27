@@ -1104,7 +1104,7 @@ def console_sheet(*, name: str, platform: str, image: str, role_name: str, names
     """Each console field to set, in the order the Create runtime form shows them."""
     mount_leaf = mount_path.removeprefix("/mnt/")
     lines = [
-        "Create it in the console: Amazon Bedrock AgentCore > Runtime > Create runtime",
+        "Create it in the console: Amazon Bedrock AgentCore > Agents > Bring your own code",
         "",
         "  Runtime details",
         f"    Name                          {name}   (replace the suggested name)",
@@ -1135,7 +1135,8 @@ def console_sheet(*, name: str, platform: str, image: str, role_name: str, names
     lines.append("    Environment variables         Add new variable, once per line:")
     for key, value in environment.items():
         lines.append(f"      {key:<28}{value}")
-    lines += ["", "Then choose Create runtime. It is Ready within about a minute.",
+    lines += ["", "Then choose Create runtime. Its status changes from Creating to Active "
+              "within about a minute.",
               f"Finish with: ./deploy-prebuilt.sh {name.replace('_', '-')} --adopt"]
     return lines
 

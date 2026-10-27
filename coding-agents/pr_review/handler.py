@@ -1,16 +1,25 @@
-"""Wake a Claude Code session on AgentCore Runtime when a pull request needs an agent.
+"""Wake an agent on AgentCore Runtime when a pull request or an issue asks for one.
 
 GitHub calls this function's HTTP endpoint for every event of the workshop App. The
 function checks GitHub's signature, acts on each signed body once and only while it is
 fresh (the signature carries no time), answers within a second, and hands the work to an
-asynchronous copy of itself, which is never retried. Two events start work:
+asynchronous copy of itself, which is never retried. Three events start work:
 
 * A pull request is opened, reopened, updated, or marked ready: a **reviewer** session.
 * A trusted person comments ``/fix`` on a pull request: a **fixer** session, which opens
   a follow-up pull request against that branch. That pull request is an event too, so a
   different reviewer session reviews the fix: the maker is never the checker.
+* The repository owner comments ``/develop <idea>`` on an issue: the **coordinator's
+  team**. The copy starts one NEW session of the deployed coordinator Runtime
+  (``CodingAgents_orchestrator``) with the idea. The coordinator answers with a run ID at
+  once and builds in that session's microVM after this function returns, so the copy
+  never stops that session. Each builder's pull request is judged by its own executed
+  check and review, so this endpoint does not review it a second time. Only the
+  repository owner can start a team, never a bot: the taught coordinator merges green
+  work on its own, so a member's or collaborator's ``/develop`` is answered and starts
+  nothing.
 
-For each job the copy:
+For a review or a fix the copy:
 
 1. finds the attendee's Claude Code Runtime (``claude_code``) and the GitHub Gateway,
 2. posts "an agent woke up" on the pull request,
@@ -25,7 +34,8 @@ For each job the copy:
 
 The GitHub credential never enters the Runtime: the Gateway's GitHub tools hold the App
 key, this function reads only the webhook secret, and the session receives files, not a
-token.
+token. A ``/develop`` session receives the idea and where it was asked; the coordinator
+reaches GitHub through the same Gateway.
 """
 from __future__ import annotations
 
@@ -34,6 +44,7 @@ import gzip
 import hashlib
 import hmac
 import io
+import itertools
 import json
 import os
 import re
@@ -60,8 +71,80 @@ ACTIONS = {"opened", "reopened", "synchronize", "ready_for_review"}
 TEAM_BUILD_BRANCH = "workshop/runs/"
 # Who may ask for a fix, by GitHub's author_association: the owner, the organization's
 # members, and collaborators; never a bot, so an agent's own comment cannot start another
-# agent. (A member or collaborator is not necessarily someone with write access.)
+# agent. (A member or collaborator is not necessarily someone with write access, which is
+# why a fix only opens a pull request that a person merges.)
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
+# Who may start a team: only the repository owner, never a bot. The taught coordinator
+# merges green, approved work with no person involved, and the idea becomes both the
+# builders' task and what the checker checks, so read access must not be enough. (The
+# lab's repository is a personal private one, so its owner is the attendee.)
+TEAM_STARTERS = {"OWNER"}
+# The deployed coordinator: project CodingAgents, agent orchestrator (deploy-coordinator.sh).
+COORDINATOR_NAME = "CodingAgents_orchestrator"
+# A new coordinator session first starts its microVM, then answers with a run ID or a
+# refusal before any agent works. This bounds that answer, not the build.
+START_READ_TIMEOUT_S = 300
+MAX_IDEA_CHARS = 1000
+DEVELOP = re.compile(r"^/develop(?=[\s:]|$):?", re.I)
+# Quotes people put around the idea, including the curly ones a phone keyboard types.
+QUOTES = {'"': '"', "'": "'", "`": "`", "\u201c": "\u201d", "\u2018": "\u2019"}
+WATCH = "`python3 orchestrator/watch_run.py --plain`"
+# Only a NEW comment is read: an edited one arrives as `edited` and starts nothing.
+NEW_COMMENT = "Post a new comment; an edited comment is not read."
+USAGE = ("Post a new comment with `/develop` followed by your idea in one sentence, for "
+         "example `/develop a lighthouse keeper guides ships through a storm`. An edited "
+         "comment is not read.")
+NOT_OWNER = ("Only the repository owner can start a team, never a bot, so this comment "
+             "started nothing. Ask the owner to post the `/develop` comment. On a repository "
+             "an organization owns, GitHub reports everyone as a member, so start the team "
+             "from the terminal with `./ask.sh` instead.")
+IDEA_REPLIES = {
+    "IDEA_MISSING": f"There is no idea after `/develop`, so no team was started. {USAGE}",
+    "IDEA_PLACEHOLDER": ("That is the placeholder from the workshop page, so no team was "
+                         "started. Write your own idea where the angle brackets and their "
+                         f"text are. {USAGE}"),
+    "IDEA_TOO_LONG": (f"The idea is longer than {MAX_IDEA_CHARS} characters, so no team was "
+                      f"started. Keep it to one sentence; the builders choose the rest. "
+                      f"{NEW_COMMENT}"),
+}
+# Where the full error goes: GitHub gets a code and a fixed hint, never an AWS message
+# (those carry ARNs and the account ID). Lab 3, Connect GitHub, step 2 tails this log.
+SEE_LOG = "Nothing was retried; the endpoint's log line `DEVELOP_REFUSED` has the details."
+# What a person can do about each answer that definitely started nothing: a refusal the
+# coordinator answered with, or AgentCore turning the invocation away before it reached
+# the coordinator. Any other code gets SEE_LOG.
+COORDINATOR_HINTS = {
+    **IDEA_REPLIES,
+    "BUILD_ALREADY_RUNNING": ("A `/develop` comment starts nothing while another build is "
+                              f"running. Watch it with {WATCH}. When it ends, read its "
+                              "summary on its issue; post a new `/develop` comment only for "
+                              "a different idea, never to retry a failed pull request."),
+    "RUN_STATE_UNAVAILABLE": ("The coordinator could not read its saved runs to check that no "
+                              "other build is running, so it started nothing. Check with "
+                              f"{WATCH}; the coordinator's log has the cause."),
+    "REPOSITORY_MISMATCH": ("The coordinator builds only the repository it was deployed "
+                            "with. Comment on an issue in that repository."),
+    "AccessDeniedException": ("The endpoint is not allowed to start the coordinator yet: "
+                              "redeploy the endpoint stack (Lab 3, Deploy the Endpoint, step "
+                              "1), then post a new `/develop` comment."),
+    "ResourceNotFoundException": ("AgentCore found no coordinator to start. If "
+                                  "`./deploy-coordinator.sh` is still running, wait for it to "
+                                  "finish (Lab 3, Deploy the Coordinator, step 3), then post a "
+                                  "new `/develop` comment."),
+    **dict.fromkeys(("ThrottlingException", "ServiceQuotaExceededException",
+                     "RetryableConflictException"),
+                    "AgentCore turned the request away for now. Wait a minute, then post a "
+                    "new `/develop` comment."),
+}
+# The answer was lost after the request may have reached the coordinator, which submits
+# the build before it answers. Commenting again could start a second build.
+MAYBE_STARTED = (f"A build may still have started: check with {WATCH} before you comment "
+                 f"`/develop` again. {SEE_LOG}")
+# Failures that happen before a request leaves this function: nothing reached AgentCore.
+NOT_SENT = {"ConnectTimeoutError", "EndpointConnectionError", "ProxyConnectionError",
+            "NoCredentialsError", "PartialCredentialsError", "NoRegionError",
+            "ParamValidationError"}
+RUN_ID = re.compile(r"run_[0-9]{6}_[0-9a-f]{12}")
 # One InvokeAgentRuntimeCommand command allows 65,536 characters. The bundle is a
 # base64 tar.gz of the diff, the changed files and the rules; the prompt takes the rest.
 MAX_BUNDLE_CHARS = 52_000
@@ -195,7 +278,7 @@ def job_from_event(kind: str, payload: dict) -> dict | None:
         pr = payload.get("pull_request") or {}
         if pr.get("draft") or pr.get("state") != "open":
             return None
-        # A team build's pull request (Lab 4's coordinator, branch workshop/runs/...)
+        # A team build's pull request (Lab 3's coordinator, branch workshop/runs/...)
         # already carries its own executed check and independent review. A second,
         # REVIEW.md-based verdict beside them would blur which one decides.
         if str((pr.get("head") or {}).get("ref", "")).startswith(TEAM_BUILD_BRANCH):
@@ -214,20 +297,55 @@ def job_from_event(kind: str, payload: dict) -> dict | None:
     if kind == "issue_comment":
         issue, comment = payload.get("issue") or {}, payload.get("comment") or {}
         body = (comment.get("body") or "").strip()
+        user = comment.get("user") or {}
+        association = comment.get("author_association")
+        trusted = user.get("type") != "Bot" and association in TRUSTED
+        if payload.get("action") == "created" and DEVELOP.match(body):
+            # The team's own comments (the App is a Bot) can never start another team, and
+            # neither a bot nor a stranger is answered. A member or collaborator is told on
+            # GitHub that only the owner can start a team; a /develop on a pull request is
+            # answered there. Neither job starts a team.
+            if not trusted:
+                return None
+            return {"mode": "develop", **where, "number": issue["number"],
+                    "title": issue.get("title", ""), "author": user.get("login", ""),
+                    "idea": idea_from(body), "comment_url": comment.get("html_url", ""),
+                    "on_pull_request": "pull_request" in issue,
+                    "by_owner": association in TEAM_STARTERS}
         if (payload.get("action") != "created" or "pull_request" not in issue
                 or not body.lower().startswith("/fix")):
             return None
-        user = comment.get("user") or {}
-        if user.get("type") == "Bot" or comment.get("author_association") not in TRUSTED:
+        if not trusted:
             return None
         return {"mode": "fix", **where, "number": issue["number"], "title": issue.get("title", ""),
                 "author": user.get("login", ""), "request": body[4:].strip()}
     return None
 
 
+def idea_from(body: str) -> str:
+    """What follows ``/develop``: stripped, without one pair of quotes around all of it."""
+    idea = DEVELOP.sub("", body, count=1).strip()
+    if len(idea) >= 2 and QUOTES.get(idea[0]) == idea[-1] and idea[0] not in idea[1:-1]:
+        idea = idea[1:-1].strip()
+    return idea
+
+
+def idea_problem(idea: str) -> str | None:
+    """Why this idea cannot start a team, or None. The codes match the coordinator's."""
+    if not idea:
+        return "IDEA_MISSING"
+    if re.fullmatch(r"<[^<>]*>", idea) or "<your idea" in idea.lower():
+        return "IDEA_PLACEHOLDER"
+    if len(idea) > MAX_IDEA_CHARS:
+        return "IDEA_TOO_LONG"
+    return None
+
+
 def handler(event, context):
     if "job" in event or "review" in event:
         job = event.get("job") or {"mode": "review", **event["review"]}
+        if job.get("mode") == "develop":
+            return develop(job)
         return fix(job) if job.get("mode") == "fix" else review(job)
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     body = event.get("body") or ""
@@ -268,6 +386,11 @@ def handler(event, context):
     except Exception:
         forget(digest)
         raise
+    if job["mode"] == "develop":
+        if not job["by_owner"]:
+            return response(202, "Answering the comment: only the repository owner can start a team.")
+        return response(202, "Answering on the pull request: /develop starts a team from an issue."
+                        if job["on_pull_request"] else "An agent team is waking up for this issue.")
     verb = "fix" if job["mode"] == "fix" else "review"
     return response(202, f"An agent is waking up to {verb} this pull request.")
 
@@ -323,17 +446,23 @@ def tool(url: str, name: str, arguments: dict, *, raw: bool = False):
 
 # ---------------- What the session receives ----------------
 
-def runtime_arn() -> str:
+class RuntimeMissing(RuntimeError):
+    """No Runtime of that name in this account and Region yet."""
+
+
+def runtime_arn(name: str = RUNTIME_NAME) -> str:
     control = _boto().client("bedrock-agentcore-control", region_name=region())
     token = None
     while True:
         page = control.list_agent_runtimes(**({"nextToken": token} if token else {}))
         for item in page.get("agentRuntimes", []):
-            if item.get("agentRuntimeName") == RUNTIME_NAME:
+            if item.get("agentRuntimeName") == name:
                 return item["agentRuntimeArn"]
         token = page.get("nextToken")
         if not token:
-            raise RuntimeError(f"Runtime {RUNTIME_NAME} not found; deploy Claude Code first")
+            first = ("deploy Claude Code first" if name == RUNTIME_NAME
+                     else "run ./deploy-coordinator.sh first")
+            raise RuntimeMissing(f"Runtime {name} not found; {first}")
 
 
 def number_patch(patch: str) -> str:
@@ -371,8 +500,8 @@ def gather(url: str, job: dict, pr: dict) -> tuple[dict[str, str], str]:
     """The changed files at the head commit (bounded) and the repository's rules.
 
     Rules come from the DEFAULT branch: a pull request cannot rewrite the rules it is
-    judged by until it merges, and a fix pull request stacked on a feature branch (part
-    3's /fix) is judged by the same rules as the pull request it fixes."""
+    judged by until it merges, and a fix pull request stacked on a feature branch (the
+    one /fix opens) is judged by the same rules as the pull request it fixes."""
     where = {"owner": job["owner"], "repo": job["repo"]}
     files, total = {}, 0
     for f in pr.get("files", []):
@@ -436,6 +565,16 @@ def build_command(job: dict, encoded: str, mode: str = "review") -> str:
     return "sh -c " + shlex.quote(script)
 
 
+# A session's printed AWS errors carry role ARNs and the account ID; neither belongs on
+# GitHub, so an excerpt posted there is redacted first (the log keeps the exit code).
+_ARN = re.compile(r"arn:aws[a-z-]*:[^\s'\"`]*")
+_ACCOUNT = re.compile(r"(?<![\w])\d{12}(?![\w])")
+
+
+def redact(text: str) -> str:
+    return _ACCOUNT.sub("<account>", _ARN.sub("<arn>", text or ""))
+
+
 def extract_review(stdout: str) -> str:
     if BEGIN not in stdout:
         return ""
@@ -483,7 +622,95 @@ def run_session(arn: str, session: str, command: str) -> tuple[str, int | None]:
     return "".join(out), code
 
 
-# ---------------- The two jobs ----------------
+def reply_object(text: str) -> dict | None:
+    """The coordinator's answer in one event's data, or None when the data is not it.
+
+    The coordinator yields one JSON string and the Runtime SDK JSON-encodes what it
+    yields, so the data is that object either as it is or encoded once more."""
+    value = text
+    for _ in range(2):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(value, dict):
+            return value if ("run_id" in value or "error" in value) else None
+        if not isinstance(value, str):
+            return None
+    return None
+
+
+def first_reply(lines) -> dict:
+    """The first object with ``run_id`` or ``error`` in a server-sent event stream."""
+    data: list[str] = []
+    for raw in itertools.chain(lines, [""]):
+        line = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw).rstrip("\r")
+        if line.startswith("data:"):
+            data.append(line[6:] if line.startswith("data: ") else line[5:])
+        elif not line and data:
+            found = reply_object("\n".join(data))
+            data = []
+            if found is not None:
+                return found
+    return {}
+
+
+def start_team(arn: str, session: str, event: dict) -> dict:
+    """Ask the coordinator for one build and return its first answer.
+
+    One invocation of a NEW coordinator session, with one attempt: a resent invocation
+    could start a second build. The build runs in that session's microVM as an
+    asynchronous task after this call returns, so the session is never stopped here;
+    stopping it would end the build."""
+    from botocore.config import Config
+    client = _boto().client("bedrock-agentcore", region_name=region(),
+                            config=Config(read_timeout=START_READ_TIMEOUT_S,
+                                          retries={"total_max_attempts": 1}))
+    resp = client.invoke_agent_runtime(
+        agentRuntimeArn=arn, runtimeSessionId=session,
+        payload=json.dumps({"github_event": event}).encode(),
+        contentType="application/json", accept="text/event-stream")
+    body = resp["response"]
+    try:
+        if "event-stream" in (resp.get("contentType") or ""):
+            reply = first_reply(body.iter_lines() if hasattr(body, "iter_lines")
+                                else body.read().splitlines())
+        else:
+            reply = reply_object(body.read().decode("utf-8", "replace")) or {}
+    finally:
+        try:
+            body.close()
+        except Exception:  # noqa: BLE001 (closing early only ends this read; the build goes on)
+            pass
+    # The request reached the coordinator, which submits a build before it answers.
+    return reply or {"error": "NO_REPLY", "detail": "the coordinator's answer had no run ID",
+                     "may_have_started": True}
+
+
+def start_failure(exc: Exception) -> dict:
+    """The coordinator invocation itself failed: say which way, never retry it.
+
+    ``may_have_started`` is False only when the request cannot have reached the
+    coordinator: no connection was made, or AgentCore refused the request itself (a 4xx,
+    except RuntimeClientError, which reports the Runtime's own failure). A read timeout,
+    a broken stream, a 5xx, or anything unknown may have come after the build started.
+    ``detail`` is the full message, for the log only: it can carry ARNs and the account."""
+    name = type(exc).__name__
+    if name == "ReadTimeoutError":
+        return {"error": "COORDINATOR_NO_REPLY", "detail": f"no answer within {START_READ_TIMEOUT_S} s",
+                "may_have_started": True}
+    response = getattr(exc, "response", None)
+    response = response if isinstance(response, dict) else {}
+    error = response.get("Error") or {}
+    code = str(error.get("Code") or name)
+    status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    turned_away = (isinstance(status, int) and 400 <= status < 500
+                   and code != "RuntimeClientError" and name != "EventStreamError")
+    return {"error": code, "detail": str(error.get("Message") or exc)[:2000],
+            "may_have_started": not (name in NOT_SENT or turned_away)}
+
+
+# ---------------- The three jobs ----------------
 
 def review(job: dict) -> dict:
     started = time.time()
@@ -513,7 +740,7 @@ def review(job: dict) -> dict:
                 f"GitHub token.{rules_note} Comment `/fix` to have another agent propose a fix.")
     else:
         body = (f"The review session ended without a review (exit {code}). The agent's last "
-                f"output:\n\n```\n{stdout[-1500:]}\n```")
+                f"output:\n\n```\n{redact(stdout[-1500:])}\n```")
     tool(url, "comment_on_issue", {**where, "body": body})
     result = {"repo": f"{job['owner']}/{job['repo']}", "number": job["number"], "exit": code,
               "reviewed": bool(code == 0 and text), "seconds": round(seconds, 1), "session": session,
@@ -536,6 +763,17 @@ def fix(job: dict) -> dict:
     where = {"owner": job["owner"], "repo": job["repo"], "issue_number": job["number"]}
     pr = tool(url, "get_pull_request_files",
               {"owner": job["owner"], "repo": job["repo"], "number": job["number"]})
+    # A team build's pull request belongs to the coordinator's engine: its own executed
+    # check decides it, and the engine's one bounded repair commits onto this same branch,
+    # which a fixer's pushed branch would conflict with.
+    if str(pr.get("head_ref") or "").startswith(TEAM_BUILD_BRANCH):
+        tool(url, "comment_on_issue", {**where, "body": (
+            "This pull request belongs to a team build, so `/fix` does not run here: the "
+            "team's own executed check decides it, and the coordinator makes at most one "
+            "bounded repair on this branch. Read the check evidence in the comments, then "
+            "merge or close it yourself.")})
+        log("FIX_REFUSED", number=job["number"], reason="team build")
+        return {"number": job["number"], "fixed": False, "reason": "team_build"}
     if not pr.get("same_repo"):
         tool(url, "comment_on_issue", {**where, "body": (
             "This pull request comes from a fork, so the workshop App cannot push a fix branch "
@@ -561,7 +799,7 @@ def fix(job: dict) -> dict:
         reason = "it changed no file" if code == 0 else f"exit {code}"
         tool(url, "comment_on_issue", {**where, "body": (
             f"The fix session ended without a fix ({reason}). Its last output:\n\n"
-            f"```\n{stdout[-1500:] if code else summary[-1500:]}\n```")})
+            f"```\n{redact(stdout[-1500:] if code else summary[-1500:])}\n```")})
         log("FIX_FAILED", number=job["number"], exit=code, session=session)
         return {"number": job["number"], "fixed": False, "exit": code}
     branch = f"agent-fix-{job['number']}-{session[-6:]}"
@@ -583,3 +821,84 @@ def fix(job: dict) -> dict:
               "files": len(changed), "seconds": round(seconds, 1), "session": session}
     log("FIX_OPENED", **result)
     return result
+
+
+def develop(job: dict) -> dict:
+    """Start the coordinator's team for a /develop comment, and say so on the issue."""
+    started = time.time()
+    url = gateway_url()
+    where = {"owner": job["owner"], "repo": job["repo"], "issue_number": job["number"]}
+    result = {"repo": f"{job['owner']}/{job['repo']}", "number": job["number"]}
+
+    def refuse(reason: str, body: str, **extra) -> dict:
+        tool(url, "comment_on_issue", {**where, "body": body})
+        log("DEVELOP_REFUSED", **result, reason=reason, **extra)
+        return {**result, "started": False, "reason": reason, **extra}
+
+    if not job.get("by_owner"):
+        return refuse("NOT_OWNER", NOT_OWNER, author=job.get("author", ""))
+    if job.get("on_pull_request"):
+        return refuse("ON_PULL_REQUEST", "Comment /develop on an issue, not a pull request. "
+                      "Nothing was started.")
+    idea = job.get("idea") or ""
+    problem = idea_problem(idea)
+    if problem:
+        return refuse(problem, IDEA_REPLIES[problem])
+    try:
+        arn = runtime_arn(COORDINATOR_NAME)
+    except RuntimeMissing:
+        return refuse("COORDINATOR_MISSING", (
+            "No coordinator yet: run `./deploy-coordinator.sh` (Lab 3, Deploy the Coordinator, "
+            "step 3), then post a new `/develop` comment with your idea. Nothing was started."))
+    session = f"gh-develop-{job['number']}-{uuid.uuid4()}"
+    author = job.get("author", "")
+    tool(url, "comment_on_issue", {**where, "body": (
+        f"**An agent team woke up.** `{author}` asked for a build on this issue, so the "
+        "coordinator on Amazon Bedrock AgentCore Runtime is starting one in a new session of "
+        f"its own (`{session[-12:]}`). No one ran a command: the comment did. Its run ID "
+        "follows in a moment.")})
+    log("SESSION", mode="develop", number=job["number"], session=session)
+    event = {"kind": "develop", "owner": job["owner"], "repo": job["repo"],
+             "issue_number": job["number"], "author": author, "idea": idea,
+             "comment_url": job.get("comment_url", "")}
+    try:
+        reply = start_team(arn, session, event)
+    except Exception as exc:  # noqa: BLE001 (any failed invocation is reported, not retried)
+        reply = start_failure(exc)
+    seconds = round(time.time() - job.get("received_at", started), 1)
+    run_id = str(reply.get("run_id") or "").replace("`", "")
+    if run_id and not reply.get("error"):
+        agents = ", ".join(f"`{str(a).replace('`', '')}`" for a in reply.get("agents") or [])
+        preset = str(reply.get("preset") or "").replace("`", "")
+        plan = (f" with {agents}" if agents else "") + (f" (preset `{preset}`)" if preset else "")
+        tool(url, "comment_on_issue", {**where, "body": (
+            f"The coordinator started build `{run_id}`{plan}. Each builder opens its own pull "
+            "request in this repository; a different agent's executed check and an independent "
+            "review decide each one, and the coordinator posts a summary on this issue when the "
+            f"build ends. Watch it with {WATCH} in `~/sample-amazon-bedrock-agentcore-coding-agents`.")})
+        log("DEVELOP_STARTED", **result, run_id=run_id, session=session, seconds=seconds,
+            agents=reply.get("agents") or [], preset=reply.get("preset", ""))
+        return {**result, "started": True, "run_id": run_id, "session": session, "seconds": seconds}
+    error = str(reply.get("error") or "NO_REPLY")
+    if "error_type" not in reply and re.fullmatch(r"[A-Z][A-Za-z0-9_]*(?::[\w.-]+)?", error):
+        # A coordinator refusal (it starts nothing), or the invocation's own failure,
+        # which start_failure and start_team mark when a build may have started.
+        code, detail = error, reply.get("detail")
+        maybe = bool(reply.get("may_have_started"))
+    else:  # the Runtime SDK's own error event: the entrypoint raised, maybe after submitting
+        code, detail = str(reply.get("error_type") or "COORDINATOR_ERROR"), error
+        maybe = True
+    code = re.sub(r"[^\w.:-]", "", code)[:80] or "COORDINATOR_ERROR"
+    # The detail stays in this function's log: an AWS message names ARNs and the account.
+    detail = " ".join(str(detail or "").split())[:2000]
+    if maybe:
+        lead = (f"The coordinator did not answer within {START_READ_TIMEOUT_S} s"
+                if code == "COORDINATOR_NO_REPLY"
+                else "The endpoint could not read the coordinator's answer")
+        body = f"{lead}: `{code}`. {MAYBE_STARTED}"
+    else:
+        running = str(reply.get("running_run_id") or "")
+        seen = f"It sees `{running}` still running. " if RUN_ID.fullmatch(running) else ""
+        body = (f"The coordinator did not start a build: `{code}`. {seen}"
+                + COORDINATOR_HINTS.get(code.split(":", 1)[0], SEE_LOG))
+    return refuse(code, body, session=session, detail=detail, may_have_started=maybe)

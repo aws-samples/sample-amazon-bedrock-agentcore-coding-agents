@@ -250,7 +250,7 @@ def next_action(status: str, fail_reason: str | None,
         return ""
     reason = (fail_reason or "").split(":")[0].strip()
     if reason in {"ROLE_EXECUTION_ERROR", "ROLE_TOTAL_FAILURE",
-                  "ARTIFACT_TRANSFER_ERROR"}:
+                  "ARTIFACT_TRANSFER_ERROR", "ROLE_PR_PUBLISH_ERROR"}:
         opened = [r for r in (role_prs or []) if r.get("pr_url")]
         if opened:
             return (
@@ -287,7 +287,7 @@ def next_action(status: str, fail_reason: str | None,
                 + (detail or "the GitHub pull-request destination did not resolve.")
                 + " Fix that, then resubmit.")
     if reason.startswith("RUNTIME_NOT_WIRED"):
-        return ("A routed role has no wired runtime ARN. Create that role's Runtime (Lab 1 or Lab 4) or "
+        return ("A routed role has no wired runtime ARN. Create that role's Runtime (Lab 1 or Lab 3) or "
                 "wire its ARN, then resubmit; the engine never falls back to a local "
                 "build.")
     if reason.startswith(("UNKNOWN_PRESET", "UNKNOWN_ROLE")):

@@ -74,7 +74,12 @@ for role in $role_names; do
   arn=$(jq -r '.runtime_arn // empty' "$cfg" 2>/dev/null || true)
   # A Runtime built in the AgentCore console is found by its name instead.
   [ -n "$arn" ] || arn=$(cd "$HERE" && python3 -c 'import sys, configure_deploy as c; print(c.named_runtime_arn(sys.argv[1]))' "$role" 2>/dev/null || true)
-  [ -n "$arn" ] || die "No Runtime for $role: create one named ${role//-/_} first (Build and Run the Team, step 2). The coordinator must not be created before its workers exist."
+  # claude_code is Lab 1's own Runtime, made in the console (or by its deploy.py). A
+  # clone without its agent.config would make deploy-prebuilt.sh rebuild the image.
+  if [ -z "$arn" ] && [ "$role" = claude-code ]; then
+    die "No Runtime named claude_code. Create it in Lab 1, Create the Runtime and Open a Session, step 1. The coordinator must not be created before its workers exist."
+  fi
+  [ -n "$arn" ] || die "No Runtime named ${role//-/_} for $role. Check the team's Runtimes (Lab 3, Deploy the Coordinator, step 1); a missing one is deployed with ./deploy-prebuilt.sh $role from coding-agents. The coordinator must not be created before its workers exist."
   printf '      %-12s %s\n' "$role" "$arn"
 done
 printf '      %-12s %s\n' "gateway" "$GITHUB_GATEWAY_URL"
@@ -124,8 +129,11 @@ echo
 python3 "$HERE/promote_runtime.py" --project "$PROJECT_DIR" --receipt || true
 
 echo
-# The request here MUST match the one the page tells the room to submit. ask.sh keeps
-# one conversation per host, and the coordinator refuses a duplicate of a build that is
-# still running, so printing the command cannot start a second build by accident.
-echo "Coordinator deployed. Next, send your request (Build and Run the Team, step 6):"
+# The request here MUST match the one the page tells the room to submit. A /develop
+# comment admits the same request; ask.sh keeps one conversation per host, and the
+# coordinator refuses a duplicate of a build that is still running, so printing the
+# command cannot start a second build by accident.
+echo "Coordinator deployed. Once Claude Code's grant is in place (Lab 3, Deploy the Coordinator,"
+echo "step 4), start the team: comment /develop <your idea, in one sentence> on an issue in"
+echo "$GITHUB_REPO (Start the Team from GitHub, step 1), or send the same request from here:"
 echo "  ./ask.sh \"Use preset=team-game. Creative direction: <your idea, in one sentence>\""

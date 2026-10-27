@@ -1,7 +1,7 @@
 """A build must be watchable while it runs, including from a DEPLOYED coordinator.
 
 The console renders the per-role feed in-process and `watch_agents.py` attaches to its
-multiplexed Runtime PTYs, but the served Lab 2 path is a coordinator inside its own
+multiplexed Runtime PTYs, but the served Lab 3 path is a coordinator inside its own
 AgentCore Runtime. Before this, the only window into such a run was a chat turn per
 poll -- about a minute of model time per line of state.
 
@@ -480,9 +480,9 @@ def test_an_auto_merged_run_skips_the_merge_step(monkeypatch, tmp_path):
     assert "1. python3 orchestrator/github.py checkout ~/game" in block
 
 
-def test_a_team_build_checks_out_to_the_part_4_folder_and_points_at_the_gallery(
+def test_a_team_build_checks_out_to_the_lab_3_folder_and_points_at_the_gallery(
         monkeypatch, tmp_path):
-    """Part 4's page checks the team game out to ~/team-game; ~/game is Lab 2's."""
+    """Lab 3's page checks the team game out to ~/team-game; ~/game is the older default."""
     monkeypatch.setenv("HOME", str(tmp_path))
     with tempfile.TemporaryDirectory() as tmp:
         out, _rc = _terminal(tmp, preset="team-game",
@@ -530,7 +530,8 @@ def test_a_red_run_offers_the_two_recoveries_the_page_teaches(monkeypatch, tmp_p
     assert "a. If you judge the game good enough" in flat
     assert "merge it yourself" in flat and "latest check comment" in flat
     assert "python3 orchestrator/github.py checkout ~/game" in block
-    assert "b. Or rerun Build and Run the Team step 6 with a simpler direction" in flat
+    assert ("b. Or send a new request with a simpler direction (Go Further, Improve "
+            "Your Game, step 2)") in flat
     assert "NEW session ID" in flat
     assert "Do not resubmit the same request to retry a red pull request" in flat
 
@@ -555,11 +556,11 @@ def test_other_stops_print_the_engines_own_advice_not_the_red_gate_choice(
     assert f"BUILD NEEDS YOU: {reason}" in flat and _PR in flat
     assert advice in flat
     assert "after its one repair" not in flat
-    assert "rerun Build and Run the Team step 6" not in flat
+    assert "send a new request with a simpler direction" not in flat
 
 
 def test_a_lab3_chat_build_never_gets_lab2s_rebuild_advice(monkeypatch, tmp_path):
-    """A Chat build records its signed-in submitter. Rerunning Build and Run the Team step 6 would
+    """A Chat build records its signed-in submitter. Sending a new team request would
     start a new game on top of the merged one; its checkout folder is ~/game-lab3."""
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "game").mkdir()
@@ -569,7 +570,7 @@ def test_a_lab3_chat_build_never_gets_lab2s_rebuild_advice(monkeypatch, tmp_path
                              submitted_by="frontend-dev@workshop.aws",
                              role_prs=_blocked("GATE_RED"))
     flat = " ".join(out.split("what to do now", 1)[1].split())
-    assert "Build and Run the Team step 6" not in flat
+    assert "Start the Team from GitHub" not in flat
     assert "Next action in Agent Studio" in flat
     assert "checkout ~/game-lab3" in flat and "port 8001" in flat
 
@@ -624,7 +625,10 @@ def test_an_interrupted_run_keeps_its_resubmit_advice_only_without_a_pr(
         out, _rc = _watch_once(tmp, "run_a")
     flat = " ".join(out.split("what to do now", 1)[1].split())
     assert "COORDINATOR_SESSION_INTERRUPTED" in flat
-    assert "Submit it again with Build and Run the Team step 6" in flat
+    # An ask.sh build that is not the team preset (Go Further's follow-up change) is sent
+    # back to ask.sh --new, never to /develop.
+    assert "Send the same request again once, with ./ask.sh --new" in flat
+    assert "/develop" not in flat.split("what to do now")[-1].replace("Do not comment /develop again", "")
 
     with tempfile.TemporaryDirectory() as tmp:
         _persist_raw(tmp, {"run_id": "run_b", **base,
@@ -635,6 +639,53 @@ def test_an_interrupted_run_keeps_its_resubmit_advice_only_without_a_pr(
     assert "BUILD NEEDS YOU: COORDINATOR_SESSION_INTERRUPTED" in flat and _PR in flat
     assert "Do not resubmit the whole build" in flat
     assert "submit the request again" not in " ".join(frame.split()), frame
+
+
+def test_a_develop_build_interrupted_before_its_pr_is_started_again_from_github(
+        monkeypatch, tmp_path):
+    """A /develop build records `github:<login>` as its submitter, as a Chat build records
+    its sign-in, but it is started again from the issue (or ask.sh), not from Agent Studio."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
+        time.time() - run_store.ACTIVE_STALE_AFTER_S - 60))
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_d", "status": "running", "_saved_at": stale,
+                           "phase": "agent_execution", "preset": "team-game",
+                           "submitted_by": "github:octocat"})
+        out, _rc = _watch_once(tmp, "run_d")
+    flat = " ".join(out.split("what to do now", 1)[1].split())
+    assert "NO PULL REQUEST OPENED: COORDINATOR_SESSION_INTERRUPTED" in flat
+    # The same rule as the summary on the issue: once, with ./ask.sh, never /develop.
+    assert "Submit it again once, with ./ask.sh and the same idea" in flat
+    assert "Do not comment /develop again" in flat
+
+    # The recorded origin issue alone says the same, whatever the submitter label.
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_e", "status": "running", "_saved_at": stale,
+                           "phase": "agent_execution", "preset": "team-game",
+                           "submitted_by": "octocat",
+                           "options": {"origin": {"owner": "octo", "repo": "game",
+                                                  "issue_number": 3, "author": "octocat"}}})
+        out, _rc = _watch_once(tmp, "run_e")
+    flat = " ".join(out.split("what to do now", 1)[1].split())
+    assert "Submit it again once, with ./ask.sh and the same idea" in flat
+
+
+def test_a_chat_team_build_interrupted_before_its_pr_is_not_sent_to_an_issue(
+        monkeypatch, tmp_path):
+    """A Chat build with preset=team-game records its sign-in and no origin issue: there
+    is no issue to comment /develop on, so it gets no GitHub resubmit advice."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
+        time.time() - run_store.ACTIVE_STALE_AFTER_S - 60))
+    with tempfile.TemporaryDirectory() as tmp:
+        _persist_raw(tmp, {"run_id": "run_f", "status": "running", "_saved_at": stale,
+                           "phase": "agent_execution", "preset": "team-game",
+                           "submitted_by": "frontend-dev@workshop.aws"})
+        out, _rc = _watch_once(tmp, "run_f")
+    flat = " ".join(out.split("what to do now", 1)[1].split())
+    assert "NO PULL REQUEST OPENED: COORDINATOR_SESSION_INTERRUPTED" in flat
+    assert "/develop" not in flat and "Submit it again" not in flat
 
 
 def test_the_suggested_checkout_never_replaces_an_existing_game(monkeypatch, tmp_path):

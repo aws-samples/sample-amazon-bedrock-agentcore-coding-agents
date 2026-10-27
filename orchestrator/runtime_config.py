@@ -177,8 +177,8 @@ def _discover_deployed(role: str) -> list[str]:
     return [arn] if arn and _ARN_RE.match(arn) else []
 
 
-# A Runtime created in the AgentCore console (Lab 1 and Lab 4 of the workshop) has
-# no runtime_config.json anywhere: its name is the whole contract. Listing Runtimes is
+# A Runtime created in the AgentCore console (Lab 1 of the workshop) has no
+# runtime_config.json anywhere: its name is the whole contract. Listing Runtimes is
 # an AWS call and the console polls its wiring view, so one listing per region serves
 # every role for a short while. Discovery is on by default and switched off for the
 # offline suite (the root conftest), which must never list a developer's real account.

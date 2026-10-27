@@ -43,6 +43,8 @@ from gate_diagnostics import (
     MAX_FAILURE_LINE_CHARS,
     gate_failure_lines,
 )
+# The reporting projection, which imports neither the engine nor its judges.
+from run_views import _published_rows, next_action
 
 # Cap the check excerpt. The whole point is to show a reviewer WHAT was asserted
 # without pasting a file that already ships in the diff beside it.
@@ -231,6 +233,14 @@ def work_item_narrative(run: Any, item: Any) -> str:
         f"This is the isolated `{item.capability}` work item for "
         f"`{getattr(run, 'run_id', '')}`.",
         "",
+    ]
+    number, login, _url = _origin(run)
+    if number:
+        # Outside the request fence, so GitHub links the issue and lists this pull
+        # request on its timeline. Never "Closes #N": a team build opens several
+        # pull requests, and the first merge would close the issue for all of them.
+        lines += [f"Requested on #{number}" + (f" by `{login}`." if login else "."), ""]
+    lines += [
         "## Request",
         "",
         _request_block(str(getattr(run, "task", "") or ""), str(getattr(run, "run_id", "") or "")),
@@ -556,4 +566,144 @@ def round_comment(run: Any) -> str:
     lines.append(f"The re-authored acceptance check "
                  f"{'passed' if gate.get('passed') else 'did not pass'}"
                  + (f": `{summary}`" if summary else "") + ".")
+    return "\n".join(lines) + "\n"
+
+
+# ------------------------------------------------------- back where it was asked
+# A `/develop <idea>` comment on an issue starts a team build (chat.start_event_build)
+# and the engine posts ONE result comment back on that issue when the run is terminal.
+# The same rules hold as for the PR body: it reports what the run recorded and judges
+# nothing. Two more matter because the issue thread is where a person asked:
+#   * no `@login`: logins appear in backticks, so a report never notifies anyone, and
+#     free text from the run (a check summary, a fail reason) sits in code spans. The
+#     run's next_action embeds recorded details too (a pre-flight cause, a Gateway
+#     error), so any mention in it is put in a code span as well;
+#   * it never invites a retry. A red pull request already used its one bounded
+#     repair, and "comment /develop again" would be the unbounded loop one layer up.
+#     When no pull request was opened, next_action may say to submit the request
+#     again; the comment then names the one way to do that (./ask.sh, once).
+# The same login rule as chat.start_event_build: an underscore for Enterprise Managed
+# Users, never a "[bot]" login.
+_GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$")
+_LINK_RE = re.compile(r"^https://[^\s()<>\[\]]+$")
+# A user or team mention as GitHub reads one: "@" not preceded by a word character.
+_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])@[A-Za-z0-9](?:[A-Za-z0-9_/-]*[A-Za-z0-9])?")
+_STATUS_WORDS = {"passed": "passed", "failed": "failed", "needs_human": "needs a person"}
+NO_RETRY_SENTENCE = ("A failed pull request is not retried automatically; do not comment "
+                     "/develop again to retry it.")
+ONCE_MORE_SENTENCE = ("This run opened no pull request. If the advice above says to "
+                      "submit the request again, do that once, with `./ask.sh` and the "
+                      "same idea (Lab 3, Start the Team from GitHub, step 2).")
+
+
+def _origin(run: Any) -> tuple[int, str, str]:
+    """(issue number, login, comment link) from the run's recorded origin; 0/'' if absent."""
+    origin = (getattr(run, "options", None) or {}).get("origin")
+    if not isinstance(origin, dict):
+        return 0, "", ""
+    number = origin.get("issue_number")
+    if isinstance(number, str) and number.isdigit():
+        number = int(number)
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return 0, "", ""
+    login = str(origin.get("author") or "")
+    url = str(origin.get("comment_url") or "")
+    return (number, login if _GITHUB_LOGIN_RE.match(login) else "",
+            url if _LINK_RE.match(url) else "")
+
+
+# A recorded AWS error carries role ARNs and the account ID; neither belongs on GitHub,
+# so run-recorded free text is redacted before it reaches an issue comment.
+_AWS_ARN = re.compile(r"arn:aws[a-z-]*:[^\s'\"`|]*")
+_AWS_ACCOUNT = re.compile(r"(?<![\w])\d{12}(?![\w])")
+
+
+def _redact_aws(text: str) -> str:
+    return _AWS_ACCOUNT.sub("<account>", _AWS_ARN.sub("<arn>", str(text or "")))
+
+
+def _code(text: str, limit: int = 160) -> str:
+    """Run-recorded free text as one inline code span: literal, never a mention, and
+    with no AWS ARN or account ID."""
+    flat = _cell(_redact_aws(text).replace("`", "'"), limit)
+    return f"`{flat}`" if flat.strip() else "-"
+
+
+def _without_mentions(text: str) -> str:
+    """Advice text with every mention outside a code span moved into one.
+
+    The fixed advice keeps its own code spans. Text whose backticks do not pair up
+    simply cannot be split safely, so it becomes one literal code span instead."""
+    flat = " ".join(_redact_aws(text).split())
+    if "``" in flat or flat.count("`") % 2:
+        return _code(flat, 600)
+    return "".join(
+        part if part.startswith("`")
+        else _MENTION_RE.sub(lambda match: f"`{match.group(0)}`", part)
+        for part in re.split(r"(`[^`]*`)", flat))
+
+
+def origin_comment(run: Any) -> str:
+    """The one result comment on the issue that asked for this run.
+
+    Status, each role pull request (role, link, state), each executed check (PASS or
+    FAIL with the executable's SHA-256 prefix), the run's own next_action, and the
+    run id. The pull requests carry the full evidence; this points at them from the
+    place the request was made.
+    """
+    status = str(getattr(run, "status", "") or "unknown")
+    run_id = str(getattr(run, "run_id", "") or "")
+    _number, login, url = _origin(run)
+    lines = [f"### Agent team build: {_STATUS_WORDS.get(status, status)}", ""]
+    asked = "Requested" + (f" by `{login}`" if login else "")
+    asked += f" in [this comment]({url})" if url else ""
+    lines.append(f"{asked}. Run `{_cell(run_id, 64)}`, status `{_cell(status, 32)}`.")
+    reason = getattr(run, "fail_reason", None)
+    if reason:
+        lines.append(f"Recorded reason: {_code(reason, 200)}.")
+
+    lines += ["", "**Pull requests**", ""]
+    rows = _published_rows(getattr(run, "role_prs", None), getattr(run, "work_items", None))
+    if rows:
+        lines += ["| role | pull request | state |", "|---|---|---|"]
+        for row in rows:
+            role = _cell(str(row.get("role") or row.get("work_id") or "role"), 40)
+            if row.get("agent") and row.get("agent") != row.get("role"):
+                role += f" ({_code(row['agent'], 40)})"
+            link = str(row.get("pr_url") or "")
+            state = str(row.get("state") or "unknown")
+            if row.get("error"):
+                state += f" ({row['error']})"
+            lines.append(f"| {role} "
+                         f"| {_cell(link, 120) if _LINK_RE.match(link) else 'not opened'} "
+                         f"| {_code(state, 60)} |")
+    else:
+        lines.append("_No pull request was opened._")
+
+    lines += ["", "**Executed checks**", ""]
+    history = [row for row in (getattr(run, "gate_history", None) or [])
+               if isinstance(row, dict)]
+    if history:
+        lines += ["| # | round | result | executable SHA-256 | summary |",
+                  "|---|---|---|---|---|"]
+        for row in history:
+            sha = str(row.get("check_sha256") or "")[:12]
+            sha_cell = f"`{sha}`" if re.fullmatch(r"[0-9a-f]+", sha) else "not recorded"
+            result = "PASS" if row.get("passed") else "FAIL"
+            lines.append(
+                f"| {_cell(str(row.get('sequence') or ''), 6)} "
+                f"| {_code(row.get('stage') or row.get('work_id') or '', 80)} "
+                f"| **{result}** | {sha_cell} "
+                f"| {_code(row.get('summary') or '', 160)} |")
+    else:
+        lines.append("_No check was executed._")
+
+    advice = next_action(
+        status, reason, getattr(run, "pr", None), getattr(run, "pr_url", None),
+        getattr(run, "role_prs", None), work_items=getattr(run, "work_items", None))
+    if advice:
+        lines += ["", "**What to do now**", "", _without_mentions(advice)]
+        if not any(r.get("pr_url") for r in rows):
+            lines += ["", ONCE_MORE_SENTENCE]
+    lines += ["", NO_RETRY_SENTENCE]
     return "\n".join(lines) + "\n"
