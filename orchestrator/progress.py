@@ -573,9 +573,11 @@ SPECS = [
     Spec(PART1, "Claude Code image", check_image, CMD_BUILD,
          note="First time? Create the repository and sign in to it first (Lab 1, Build the Container Image, steps 1 and 2)."),
     Spec(PART1, "Claude Code Runtime", check_runtime,
-         note="Create it in the AgentCore console: Agents > More > Host agent, named claude_code, "
-              "with your image and Create default role (Lab 1, Create the Runtime and Open a Session, step 1). "
-              "That step's first expand creates the same Runtime from the terminal instead."),
+         note="First run Lab 1's deploy.py --prepare command in the workshop host terminal. "
+              "Then create claude_code in the AgentCore console: Agents > More > Host agent, "
+              "with your image and Use another role, selecting the execution role it printed "
+              "(Lab 1, Create the Runtime and Open a Session, step 1). "
+              "That step's optional expand creates the same Runtime from the terminal instead."),
     Spec(PART1, "The work it finished", check_lid_work, CMD_CONNECT + CMD_START,
          note="Connect, start Claude Code in the shared folder, and paste the task on the page. "
               "Press Enter, then press Ctrl+] right away, while it works; if Ctrl+] does "
@@ -605,9 +607,9 @@ SPECS = [
     Spec(PART3, "The coordinator", check_coordinator, CMD_COORDINATOR,
          note="Add your rule to a SKILL.md first (step 2): the coordinator image carries it."),
     Spec(PART3, "Claude Code's grant", check_team_grants, CMD_GRANTS,
-         note="Let Claude Code's console role trade its source archive through the bucket "
-              "(Lab 3, Deploy the Coordinator, step 4). The stack's codex and kiro roles "
-              "already can."),
+         note="Lab 1's prepared role and the stack's team roles already have archive access. "
+              "For an older console default role, follow the facilitator migration guidance "
+              "before continuing (Lab 3, Deploy the Coordinator, step 4)."),
     Spec(PART3, "An agent woke up", check_review,
          note="Open a pull request in your connected repository on GitHub, then watch its "
               "conversation (Lab 3, Deploy the Coordinator, step 5)."),

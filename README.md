@@ -25,9 +25,11 @@ vendors that check it. This repository is a complete, working example.
 
 ## The three labs
 
-**Lab 1. Run Claude Code on AgentCore Runtime.** Build Claude Code's image, create its
-Runtime in the AgentCore console (**Agents > More > Host agent**, an ECR image,
-**Create default role**, an S3 Files mount, then **Create runtime**), and open a
+**Lab 1. Run Claude Code on AgentCore Runtime.** Build Claude Code's image and prepare
+its execution role with `deploy.py --prepare` on the workshop host. Create the Runtime
+in the AgentCore console (**Agents > More > Host agent**, an ECR image,
+**Use another role** with `agentcore-claude_code-<region>-role`, an S3 Files mount,
+then **Create runtime**), and open a
 terminal inside a new session, a microVM of its own. Give it a task, press **Enter**,
 then press **Ctrl+]** right away to disconnect while it works, and reconnect later to
 the same conversation with the work done. The AgentCore CLI detaches only on the raw

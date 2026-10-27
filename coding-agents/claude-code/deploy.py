@@ -171,6 +171,7 @@ def prepare_for_console() -> None:
     print(f"Execution role ready: {role_arn}")
     print("  It lets the agent pull its image, call Bedrock, mount the shared folder and")
     print("  send telemetry. Read it in IAM > Roles; the console form only selects it.\n")
+    print(f"S3 Files access point ARN: {S3FILES_AP_ARN}\n")
     for line in runtime_deploy.console_sheet(
             name=AGENT_NAME, platform=runtime_deploy.selected_platform(), image=ECR_URI,
             role_name=execution_role_documents()[0], names=names,

@@ -120,3 +120,6 @@ def test_the_sheet_names_every_value_the_check_requires():
                   "cfn-ws-AgentSecurityGroup", "V1", "microVMs",
                   "--adopt", *EXPECTED["environment"], *EXPECTED["environment"].values()):
         assert value in sheet, value
+    assert "Optional local record:" in sheet
+    assert "python3 deploy.py --adopt" in sheet and "this agent's directory" in sheet
+    assert "Finish with:" not in sheet and "deploy-prebuilt.sh" not in sheet

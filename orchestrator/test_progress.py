@@ -226,7 +226,9 @@ def test_a_ready_host_is_told_to_build_then_create_the_runtime(box):
     box.image = True
     step = _next(box)
     assert step.name == "Claude Code Runtime" and not step.commands
-    assert "console" in step.note and "Create default role" in step.note
+    assert "console" in step.note and "Use another role" in step.note
+    assert "deploy.py --prepare" in step.note and "workshop host terminal" in step.note
+    assert "Create default role" not in step.note
     assert "Agents > More > Host agent" in step.note and "Runtime > Create runtime" not in step.note
 
 

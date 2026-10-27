@@ -1129,7 +1129,8 @@ def console_sheet(*, name: str, platform: str, image: str, role_name: str, names
         lines.append(f"      {key:<28}{value}")
     lines += ["", "Then choose Create runtime. Its status changes from Creating to Active "
               "within about a minute.",
-              f"Finish with: ./deploy-prebuilt.sh {name.replace('_', '-')} --adopt"]
+              "Optional local record: run python3 deploy.py --adopt from this agent's directory "
+              "after the Runtime is ready. It checks and records the console-created Runtime."]
     return lines
 
 
