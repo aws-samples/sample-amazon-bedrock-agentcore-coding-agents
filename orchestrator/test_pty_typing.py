@@ -55,14 +55,23 @@ def _type_into_pty(text: str, marker: str, timeout_s: float = 20.0) -> tuple[str
         if not chunk:
             break
         out += chunk
+    code = None
     try:
-        _, status = os.waitpid(pid, os.WNOHANG)
-        code = os.waitstatus_to_exitcode(status) if status else None
-    except ChildProcessError:
-        code = None
-    if code is None:
-        os.kill(pid, 9)
-        os.waitpid(pid, 0)
+        # PTY EOF can precede the child becoming waitable. Use the remaining
+        # deadline to reap it, and distinguish a zero exit status from no child.
+        while True:
+            waited, status = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                code = os.waitstatus_to_exitcode(status)
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+                break
+            time.sleep(min(0.01, remaining))
+    finally:
+        os.close(fd)
     return out.decode(errors="replace"), code
 
 
@@ -92,6 +101,13 @@ def test_the_typed_form_survives_a_real_terminal():
     out, code = _type_into_pty(typeable(_long_command()), "DONE-MARK")
     assert "LEN=9000" in out and "DONE-MARK" in out.replace("echo DONE-MARK", "")
     assert code == 7
+
+
+@LINUX_PTY
+def test_terminal_exit_zero_is_preserved():
+    out, code = _type_into_pty('echo ZERO-MARK; exit 0\n', "ZERO-MARK")
+    assert "ZERO-MARK" in out.replace("echo ZERO-MARK", "")
+    assert code == 0
 
 
 @LINUX_PTY
