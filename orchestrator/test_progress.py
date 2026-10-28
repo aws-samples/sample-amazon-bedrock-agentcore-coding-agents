@@ -52,8 +52,8 @@ class FakeAws:
             raise NotFound()
         name = agentRuntimeId.rsplit("-", 1)[0]
         if name in self.box.console_roles:
-            # Lab 1's claude_code: the role the console's Create default role made. The
-            # console's suffix is random; the Runtime's name keeps each one apart here.
+            # A legacy console default role. Its suffix is random; the Runtime's
+            # name keeps each one apart in this fixture.
             role = f"service-role/{progress.CONSOLE_ROLE}{name}"
         else:
             role = f"agentcore-{name}-us-west-2-role"   # what the stack's deploy.py made
@@ -62,7 +62,7 @@ class FakeAws:
 
     # iam
     def get_role_policy(self, RoleName, PolicyName):
-        """Per role: only a console role holds what the page's commands put on it."""
+        """Per role: a legacy console role can still hold its earlier inline grant."""
         self.box.policy_reads.append((RoleName, PolicyName))
         name = RoleName[len(progress.CONSOLE_ROLE):] if RoleName.startswith(progress.CONSOLE_ROLE) else ""
         held = name in self.box.console_roles and (
@@ -317,7 +317,8 @@ def test_the_walk_follows_the_three_labs_in_order(box):
     box.coordinator()
     box.console_runtime = True
     step = _next(box)
-    assert step.name == "Claude Code's grant" and step.commands == progress.CMD_GRANTS
+    assert step.name == "Claude Code's grant" and step.commands == []
+    assert "facilitator migration" in step.note
     assert "step 4" in step.note
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
     assert check.detail == "no TeamRunExchange grant yet for claude_code", \
@@ -351,20 +352,22 @@ def test_only_lab3_follows_lab2_and_no_fourth_lab_remains():
         "The coordinator", "Claude Code's grant", "An agent woke up", "A team build"]
 
 
-def test_the_grant_is_for_claude_code_alone(box):
-    """One put-role-policy, on the role Lab 1's console made; nothing for codex or kiro."""
-    grant = progress.CMD_GRANTS[-1]
-    assert '"$(role claude_code)"' in grant and "TeamRunExchange" in grant
-    assert "for n in" not in grant and "codex" not in grant and "kiro" not in grant
-    assert "ReadKiroKey" not in " ".join(progress.CMD_GRANTS)
-    assert 'team_exchange_policy.py --role claude-code --bucket "$INFRA_BUCKET"' in grant
-    assert progress.CMD_TEAM_CODEX[1:] == ["./deploy-prebuilt.sh codex"]
-    assert progress.CMD_TEAM_KIRO[1:] == ["./deploy-prebuilt.sh kiro"]
+def test_a_legacy_console_role_needs_migration_without_attendee_iam_commands(box):
+    box.console_runtime = True
+    box.team_runtimes = ["codex", "kiro"]
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert check.state == progress.TODO
+    assert check.commands == []
+    assert "prepared role" in check.note and "facilitator migration" in check.note
+    output = progress.render([check])
+    assert "TeamRunExchange" in output, "the missing archive grant must still be reported"
+    assert "facilitator migration" in output
+    assert "put-role-policy" not in output
 
 
 def test_a_kiro_runtime_from_deploy_py_needs_neither_grant(box):
     """The stack's kiro role already reads the bucket and its key: no TeamRunExchange or
-    ReadKiroKey is expected, and Lab 1's claude_code with its grant is enough."""
+    ReadKiroKey is expected, even alongside a legacy Claude Code role with its grant."""
     box.console_runtime, box.grants = True, True
     box.team_runtimes = ["codex", "kiro"]
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
@@ -383,21 +386,24 @@ def test_a_kiro_runtime_made_in_the_console_also_needs_its_key_read(box):
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
     assert check.state == progress.TODO
     assert "no ReadKiroKey grant yet for kiro" in check.detail
-    assert "kiro/token-vault-policy.json" in check.detail and "TeamRunExchange" not in check.detail
-    assert "./deploy-prebuilt.sh kiro" in check.detail
+    assert "Token Vault" in check.detail and "TeamRunExchange" not in check.detail
+    assert not check.commands and "facilitator migration" in check.note
+    assert "put-role-policy" not in progress.render([check])
     box.kiro_read = True
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
     assert check.state == progress.DONE
 
 
-def test_a_team_runtime_made_in_the_console_is_still_named_with_its_fix(box):
+def test_a_legacy_team_console_role_is_named_for_facilitator_migration(box):
     box.console_runtime = True
     box.team_runtimes = ["codex", "kiro"]
     box.console_roles = {"claude_code", "codex"}
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
     assert check.state == progress.TODO
-    assert "claude_code, codex" in check.detail and "--role" in check.detail
+    assert "claude_code, codex" in check.detail
     assert "kiro" not in check.detail
+    assert not check.commands and "facilitator migration" in check.note
+    assert "role()" not in progress.render([check])
 
 
 def test_the_no_key_checker_grant_is_looked_up_by_its_own_runtime_name(box):
@@ -427,7 +433,10 @@ def test_existing_console_grant_cannot_hide_shared_writes_or_wrong_producer(box,
     result = progress.check_team_grants()
     assert result["state"] == progress.TODO
     assert "outdated or wrong-producer" in result["detail"]
-    assert console_name in result["detail"] and "team_exchange_policy.py" in result["detail"]
+    assert console_name in result["detail"]
+    check = next(c for c in progress._run_all(progress.SPECS) if c.name == "Claude Code's grant")
+    assert not check.commands and "facilitator migration" in check.note
+    assert "put-role-policy" not in progress.render([check])
     box.policy_documents[console_name] = progress.team_exchange_policy.document("bucket-1", "codex")
     assert progress.check_team_grants()["state"] == progress.TODO
     box.policy_documents[console_name] = progress.team_exchange_policy.document(

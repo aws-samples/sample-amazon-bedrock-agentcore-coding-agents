@@ -101,17 +101,6 @@ CMD_TEAM_KIRO = CMD_CD + ["./deploy-prebuilt.sh kiro"]
 CMD_TEAM_CHECKER = CMD_CD + ["./deploy-prebuilt.sh claude-code-validator"]
 _TEAM_RUNTIME_CMDS = {"codex": CMD_TEAM_CODEX, "kiro": CMD_TEAM_KIRO,
                       "claude_code_validator": CMD_TEAM_CHECKER}
-# Only claude_code needs it: Lab 1's console role. The roles deploy.py made for codex
-# and kiro already have their own archive grant and, for kiro, the Token Vault.
-CMD_GRANTS = [
-    "cd ~/sample-amazon-bedrock-agentcore-coding-agents/coding-agents && . infra.config",
-    'role() { basename "$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id '
-    '"$(aws bedrock-agentcore-control list-agent-runtimes --query '
-    '"agentRuntimes[?agentRuntimeName==\'$1\'].agentRuntimeId" --output text)" '
-    '--query roleArn --output text)"; }',
-    'aws iam put-role-policy --role-name "$(role claude_code)" '
-    '--policy-name TeamRunExchange --policy-document '
-    '"$(python3 team_exchange_policy.py --role claude-code --bucket "$INFRA_BUCKET")"']
 CONSOLE_ROLE = "AmazonBedrockAgentCoreRuntimeDefaultServiceRole-"
 CMD_KIRO_KEY = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents && python3 orchestrator/kiro_config.py save"]
 CMD_COORDINATOR = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent",
@@ -456,15 +445,12 @@ def check_team_runtimes() -> dict:
 
 
 def check_team_grants() -> dict:
-    """Console roles must have the current producer-specific archive grant.
+    """Report missing or outdated grants on legacy console default roles.
 
-    Only a console default role needs the TeamRunExchange grant, and in the workshop
-    that is claude_code from Lab 1. The stack's codex and kiro (or the no-key checker)
-    run on roles deploy.py made, which already carry their own grants, and Kiro's
-    also reads its key from the Token Vault, so neither is asked for a grant. A team
-    Runtime someone made in the console instead is still checked, by name, for both
-    grants it lacks: TeamRunExchange, and for kiro also ReadKiroKey
-    (kiro/token-vault-policy.json), without which its check cannot read its key.
+    Lab 1's prepared role and the stack's team roles already carry their own archive
+    grants; Kiro's role also reads its key from the Token Vault. Legacy console roles
+    are still checked by Runtime name for TeamRunExchange and, for Kiro, ReadKiroKey.
+    A missing or outdated grant stays TODO and uses the facilitator migration note.
     """
     roles = [r.strip() for r in _coordinator_roles().split(",") if r.strip()]
     checker = NO_KEY_CHECKER if NO_KEY_CHECKER in roles and "kiro" not in roles else "kiro"
@@ -499,24 +485,14 @@ def check_team_grants() -> dict:
         return _outcome(UNKNOWN, f"role grants unreadable ({_error_code(exc)})")
     gaps = []
     if missing:
-        others = [n for n in missing if n != "claude_code"]
-        hint = (f" ({', '.join(others)} also has a console role: set role() to its "
-                "Runtime name and --role to its name with hyphens, "
-                "not the Claude Code policy)") if others else ""
-        gaps.append("no TeamRunExchange grant yet for " + ", ".join(missing) + hint)
+        gaps.append("no TeamRunExchange grant yet for " + ", ".join(missing))
     if stale:
         gaps.append("outdated or wrong-producer TeamRunExchange grant for "
-                    + ", ".join(stale)
-                    + ": replace it using team_exchange_policy.py --role "
-                    "<role-id> --bucket \"$INFRA_BUCKET\"; the Runtime name uses "
-                    "underscores and --role uses hyphens")
+                    + ", ".join(stale))
     if key_missing:
         # Its check reads the key at session start; without this the gate dies later.
-        gaps.append("no ReadKiroKey grant yet for kiro, whose console role cannot read its key "
-                    "from the Token Vault: in the same terminal, run aws iam put-role-policy "
-                    '--role-name "$(role kiro)" --policy-name ReadKiroKey --policy-document '
-                    "file://kiro/token-vault-policy.json, or give kiro its own role with "
-                    "./deploy-prebuilt.sh kiro")
+        gaps.append("no ReadKiroKey grant yet for kiro; its legacy console role cannot read "
+                    "its key from the Token Vault")
     if gaps:
         return _outcome(TODO, "; ".join(gaps))
     return _outcome(DONE, "Claude Code's role may read coordinator inputs and create "
@@ -606,7 +582,7 @@ SPECS = [
               "its image first if this clone has none."),
     Spec(PART3, "The coordinator", check_coordinator, CMD_COORDINATOR,
          note="Add your rule to a SKILL.md first (step 2): the coordinator image carries it."),
-    Spec(PART3, "Claude Code's grant", check_team_grants, CMD_GRANTS,
+    Spec(PART3, "Claude Code's grant", check_team_grants,
          note="Lab 1's prepared role and the stack's team roles already have archive access. "
               "For an older console default role, follow the facilitator migration guidance "
               "before continuing (Lab 3, Deploy the Coordinator, step 4)."),
