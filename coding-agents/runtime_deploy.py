@@ -1092,8 +1092,14 @@ def console_names(session, *, subnets: list, security_groups: list,
 
 
 def console_sheet(*, name: str, platform: str, image: str, role_name: str, names: dict,
-                  mount_path: str, environment: dict) -> list[str]:
-    """Each console field to set, in the order the Create runtime form shows them."""
+                  mount_path: str, environment: dict, mount_ap_arn: str = "") -> list[str]:
+    """Each console field to set, in the order the Create runtime form shows them.
+
+    The labels follow the current form, which is also what Lab 1's Create the Runtime
+    page tells the attendee to do (October 29 dry run: the sheet named the Browse
+    dropdowns while the page said Enter access point ARN). Inbound Auth keeps its
+    defaults, which are what --adopt checks.
+    """
     mount_leaf = mount_path.removeprefix("/mnt/")
     lines = [
         "Create it in the console: Amazon Bedrock AgentCore > Agents > More > Host agent",
@@ -1108,13 +1114,11 @@ def console_sheet(*, name: str, platform: str, image: str, role_name: str, names
         "  Permissions",
         "    IAM permissions               Use another role > Choose an existing role",
         f"                                  {role_name}",
-        "  Inbound Auth (expand it)",
-        "    Protocol                      HTTP",
-        "    Inbound Auth Type             Use IAM permissions",
+        "  Inbound Auth                    leave the defaults: Protocol HTTP, Use IAM permissions",
         "  Filesystem configuration (expand it) > Add filesystem",
         "    Filesystem type               S3 files",
-        f"    Filesystem                    {names.get('file_system') or '(the workshop file system)'}",
-        f"    Access point                  {names.get('access_point', '')}",
+        "    Access point ARN              Enter access point ARN, then paste",
+        f"                                  {mount_ap_arn or names.get('access_point', '')}",
         f"    Mount path                    /mnt/{mount_leaf}   (type {mount_leaf} after /mnt/), then Save",
         "  Advanced configurations (expand it)",
         "    Security                      VPC (Virtual Private Cloud)",
@@ -1129,6 +1133,8 @@ def console_sheet(*, name: str, platform: str, image: str, role_name: str, names
         lines.append(f"      {key:<28}{value}")
     lines += ["", "Then choose Create runtime. Its status changes from Creating to Active "
               "within about a minute.",
+              "The success banner suggests updating the IAM execution role. No change is "
+              "needed: the prepared role already has what Lab 1 needs.",
               "Optional local record: run python3 deploy.py --adopt from this agent's directory "
               "after the Runtime is ready. It checks and records the console-created Runtime."]
     return lines

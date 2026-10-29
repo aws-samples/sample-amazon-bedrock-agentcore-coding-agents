@@ -18,3 +18,12 @@ def test_the_printed_request_is_the_pages():
     printed = re.findall(r'^echo "  (\./ask\.sh .*)"$', script, re.M)
     assert printed, "deploy-coordinator.sh no longer prints the next request"
     assert printed[-1].replace('\\"', '"') == progress.CMD_ASK[-1]
+
+
+def test_the_closing_hint_asks_for_no_grant_step():
+    # Lab 1's prepared role already carries Claude Code's archive grant, and Deploy the
+    # Coordinator step 4 adds none (live dry run, 2026-10-29: the old hint still sent the
+    # attendee to "Claude Code's grant").
+    script = (HERE / "deploy-coordinator.sh").read_text()
+    closing = script[script.index('echo "Coordinator deployed.'):]
+    assert "grant" not in closing.split("./ask.sh")[0]

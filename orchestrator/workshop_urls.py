@@ -72,6 +72,23 @@ def local_answer(port: int, timeout: float = 3) -> tuple[bool, str]:
         return False, f"no answer on port {port} ({reason})"
 
 
+def answer_line(port: int, answered: bool, detail: str) -> str:
+    """The last line the command prints: what ``local_answer`` found, in plain words.
+
+    October 29 dry run: Lab 2 runs this command on the line BEFORE the one that starts
+    the web server, so "not answering" read like a failure. Nothing listening yet is
+    the normal state at that point; say so, and say what starts it. This only words
+    the result; the check itself is ``local_answer``, unchanged.
+    """
+    if answered:
+        return f"answering: {detail}"
+    if detail == f"nothing is listening on port {int(port)}":
+        return (f"not listening yet: nothing is listening on port {int(port)}. That is "
+                "expected before the server starts; the next command starts it, and the "
+                "address above works once it is running.")
+    return f"not answering: {detail}"
+
+
 def play_hint(port: int, base: str | None = None) -> list[str]:
     """Lines telling the attendee exactly which URL to open for a local port."""
     url = proxy_url(port, base)
@@ -91,4 +108,4 @@ if __name__ == "__main__":
     answered, detail = local_answer(args.port)
     for line in play_hint(args.port):
         print(line)
-    print(("answering: " if answered else "not answering: ") + detail)
+    print(answer_line(args.port, answered, detail))

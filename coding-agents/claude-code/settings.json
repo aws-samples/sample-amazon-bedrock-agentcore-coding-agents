@@ -1,6 +1,14 @@
 {
   "model": "global.anthropic.claude-sonnet-5-5",
   "effortLevel": "medium",
+  "env": {
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "global.anthropic.claude-sonnet-5-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "global.anthropic.claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "global.anthropic.claude-sonnet-5-5"
+  },
+  "modelOverrides": {
+    "claude-haiku-4-5-20251001": "us.anthropic.claude-sonnet-5-5"
+  },
   "permissionMode": "dontAsk",
   "permissions": {
     "deny": [

@@ -2360,8 +2360,13 @@ class Engine:
             "budget first. Before handing "
             "the file off, run a PARSE-ONLY syntax check (`bash -n`, "
             "`python -m py_compile`, or `node --check`, as appropriate). If the file "
-            "has its own parser controls, run it once with WORKSHOP_CHECK_SELFTEST=1 "
-            "(controls only, no deliverable) and fix the check until they pass. Do "
+            "defines checking helpers of its own (parsers, DOM or sandbox fixtures, "
+            "stubs, replaced globals, clocks, timers, random sources), give it a "
+            "self-test mode: with WORKSHOP_CHECK_SELFTEST=1 it drives EVERY such "
+            "helper once on a trivial input written inside the check and exits, "
+            "without reading or starting the deliverable. Run it once that way and "
+            "fix the check until it passes: a crash in your own harness during the "
+            "real gate is the check's defect, and no builder can repair it. Do "
             "not run the acceptance behavior; the engine owns that one real execution."
             + feedback)
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
@@ -3594,11 +3599,22 @@ class Engine:
                         else "CHECK_REQUIRES_HUMAN" if not run._active_builders
                         else "ROLE_EXECUTION_ERROR")
                     item.merge_state = "blocked"
-                    self._comment_work_item(run, item, (
-                        f"**Repair did not complete** ({row['error']}). The builder's "
-                        "repair turn for this pull request stopped before it produced a "
-                        "change, so the check was not run again. The evidence above is "
-                        "still the latest; a person decides what happens next."))
+                    if row["error"] == "CHECK_REQUIRES_HUMAN":
+                        # No builder was asked to change anything (the comment above
+                        # says so); do not claim a builder's repair turn stopped.
+                        closing = (
+                            f"**Stopped for a person** ({row['error']}). No builder was "
+                            "asked to repair this pull request, because triage found the "
+                            "failure in the check itself, so the check was not run again. "
+                            "The evidence above is still the latest; a person decides "
+                            "what happens next.")
+                    else:
+                        closing = (
+                            f"**Repair did not complete** ({row['error']}). The builder's "
+                            "repair turn for this pull request stopped before it produced a "
+                            "change, so the check was not run again. The evidence above is "
+                            "still the latest; a person decides what happens next.")
+                    self._comment_work_item(run, item, closing)
                     continue
                 stage = f"{item.work_id} round {item.attempt}"
                 gate = self._gate_one_pull_request(run, item, stage)

@@ -113,9 +113,9 @@ def test_the_sheet_names_every_value_the_check_requires():
              "security_groups": {"sg-1": "sg-1 (cfn-ws-AgentSecurityGroup)"}}
     sheet = "\n".join(runtime_deploy.console_sheet(
         name="claude_code", platform="V1", image=IMAGE, role_name=ROLE, names=names,
-        mount_path="/mnt/s3files", environment=EXPECTED["environment"]))
+        mount_path="/mnt/s3files", environment=EXPECTED["environment"], mount_ap_arn=AP))
     for value in (IMAGE, ROLE, "ECR Container", "HTTP", "Use IAM permissions", "S3 files",
-                  "cfn-ws-workspace", "fsap-1", "/mnt/s3files", "cfn-ws-VPC",
+                  AP, "/mnt/s3files", "cfn-ws-VPC",
                   "cfn-ws-agent-private-1", "cfn-ws-agent-private-2",
                   "cfn-ws-AgentSecurityGroup", "V1", "microVMs",
                   "--adopt", *EXPECTED["environment"], *EXPECTED["environment"].values()):
@@ -123,3 +123,17 @@ def test_the_sheet_names_every_value_the_check_requires():
     assert "Optional local record:" in sheet
     assert "python3 deploy.py --adopt" in sheet and "this agent's directory" in sheet
     assert "Finish with:" not in sheet and "deploy-prebuilt.sh" not in sheet
+
+
+def test_the_sheet_uses_the_same_console_choices_as_the_lab_page():
+    """October 29 dry run: the sheet named the Browse dropdowns (Filesystem, Access
+    point) and an Inbound Auth step, while Lab 1's page said Enter access point ARN and
+    left Inbound Auth out. Both now say the same thing, in the current form's words."""
+    sheet = "\n".join(runtime_deploy.console_sheet(
+        name="claude_code", platform="V1", image=IMAGE, role_name=ROLE,
+        names={"access_point": "fsap-1"}, mount_path="/mnt/s3files",
+        environment=EXPECTED["environment"], mount_ap_arn=AP))
+    assert "Enter access point ARN" in sheet and AP in sheet
+    assert "    Filesystem   " not in sheet and "    Access point   " not in sheet
+    assert "Inbound Auth                    leave the defaults: Protocol HTTP, Use IAM permissions" in sheet
+    assert "the prepared role already has what Lab 1 needs" in sheet

@@ -261,10 +261,12 @@ _TOOL = {"toolSpec": {"name": "submit_review", "description": "d",
 
 
 def test_a_model_that_rejects_forced_tool_choice_is_asked_with_auto(monkeypatch):
+    """An unknown model that rejects ``any`` is retried with ``auto`` and remembered."""
     import boto3
+    monkeypatch.setattr(llm, "_AUTO_TOOL_CHOICE_MODELS", set())
     client = _NoForcedToolChoice()
     monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
-    out = llm.invoke("global.anthropic.claude-sonnet-5-5", "review", tool=_TOOL, effort="low")
+    out = llm.invoke("global.anthropic.claude-sonnet-6", "review", tool=_TOOL, effort="low")
     assert out["tool_input"] == {"approve": True}
     assert [c["toolConfig"]["toolChoice"] for c in client.calls] == [{"any": {}}, {"auto": {}}]
     # The effort setting is kept: only the field the model named was changed.
@@ -304,3 +306,29 @@ def test_an_unrelated_validation_error_is_not_retried_forever(monkeypatch):
     else:
         raise AssertionError("expected LLMUnavailable")
     assert len(client.calls) == 1
+
+
+def test_a_learned_auto_model_starts_with_auto_on_the_next_call(monkeypatch):
+    import boto3
+    monkeypatch.setattr(llm, "_AUTO_TOOL_CHOICE_MODELS", set())
+    first = _NoForcedToolChoice()
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: first)
+    llm.invoke("global.anthropic.claude-sonnet-6", "review", tool=_TOOL)
+    second = _NoForcedToolChoice()
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: second)
+    llm.invoke("global.anthropic.claude-sonnet-6", "review", tool=_TOOL)
+    assert [c["toolConfig"]["toolChoice"] for c in second.calls] == [{"auto": {}}]
+
+
+def test_the_5_5_and_fable_5_1_models_never_send_a_forced_tool_choice(monkeypatch):
+    """Grant event c27c50a7: 3 of 8 Opus 5.5 review calls were the rejected forced choice."""
+    import boto3
+    monkeypatch.setattr(llm, "_AUTO_TOOL_CHOICE_MODELS", set())
+    for model in ("global.anthropic.claude-opus-5-5", "global.anthropic.claude-sonnet-5-5",
+                  "us.anthropic.claude-haiku-5-5", "global.anthropic.claude-fable-5-1"):
+        client = _NoForcedToolChoice()
+        monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+        out = llm.invoke(model, "review", tool=_TOOL, effort="low")
+        assert out["tool_input"] == {"approve": True}
+        assert [c["toolConfig"]["toolChoice"] for c in client.calls] == [{"auto": {}}], model
+    assert llm._starts_with_auto_tool_choice("global.anthropic.claude-sonnet-5") is False

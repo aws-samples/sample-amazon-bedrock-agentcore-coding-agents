@@ -44,6 +44,14 @@ RUN chmod +x /app/run.sh /app/entrypoint.sh
 RUN mkdir -p /home/agent/.claude && \
     echo '{"numStartups":1,"hasCompletedOnboarding":true,"lastOnboardingVersion":"9.9.999","opusProMigrationComplete":true,"sonnet1m45MigrationComplete":true,"migrationVersion":13,"officialMarketplaceAutoInstallAttempted":true,"officialMarketplaceAutoInstalled":true,"projects":{"/home/agent":{"hasTrustDialogAccepted":true,"hasCompletedProjectOnboarding":true,"lastGracefulShutdown":true}}}' > /home/agent/.claude.json && \
     chown -R agent:agent /home/agent/.claude /home/agent/.claude.json
+# settings.json pins Claude Code's three model aliases and maps its built-in Haiku 4.5
+# default (modelOverrides). Claude Code checks each UNPINNED tier at start-up, and a tier
+# only counts as pinned when its alias names a model of that family, so the Haiku tier
+# (unset, or aliased to Sonnet 5.5) was probed on every session: Haiku 4.5 got the Marketplace
+# 403 and Haiku 3.5 a 404 (grant event c27c50a7, October 29, 2.1.304). A tier whose
+# default has an override is not checked. The override value must differ from every
+# configured id: Claude Code maps an override value back to its key, and an equal value
+# made Sonnet 5.5 requests carry Haiku 4.5's thinking type and fail once.
 COPY --chown=agent:agent settings.json /home/agent/.claude/settings.json
 
 ENV CLAUDE_CODE_USE_BEDROCK=1

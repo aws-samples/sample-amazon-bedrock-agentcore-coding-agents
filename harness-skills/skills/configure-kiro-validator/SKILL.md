@@ -132,6 +132,15 @@ in an isolated context, or restore replaced values in a `finally` block before
 other probes. Preserve the runtime APIs used by the application and its dependencies.
 Report a failure caused by the checking environment as such.
 
+Exercise the check's own harness before handoff. Give the executable a
+`WORKSHOP_CHECK_SELFTEST=1` mode that drives every helper it defines (parsers, DOM
+or sandbox fixtures, stubs, replaced globals, clocks, timers, random sources) once
+on a trivial input written inside the check, without reading or starting the
+deliverable, and run it once that way. A crash there is the check's own defect,
+not the work's: for example, an isolated context's built-ins are not properties of
+the object it was created from, and a replaced timing API can break the code under
+test. Fix it before handoff, because in the real gate no builder can repair it.
+
 Observe the precondition before asserting the outcome. When timing or randomness
 matters, use controlled inputs or observed state to reach the required condition.
 A fixed input sequence alone does not prove it occurred. If the precondition remains
@@ -178,7 +187,9 @@ means for this artifact.
 Keeping those apart is the whole point. A validator that ran its own check would
 be grading and reporting in one breath, and the exit code the engine reads is the
 only verdict that counts. Kiro may run a parse-only syntax check (`bash -n`,
-`python -m py_compile`, `node --check`) before handing the file off.
+`python -m py_compile`, `node --check`) and the check's own self-test
+(`WORKSHOP_CHECK_SELFTEST=1`, helpers only, never the deliverable) before handing
+the file off.
 
 To observe the validator's output during development or to test the deployment:
 

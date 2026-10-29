@@ -94,3 +94,32 @@ def test_local_answer_sees_a_real_server_and_a_closed_port():
         closed = probe.getsockname()[1]
     answered, detail = workshop_urls.local_answer(closed)
     assert not answered and f"nothing is listening on port {closed}" == detail
+
+
+def test_a_closed_port_reads_as_not_started_yet_not_as_a_failure(monkeypatch, capsys):
+    """October 29 dry run: Lab 2 prints the address on the line BEFORE the one that
+    starts the server, and "not answering" read like a broken game. The check is the
+    same; only its wording says that nothing listening yet is expected."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    answered, detail = workshop_urls.local_answer(closed)
+    line = workshop_urls.answer_line(closed, answered, detail)
+    assert line.startswith("not listening yet: ")
+    assert f"nothing is listening on port {closed}" in line
+    assert "the next command starts it" in line
+    assert "not answering" not in line
+
+    assert workshop_urls.answer_line(8002, True, "HTTP 200") == "answering: HTTP 200"
+    # Any other failure (a timeout, a reset) is not "not started yet": say what happened.
+    other = workshop_urls.answer_line(8002, False, "no answer on port 8002 (timed out)")
+    assert other == "not answering: no answer on port 8002 (timed out)"
+
+    # The command prints that line last, after the address, from the same check.
+    monkeypatch.setenv("WORKSHOP_PUBLIC_BASE_URL", "https://dexample.cloudfront.net")
+    monkeypatch.setattr(sys, "argv", ["workshop_urls.py", str(closed)])
+    import runpy
+    runpy.run_path(workshop_urls.__file__, run_name="__main__")
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out[0].endswith(f"/proxy/{closed}/")
+    assert out[-1] == line

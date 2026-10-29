@@ -162,6 +162,23 @@ def _invoke_claude(model_id: str, prompt: str, system: str | None,
             "model_id": model_id, "api": "converse"}
 
 
+# Models that answer a forced tool choice (``any`` or ``tool``) with a 400. They are
+# asked with ``auto`` from the first call, so a review costs one request, not a
+# rejected request and a retry (grant event c27c50a7, October 29: 3 of 8 Opus 5.5
+# review calls were that rejection). A model not named here that rejects it is
+# remembered for the rest of the process after its first retry.
+_NO_FORCED_TOOL_CHOICE_RE = re.compile(
+    r"claude-(?:sonnet|opus|haiku)-5-5|claude-(?:fable|mythos)-5-1", re.IGNORECASE)
+_AUTO_TOOL_CHOICE_MODELS: set[str] = set()
+_AUTO_TOOL_CHOICE_LOCK = threading.Lock()
+
+
+def _starts_with_auto_tool_choice(model_id: str) -> bool:
+    with _AUTO_TOOL_CHOICE_LOCK:
+        learned = model_id in _AUTO_TOOL_CHOICE_MODELS
+    return learned or bool(_NO_FORCED_TOOL_CHOICE_RE.search(model_id))
+
+
 def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
                        system: str | None, max_tokens: int,
                        effort: str) -> dict[str, Any]:
@@ -173,6 +190,7 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
     Claude Sonnet 5.5, Opus 5.5 and Fable 5.1 reject a forced tool choice
     (``tool_choice: type "tool" and "any" are not supported``), so a model that
     names ``tool_choice`` is retried once with ``auto``; the prompt asks for the call.
+    Models known to reject it start with ``auto`` (``_starts_with_auto_tool_choice``).
     ``text`` carries the tool input as JSON when one was returned.
     """
     name = tool["toolSpec"]["name"]
@@ -183,7 +201,8 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
             "modelId": model_id,
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
             "inferenceConfig": {"maxTokens": max_tokens},
-            "toolConfig": {"tools": [tool], "toolChoice": {"any": {}}},
+            "toolConfig": {"tools": [tool], "toolChoice": (
+                {"auto": {}} if _starts_with_auto_tool_choice(model_id) else {"any": {}})},
         }
         if system:
             kwargs["system"] = [{"text": system}]
@@ -200,6 +219,8 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
                     raise
                 if "tool_choice" in detail and "any" in kwargs["toolConfig"]["toolChoice"]:
                     kwargs["toolConfig"]["toolChoice"] = {"auto": {}}
+                    with _AUTO_TOOL_CHOICE_LOCK:
+                        _AUTO_TOOL_CHOICE_MODELS.add(model_id)
                 elif "additionalModelRequestFields" in kwargs:
                     kwargs.pop("additionalModelRequestFields")
                 else:

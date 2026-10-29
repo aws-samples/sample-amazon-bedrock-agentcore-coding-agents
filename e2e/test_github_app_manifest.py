@@ -791,3 +791,14 @@ def test_a_personal_or_unknown_owner_keeps_the_personal_registration_page(module
     assert module.organization_for("octocat/workshop") is None
     page = module.start_page(module.build_manifest(BASE, 8765, "n"), "s" * 24)
     assert b"https://github.com/settings/apps/new?state=" in page
+
+
+def test_receiver_says_to_reopen_the_url_after_the_code_server_password(module, monkeypatch, capsys):
+    # code-server's login for /proxy/<port>/ redirects to the workspace, not back to
+    # the receiver (live dry run, 2026-10-29), so the printed guidance must say so.
+    monkeypatch.setattr(module, "CALLBACK_WAIT_S", 0.05)
+    with pytest.raises(SystemExit):
+        module.main(["--repo", REPO, "--port", str(_free_port())])
+    out = capsys.readouterr().out
+    assert "open this URL again" in out
+    assert "continues to GitHub" not in out

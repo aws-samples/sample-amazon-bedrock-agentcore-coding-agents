@@ -133,7 +133,7 @@ echo
 # comment admits the same request; ask.sh keeps one conversation per host, and the
 # coordinator refuses a duplicate of a build that is still running, so printing the
 # command cannot start a second build by accident.
-echo "Coordinator deployed. Once Claude Code's grant is in place (Lab 3, Deploy the Coordinator,"
-echo "step 4), start the team: comment /develop <your idea, in one sentence> on an issue in"
-echo "$GITHUB_REPO (Start the Team from GitHub, step 1), or send the same request from here:"
+echo "Coordinator deployed. Next, start the team: comment /develop <your idea, in one sentence>"
+echo "on an issue in $GITHUB_REPO (Start the Team from GitHub, step 1), or send the same"
+echo "request from here:"
 echo "  ./ask.sh \"Use preset=team-game. Creative direction: <your idea, in one sentence>\""

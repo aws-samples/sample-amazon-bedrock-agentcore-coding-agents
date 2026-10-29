@@ -88,10 +88,28 @@ it must find out by REALLY EXERCISING the work, not by reading it.
   cannot recognize valid input is a checking failure, not a missing application
   feature. Report that distinction and stop; do not change the required result.
   Do not require a particular document format unless the request requires it.
+  Give these controls their own mode: when `WORKSHOP_CHECK_SELFTEST=1` is set, run
+  only the check's own controls (these and the harness controls below) on literal
+  inputs and exit, without starting or reading the deliverable.
+- **Exercise your own harness in that mode too.** Every helper the check defines to
+  observe the work is code you wrote, and it can fail before the work is judged: a
+  DOM or sandbox fixture, a stub or test double, a replaced global, a controlled
+  clock, timer, or random source, a port or process helper. Live checks have crashed
+  in the real gate on exactly this after many passing lines: one installed a double
+  for a built-in of an isolated context through the object the context was created
+  from, where built-ins are not properties, and another replaced a timing API that
+  the code under test still needed. In the self-test mode, drive each helper once on
+  a trivial input written inside the check, such as a few lines of your own script
+  that read the time, draw a random number, and schedule a frame inside the fixture,
+  and assert what comes back. Never load the deliverable's files in this mode. A
+  crash or failed control there is the check's own defect, not the work's.
 - **Syntax-check the executable before handing it off.** You may run a parse-only check
-  such as `bash -n`, `python -m py_compile`, or `node --check`. Do not start the
-  deliverable or execute the acceptance behavior yourself; the orchestrator owns that
-  one real execution and reads its exit code.
+  such as `bash -n`, `python -m py_compile`, or `node --check`, and run the file once
+  with `WORKSHOP_CHECK_SELFTEST=1`. Fix the check until every control and helper
+  passes: a crash in your own harness during the real gate stops the build for a
+  person, and no builder can repair it. Do not start the deliverable or execute the
+  acceptance behavior yourself; the orchestrator owns that one real execution and
+  reads its exit code.
 
 **You decide what "acceptable" means for this task.** Derive the checks from the request
 itself. What that involves depends entirely on what was asked, so let the deliverable tell

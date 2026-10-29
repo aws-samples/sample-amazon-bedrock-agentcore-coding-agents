@@ -638,6 +638,14 @@ def test_suspected_checker_failure_stops_without_rewriting_the_check(monkeypatch
     monkeypatch.setattr(
         "engine.integration_plan.select_repair_agents",
         lambda *args, **kwargs: ([], "the check failed before probing the work"))
+    posted = []
+    real_comment = Engine._comment_work_item
+
+    def record(self, run, item, body):
+        posted.append(body)
+        return real_comment(self, run, item, body)
+
+    monkeypatch.setattr(Engine, "_comment_work_item", record)
     engine = _engine()
     try:
         run = _wait_terminal(engine.submit(
@@ -647,6 +655,11 @@ def test_suspected_checker_failure_stops_without_rewriting_the_check(monkeypatch
         assert run.role_prs[0]["error"] == "CHECK_REQUIRES_HUMAN"
         assert len(run.gate_history) == 1 and not run.gate_history[0]["passed"]
         assert run.work_items["claude-code"].attempt == 1
+        # Live dry run 2026-10-29: the closing comment claimed a builder's repair turn
+        # had stopped, right under the comment saying no builder was asked.
+        closing = [b for b in posted if "CHECK_REQUIRES_HUMAN" in b]
+        assert closing and all("repair turn" not in b for b in closing)
+        assert any(b.startswith("**Stopped for a person**") for b in closing)
     finally:
         engine.shutdown()
 

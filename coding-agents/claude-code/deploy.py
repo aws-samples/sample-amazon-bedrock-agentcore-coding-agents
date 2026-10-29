@@ -175,7 +175,8 @@ def prepare_for_console() -> None:
     for line in runtime_deploy.console_sheet(
             name=AGENT_NAME, platform=runtime_deploy.selected_platform(), image=ECR_URI,
             role_name=execution_role_documents()[0], names=names,
-            mount_path=S3FILES_MOUNT_PATH, environment=_runtime_environment()):
+            mount_path=S3FILES_MOUNT_PATH, environment=_runtime_environment(),
+            mount_ap_arn=S3FILES_AP_ARN):
         print(line)
 
 
