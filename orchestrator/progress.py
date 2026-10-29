@@ -383,14 +383,26 @@ def _coordinator_roles() -> str:
     return found[0] if found else os.environ.get("WORKSHOP_ROLES", "")
 
 
-def _event_key_status() -> str | None:
-    """The event's key import outcome (KiroAccess central), or None outside an event."""
+def _event_key_record() -> dict:
+    """The event's key import record (KiroAccess central or team-key), or {} outside an event."""
     try:
         value = _client("ssm").get_parameter(Name=KIRO_KEY_STATUS_PARAM)["Parameter"]["Value"]
-        status = json.loads(value).get("key_status")
+        record = json.loads(value)
     except Exception:  # noqa: BLE001 (absent, unreadable or not JSON: no event record)
-        return None
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _event_key_status() -> str | None:
+    """The event's key import outcome, or None outside an event."""
+    status = _event_key_record().get("key_status")
     return status if isinstance(status, str) and status else None
+
+
+# Where a READY key came from, by the import record's source.
+_KEY_ORIGINS = {"central-account": " from the event's central account",
+                "team-account": ", minted in this team's own account",
+                "facilitator-shared": ", the facilitator's shared key"}
 
 
 def check_checker() -> dict:
@@ -410,7 +422,9 @@ def check_checker() -> dict:
             return _outcome(TODO, f"the event's Kiro key did not arrive: {event}")
         return _outcome(TODO, "Kiro has no key in the Token Vault yet")
     # Provider metadata only: GetApiKeyCredentialProvider never returns the key.
-    origin = " from the event's central account" if _event_key_status() == "READY" else ""
+    record = _event_key_record()
+    ready = str(record.get("key_status") or "").startswith("READY")
+    origin = _KEY_ORIGINS.get(str(record.get("source") or ""), "") if ready else ""
     return _outcome(DONE, f"Kiro's key is in the Token Vault ({KIRO_PROVIDER}){origin}")
 
 

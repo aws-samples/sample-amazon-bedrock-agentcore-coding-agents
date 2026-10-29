@@ -113,7 +113,7 @@ class FakeAws:
             if self.box.kiro_status is None:
                 raise ParameterNotFound()
             return {"Parameter": {"Value": json.dumps({"key_status": self.box.kiro_status,
-                                                        "source": "central-account"})}}
+                                                        "source": self.box.kiro_source})}}
         if not self.box.endpoint:
             raise ParameterNotFound()
         return {"Parameter": {"Value": "https://abc123.execute-api.us-west-2.amazonaws.com/github"}}
@@ -147,6 +147,7 @@ class Box:
         self.policy_reads: list[tuple[str, str]] = []
         self.policy_documents: dict[str, dict] = {}
         self.kiro_status = None  # the event key import's record, absent outside an event
+        self.kiro_source = "central-account"
         self.runs: list[dict] = []
         self.team_runtimes: list[str] = []
         self.console_roles = {"claude_code"}
@@ -458,6 +459,19 @@ def test_the_event_key_in_the_vault_is_done_and_says_where_it_came_from(box):
     box.kiro_status, box.kiro_key = "READY", True
     check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The checker's key")
     assert check.state == progress.DONE and "central account" in check.detail
+
+
+def test_a_team_minted_or_shared_key_names_its_own_origin(box):
+    # KiroAccess team-key mints in the team's own account; a facilitator's shared key is
+    # the fallback when no key was delivered. Neither came from the central account.
+    for source, words in (("team-account", "this team's own account"),
+                          ("facilitator-shared", "facilitator's shared key")):
+        box.kiro_key, box.kiro_source = True, source
+        box.kiro_status = "READY" if source == "team-account" else (
+            "READY: the facilitator's shared key, because this team's own key was not delivered")
+        check = next(c for c in progress._run_all(progress.SPECS) if c.name == "The checker's key")
+        assert check.state == progress.DONE and words in check.detail
+        assert "central account" not in check.detail
 
 
 def test_a_coordinator_deployed_with_the_no_key_checker_needs_no_kiro_key(box):
