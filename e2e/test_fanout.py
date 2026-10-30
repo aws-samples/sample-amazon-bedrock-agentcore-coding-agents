@@ -338,6 +338,57 @@ def test_a_session_that_failed_before_any_work_gets_one_new_session():
     assert tile.errors, "the first failure is kept for the summary"
 
 
+def test_a_session_whose_clone_failed_gets_one_new_session():
+    calls = []
+
+    def clone_fails_once(tile, *args):
+        calls.append(tile.session)
+        tile.up = "25"
+        if len(calls) == 1:
+            tile.state, tile.error = "failed", "CLONE_FAILED fatal: early EOF"
+            tile.errors.append("session x: CLONE_FAILED fatal: early EOF")
+        else:
+            tile.state = "done"
+
+    tile = fanout.Tile(1, "feature-01")
+    fanout.run_tile_with_one_retry(tile, "arn", "us-east-1", "cmd", threading.Lock(), run=clone_fails_once)
+    assert tile.state == "done" and tile.retried and len(set(calls)) == 2
+
+
+def test_the_clone_failure_line_carries_git_s_reason():
+    source = fanout.Path(fanout.__file__).read_text()
+    assert "CLONE_FAILED $(tail -c 200" in source and "clone.err" in source
+
+
+def test_two_failed_starts_in_a_row_still_get_a_third_session():
+    calls = []
+
+    def fails_twice(tile, *args):
+        calls.append(tile.session)
+        if len(calls) < 3:
+            tile.state, tile.error = "failed", "RuntimeClientError: 500"
+            tile.errors.append("RuntimeClientError: 500")
+        else:
+            tile.state, tile.up = "done", "25"
+
+    tile = fanout.Tile(1, "feature-01")
+    fanout.run_tile_with_one_retry(tile, "arn", "us-east-1", "cmd", threading.Lock(), run=fails_twice)
+    assert tile.state == "done" and len(set(calls)) == 3
+
+
+def test_a_session_that_never_starts_stops_after_its_retries():
+    calls = []
+
+    def always_fails(tile, *args):
+        calls.append(tile.session)
+        tile.state, tile.error = "failed", "RuntimeClientError: 500"
+        tile.errors.append("RuntimeClientError: 500")
+
+    tile = fanout.Tile(1, "feature-01")
+    fanout.run_tile_with_one_retry(tile, "arn", "us-east-1", "cmd", threading.Lock(), run=always_fails)
+    assert tile.state == "failed" and len(calls) == 1 + fanout.NO_WORK_RETRIES
+
+
 def test_a_failure_after_work_began_is_a_result_not_a_retry():
     calls = []
 

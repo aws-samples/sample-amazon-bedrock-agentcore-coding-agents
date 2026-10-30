@@ -245,7 +245,9 @@ def agent_command(index: int, name: str, clone_url: str, task: str, *, agents: i
         # The image's agent user has no Git identity; the commits get one per agent.
         f"export GIT_AUTHOR_NAME={q(who)} GIT_AUTHOR_EMAIL={mail} GIT_COMMITTER_NAME={q(who)} "
         f"GIT_COMMITTER_EMAIL={mail}",
-        f"rm -rf {q(clone_dir)}; git clone -q {q(clone_url)} {q(clone_dir)} || {{ echo CLONE_FAILED; exit 90; }}",
+        # The clone's own error goes on the line, so a failed clone says why.
+        f"rm -rf {q(clone_dir)}; git clone -q {q(clone_url)} {q(clone_dir)} 2>{scratch}/clone.err || "
+        f"{{ echo CLONE_FAILED $(tail -c 200 {scratch}/clone.err | tr '\\n' ' '); exit 90; }}",
         f"cd {q(clone_dir)}",
         # stdin is /dev/null on purpose: a one-shot CLI with no terminal can wait on an
         # open stdin for a prompt it already has (`codex exec` does).
@@ -359,17 +361,25 @@ def run_tile(tile: Tile, arn: str, region: str, command: str, lock: threading.Lo
 
 def run_tile_with_one_retry(tile: Tile, arn: str, region: str, command: str,
                             lock: threading.Lock, run=None) -> None:
-    """A session that failed before its agent reported anything did no work, so it gets
-    one more try in a NEW session (a new microVM). A failure after work began is a
-    result: it stays on the board, never retried."""
+    """A session that failed before its agent started did no work, so it gets up to
+    NO_WORK_RETRIES more tries, each in a NEW session (a new microVM): one that never came
+    up, or one whose clone failed. A failure after the agent started is a result: it stays
+    on the board, never retried. October 29, 60 teams at once: about one session start
+    in 40 returned a 500, and a second 500 in a row left 13 of 1,180 branches missing."""
     run = run or run_tile
     run(tile, arn, region, command, lock)
-    if tile.state == "failed" and not tile.up and tile.errors and not tile.retried:
+    for _ in range(NO_WORK_RETRIES):
+        no_work = not tile.up or tile.error.startswith("CLONE_FAILED")
+        if not (tile.state == "failed" and no_work and tile.errors):
+            return
         with lock:
             tile.retried, tile.session = True, str(uuid.uuid4())
-            tile.state, tile.error, tile.last = "starting", "", ""
+            tile.state, tile.error, tile.last, tile.up = "starting", "", "", ""
             tile.finished = 0.0
         run(tile, arn, region, command, lock)
+
+
+NO_WORK_RETRIES = 2
 
 
 # ---------------------------------------------------------------- back on the host
