@@ -23,6 +23,14 @@ AgentCore Runtime gives every session its own microVM, so the same agent can out
 the laptop, run in parallel, start from an event, and work beside agents from other
 vendors that check it. This repository is a complete, working example.
 
+The workshop host also provides Claude Code in VS Code's right sidebar. Ask it
+to explain a step or diagnose an error with your lab, step, and `progress.py`
+output. It runs on the EC2 host with the existing Bedrock configuration and normal
+permission prompts. Use **F1 > Claude Code: Open in Side Bar** to reopen it.
+The stack installs the official, checksummed VSIX through
+[`install_claude_code_extension.py`](coding-agents/install_claude_code_extension.py);
+`--check` verifies its installed version and settings without changing them.
+
 ## The three labs
 
 **Lab 1. Run Claude Code on AgentCore Runtime.** Build Claude Code's image and prepare
@@ -35,10 +43,10 @@ then press **Ctrl+]** right away to disconnect while it works, and reconnect lat
 the same conversation with the work done. The AgentCore CLI detaches only on the raw
 Ctrl+] byte, so the workshop stack turns off VS Code's kitty keyboard protocol, which
 would send Ctrl+] to Claude Code in a newer format. Closing the terminal also leaves
-the session running, with the first Claude Code still open in it. From a new shell,
-`/app/run.sh --continue` in the same folder opens that conversation: run it once the
-files show the task finished, or add `--fork-session` to continue in a copy, so two
-Claude Code processes never write one conversation at once. Files live on the S3 Files
+the session running, with the first Claude Code still open in it. Reconnect with
+the exact command printed on detach, including its original session and shell IDs.
+If that command is lost, ask a facilitator to recover the original shell; a quiet
+file timestamp does not prove its writer stopped. Files live on the S3 Files
 mount, so they outlive the session. The image's health server (`coding-agents/healthcheck.py`)
 answers `/ping` with `HealthyBusy` while the agent CLI runs, including an open Claude
 Code whose task has ended, which keeps the session alive while you are disconnected;

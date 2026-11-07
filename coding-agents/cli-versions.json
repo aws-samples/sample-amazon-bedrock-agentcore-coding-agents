@@ -44,6 +44,19 @@
     "boto3": "1.43.115",
     "botocore": "1.43.115"
   },
+  "vscode_extensions": {
+    "claude-code": {
+      "id": "anthropic.claude-code",
+      "version": "2.1.304",
+      "archives": {
+        "linux-aarch64": {
+          "url": "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/anthropic/vsextensions/claude-code/2.1.304/vspackage?targetPlatform=linux-arm64",
+          "sha256": "7b469362d6f8537aaf946f748c46e22c3e921a8bb0f13e78c14ae5a7795878ed",
+          "bytes": 135515575
+        }
+      }
+    }
+  },
   "runtime": {
     "platform_version": "V1",
     "base_image": "public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b"
