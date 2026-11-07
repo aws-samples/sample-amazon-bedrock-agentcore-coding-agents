@@ -21,7 +21,7 @@ import zipfile
 MANIFEST = Path(__file__).with_name("cli-versions.json")
 SIDEBAR_COMMAND = "claude-vscode.sidebar.open"
 SETTINGS = {
-    "extensions.autoUpdate": False,
+    "extensions.autoUpdate": "off",
     "extensions.autoCheckUpdates": False,
     "claudeCode.preferredLocation": "sidebar",
     "claudeCode.useTerminal": False,
@@ -91,7 +91,12 @@ def install(*, home=None, check=False, code_server="code-server"):
     settings = read_settings(settings_path)
     if check:
         installed = verify_installation(extension, code_server=code_server)
-        if sidebar_settings(settings) != settings:
+        # VS Code migrates the old boolean to "off" when the first window opens.
+        # Both forms disable updates; checking must not modify the user's file.
+        checked = dict(settings)
+        if checked.get("extensions.autoUpdate") is False:
+            checked["extensions.autoUpdate"] = "off"
+        if sidebar_settings(checked) != checked:
             raise RuntimeError("Claude Code sidebar settings are not configured")
         return {"extension": installed, "sidebar": "right", "permission_mode": "default"}
 

@@ -73,3 +73,21 @@ def test_invalid_settings_are_preserved_without_running_installer(tmp_path, monk
     with pytest.raises(ValueError, match="list of command objects"):
         extension.install(home=tmp_path)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("auto_update", [False, "off", True, "on"])
+def test_check_handles_vscode_update_setting_migration(tmp_path, monkeypatch, auto_update):
+    path = tmp_path / ".local/share/code-server/User/settings.json"
+    path.parent.mkdir(parents=True)
+    settings = extension.sidebar_settings({})
+    settings["extensions.autoUpdate"] = auto_update
+    path.write_text(json.dumps(settings))
+    before = path.read_bytes()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(
+        stdout="Anthropic.claude-code@2.1.304\n"))
+    if auto_update is False or auto_update == "off":
+        assert extension.install(home=tmp_path, check=True)["permission_mode"] == "default"
+    else:
+        with pytest.raises(RuntimeError, match="sidebar settings"):
+            extension.install(home=tmp_path, check=True)
+    assert path.read_bytes() == before
