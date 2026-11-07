@@ -106,7 +106,8 @@ CMD_KIRO_KEY = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents && python3 o
 CMD_COORDINATOR = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent",
                    "WORKSHOP_MERGE_POLICY=auto ./deploy-coordinator.sh"]
 CMD_ASK = ["cd ~/sample-amazon-bedrock-agentcore-coding-agents/orchestrator-agent",
-           './ask.sh "Use preset=team-game. Creative direction: <your idea, in one sentence>"']
+           './ask.sh "Use preset=team-game. Creative direction: Create an original arcade game. '
+           'Choose its theme, mechanic, and visual style, with a short round and a persistent leaderboard."']
 CMD_WATCH = CMD_ROOT + ["python3 orchestrator/watch_run.py --plain"]
 
 _ACCOUNT_RE = re.compile(r"(?<![\w])(\d{4})\d{4}(\d{4})(?![\w])")
@@ -604,8 +605,9 @@ SPECS = [
          note="Open a pull request in your connected repository on GitHub, then watch its "
               "conversation (Lab 3, Deploy the Coordinator, step 5)."),
     Spec(PART3, "A team build", check_team_build, CMD_WATCH,
-         note="Comment /develop <your idea, in one sentence> on an issue in your repository "
-              "(Lab 3, Start the Team from GitHub, step 1), then watch it."),
+         note="Post the /develop example from Lab 3, Start the Team from GitHub, step 1 "
+              "on an issue in your repository. Use its surprise-game request unchanged "
+              "or add your own idea before posting, then watch that run."),
 ]
 
 

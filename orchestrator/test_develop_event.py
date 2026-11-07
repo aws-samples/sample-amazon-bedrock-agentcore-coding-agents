@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -38,6 +39,7 @@ import chat  # noqa: E402
 import engine  # noqa: E402
 import github  # noqa: E402
 import presets  # noqa: E402
+import progress  # noqa: E402
 import replay  # noqa: E402
 import roles  # noqa: E402
 import run_store  # noqa: E402
@@ -164,6 +166,21 @@ def _ask_sh_task(rec, idea=IDEA):
 
 
 # ------------------------------------------------------------- the admitted build
+def test_the_printed_default_request_can_start_a_build_unchanged(recorded):
+    # A matching hint is not enough: the old matching page/deploy/progress examples
+    # all contained a placeholder that the real admission path refused.
+    command, prompt = shlex.split(progress.CMD_ASK[-1])
+    assert command == "./ask.sh"
+    prefix = "Use preset=team-game. Creative direction: "
+    assert prompt.startswith(prefix)
+    idea = prompt.removeprefix(prefix)
+    asked = _ask_sh_task(recorded, idea=idea)
+    out = chat.start_event_build(_event(idea=idea))
+    assert out["status"] == "started", out
+    [run] = recorded.runs
+    assert run.task == asked.task
+
+
 def test_the_event_admits_exactly_the_task_ask_sh_admits(recorded):
     asked = _ask_sh_task(recorded)
     out = chat.start_event_build(_event())
