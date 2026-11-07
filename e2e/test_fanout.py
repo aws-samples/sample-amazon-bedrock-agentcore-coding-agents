@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import random
+import re
 import shlex
 import shutil
 import subprocess
@@ -90,7 +92,7 @@ def test_init_makes_the_game_a_repository_with_a_backlog_and_a_bare_copy(shared)
     assert remote == "origin"
     assert fanout.current_branch(repo) == "main"
     log = fanout.git(repo, "log", "--format=%s", "main").splitlines()
-    assert log == ["Add a backlog: one feature idea per agent", "The game from Lab 1"]
+    assert log == ["Deal twenty different game briefs", "The game from Lab 1"]
     assert fanout.backlog_items((repo / "BACKLOG.md").read_text()) == 20
     assert (bare / "HEAD").is_file() and fanout.git(bare, "rev-parse", "--is-bare-repository") == "true"
     assert fanout.git(bare, "rev-parse", "main") == fanout.git(repo, "rev-parse", "main")
@@ -108,6 +110,18 @@ def test_init_twice_repeats_nothing(shared):
     assert fanout.init(repo, bare, backlog=True, say=said.append) == "origin"
     assert fanout.git(repo, "rev-parse", "HEAD") == before
     assert all("already" in line or "pushed" in line for line in said), said
+
+
+def test_init_preserves_an_attendees_edited_briefs_and_pushes_that_version(shared):
+    repo, bare, _, _ = shared
+    custom = "# My briefs\n\n1. A paper submarine maze.\n"
+    (repo / fanout.BACKLOG).write_text(custom)
+    fanout.git(repo, "commit", "-qam", "Choose my own game")
+    before = fanout.git(repo, "rev-parse", "HEAD")
+    fanout.init(repo, bare, backlog=True, say=lambda _: None)
+    assert (repo / fanout.BACKLOG).read_text() == custom
+    assert fanout.git(repo, "rev-parse", "HEAD") == before
+    assert fanout.git(bare, "show", f"main:{fanout.BACKLOG}") == custom.strip()
 
 
 def test_init_copies_the_lab1_game_home_when_it_is_missing(tmp_path, monkeypatch):
@@ -282,6 +296,18 @@ def test_the_board_shows_branch_session_age_isolation_lines_and_title():
     assert "queued" in row2 and "sees ·/·" in row2
 
 
+def test_long_game_titles_do_not_wrap_and_displace_the_live_board():
+    title = "A very long game title " * 12
+    tile = fanout.Tile(1, "game-01", state="done", title=title)
+    board = fanout.render([tile], time.time(), color=False, base_title=title, columns=120)
+    assert len(board.splitlines()) == 4
+    assert all(len(row) < 120 for row in board.splitlines())
+    assert "worktree-game-01" in board
+    assert tile.title == title, "only display is shortened; the receipt keeps the full title"
+    assert fanout.fit_row("ab月猫cd", 7) == "ab月猫", "wide characters consume two cells"
+    assert fanout.fit_row("cafe\u0301!", 5) == "cafe\u0301", "a combining accent adds no cell"
+
+
 def test_the_arcade_page_has_a_card_per_branch_linking_its_worktree(tmp_path):
     tiles = [fanout.Tile(1, "feature-01", state="done", collected=True,
                          title="Dash: Boss <b>", lines="+9 -1",
@@ -305,8 +331,20 @@ def test_an_index_someone_else_wrote_is_left_alone(tmp_path):
     assert mine.read_text().startswith(fanout.INDEX_MARK)
 
 
-def test_the_backlog_ships_one_item_for_each_of_twenty_agents():
-    assert fanout.backlog_items(fanout.BACKLOG_SOURCE.read_text()) == 20
+def test_twenty_briefs_have_different_mechanics_worlds_and_art_directions():
+    first = fanout.new_backlog(random.Random(7))
+    second = fanout.new_backlog(random.Random(19))
+    assert fanout.backlog_items(first) == fanout.backlog_items(second) == 20
+    pattern = r"^\d+\. Mechanic: (.+?) World: (.+?) Art direction: (.+)$"
+    first_deal = re.findall(pattern, first, re.M)
+    second_deal = re.findall(pattern, second, re.M)
+    assert len(first_deal) == len(second_deal) == 20
+    for dimension in range(3):
+        choices = {brief[dimension] for brief in first_deal}
+        assert len(choices) == 20, "each agent gets a distinct choice in every dimension"
+        assert choices == {brief[dimension] for brief in second_deal}
+    assert set(first_deal) != set(second_deal), "participants get different combinations"
+    assert first == fanout.new_backlog(random.Random(7)), "a recorded deal is reproducible"
     assert "{n}" in fanout.TASK and "BACKLOG.md" in fanout.TASK and "CLAUDE.md" in fanout.TASK
 
 
@@ -427,8 +465,8 @@ def test_the_run_record_is_written_beside_the_worktrees(shared, tmp_path, monkey
     summary = json.loads((out / "fanout-summary.json").read_text())
     assert summary["agents"] == 2 and summary["pushed"] == 2 and summary["finished"] == 2
     assert summary["collected"] == 2
-    assert [b["branch"] for b in summary["branches"]] == ["worktree-feature-01", "worktree-feature-02"]
-    assert summary["branches"][0]["title"] == "Mina's Dumpling Dash: feature-01"
+    assert [b["branch"] for b in summary["branches"]] == ["worktree-game-01", "worktree-game-02"]
+    assert summary["branches"][0]["title"] == "Mina's Dumpling Dash: game-01"
     assert (out / "index.html").read_text().count('class="card done"') == 2
     assert len(fanout.worktrees(repo)) == 3, "the repository itself and one worktree per branch"
 
@@ -523,11 +561,11 @@ def test_run_receipt_distinguishes_pushed_branches_from_ready_worktrees(shared, 
     assert fanout.main(["--repo", str(repo), "--bare", str(bare), "--agents", "2", "--out", str(out)]) == 1
     summary = json.loads((out / "fanout-summary.json").read_text())
     assert summary["pushed"] == 2 and summary["collected"] == summary["finished"] == 1
-    assert summary["errors"]["worktree-feature-02"]
+    assert summary["errors"]["worktree-game-02"]
     receipt = capsys.readouterr().out
     assert "2 branches pushed" in receipt and "1 worktrees prepared" in receipt
     assert "each checked out" not in receipt and "instead of running all agents again" in receipt
-    assert 'href="feature-02/"' not in (out / "index.html").read_text()
+    assert 'href="game-02/"' not in (out / "index.html").read_text()
 
 
 def test_paths_in_your_home_print_as_you_would_type_them():

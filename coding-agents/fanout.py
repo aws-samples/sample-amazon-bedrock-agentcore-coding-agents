@@ -16,7 +16,7 @@ local disk.
 Git data stays on local disk, where Git is fast. The only Git data on the S3 Files mount
 is one bare repository (``/mnt/s3files/lid.git``), and only ``clone``, ``fetch``, and
 ``push`` touch it. Each session clones it to its own /tmp, Claude Code creates its
-worktree there (``.claude/worktrees/feature-07`` on branch ``worktree-feature-07``), and
+worktree there (``.claude/worktrees/game-07`` on branch ``worktree-game-07``), and
 the session commits what the agent left and pushes that one branch. The local worktree
 is exchanged through Git; the sessions still share the mounted storage and IAM role.
 On the host, the script fetches each branch into your
@@ -41,6 +41,7 @@ import argparse
 import html
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -48,6 +49,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,16 +61,25 @@ LAB1 = "lid"                     # Lab 1's folder on the mount
 GAME = Path.home() / "lid-game"  # Lab 1 copies that folder here before it publishes the game
 BACKLOG = "BACKLOG.md"
 BACKLOG_SOURCE = HERE / "game-backlog.md"
-NAME = "feature"
+NAME = "game"
 OUT = Path.home() / "arcade"
 TIMEOUT_S = 900
 COLLECT_TIMEOUT_S = 60
 
 TASK = (
-    "You are agent {n} of {agents}, working in your own git worktree of this game, on your own "
-    "branch. Build item {n} of BACKLOG.md into the game, and follow CLAUDE.md. Keep the game "
-    "playable in index.html, with no new libraries, and leave BACKLOG.md as it is. When you are "
-    "done, print exactly one final line: DONE <the feature, in a few words>."
+    "You are agent {n} of {agents}, working in your own Git worktree and branch. "
+    "Build a NEW standalone game from item {n} of BACKLOG.md, and follow CLAUDE.md. "
+    "Replace the previous index.html: invent different gameplay, artwork, layout and title, "
+    "not a feature or reskin of the old game. Combine your assigned mechanic, world and art "
+    "direction into one coherent idea. Give it a short original title without a personal "
+    "name or possessive. Make one satisfying 30-second round: responsive controls, an "
+    "interesting choice or skill to learn, clear score/progress, escalating challenge, "
+    "and a fresh restart. Use custom shapes, readable high-contrast text, and brief hit, "
+    "trail or combo feedback that suits your art direction. Keep it compact, about 4-6 KB "
+    "of inline HTML/CSS/JS in index.html, with no libraries, downloads or external assets. "
+    "Check first-frame initialization, score/timer updates and restart. Leave CLAUDE.md "
+    "and BACKLOG.md unchanged. When done, print exactly one final line: "
+    "DONE <game title and its main mechanic, in a few words>."
 )
 
 # For the commits this script makes on the host when your Git has no name or email.
@@ -141,6 +152,38 @@ def backlog_items(text: str) -> int:
     return len(re.findall(r"^\s*\d+\.\s+\S", text, re.M))
 
 
+def new_backlog(rng: random.Random | None = None) -> str:
+    """Deal twenty different briefs, then keep that deal in Git.
+
+    Each dimension is sampled without replacement. The models still design the
+    games; the deal avoids twenty independent prompts choosing the same idea.
+    Randomness happens only at first --init, never while agents read their input.
+    """
+    rng = rng or random.SystemRandom()
+    source = BACKLOG_SOURCE.read_text()
+    choices = []
+    for section in ("Mechanics", "Worlds", "Art directions"):
+        match = re.search(rf"^## {section}\n(.*?)(?=^## |\Z)", source, re.M | re.S)
+        items = re.findall(r"^- (.+)$", match[1], re.M) if match else []
+        if len(items) < 20 or len(set(items)) != len(items):
+            raise ValueError(f"{BACKLOG_SOURCE}: {section} needs at least twenty unique choices")
+        choices.append(rng.sample(items, 20))
+    header = (
+        "# Game briefs\n\n"
+        "Agent N builds item N as a new game on its own branch. Every item has a "
+        "different mechanic, world and art direction, shuffled when this file was created.\n\n"
+        "Follow CLAUDE.md. Replace the previous game's implementation and invent your own "
+        "title, scene and layout. Keep the assigned mechanic recognizable. These are creative "
+        "directions, not prescribed code. Leave this file unchanged while building.\n\n"
+        "You can edit any brief before the run; commit and push your edits so every agent "
+        "reads the same version. Running --init again keeps this file.\n\n"
+    )
+    return header + "".join(
+        f"{i}. Mechanic: {mechanic} World: {world} Art direction: {art}\n"
+        for i, (mechanic, world, art) in enumerate(zip(*choices), 1)
+    )
+
+
 # ---------------------------------------------------------------- --init
 def init(repo: Path, bare: Path, *, backlog: bool, say=print) -> str:
     """Make the repository shareable with the agents, step by step, and say each step.
@@ -168,10 +211,10 @@ def init(repo: Path, bare: Path, *, backlog: bool, say=print) -> str:
         if target.exists():
             say(f"  {BACKLOG} is already there ({backlog_items(target.read_text())} items)")
         else:
-            shutil.copyfile(BACKLOG_SOURCE, target)
+            target.write_text(new_backlog())
             git(repo, "add", BACKLOG)
-            git(repo, "commit", "-q", "-m", "Add a backlog: one feature idea per agent", env=env)
-            say(f"  added {BACKLOG}: {backlog_items(target.read_text())} feature ideas, one per agent "
+            git(repo, "commit", "-q", "-m", "Deal twenty different game briefs", env=env)
+            say(f"  added {BACKLOG}: {backlog_items(target.read_text())} different game briefs, one per agent "
                 f"(commit {git(repo, 'rev-parse', '--short', 'HEAD')})")
     if (bare / "HEAD").is_file():
         say(f"  {bare} already exists")
@@ -493,25 +536,39 @@ COLORS = {"queued": "90", "starting": "33", "working": "36", "collecting": "33",
 DOTS = {"queued": "·", "starting": "◌", "working": "●", "collecting": "◌", "done": "✓", "failed": "✗"}
 
 
+def fit_row(text: str, columns: int) -> str:
+    """Keep one board row on one terminal line, including wide game titles."""
+    available = max(1, columns - 1)  # leave the last cell free of automatic wrapping
+    used = 0
+    for i, char in enumerate(text):
+        cells = 0 if unicodedata.combining(char) else (
+            2 if unicodedata.east_asian_width(char) in ("W", "F") else 1)
+        if used + cells > available:
+            return text[:i]
+        used += cells
+    return text
+
+
 def render(tiles: list[Tile], started: float, color: bool = True, base: str = "main",
-           base_title: str = "") -> str:
+           base_title: str = "", columns: int = 170) -> str:
     now = time.time()
     vms = sum(bool(t.up) for t in tiles)
     done = sum(t.state == "done" for t in tiles)
     pushed = sum(bool(t.pushed) for t in tiles)
     head = (f"  {len(tiles)} agents  ·  {vms} microVMs up  ·  {done} finished  ·  "
             f"{pushed} branches pushed  ·  {now - started:5.0f}s")
-    rows = [head]
+    rows = [fit_row(head, columns)]
     if base_title:
-        rows.append(f"  {base} serves: {base_title}")
-    rows.append("  " + "─" * (len(head) - 2))
+        rows.append(fit_row(f"  {base} serves: {base_title}", columns))
+    rows.append(fit_row("  " + "─" * (len(head) - 2), columns))
     width = max(len(t.branch) for t in tiles) if tiles else 0
     for t in tiles:
         seen = f"{t.siblings or '·'}/{t.peers or '·'}"
         tail = t.error if t.state == "failed" else (t.title or t.last)
         line = (f"  {DOTS[t.state]} {t.branch:{width}}  session {t.session[:8]}  "
                 f"up {(t.up + 's') if t.up else '·':>5}  sees {seen:3}  {t.state:8} {t.elapsed(now):5.0f}s  "
-                f"{(t.lines or ''):11} {'(second session) ' if t.retried else ''}{tail}")[:170]
+                f"{(t.lines or ''):11} {'(second session) ' if t.retried else ''}{tail}")
+        line = fit_row(line, columns)
         rows.append(f"\033[{COLORS[t.state]}m{line}\033[0m" if color else line)
     return "\n".join(rows)
 
@@ -628,7 +685,8 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         alive = any(th.is_alive() for th in threads)
         with lock:
-            frame = render(tiles, started, color=tty, base=base, base_title=base_title)
+            frame = render(tiles, started, color=tty, base=base, base_title=base_title,
+                           columns=shutil.get_terminal_size((170, 24)).columns if tty else 170)
         if tty:
             sys.stdout.write(("\033[F" * lines) + "\033[J" + frame + "\n")
             lines = frame.count("\n") + 1

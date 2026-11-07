@@ -62,9 +62,13 @@ repository at once, the way you run parallel agents on a laptop: one branch and 
 Git worktree per agent (`claude -w <name>`). Here each agent is a new session, so each
 worktree is on its own isolated microVM. You check the isolation by hand first: a note
 written in session A cannot be read from session B. `fanout.py --init` makes your Lab 1
-game a Git repository with a backlog of feature ideas and pushes it to a bare repository
-on the S3 Files mount, the only Git data there. Each session clones it to its own disk,
-runs `claude -w feature-NN` on one backlog item, and pushes that one branch. The host
+game a Git repository with twenty random game briefs and pushes it to a bare repository
+on the S3 Files mount, the only Git data there. Mechanics, worlds, and art directions
+are independently shuffled without replacement, so each agent designs a different
+game. The committed `BACKLOG.md` keeps that deal and can be edited before the run;
+`--init` never replaces an existing backlog. Each session clones it to its own disk,
+runs `claude -w game-NN` on one brief, replaces `index.html` with its new game, and
+pushes that one branch. The host
 checks every branch out as a worktree under `~/arcade`, where you play them and merge the
 one you like. One rule committed to `CLAUDE.md` on `main` reaches every agent.
 
@@ -194,7 +198,7 @@ Claude Opus 5.5 and GPT-6.1 Sol), and a GitHub account for Lab 3.
 | Lab | You do | You learn |
 |---|---|---|
 | **Lab 1. Run Claude Code on AgentCore Runtime** | Build Claude Code's image, create its Runtime, give it a task, disconnect, reconnect | A session is a microVM in the cloud, so it keeps running after you disconnect |
-| **Lab 2. Run Many Agents in Parallel** | Run twenty agents on one repository, a branch and worktree each, then merge the one you like | Each new session is a new isolated microVM, so running more agents is a loop over session IDs |
+| **Lab 2. Run Many Agents in Parallel** | Build twenty different games from shuffled briefs, a branch and worktree each, then merge your favorite | Each new session is a new isolated microVM, so running more agents is a loop over session IDs |
 | **Lab 3. Build with a Team of Agents from GitHub** | Deploy the endpoint, connect a repository, deploy the coordinator, open a pull request, then comment `/develop` on an issue | A GitHub event starts the work without the agents holding a GitHub token, a separate agent's check decides, and anything still failing waits for you |
 
 Lost at any point? One read-only command says where you are and what to run next:
