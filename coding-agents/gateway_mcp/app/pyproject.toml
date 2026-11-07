@@ -13,7 +13,7 @@ dependencies = [
     "httpx >= 0.27",
     "pydantic >= 2.7",
     "pyjwt[crypto] >= 2.8",
-    "aws-opentelemetry-distro >= 0.10",
+    "aws-opentelemetry-distro >= 0.22",
     "boto3 >= 1.34",
 ]
 
