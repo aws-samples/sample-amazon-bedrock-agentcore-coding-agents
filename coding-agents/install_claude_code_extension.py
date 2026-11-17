@@ -116,7 +116,7 @@ def install(*, home=None, check=False, code_server="code-server"):
         # Marketplace may return Content-Encoding: gzip even without a request
         # header. --compressed verifies the actual VSIX, not its transport bytes.
         subprocess.run(
-            ["curl", "-fLsS", "--compressed", "--retry", "3",
+            ["curl", "-fLsS", "--compressed", "--retry", "3", "--retry-all-errors",
              "--connect-timeout", "10", "--max-time", "120",
              artifact["url"], "--output", str(archive)],
             check=True, timeout=540)
