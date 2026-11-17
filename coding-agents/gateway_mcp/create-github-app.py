@@ -540,8 +540,8 @@ def build_manifest(base_url: str, port: int, name: str, public: bool = False,
     requests to open and merge them, and metadata because GitHub requires it.
 
     With a ``webhook_url`` (the stack's review endpoint), the App subscribes to pull
-    request events and GitHub signs each delivery with the webhook secret it returns
-    on conversion. Without one the webhook is registered inactive, because
+    request, issue, and issue comment events, and GitHub signs each delivery with the
+    webhook secret it returns on conversion. Without one the webhook is registered inactive, because
     `hook_attributes.url` is required by the manifest schema even so.
 
     The App is private unless --public is chosen. Some GitHub accounts reject a
@@ -559,7 +559,7 @@ def build_manifest(base_url: str, port: int, name: str, public: bool = False,
             "pull_requests": "write",
             "metadata": "read",
         },
-        "default_events": ["pull_request", "issue_comment"] if webhook_url else [],
+        "default_events": ["pull_request", "issues", "issue_comment"] if webhook_url else [],
         "hook_attributes": ({"url": webhook_url, "active": True} if webhook_url
                             else {"url": f"{base_url}/proxy/{port}/webhook", "active": False}),
     }

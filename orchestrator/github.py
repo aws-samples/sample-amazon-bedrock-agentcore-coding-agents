@@ -988,7 +988,7 @@ def comment_on_work_item(item: Any, body_md: str) -> dict[str, Any]:
 
 
 def comment_on_origin(origin: dict | None, body_md: str) -> dict[str, Any]:
-    """Post a run's result on the issue whose `/develop` comment started it.
+    """Post a run's result on the issue that started it.
 
     Reporting only, through the same Gateway ``comment_on_issue`` tool as the PR
     evidence. The issue must be in the configured repository: the coordinator was

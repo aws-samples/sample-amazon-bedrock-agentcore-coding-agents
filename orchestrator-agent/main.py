@@ -27,8 +27,8 @@ the current default branch by a validator-authored executable and an independent
 read-only review covering adversarial and design/integration lenses.
 
 One payload skips the model: ``{"github_event": ...}``, sent by the PR-review
-endpoint when the repository owner (never a bot) comments ``/develop <idea>`` on an issue, starts the
-team build directly (see ``invoke``), and the engine reports its result on that issue.
+endpoint when the repository owner (never a bot) opens an issue, starts the team build
+directly (see ``invoke``), and the engine reports its result on that issue.
 
 Run a non-dispatching local check from the generated CLI project:
     agentcore dev --logs
@@ -110,8 +110,8 @@ async def invoke(payload: dict[str, Any], context: Any = None):
     engine tags the run and the runtime dispatch carries the OBO headers.
 
     A GitHub event: ``{"github_event": {"kind": "develop", ...}}`` comes from the
-    PR-review endpoint when the repository owner (never a bot) comments ``/develop <idea>`` on an
-    issue. It is answered with NO model turn: ``chat.start_event_build`` admits the
+    PR-review endpoint when the repository owner (never a bot) opens an issue; its title
+    and description are the idea. It is answered with NO model turn: ``chat.start_event_build`` admits the
     same task ``./ask.sh`` would and yields one JSON object, ``{"run_id", "status",
     "agents", "preset"}`` or ``{"error", "detail"}``. The build then runs in this
     session's microVM after the caller disconnects, registered as an async task.

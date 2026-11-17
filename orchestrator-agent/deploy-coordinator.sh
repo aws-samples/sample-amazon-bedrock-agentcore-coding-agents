@@ -129,12 +129,13 @@ echo
 python3 "$HERE/promote_runtime.py" --project "$PROJECT_DIR" --receipt || true
 
 echo
-# The request here MUST match the one the page tells the room to submit. A /develop
-# comment admits the same request; ask.sh keeps one conversation per host, and the
+# The request here MUST match the one the page tells the room to submit. A new issue
+# admits the same request; ask.sh keeps one conversation per host, and the
 # coordinator refuses a duplicate of a build that is still running, so printing the
 # command cannot start a second build by accident.
-echo "Coordinator deployed. Next, open an issue in $GITHUB_REPO and post:"
-echo "  /develop Create an original arcade game. Choose its theme, mechanic, and visual style, with a short round and a persistent leaderboard."
-echo "Use this surprise-game request unchanged or add your own idea before posting."
+echo "Coordinator deployed. Next, open a new issue in $GITHUB_REPO with:"
+echo "  Title:       Create an original arcade game"
+echo "  Description: Choose its theme, mechanic, and visual style, with a short round and a persistent leaderboard."
+echo "Use this surprise-game request unchanged or write your own idea before you create it."
 echo "Alternatively, send the same request from here (choose one method):"
 echo "  ./ask.sh \"Use preset=team-game. Creative direction: Create an original arcade game. Choose its theme, mechanic, and visual style, with a short round and a persistent leaderboard.\""

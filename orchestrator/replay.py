@@ -570,7 +570,7 @@ def round_comment(run: Any) -> str:
 
 
 # ------------------------------------------------------- back where it was asked
-# A `/develop <idea>` comment on an issue starts a team build (chat.start_event_build)
+# An issue the repository owner opens starts a team build (chat.start_event_build)
 # and the engine posts ONE result comment back on that issue when the run is terminal.
 # The same rules hold as for the PR body: it reports what the run recorded and judges
 # nothing. Two more matter because the issue thread is where a person asked:
@@ -579,7 +579,7 @@ def round_comment(run: Any) -> str:
 #     run's next_action embeds recorded details too (a pre-flight cause, a Gateway
 #     error), so any mention in it is put in a code span as well;
 #   * it never invites a retry. A red pull request already used its one bounded
-#     repair, and "comment /develop again" would be the unbounded loop one layer up.
+#     repair, and "open another issue" would be the unbounded loop one layer up.
 #     When no pull request was opened, next_action may say to submit the request
 #     again; the comment then names the one way to do that (./ask.sh, once).
 # The same login rule as chat.start_event_build: an underscore for Enterprise Managed
@@ -589,8 +589,8 @@ _LINK_RE = re.compile(r"^https://[^\s()<>\[\]]+$")
 # A user or team mention as GitHub reads one: "@" not preceded by a word character.
 _MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])@[A-Za-z0-9](?:[A-Za-z0-9_/-]*[A-Za-z0-9])?")
 _STATUS_WORDS = {"passed": "passed", "failed": "failed", "needs_human": "needs a person"}
-NO_RETRY_SENTENCE = ("A failed pull request is not retried automatically; do not comment "
-                     "/develop again to retry it.")
+NO_RETRY_SENTENCE = ("A failed pull request is not retried automatically; do not open "
+                     "another issue to retry it.")
 ONCE_MORE_SENTENCE = ("This run opened no pull request. If the advice above says to "
                       "submit the request again, do that once, with `./ask.sh` and the "
                       "same idea (Lab 3, Start the Team from GitHub, step 2).")

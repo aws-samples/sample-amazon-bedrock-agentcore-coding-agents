@@ -521,7 +521,7 @@ def test_per_user_credentials_apply_only_to_the_agent_cli(monkeypatch):
     assert download < worktree < assume < subshell_end < upload
 
 
-# A `/develop` comment's build carries the identity ``github:<login>`` (chat.py), and
+# A new issue's build carries the identity ``github:<login>`` (chat.py), and
 # the deployed coordinator always has PERUSER_ROLE_ARN (configure_deploy). That login
 # labels the run and its telemetry only: no role command may change because of it.
 # The headless prefix runs BEFORE the Kiro key fetch, so an assume-role there would

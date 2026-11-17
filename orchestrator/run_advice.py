@@ -66,7 +66,7 @@ def pr_rows(rec: dict) -> list[dict]:
 
 
 def is_github_build(rec: dict) -> bool:
-    """A build a ``/develop`` comment started: its recorded origin issue, or the
+    """A build a new GitHub issue started: its recorded origin issue, or the
     ``github:<login>`` submitter that path records."""
     options = rec.get("options") if isinstance(rec.get("options"), dict) else {}
     origin = options.get("origin")
@@ -76,12 +76,12 @@ def is_github_build(rec: dict) -> bool:
 
 def is_chat_build(rec: dict) -> bool:
     """Agent Studio Chat records its signed-in submitter; ``./ask.sh`` records none, and
-    a ``/develop`` build records ``github:<login>``, which is not a Chat sign-in."""
+    an issue's build records ``github:<login>``, which is not a Chat sign-in."""
     return bool(str(rec.get("submitted_by") or "").strip()) and not is_github_build(rec)
 
 
 def is_team_build(rec: dict) -> bool:
-    """Lab 3's two-builder request (a `/develop` comment or ``./ask.sh``); its pages
+    """Lab 3's two-builder request (a new issue or ``./ask.sh``); its pages
     check the game out to ``~/team-game``."""
     return str(rec.get("preset") or "") == "team-game"
 

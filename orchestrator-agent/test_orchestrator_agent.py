@@ -169,8 +169,8 @@ def test_main_reexports_the_system_prompt():
     assert "clarif" in main.SYSTEM_PROMPT.lower()  # the chatbot clarifies, not guesses
 
 
-# ------------------------------------------------- a GitHub event (/develop on an issue)
-# The PR-review endpoint relays a trusted `/develop <idea>` comment to a NEW coordinator
+# ------------------------------------------------- a GitHub event (a new issue)
+# The PR-review endpoint relays an issue the repository owner opens to a NEW coordinator
 # session as {"github_event": ...}. The entrypoint answers it with no model turn: the
 # admitted task must be the one `./ask.sh` admits for the same idea, and the build must
 # be registered with the session's async-task tracking before the response closes.
@@ -310,7 +310,7 @@ def test_a_github_event_is_refused_while_a_build_is_running(event_entrypoint, mo
 
 def test_a_github_event_without_the_run_state_mirror_starts_nothing(event_entrypoint,
                                                                      monkeypatch):
-    # Every /develop is a NEW session with an empty engine: without the mirror it
+    # Every new issue is a NEW session with an empty engine: without the mirror it
     # cannot see a build another session started, so it must not start one.
     monkeypatch.delenv("WORKSHOP_RUNTIME_BUCKET")
     engine = _RecordingEngine()

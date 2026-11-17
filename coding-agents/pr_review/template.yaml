@@ -2,14 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   The GitHub endpoint of the workshop's Lab 3: GitHub calls it. A pull request wakes
   an agent in its own AgentCore Runtime session to review the change, and the
-  repository owner's /develop comment on an issue starts the deployed coordinator's
-  team. Deploy it from this folder with aws cloudformation package, then aws
+  repository owner opening an issue starts the deployed coordinator's team. Deploy it from this folder with aws cloudformation package, then aws
   cloudformation deploy.
 Resources:
   # GitHub calls this endpoint for every event of the workshop App: a pull request wakes an
-  # agent in its own Runtime session to review the change, and the repository owner's
-  # /develop comment on an issue starts one session of the deployed coordinator, which
-  # builds with its team. Only the owner can start a team, never a bot (handler.py).
+  # agent in its own Runtime session to review the change, and an issue the repository
+  # owner opens starts one session of the deployed coordinator, which builds with its
+  # team. Only the owner can start a team, never a bot (handler.py).
   PrReviewLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -70,7 +69,7 @@ Resources:
                   - bedrock-agentcore:StopRuntimeSession
                 Resource:
                   - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/claude_code-*
-              # /develop: one invocation of a new coordinator session. The build runs in
+              # A new issue: one invocation of a new coordinator session. The build runs in
               # that session after the invocation returns, so the function may not stop it.
               - Sid: StartTheTeam
                 Effect: Allow
@@ -82,7 +81,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Ref AWS::StackName
-      Description: Wakes a Claude Code session to review a pull request, or the coordinator for /develop
+      Description: Wakes a Claude Code session to review a pull request, or the coordinator for a new issue
       Handler: handler.handler
       Runtime: python3.13
       Architectures:

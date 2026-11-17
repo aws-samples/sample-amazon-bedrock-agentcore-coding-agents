@@ -385,13 +385,13 @@ def active_runs(runs_dir: str, *, require_mirror: bool = False,
                 now: float | None = None) -> list[dict[str, Any]]:
     """Every saved run still queued or running with a fresh heartbeat, newest first.
 
-    The STRICT reader, for a decision that must fail closed: the `/develop` event
+    The STRICT reader, for a decision that must fail closed: the new-issue event
     path refuses to start a build while it can see another one. ``recent`` is a
     history view and skips what it cannot read; read here, a skipped record would be
     "nothing is running", so every doubt raises ``RunStateUnavailable`` instead: an
     S3 list or get failure, an S3 client that cannot be built, an unreadable local
     record, and, with ``require_mirror``, no mirror bucket at all. That last one is
-    the deployed coordinator's case: each `/develop` gets a NEW session, a fresh
+    the deployed coordinator's case: each new issue gets a NEW session, a fresh
     microVM whose local disk holds only its own runs, so without the mirror it
     cannot see a build another session started.
 

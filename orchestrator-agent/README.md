@@ -36,7 +36,7 @@ actually idle session can still expire; terminal results remain in the run store
 ## One build per repository
 
 `Engine.submit` acquires an atomic repository claim before starting a worker.
-GitHub `/develop`, `ask.sh`, and Agent Studio use the same S3 bucket and claim.
+A new GitHub issue, `ask.sh`, and Agent Studio use the same S3 bucket and claim.
 The selected repository stays bound to that worker even if Studio Settings change.
 The claim is released after the worker and its graph threads finish, including
 bounded repairs, finalization, and reporting. A refused request starts no build.

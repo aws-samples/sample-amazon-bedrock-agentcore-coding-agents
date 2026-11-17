@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Connect one GitHub repository so an agent wakes up on every pull request, and the
-# coordinator's team on a /develop comment on an issue.
+# coordinator's team when the repository owner opens an issue.
 #
 #   ./connect-github.sh owner/repository
 #   ./connect-github.sh --resume           # continue the saved App setup after a callback timeout
 #   ./connect-github.sh --restart          # start over only if the App was never created
 #
 # 1. Registers a GitHub App for this workshop (two clicks on GitHub: Create, Install).
-#    It subscribes to pull request and issue comment events and sends them to the
+#    It subscribes to pull request, issue, and issue comment events and sends them to the
 #    endpoint you deployed.
 # 2. Stores the App's credential and deploys the GitHub tools the review uses. The
 #    credential stays with those tools; no agent session ever receives it.

@@ -1,6 +1,6 @@
-"""A `/develop <idea>` comment starts the team build, and the result returns to the issue.
+"""A new issue starts the team build, and the result returns to that issue.
 
-The PR-review endpoint relays a trusted `/develop` comment on an issue to a NEW
+The PR-review endpoint relays an issue the repository owner opens to a NEW
 coordinator session as ``{"github_event": {...}}``. That path has no model turn, so
 these tests hold it to two properties the model path gets from its steering:
 
@@ -318,7 +318,7 @@ def test_a_finished_mirrored_build_does_not_block(recorded, mirror):
     assert chat.start_event_build(_event()).get("run_id")
 
 
-# One build at a time FAILS CLOSED: the deployed coordinator's every /develop is a NEW
+# One build at a time FAILS CLOSED: the deployed coordinator's every new issue is a NEW
 # session with an empty engine, so the mirror is the only evidence of a sibling's build.
 # These go through the real run_store reader against an S3 client that fails the way
 # a real one does, not a stubbed reader.
@@ -624,10 +624,10 @@ def test_the_issue_comment_mentions_nobody_closes_nothing_and_invites_no_retry()
     assert "@" not in _outside_code(body), body
     assert "closes" not in body.lower() and "fixes #" not in body.lower()
     assert body.rstrip().endswith(
-        "A failed pull request is not retried automatically; do not comment "
-        "/develop again to retry it.")
-    # The endpoint starts work only on a comment that BEGINS with a command.
-    assert not body.lstrip().startswith(("/develop", "/fix"))
+        "A failed pull request is not retried automatically; do not open "
+        "another issue to retry it.")
+    # The endpoint starts a fixer only on a comment that BEGINS with /fix.
+    assert not body.lstrip().startswith("/fix")
 
 
 def test_an_issue_comment_for_a_run_with_no_pr_or_check_says_so():
@@ -645,7 +645,7 @@ def test_an_issue_comment_for_a_run_with_no_pr_or_check_says_so():
 ])
 def test_a_run_with_no_pr_names_the_one_way_to_submit_it_again(reason):
     # Their advice says "Resubmit" or "Submit the SAME request again", and the comment
-    # ends "do not comment /develop again". The person on the issue gets ONE defined
+    # ends "do not open another issue". The person on the issue gets ONE defined
     # way to follow the advice: ./ask.sh, once.
     run = _reported_run(fail_reason=reason, role_prs=[], gate_history=[])
     body = replay.origin_comment(run)
@@ -663,7 +663,7 @@ def test_a_run_with_a_pr_gets_no_resubmission_sentence():
 def test_a_publish_failure_beside_a_published_sibling_asks_for_no_resubmission():
     # One builder's pull request was published, the other's was refused: the opened one
     # keeps its evidence, so the advice must not say "submit the request again" while
-    # the comment ends "do not comment /develop again".
+    # the comment ends "do not open another issue".
     run = _reported_run(
         fail_reason="ROLE_PR_PUBLISH_ERROR: 403",
         role_prs=[{"work_id": "work_claude_1", "agent": "claude-code", "role": "backend",
@@ -681,7 +681,7 @@ def test_the_issue_summary_and_the_watcher_give_one_resubmission_rule():
     watcher = " ".join(inspect.getsource(watch_run).split())
     assert "once, with ./ask.sh and the same idea" in watcher.replace('" "', "")
     assert "once, with `./ask.sh` and the same idea" in replay.ONCE_MORE_SENTENCE
-    assert "a new /develop comment" not in watcher.replace('" "', "")
+    assert "open a new issue" not in watcher.replace('" "', "")
 
 
 def test_a_github_build_is_not_an_agent_studio_chat_build():

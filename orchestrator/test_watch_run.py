@@ -645,9 +645,9 @@ def test_an_interrupted_run_keeps_its_resubmit_advice_only_without_a_pr(
     flat = " ".join(out.split("what to do now", 1)[1].split())
     assert "COORDINATOR_SESSION_INTERRUPTED" in flat
     # An ask.sh build that is not the team preset (Go Further's follow-up change) is sent
-    # back to ask.sh --new, never to /develop.
+    # back to ask.sh --new, never to a new issue.
     assert "Send the same request again once, with ./ask.sh --new" in flat
-    assert "/develop" not in flat.split("what to do now")[-1].replace("Do not comment /develop again", "")
+    assert "issue" not in flat.split("what to do now")[-1]
 
     with tempfile.TemporaryDirectory() as tmp:
         _persist_raw(tmp, {"run_id": "run_b", **base,
@@ -660,9 +660,9 @@ def test_an_interrupted_run_keeps_its_resubmit_advice_only_without_a_pr(
     assert "submit the request again" not in " ".join(frame.split()), frame
 
 
-def test_a_develop_build_interrupted_before_its_pr_is_started_again_from_github(
+def test_an_issue_build_interrupted_before_its_pr_is_started_again_from_the_terminal(
         monkeypatch, tmp_path):
-    """A /develop build records `github:<login>` as its submitter, as a Chat build records
+    """An issue's build records `github:<login>` as its submitter, as a Chat build records
     its sign-in, but it is started again from the issue (or ask.sh), not from Agent Studio."""
     monkeypatch.setenv("HOME", str(tmp_path))
     stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
@@ -674,9 +674,9 @@ def test_a_develop_build_interrupted_before_its_pr_is_started_again_from_github(
         out, _rc = _watch_once(tmp, "run_d")
     flat = " ".join(out.split("what to do now", 1)[1].split())
     assert "NO PULL REQUEST OPENED: COORDINATOR_SESSION_INTERRUPTED" in flat
-    # The same rule as the summary on the issue: once, with ./ask.sh, never /develop.
+    # The same rule as the summary on the issue: once, with ./ask.sh, never a new issue.
     assert "Submit it again once, with ./ask.sh and the same idea" in flat
-    assert "Do not comment /develop again" in flat
+    assert "Do not open another issue for it" in flat
 
     # The recorded origin issue alone says the same, whatever the submitter label.
     with tempfile.TemporaryDirectory() as tmp:
@@ -693,7 +693,7 @@ def test_a_develop_build_interrupted_before_its_pr_is_started_again_from_github(
 def test_a_chat_team_build_interrupted_before_its_pr_is_not_sent_to_an_issue(
         monkeypatch, tmp_path):
     """A Chat build with preset=team-game records its sign-in and no origin issue: there
-    is no issue to comment /develop on, so it gets no GitHub resubmit advice."""
+    is no issue behind it, so it gets no GitHub resubmit advice."""
     monkeypatch.setenv("HOME", str(tmp_path))
     stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
         time.time() - run_store.ACTIVE_STALE_AFTER_S - 60))
@@ -704,7 +704,7 @@ def test_a_chat_team_build_interrupted_before_its_pr_is_not_sent_to_an_issue(
         out, _rc = _watch_once(tmp, "run_f")
     flat = " ".join(out.split("what to do now", 1)[1].split())
     assert "NO PULL REQUEST OPENED: COORDINATOR_SESSION_INTERRUPTED" in flat
-    assert "/develop" not in flat and "Submit it again" not in flat
+    assert "another issue" not in flat and "Submit it again" not in flat
 
 
 def test_the_suggested_checkout_never_replaces_an_existing_game(monkeypatch, tmp_path):

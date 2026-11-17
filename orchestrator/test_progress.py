@@ -331,7 +331,7 @@ def test_the_walk_follows_the_three_labs_in_order(box):
     box.reviewed = True
     step = _next(box)
     assert step.name == "A team build" and step.commands == progress.CMD_WATCH
-    assert "/develop" in step.note and "Start the Team from GitHub, step 1" in step.note
+    assert "Open the issue" in step.note and "Start the Team from GitHub, step 1" in step.note
     box.runs = [{"run_id": "run_1", "status": "running", "role_prs": [{"pr_url": "https://x/1"}]}]
     assert _next(box).name == "A team build", "a build still running is not done"
     box.runs[0]["status"] = "needs_human"

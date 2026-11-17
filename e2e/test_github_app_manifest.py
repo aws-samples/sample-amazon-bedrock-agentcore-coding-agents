@@ -143,13 +143,12 @@ def test_manifest_requests_only_workshop_permissions(module):
     assert manifest["redirect_url"] == BASE + "/proxy/8765/callback"
 
 
-def test_with_the_endpoint_the_app_delivers_pull_requests_and_comments(module):
-    """The review endpoint acts on pull_request events, and on issue_comment for /fix on
-    a pull request and /develop on an issue; GitHub sends both kinds of comment as one
-    event, so an App made before /develop existed already delivers it."""
+def test_with_the_endpoint_the_app_delivers_pull_requests_issues_and_comments(module):
+    """The review endpoint acts on pull_request events, on issues for a new issue that
+    starts the team, and on issue_comment for /fix on a pull request."""
     endpoint = "https://abc123.execute-api.us-west-2.amazonaws.com/github"
     manifest = module.build_manifest(BASE, 8765, "Test App", webhook_url=endpoint)
-    assert manifest["default_events"] == ["pull_request", "issue_comment"]
+    assert manifest["default_events"] == ["pull_request", "issues", "issue_comment"]
     assert manifest["hook_attributes"] == {"url": endpoint, "active": True}
     assert manifest["default_permissions"]["issues"] == "write"
 

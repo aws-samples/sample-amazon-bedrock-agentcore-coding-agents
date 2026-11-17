@@ -1192,7 +1192,7 @@ class Engine:
                 except Exception:
                     pass
             # Only now, with the verdict durable, tell the issue that asked for this
-            # run (a `/develop` comment) how it ended. Reporting, never the verdict
+            # run (a new issue) how it ended. Reporting, never the verdict
             # path: it reads the settled run and cannot raise.
             self._report_origin(run)
             # Finalization and all its bounded repairs are finished. A terminal

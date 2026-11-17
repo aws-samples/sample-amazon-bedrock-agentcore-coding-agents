@@ -9,15 +9,14 @@ which is never retried, then acknowledges the delivery. Three events start work:
 * A trusted person comments ``/fix`` on a pull request: a **fixer** session, which opens
   a follow-up pull request against that branch. That pull request is an event too, so a
   different reviewer session reviews the fix: the maker is never the checker.
-* The repository owner comments ``/develop <idea>`` on an issue: the **coordinator's
-  team**. The copy starts one NEW session of the deployed coordinator Runtime
-  (``CodingAgents_orchestrator``) with the idea. The coordinator answers with a run ID at
-  once and builds in that session's microVM after this function returns, so the copy
+* The repository owner opens an issue: the **coordinator's team**. The issue's title and
+  description are the idea. The copy starts one NEW session of the deployed coordinator
+  Runtime (``CodingAgents_orchestrator``) with it. The coordinator answers with a run ID
+  at once and builds in that session's microVM after this function returns, so the copy
   never stops that session. Each builder's pull request is judged by its own executed
   check and review, so this endpoint does not review it a second time. Only the
   repository owner can start a team, never a bot: the taught coordinator merges green
-  work on its own, so a member's or collaborator's ``/develop`` is answered and starts
-  nothing.
+  work on its own, so a member's or collaborator's issue is answered and starts nothing.
 
 For a review or a fix the copy:
 
@@ -34,7 +33,7 @@ For a review or a fix the copy:
 
 The GitHub credential never enters the Runtime: the Gateway's GitHub tools hold the App
 key, this function reads only the webhook secret, and the session receives files, not a
-token. A ``/develop`` session receives the idea and where it was asked; the coordinator
+token. A team session receives the idea and the issue it came from; the coordinator
 reaches GitHub through the same Gateway.
 """
 from __future__ import annotations
@@ -85,61 +84,58 @@ COORDINATOR_NAME = "CodingAgents_orchestrator"
 # refusal before any agent works. This bounds that answer, not the build.
 START_READ_TIMEOUT_S = 300
 MAX_IDEA_CHARS = 1000
-DEVELOP = re.compile(r"^/develop(?=[\s:]|$):?", re.I)
-# Quotes people put around the idea, including the curly ones a phone keyboard types.
-QUOTES = {'"': '"', "'": "'", "`": "`", "\u201c": "\u201d", "\u2018": "\u2019"}
 WATCH = "`python3 orchestrator/watch_run.py --plain`"
-# Only a NEW comment is read: an edited one arrives as `edited` and starts nothing.
-NEW_COMMENT = "Post a new comment; an edited comment is not read."
-USAGE = ("Post a new comment with `/develop` followed by your idea in one sentence, for "
-         "example `/develop a lighthouse keeper guides ships through a storm`. An edited "
-         "comment is not read.")
-NOT_OWNER = ("Only the repository owner can start a team, never a bot, so this comment "
-             "started nothing. Ask the owner to post the `/develop` comment. On a repository "
-             "an organization owns, GitHub reports everyone as a member, so start the team "
+# Only a NEW issue is read: an edited one arrives as `edited` and starts nothing.
+NEW_ISSUE = "Open a new issue; editing this one starts nothing."
+USAGE = ("Open a new issue whose title and description describe your idea, for example "
+         "the title `Build a lighthouse game` and the description `A keeper guides ships "
+         f"through a storm.` {NEW_ISSUE}")
+NOT_OWNER = ("Only the repository owner can start a team, never a bot, so this issue "
+             "started nothing. Ask the owner to open the issue. On a repository an "
+             "organization owns, GitHub reports everyone as a member, so start the team "
              "from the terminal with `./ask.sh` instead.")
 IDEA_REPLIES = {
-    "IDEA_MISSING": f"There is no idea after `/develop`, so no team was started. {USAGE}",
+    "IDEA_MISSING": f"This issue has no idea to build, so no team was started. {USAGE}",
     "IDEA_PLACEHOLDER": ("That is the placeholder from the workshop page, so no team was "
                          "started. Write your own idea where the angle brackets and their "
                          f"text are. {USAGE}"),
-    "IDEA_TOO_LONG": (f"The idea is longer than {MAX_IDEA_CHARS} characters, so no team was "
-                      f"started. Keep it to one sentence; the builders choose the rest. "
-                      f"{NEW_COMMENT}"),
+    "IDEA_TOO_LONG": (f"The issue's title and description are longer than {MAX_IDEA_CHARS} "
+                      "characters together, so no team was started. Keep the idea to a "
+                      f"sentence or two; the builders choose the rest. {NEW_ISSUE}"),
 }
 # Where the full error goes: GitHub gets a code and a fixed hint, never an AWS message
 # (those carry ARNs and the account ID). Lab 3, Connect GitHub, step 2 tails this log.
-SEE_LOG = "Nothing was retried; the endpoint's log line `DEVELOP_REFUSED` has the details."
+SEE_LOG = "Nothing was retried; the endpoint's log line `TEAM_REFUSED` has the details."
 # What a person can do about each answer that definitely started nothing: a refusal the
 # coordinator answered with, or AgentCore turning the invocation away before it reached
 # the coordinator. Any other code gets SEE_LOG.
 COORDINATOR_HINTS = {
     **IDEA_REPLIES,
-    "BUILD_ALREADY_RUNNING": ("A `/develop` comment starts nothing while another build is "
-                              f"running. Watch it with {WATCH}. When it ends, read its "
-                              "summary on its issue; post a new `/develop` comment only for "
-                              "a different idea, never to retry a failed pull request."),
+    "BUILD_ALREADY_RUNNING": ("A new issue starts nothing while another build is running. "
+                              f"Watch it with {WATCH}. When it ends, read its summary on its "
+                              "issue; open a new issue only for a different idea, never to "
+                              "retry a failed pull request."),
     "RUN_STATE_UNAVAILABLE": ("The coordinator could not read its saved runs to check that no "
                               "other build is running, so it started nothing. Check with "
                               f"{WATCH}; the coordinator's log has the cause."),
     "REPOSITORY_MISMATCH": ("The coordinator builds only the repository it was deployed "
-                            "with. Comment on an issue in that repository."),
+                            "with. Open the issue in that repository."),
     "AccessDeniedException": ("The endpoint is not allowed to start the coordinator yet: "
                               "redeploy the endpoint stack (Lab 3, Deploy the Endpoint, step "
-                              "1), then post a new `/develop` comment."),
+                              "1), then open a new issue."),
     "ResourceNotFoundException": ("AgentCore found no coordinator to start. If "
                                   "`./deploy-coordinator.sh` is still running, wait for it to "
-                                  "finish (Lab 3, Deploy the Coordinator, step 3), then post a "
-                                  "new `/develop` comment."),
+                                  "finish (Lab 3, Deploy the Coordinator, step 3), then open a "
+                                  "new issue."),
     **dict.fromkeys(("ThrottlingException", "ServiceQuotaExceededException",
                      "RetryableConflictException"),
-                    "AgentCore turned the request away for now. Wait a minute, then post a "
-                    "new `/develop` comment."),
+                    "AgentCore turned the request away for now. Wait a minute, then open a "
+                    "new issue."),
 }
 # The answer was lost after the request may have reached the coordinator, which submits
-# the build before it answers. Commenting again could start a second build.
-MAYBE_STARTED = (f"A build may still have started: check with {WATCH} before you comment "
-                 f"`/develop` again. {SEE_LOG}")
+# the build before it answers. Another issue could start a second build.
+MAYBE_STARTED = (f"A build may still have started: check with {WATCH} before you open "
+                 f"another issue. {SEE_LOG}")
 # Failures that happen before a request leaves this function: nothing reached AgentCore.
 NOT_SENT = {"ConnectTimeoutError", "EndpointConnectionError", "ProxyConnectionError",
             "NoCredentialsError", "PartialCredentialsError", "NoRegionError",
@@ -217,10 +213,13 @@ def webhook_secret() -> str:
 
 
 def event_time(kind: str, payload: dict) -> float | None:
-    """When GitHub says the thing happened: the pull request's update, or the comment."""
+    """When GitHub says the thing happened: the pull request's update, the issue's
+    creation, or the comment."""
     from datetime import datetime
-    item = payload.get("pull_request") if kind == "pull_request" else payload.get("comment")
-    stamp = (item or {}).get("updated_at" if kind == "pull_request" else "created_at") or ""
+    item, field = {"pull_request": (payload.get("pull_request"), "updated_at"),
+                   "issues": (payload.get("issue"), "created_at")}.get(
+                       kind, (payload.get("comment"), "created_at"))
+    stamp = (item or {}).get(field) or ""
     try:
         return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
     except ValueError:
@@ -294,40 +293,41 @@ def job_from_event(kind: str, payload: dict) -> dict | None:
             return None
         return {"mode": "review", **where, "number": pr["number"], "title": pr.get("title", ""),
                 "author": (pr.get("user") or {}).get("login", ""), "sha": pr["head"]["sha"]}
+    if kind == "issues":
+        # Only a NEW issue starts a team: an edit, a reopen, or a label starts nothing,
+        # so a person changes the idea by opening another issue once this build ends.
+        issue = payload.get("issue") or {}
+        if payload.get("action") != "opened" or "pull_request" in issue:
+            return None
+        user = issue.get("user") or {}
+        association = issue.get("author_association")
+        # The team never opens issues, and a bot (the App included) or a stranger is not
+        # even answered. A member or collaborator is told on GitHub that only the owner
+        # can start a team; that job starts nothing.
+        if user.get("type") == "Bot" or association not in TRUSTED:
+            return None
+        return {"mode": "team", **where, "number": issue["number"],
+                "title": issue.get("title") or "", "author": user.get("login", ""),
+                "idea": idea_from(issue.get("title"), issue.get("body")),
+                "by_owner": association in TEAM_STARTERS}
     if kind == "issue_comment":
         issue, comment = payload.get("issue") or {}, payload.get("comment") or {}
         body = (comment.get("body") or "").strip()
         user = comment.get("user") or {}
-        association = comment.get("author_association")
-        trusted = user.get("type") != "Bot" and association in TRUSTED
-        if payload.get("action") == "created" and DEVELOP.match(body):
-            # The team's own comments (the App is a Bot) can never start another team, and
-            # neither a bot nor a stranger is answered. A member or collaborator is told on
-            # GitHub that only the owner can start a team; a /develop on a pull request is
-            # answered there. Neither job starts a team.
-            if not trusted:
-                return None
-            return {"mode": "develop", **where, "number": issue["number"],
-                    "title": issue.get("title", ""), "author": user.get("login", ""),
-                    "idea": idea_from(body), "comment_url": comment.get("html_url", ""),
-                    "on_pull_request": "pull_request" in issue,
-                    "by_owner": association in TEAM_STARTERS}
         if (payload.get("action") != "created" or "pull_request" not in issue
                 or not body.lower().startswith("/fix")):
             return None
-        if not trusted:
+        if user.get("type") == "Bot" or comment.get("author_association") not in TRUSTED:
             return None
         return {"mode": "fix", **where, "number": issue["number"], "title": issue.get("title", ""),
                 "author": user.get("login", ""), "request": body[4:].strip()}
     return None
 
 
-def idea_from(body: str) -> str:
-    """What follows ``/develop``: stripped, without one pair of quotes around all of it."""
-    idea = DEVELOP.sub("", body, count=1).strip()
-    if len(idea) >= 2 and QUOTES.get(idea[0]) == idea[-1] and idea[0] not in idea[1:-1]:
-        idea = idea[1:-1].strip()
-    return idea
+def idea_from(title: str | None, body: str | None) -> str:
+    """The issue as one idea: its title, then its description when it has one."""
+    title, body = (title or "").strip(), (body or "").strip()
+    return f"{title}\n\n{body}" if title and body else title or body
 
 
 def idea_problem(idea: str) -> str | None:
@@ -344,8 +344,8 @@ def idea_problem(idea: str) -> str | None:
 def handler(event, context):
     if "job" in event or "review" in event:
         job = event.get("job") or {"mode": "review", **event["review"]}
-        if job.get("mode") == "develop":
-            return develop(job)
+        if job.get("mode") == "team":
+            return team(job)
         return fix(job) if job.get("mode") == "fix" else review(job)
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     body = event.get("body") or ""
@@ -386,11 +386,10 @@ def handler(event, context):
     except Exception:
         forget(digest)
         raise
-    if job["mode"] == "develop":
+    if job["mode"] == "team":
         if not job["by_owner"]:
-            return response(202, "Answering the comment: only the repository owner can start a team.")
-        return response(202, "Answering on the pull request: /develop starts a team from an issue."
-                        if job["on_pull_request"] else "An agent team is waking up for this issue.")
+            return response(202, "Answering the issue: only the repository owner can start a team.")
+        return response(202, "An agent team is waking up for this issue.")
     verb = "fix" if job["mode"] == "fix" else "review"
     return response(202, f"An agent is waking up to {verb} this pull request.")
 
@@ -823,8 +822,8 @@ def fix(job: dict) -> dict:
     return result
 
 
-def develop(job: dict) -> dict:
-    """Start the coordinator's team for a /develop comment, and say so on the issue."""
+def team(job: dict) -> dict:
+    """Start the coordinator's team for a new issue, and say so on the issue."""
     started = time.time()
     url = gateway_url()
     where = {"owner": job["owner"], "repo": job["repo"], "issue_number": job["number"]}
@@ -832,14 +831,11 @@ def develop(job: dict) -> dict:
 
     def refuse(reason: str, body: str, **extra) -> dict:
         tool(url, "comment_on_issue", {**where, "body": body})
-        log("DEVELOP_REFUSED", **result, reason=reason, **extra)
+        log("TEAM_REFUSED", **result, reason=reason, **extra)
         return {**result, "started": False, "reason": reason, **extra}
 
     if not job.get("by_owner"):
         return refuse("NOT_OWNER", NOT_OWNER, author=job.get("author", ""))
-    if job.get("on_pull_request"):
-        return refuse("ON_PULL_REQUEST", "Comment /develop on an issue, not a pull request. "
-                      "Nothing was started.")
     idea = job.get("idea") or ""
     problem = idea_problem(idea)
     if problem:
@@ -849,18 +845,17 @@ def develop(job: dict) -> dict:
     except RuntimeMissing:
         return refuse("COORDINATOR_MISSING", (
             "No coordinator yet: run `./deploy-coordinator.sh` (Lab 3, Deploy the Coordinator, "
-            "step 3), then post a new `/develop` comment with your idea. Nothing was started."))
-    session = f"gh-develop-{job['number']}-{uuid.uuid4()}"
+            "step 3), then open a new issue with your idea. Nothing was started."))
+    session = f"gh-issue-{job['number']}-{uuid.uuid4()}"
     author = job.get("author", "")
     tool(url, "comment_on_issue", {**where, "body": (
-        f"**An agent team woke up.** `{author}` asked for a build on this issue, so the "
-        "coordinator on Amazon Bedrock AgentCore Runtime is starting one in a new session of "
-        f"its own (`{session[-12:]}`). No one ran a command: the comment did. Its run ID "
-        "follows in a moment.")})
-    log("SESSION", mode="develop", number=job["number"], session=session)
+        f"**An agent team woke up.** `{author}` opened this issue, so the coordinator on "
+        "Amazon Bedrock AgentCore Runtime is starting a build in a new session of its own "
+        f"(`{session[-12:]}`). No one ran a command: the issue did. Its run ID follows in "
+        "a moment.")})
+    log("SESSION", mode="team", number=job["number"], session=session)
     event = {"kind": "develop", "owner": job["owner"], "repo": job["repo"],
-             "issue_number": job["number"], "author": author, "idea": idea,
-             "comment_url": job.get("comment_url", "")}
+             "issue_number": job["number"], "author": author, "idea": idea}
     try:
         reply = start_team(arn, session, event)
     except Exception as exc:  # noqa: BLE001 (any failed invocation is reported, not retried)
@@ -876,7 +871,7 @@ def develop(job: dict) -> dict:
             "request in this repository; a different agent's executed check and an independent "
             "review decide each one, and the coordinator posts a summary on this issue when the "
             f"build ends. Watch it with {WATCH} in `~/sample-amazon-bedrock-agentcore-coding-agents`.")})
-        log("DEVELOP_STARTED", **result, run_id=run_id, session=session, seconds=seconds,
+        log("TEAM_STARTED", **result, run_id=run_id, session=session, seconds=seconds,
             agents=reply.get("agents") or [], preset=reply.get("preset", ""))
         return {**result, "started": True, "run_id": run_id, "session": session, "seconds": seconds}
     error = str(reply.get("error") or "NO_REPLY")

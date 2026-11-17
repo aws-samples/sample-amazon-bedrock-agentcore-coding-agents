@@ -1,4 +1,4 @@
-"""The GitHub endpoint: signature, event filter, hand-off, command size, output, and /develop.
+"""The GitHub endpoint: signature, event filter, hand-off, command size, output, and new issues.
 
 Runs offline with stubbed AWS clients. The function itself is
 ``coding-agents/pr_review/handler.py``; the endpoint's template.yaml packages that exact
@@ -254,7 +254,7 @@ def test_untrusted_bot_and_ordinary_comments_start_nothing(lam):
 
 def test_a_members_or_collaborators_fix_still_starts_a_fixer(lam):
     """/fix keeps its trust rule: its pull request is merged by a person, so a member or
-    collaborator may ask for one. Only /develop is narrowed to the owner."""
+    collaborator may ask for one. Only starting a team is narrowed to the owner."""
     for association in ("MEMBER", "COLLABORATOR"):
         lam.calls.clear()
         assert call(fix_comment(f"/fix as {association}", association=association),
@@ -355,20 +355,22 @@ def test_rules_come_from_the_default_branch_so_a_stacked_fix_is_judged_by_them(m
     assert (("get_file", hook.RULES_FILE, "main")) in asked
 
 
-# ---------------- /develop: a comment on an issue starts the coordinator's team ----------------
+# ---------------- A new issue starts the coordinator's team ----------------
 
 COORDINATOR_ARN = ("arn:aws:bedrock-agentcore:us-west-2:111122223333:"
                    "runtime/CodingAgents_orchestrator-Zz9AbCdEf1")
-IDEA = "a lighthouse keeper guides ships through a storm"
+TITLE = "Build a lighthouse game"
+BODY = "A keeper guides ships through a storm."
+IDEA = f"{TITLE}\n\n{BODY}"
 STARTED = {"run_id": "run_153232_c415c8e32151", "status": "queued",
            "agents": ["claude-code", "codex"], "preset": "team-game"}
 
 
-def develop_comment(body=f"/develop {IDEA}", association="OWNER", user_type="User", on_pr=False):
-    event = fix_comment(body, association, user_type, on_pr)
-    event["issue"]["title"] = "Team game"
-    event["comment"]["html_url"] = "https://github.com/octo/game/issues/7#issuecomment-1"
-    return event
+def issue_opened(title=TITLE, body=BODY, association="OWNER", user_type="User", action="opened"):
+    return {"action": action, "repository": {"name": "game", "owner": {"login": "octo"}},
+            "issue": {"number": 7, "title": title, "body": body, "author_association": association,
+                      "created_at": _now(), "html_url": "https://github.com/octo/game/issues/7",
+                      "user": {"login": "dev", "type": user_type}}}
 
 
 def sse(*objects, encode_twice=True) -> bytes:
@@ -442,24 +444,23 @@ def team(lam, monkeypatch):
 
 
 def _job(**overrides):
-    job = hook.job_from_event("issue_comment", develop_comment())
+    job = hook.job_from_event("issues", issue_opened())
     job.update(overrides)
     return job
 
 
-def test_an_owners_develop_comment_on_an_issue_hands_off_a_team_job(lam):
-    r = call(develop_comment(f'/develop "{IDEA}"'), "issue_comment")
+def test_an_owner_opening_an_issue_hands_off_a_team_job(lam):
+    r = call(issue_opened(), "issues")
     assert r["statusCode"] == 202 and "agent team is waking up" in r["body"]
     job = json.loads(lam.calls[0]["Payload"])["job"]
     assert (job["mode"], job["owner"], job["repo"], job["number"], job["author"]) == (
-        "develop", "octo", "game", 7, "dev")
-    assert job["idea"] == IDEA and job["on_pull_request"] is False
-    assert job["comment_url"] == "https://github.com/octo/game/issues/7#issuecomment-1"
+        "team", "octo", "game", 7, "dev")
+    assert job["idea"] == IDEA and job["title"] == TITLE
     assert job["by_owner"] is True
 
 
-def test_the_owners_develop_comment_reaches_the_coordinator(lam, team):
-    call(develop_comment(association="OWNER"), "issue_comment")
+def test_the_owners_issue_reaches_the_coordinator(lam, team):
+    call(issue_opened(association="OWNER"), "issues")
     (handed,) = lam.calls
     result = hook.handler(json.loads(handed["Payload"]), Ctx())
     assert result["started"] is True and len(team.invocations) == 1
@@ -470,11 +471,11 @@ def test_only_the_repository_owner_can_start_a_team(lam, team, capsys, associati
     """The taught coordinator merges green, approved work on its own, and GitHub gives
     MEMBER and COLLABORATOR to people with read-only access too. They are told so on the
     issue, and the coordinator is never listed or invoked."""
-    answer = call(develop_comment(association=association), "issue_comment")
+    answer = call(issue_opened(association=association), "issues")
     assert answer["statusCode"] == 202 and "only the repository owner" in answer["body"]
     (handed,) = lam.calls
     job = json.loads(handed["Payload"])["job"]
-    assert job["mode"] == "develop" and job["by_owner"] is False
+    assert job["mode"] == "team" and job["by_owner"] is False
     result = hook.handler({"job": job}, Ctx())
     assert result["started"] is False and result["reason"] == "NOT_OWNER"
     (comment,) = team.comments
@@ -489,74 +490,73 @@ def test_a_job_without_the_owner_mark_starts_nothing(team):
     """A job that does not say the owner asked fails closed."""
     job = _job()
     del job["by_owner"]
-    assert hook.develop(job)["reason"] == "NOT_OWNER"
+    assert hook.team(job)["reason"] == "NOT_OWNER"
     assert team.invocations == []
 
 
-def test_the_idea_is_the_rest_of_the_comment_without_its_quotes():
-    for body, idea in (("/develop a cat game", "a cat game"),
-                       ("/Develop: 'a cat game'", "a cat game"),
-                       ("/develop\n\n  a cat game  ", "a cat game"),
-                       ("/develop \u201ca cat game\u201d", "a cat game"),
-                       ('/develop "a" and "b"', '"a" and "b"'),
-                       ("/develop", "")):
-        assert hook.idea_from(body) == idea, body
+def test_the_idea_is_the_issue_title_then_its_description():
+    for title, body, idea in ((TITLE, BODY, IDEA),
+                              (f"  {TITLE}  ", f"\n {BODY}\n", IDEA),
+                              (TITLE, None, TITLE), (TITLE, "   ", TITLE),
+                              ("", BODY, BODY), (None, None, "")):
+        assert hook.idea_from(title, body) == idea, (title, body)
 
 
-def test_a_bots_or_strangers_develop_comment_is_not_even_answered(lam):
-    """The App's own comments are a Bot's, so the team's reports can never start a team."""
-    for event in (develop_comment(association="NONE"), develop_comment(association="CONTRIBUTOR"),
-                  develop_comment(association="FIRST_TIME_CONTRIBUTOR"),
-                  develop_comment(association=None), develop_comment(user_type="Bot"),
-                  develop_comment(body="/developer mode, please"),
-                  develop_comment(body=f"please /develop {IDEA}")):
-        assert call(event, "issue_comment")["statusCode"] == 202
-    edited = develop_comment()
-    edited["action"] = "edited"
-    call(edited, "issue_comment")
+def test_a_bots_or_strangers_issue_is_not_even_answered(lam):
+    """The App is a Bot, so nothing the team does on GitHub can start another team."""
+    for event in (issue_opened(association="NONE"), issue_opened(association="CONTRIBUTOR"),
+                  issue_opened(association="FIRST_TIME_CONTRIBUTOR"),
+                  issue_opened(association=None), issue_opened(user_type="Bot")):
+        assert call(event, "issues")["statusCode"] == 202
     assert lam.calls == []
 
 
-def test_every_idea_reply_asks_for_a_new_comment_because_an_edit_is_not_read(lam):
-    """A person who fixes the placeholder by editing the comment gets no answer and no
-    build, so each reply says to post a new comment."""
-    edited = develop_comment(f"/develop {IDEA}")
-    edited["action"] = "edited"
-    assert call(edited, "issue_comment")["statusCode"] == 202 and lam.calls == []
+def test_only_a_new_issue_starts_a_team(lam):
+    """Editing, reopening, labeling, or commenting on an issue starts nothing, so a running
+    build is never changed under it and a person retries nothing by accident."""
+    for action in ("edited", "reopened", "labeled", "assigned", "closed", "deleted"):
+        assert call(issue_opened(action=action), "issues")["statusCode"] == 202, action
+    pull = issue_opened()
+    pull["issue"]["pull_request"] = {"url": "x"}
+    call(pull, "issues")
+    comment = fix_comment(body=BODY, on_pr=False)
+    call(comment, "issue_comment")
+    assert lam.calls == []
+
+
+def test_every_idea_reply_asks_for_a_new_issue_because_an_edit_is_not_read():
+    """A person who fixes the placeholder by editing the issue gets no answer and no
+    build, so each reply says to open a new issue."""
     for code, reply in hook.IDEA_REPLIES.items():
-        assert "new comment" in reply and "edited comment is not read" in reply, code
-    assert "in its place" not in hook.IDEA_REPLIES["IDEA_PLACEHOLDER"]
+        assert "new issue" in reply and "editing this one starts nothing" in reply, code
 
 
-def test_a_stale_or_repeated_develop_comment_starts_nothing_new(lam):
-    old = develop_comment()
-    old["comment"]["created_at"] = _now(-2 * hook.REPLAY_WINDOW_S)
-    assert "replay window" in call(old, "issue_comment")["body"]
-    body = develop_comment()
-    call(body, "issue_comment")
-    assert "already handled" in call(body, "issue_comment")["body"]
+def test_a_stale_or_repeated_issue_starts_nothing_new(lam):
+    old = issue_opened()
+    old["issue"]["created_at"] = _now(-2 * hook.REPLAY_WINDOW_S)
+    assert "replay window" in call(old, "issues")["body"]
+    body = issue_opened()
+    call(body, "issues")
+    assert "already handled" in call(body, "issues")["body"]
     assert len(lam.calls) == 1
 
 
-def test_develop_on_a_pull_request_or_without_an_idea_starts_no_team(lam, team):
+def test_an_issue_without_a_usable_idea_starts_no_team(lam, team):
     """Each is answered on GitHub by the hand-off's copy and never invokes the coordinator."""
-    cases = ((f"/develop {IDEA}", True, "Comment /develop on an issue, not a pull request."),
-             ("/develop", False, "There is no idea after `/develop`"),
-             ("/develop  ''  ", False, "There is no idea after `/develop`"),
-             ("/develop <your idea, in one sentence>", False, "placeholder"),
-             ("/develop <a game idea>", False, "placeholder"),
-             ("/develop Creative direction: <your idea, in one sentence>.", False, "placeholder"),
-             ("/develop " + "x" * (hook.MAX_IDEA_CHARS + 1), False, "longer than"))
-    for body, on_pr, reply in cases:
+    cases = (("   ", "", "no idea to build"),
+             ("Team game", "<your idea, in one sentence>", "placeholder"),
+             ("<a game idea>", "", "placeholder"),
+             ("Team game", "Creative direction: <your idea, in one sentence>.", "placeholder"),
+             ("Team game", "x" * (hook.MAX_IDEA_CHARS + 1), "longer than"))
+    for title, body, reply in cases:
         lam.calls.clear()
-        answer = call(develop_comment(body, on_pr=on_pr), "issue_comment")
+        answer = call(issue_opened(title, body), "issues")
         assert answer["statusCode"] == 202
-        assert ("Answering on the pull request" in answer["body"]) is on_pr
         (handed,) = lam.calls
         result = hook.handler(json.loads(handed["Payload"]), Ctx())
         assert result["started"] is False, body
         assert reply in team.comments[-1]["body"], body
-        assert "Nothing was started" in team.comments[-1]["body"] or "no team was started" in team.comments[-1]["body"]
+        assert "no team was started" in team.comments[-1]["body"]
     assert team.invocations == [] and team.configs == []
     assert len(team.comments) == len(cases)
 
@@ -567,11 +567,11 @@ def test_a_started_team_is_invoked_once_and_its_session_is_never_stopped(team, c
     assert sent["agentRuntimeArn"] == COORDINATOR_ARN
     session = sent["runtimeSessionId"]
     assert len(session) >= 33, "AgentCore rejects a session ID under 33 characters"
-    assert session.startswith("gh-develop-7-")
+    assert session.startswith("gh-issue-7-")
     assert (sent["contentType"], sent["accept"]) == ("application/json", "text/event-stream")
     assert json.loads(sent["payload"]) == {"github_event": {
         "kind": "develop", "owner": "octo", "repo": "game", "issue_number": 7, "author": "dev",
-        "idea": IDEA, "comment_url": "https://github.com/octo/game/issues/7#issuecomment-1"}}
+        "idea": IDEA}}
     (config,) = team.configs
     assert config.read_timeout == hook.START_READ_TIMEOUT_S == 300
     assert config.retries == {"total_max_attempts": 1}, "a resent invocation could start a second build"
@@ -579,11 +579,12 @@ def test_a_started_team_is_invoked_once_and_its_session_is_never_stopped(team, c
     assert team.stopped == []
     woke, started = (c["body"] for c in team.comments)
     assert woke.startswith("**An agent team woke up.**") and session[-12:] in woke
+    assert "`dev` opened this issue" in woke and "the issue did" in woke
     assert f"`{STARTED['run_id']}`" in started and "`claude-code`, `codex`" in started
     assert "`python3 orchestrator/watch_run.py --plain`" in started
     assert all(c["issue_number"] == 7 for c in team.comments)
     assert not any("@" in c["body"] for c in team.comments), "a login in backticks notifies nobody"
-    line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("DEVELOP_STARTED "))
+    line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("TEAM_STARTED "))
     logged = json.loads(line.split(" ", 1)[1])
     assert (logged["run_id"], logged["session"], logged["number"]) == (STARTED["run_id"], session, 7)
 
@@ -602,14 +603,14 @@ def test_the_run_id_is_read_from_either_frame_shape():
 
 def test_a_json_answer_and_an_empty_stream_are_both_understood(team):
     team.content_type, team.stream = "application/json", json.dumps(STARTED).encode()
-    assert hook.start_team(COORDINATOR_ARN, "gh-develop-7-" + "0" * 36, {"kind": "develop"}) == STARTED
+    assert hook.start_team(COORDINATOR_ARN, "gh-issue-7-" + "0" * 36, {"kind": "develop"}) == STARTED
     team.content_type, team.stream = "text/event-stream", b""
-    assert hook.start_team(COORDINATOR_ARN, "gh-develop-7-" + "1" * 36, {"kind": "develop"})["error"] == "NO_REPLY"
+    assert hook.start_team(COORDINATOR_ARN, "gh-issue-7-" + "1" * 36, {"kind": "develop"})["error"] == "NO_REPLY"
 
 
 def test_a_missing_coordinator_is_reported_on_the_issue(team, capsys):
     team.runtimes = [r for r in team.runtimes if r["agentRuntimeName"] != hook.COORDINATOR_NAME]
-    result = hook.develop(_job())
+    result = hook.team(_job())
     assert result["started"] is False and result["reason"] == "COORDINATOR_MISSING"
     (comment,) = team.comments
     assert comment["body"].startswith("No coordinator yet: run `./deploy-coordinator.sh` "
@@ -629,7 +630,7 @@ def _never_leaks(body):
 
 
 def _refused_line(out):
-    line = next(x for x in out.splitlines() if x.startswith("DEVELOP_REFUSED "))
+    line = next(x for x in out.splitlines() if x.startswith("TEAM_REFUSED "))
     return json.loads(line.split(" ", 1)[1])
 
 
@@ -655,7 +656,7 @@ def _refused_line(out):
 ])
 def test_a_coordinator_refusal_is_commented_once_and_not_retried(team, capsys, reply, code, hint):
     team.stream = sse(reply)
-    result = hook.develop(_job())
+    result = hook.team(_job())
     assert len(team.invocations) == 1
     assert result["started"] is False and result["reason"] == code
     woke, refused = (c["body"] for c in team.comments)
@@ -673,7 +674,7 @@ def test_the_sdks_own_error_event_may_have_come_after_a_build_started(team, caps
     cannot tell whether the coordinator had already submitted the build."""
     team.stream = sse({"error": f"boom `@x` {ACCOUNT_MESSAGE}", "error_type": "RuntimeError",
                        "message": "An error occurred during streaming"}, encode_twice=False)
-    result = hook.develop(_job())
+    result = hook.team(_job())
     assert len(team.invocations) == 1 and result["reason"] == "RuntimeError"
     refused = team.comments[-1]["body"]
     assert "`RuntimeError`" in refused and "may still have started" in refused
@@ -689,7 +690,7 @@ def test_a_code_shaped_sdk_error_event_still_may_have_started(team):
     error_type is the coordinator's own definite refusal."""
     team.stream = sse({"error": "RUNTIME_NOT_WIRED:codex", "error_type": "RuntimeError",
                        "message": "An error occurred during streaming"}, encode_twice=False)
-    result = hook.develop(_job())
+    result = hook.team(_job())
     refused = team.comments[-1]["body"]
     assert result["may_have_started"] is True
     assert "may still have started" in refused and "did not start a build" not in refused
@@ -741,24 +742,24 @@ def _maybe_started():
 def test_a_failed_invocation_that_never_reached_the_coordinator_says_so(team, capsys):
     for error, code, hint in _definitely_not_started():
         team.error, team.invocations, team.comments = error, [], []
-        result = hook.develop(_job())
+        result = hook.team(_job())
         assert len(team.invocations) == 1 and result["reason"] == code, code
         refused = team.comments[-1]["body"]
         assert refused.startswith(f"The coordinator did not start a build: `{code}`."), refused
         assert hint in refused and "may still have started" not in refused, code
         _never_leaks(refused)
     logged = [json.loads(x.split(" ", 1)[1]) for x in capsys.readouterr().out.splitlines()
-              if x.startswith("DEVELOP_REFUSED ")]
+              if x.startswith("TEAM_REFUSED ")]
     assert logged[0]["detail"] == ACCOUNT_MESSAGE, "the full message stays in the Lambda log"
 
 
 def test_a_lost_answer_is_never_reported_as_no_build(team):
     """After the request may have reached the coordinator, which submits before it
-    answers, the issue is told to check before commenting again, never that nothing
-    started: a second /develop could start a second build."""
+    answers, the issue is told to check before opening another, never that nothing
+    started: a second issue could start a second build."""
     for error, code in _maybe_started():
         team.error, team.invocations, team.comments = error, [], []
-        result = hook.develop(_job())
+        result = hook.team(_job())
         assert len(team.invocations) == 1 and result["reason"] == code, code
         refused = team.comments[-1]["body"]
         assert f"`{code}`" in refused and "may still have started" in refused, refused
@@ -770,7 +771,7 @@ def test_a_lost_answer_is_never_reported_as_no_build(team):
 
 def test_a_stream_without_an_answer_may_have_started_a_build(team):
     team.error, team.stream = None, b": keep-alive\n\n"
-    result = hook.develop(_job())
+    result = hook.team(_job())
     assert result["reason"] == "NO_REPLY" and result["may_have_started"] is True
     refused = team.comments[-1]["body"]
     assert "`NO_REPLY`" in refused and "may still have started" in refused

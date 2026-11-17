@@ -83,13 +83,14 @@ python3 coding-agents/fanout.py --repo ~/your-repo --init   # then --repo ~/your
 connect a private repository; from then on, GitHub events start the work, and the
 endpoint checks each event's signature and acts on each signed event once within an
 hour. A pull request wakes a reviewer: a new session reviews the change, runs the code
-to prove what it finds, and posts the review on the pull request. A `/develop <idea>`
-comment on an issue wakes the coordinator in its own Runtime and its team. Claude Code
+to prove what it finds, and posts the review on the pull request. An issue you open,
+with your idea as its title and description, wakes the coordinator in its own Runtime
+and its team. Claude Code
 builds the service and Codex the page, one pull request each; Kiro writes and runs a
 check for each; an independent review reads each; a red result goes back to its
 builder once. Green, approved work merges in order, anything still red waits for you,
-and the coordinator posts a summary on the issue. A `/develop` comment starts nothing
-while another build is running. The stack already created the Codex and Kiro Runtimes.
+and the coordinator posts a summary on the issue. A new issue starts nothing while
+another build is running. The stack already created the Codex and Kiro Runtimes.
 The agents run the code, so a pull request is reviewed only when its branch is in the
 repository or GitHub associates its author with it, and only the repository owner can
 start a team, never a bot, because the coordinator merges green work. No agent ever
@@ -100,11 +101,11 @@ aws cloudformation deploy --template-file /tmp/pr-review.yaml --stack-name codin
   --capabilities CAPABILITY_NAMED_IAM   # after cloudformation package of coding-agents/pr_review/template.yaml
 coding-agents/connect-github.sh owner/repository   # two clicks on GitHub: Create, Install
 WORKSHOP_MERGE_POLICY=auto orchestrator-agent/deploy-coordinator.sh   # wired to the team's Runtimes and your repository
-python3 orchestrator/watch_run.py --plain   # after you comment "/develop <your idea>" on an issue
+python3 orchestrator/watch_run.py --plain   # after you open an issue with your idea
 ```
 
 The endpoint is one file, [`coding-agents/pr_review/handler.py`](coding-agents/pr_review/handler.py):
-it reviews pull requests and starts the team on a `/develop` comment. Its review prompt
+it reviews pull requests and starts the team on a new issue. Its review prompt
 is where your team's checklist goes. To try more, add `REVIEW.md` to
 the default branch to set your team's review rules, or comment `/fix` on a reviewed
 pull request and a fixer session opens a fix pull request that a different session
@@ -199,7 +200,7 @@ Claude Opus 5.5 and GPT-6.1 Sol), and a GitHub account for Lab 3.
 |---|---|---|
 | **Lab 1. Run Claude Code on AgentCore Runtime** | Build Claude Code's image, create its Runtime, give it a task, disconnect, reconnect | A session is a microVM in the cloud, so it keeps running after you disconnect |
 | **Lab 2. Run Many Agents in Parallel** | Build twenty different games from shuffled briefs, a branch and worktree each, then merge your favorite | Each new session is a new isolated microVM, so running more agents is a loop over session IDs |
-| **Lab 3. Build with a Team of Agents from GitHub** | Deploy the endpoint, connect a repository, deploy the coordinator, open a pull request, then comment `/develop` on an issue | A GitHub event starts the work without the agents holding a GitHub token, a separate agent's check decides, and anything still failing waits for you |
+| **Lab 3. Build with a Team of Agents from GitHub** | Deploy the endpoint, connect a repository, deploy the coordinator, open a pull request, then open an issue with your idea | A GitHub event starts the work without the agents holding a GitHub token, a separate agent's check decides, and anything still failing waits for you |
 
 Lost at any point? One read-only command says where you are and what to run next:
 

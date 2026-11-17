@@ -405,8 +405,8 @@ def _kick(agent_id: str | None, task: str, preset: str | None = None,
     lock, before the tool result exists, so a disconnect cannot erase it and one
     turn can never start two builds.
 
-    ``origin`` is where a GitHub event asked for the build (the issue a `/develop`
-    comment was on). It rides in the run's options so the engine can report the
+    ``origin`` is where a GitHub event asked for the build (the issue the repository
+    owner opened). It rides in the run's options so the engine can report the
     result there once; it never changes what is built or how it is judged."""
     request = _request.current()
     agents = resolved_agents
@@ -454,7 +454,7 @@ def _run_build_impl(task: str, preset: str = "", creative_direction: str = "",
                     revise_run: str = "", *, origin: dict | None = None) -> str:
     """The body of the ``run_build`` tool, shared with the GitHub event path.
 
-    One implementation, so a `/develop` comment admits exactly the task the same
+    One implementation, so a new issue admits exactly the task the same
     words typed into ``./ask.sh`` admit: the same ledger rules, preset text, routing,
     and duplicate guard. The tool is a thin wrapper around this."""
     try:
@@ -496,9 +496,9 @@ def _run_build_impl(task: str, preset: str = "", creative_direction: str = "",
 
 
 # --------------------------------------------------------------------------- #
-# The GitHub event path. A trusted `/develop <idea>` comment on an issue reaches the
-# PR-review endpoint, which starts a NEW coordinator session with
-# {"github_event": {...}}. main.py hands that event here with no model turn: the
+# The GitHub event path. An issue the repository owner opens reaches the PR-review
+# endpoint (its title and description are the idea), which starts a NEW coordinator
+# session with {"github_event": {...}}. main.py hands that event here with no model turn: the
 # event already says what to build, and a model summarizing it could only add
 # words nobody typed. Everything below either starts exactly the build that
 # `./ask.sh "Use preset=team-game. Creative direction: <idea>"` would start, or
@@ -545,7 +545,7 @@ def _running_build() -> str | None:
     counts every submitter and request, and it FAILS CLOSED: an event nobody is
     watching must not start a second build because a record could not be read.
 
-    Every `/develop` gets a NEW coordinator session, a fresh microVM, so this
+    Every new issue gets a NEW coordinator session, a fresh microVM, so this
     session's ENGINE knows only its own runs and the S3 mirror is the only place a
     sibling session's build is visible. ``run_store.active_runs`` therefore requires
     that mirror and raises ``RunStateUnavailable`` on any list or get failure, which
@@ -576,8 +576,8 @@ def start_event_build(event: Any) -> dict:
         kind = str(event.get("kind") or "")
         if kind != "develop":
             return _event_error(
-                "NOT_DEVELOP", f"This coordinator starts builds only for a /develop "
-                f"comment on an issue, not {kind or 'an unnamed event'!r}.")
+                "NOT_DEVELOP", f"This coordinator starts builds only for an issue the "
+                f"repository owner opens, not {kind or 'an unnamed event'!r}.")
         owner, repo = str(event.get("owner") or ""), str(event.get("repo") or "")
         author = str(event.get("author") or "")
         number = event.get("issue_number")
@@ -596,7 +596,7 @@ def start_event_build(event: Any) -> dict:
         problem = _event_idea_problem(idea)
         if problem:
             return _event_error(problem, {
-                "IDEA_MISSING": "There is no idea after /develop.",
+                "IDEA_MISSING": "The issue has no idea to build.",
                 "IDEA_PLACEHOLDER": "The idea is still the page's placeholder.",
                 "IDEA_TOO_LONG": f"The idea is longer than {MAX_EVENT_IDEA_CHARS} characters.",
             }[problem])
@@ -609,7 +609,7 @@ def start_event_build(event: Any) -> dict:
         try:
             running = _running_build()
         except Exception as exc:  # noqa: BLE001 - fail closed: unknown means busy
-            # The detail reaches only the endpoint's DEVELOP_REFUSED log line, never
+            # The detail reaches only the endpoint's TEAM_REFUSED log line, never
             # GitHub; it still names a code, never the raw message (an AWS error
             # carries ARNs and the account id). This process's log has the message.
             code = (exc.code if isinstance(exc, _run_store.RunStateUnavailable)
@@ -623,7 +623,7 @@ def start_event_build(event: Any) -> dict:
         if running:
             return _event_error(
                 "BUILD_ALREADY_RUNNING",
-                f"{running} is still building {configured}. A /develop comment starts "
+                f"{running} is still building {configured}. A new issue starts "
                 "nothing while another build is running.", running_run_id=running)
         comment_url = str(event.get("comment_url") or "")
         origin = {"owner": owner, "repo": repo, "issue_number": number, "author": author,

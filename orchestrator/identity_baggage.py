@@ -99,7 +99,7 @@ class UserIdentity:
         """Whether dispatch may run a role's CLI under the per-user cost role.
 
         Only an authenticated workshop user (the console's Cognito submitter) does. A
-        GitHub login (``github:<login>``, the `/develop` event path) names who asked,
+        GitHub login (``github:<login>``, the new-issue event path) names who asked,
         for labels and audit, but nobody signed in as it: assuming a role for it
         would change how every role command runs (the Kiro key fetch included) for a
         request whose commands must be exactly the ones ``./ask.sh`` would run.

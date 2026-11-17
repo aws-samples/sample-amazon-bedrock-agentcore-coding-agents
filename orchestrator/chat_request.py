@@ -58,7 +58,7 @@ MAX_LISTED_BYTES = 48 * 1024   # what get_user_request shows at once
 # revision could otherwise grow past it and fail as a red gate on working code.
 MAX_EFFECTIVE_TASK_BYTES = 96 * 1024
 # A page's placeholder, sent unedited, is not anyone's creative direction: the Lab 2
-# preset line, and the team build's `./ask.sh` line and `/develop` comment.
+# preset line, and the team build's `./ask.sh` line and issue.
 _PLACEHOLDERS = ("<your team's setting, mood, or play idea>",
                  "<your idea, in one sentence>")
 

@@ -278,14 +278,14 @@ def _what_now(rec: dict, ink: _Ink, width: int) -> list[str]:
     lines.append("  " + ink.red(head) + (f": {reason}" if reason else "."))
     if rec.get("next_action"):
         lines += para(" ".join(str(rec["next_action"]).split()))
-    # The same rule as the summary the engine posts on a /develop issue: resubmit once,
-    # from the terminal, never with another /develop comment. A Chat build (Agent
+    # The same rule as the summary the engine posts on the team's issue: resubmit once,
+    # from the terminal, never with another issue. A Chat build (Agent
     # Studio) is resubmitted from Chat, so it gets neither line.
     if reason == "COORDINATOR_SESSION_INTERRUPTED" and not chat:
         if run_advice.is_github_build(rec) or run_advice.is_team_build(rec):
             lines += para("Submit it again once, with ./ask.sh and the same idea (Lab 3, "
                           "Start the Team from GitHub, step 2), which creates a new "
-                          "session ID. Do not comment /develop again.")
+                          "session ID. Do not open another issue for it.")
         else:
             lines += para("Send the same request again once, with ./ask.sh --new (Go "
                           "Further, Improve Your Game, step 2), which creates a new "

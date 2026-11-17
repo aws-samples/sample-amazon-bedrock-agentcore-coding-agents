@@ -324,7 +324,7 @@ def _peruser_prefix(identity: Any, region: str) -> str:
 
     "" unless a per-user role is wired (``PERUSER_ROLE_ARN``) AND the submitter is a
     signed-in workshop user (``UserIdentity.attributes_cost``). A GitHub login from
-    the `/develop` event path labels the run and its telemetry but never selects
+    the new-issue event path labels the run and its telemetry but never selects
     credentials, so that dispatch is the one ``./ask.sh`` would make: no
     ``sts assume-role`` before the CLI, and the Kiro key fetched with the Runtime's
     own role. The assumption itself is ``peruser.assume_as_user``.

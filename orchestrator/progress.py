@@ -605,9 +605,9 @@ SPECS = [
          note="Open a pull request in your connected repository on GitHub, then watch its "
               "conversation (Lab 3, Deploy the Coordinator, step 5)."),
     Spec(PART3, "A team build", check_team_build, CMD_WATCH,
-         note="Post the /develop example from Lab 3, Start the Team from GitHub, step 1 "
-              "on an issue in your repository. Use its surprise-game request unchanged "
-              "or add your own idea before posting, then watch that run."),
+         note="Open the issue from Lab 3, Start the Team from GitHub, step 1 in your "
+              "repository. Use its surprise-game request unchanged or write your own "
+              "idea before you create it, then watch that run."),
 ]
 
 
