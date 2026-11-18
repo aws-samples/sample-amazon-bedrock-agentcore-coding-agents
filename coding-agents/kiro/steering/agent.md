@@ -132,7 +132,10 @@ REALLY EXERCISING the work rather than reading it.
   passes: a crash in your own harness during the real gate stops the build for a
   person, and no builder can repair it. Do not start the deliverable or execute the
   acceptance behavior yourself; the orchestrator owns that one real execution and
-  reads its exit code.
+  reads its exit code. Put `timeout 120` in front of every command you run
+  (`timeout 120 env WORKSHOP_CHECK_SELFTEST=1 ./acceptance_check`): your tool runner
+  waits without a limit, and on November 18 a check started without the self-test
+  flag waited on a socket until the 30-minute role limit stopped the build.
 - **Pass whole numbers to process and network timeouts.** Round any computed budget
   to integer milliseconds or seconds before passing it on.
 

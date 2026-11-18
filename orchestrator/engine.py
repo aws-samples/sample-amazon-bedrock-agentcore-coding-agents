@@ -2431,6 +2431,9 @@ class Engine:
             "poll rejects services that were merely still starting, which is a false "
             "verdict: reject work that ANSWERS WRONGLY, never work you did not wait "
             "for.\n\n"
+            # November 18, team 30: the checker ran its whole check without the
+            # self-test flag, the check waited on a socket, and the checker's turn
+            # hung with it until the 30-minute role limit stopped the build.
             "KEEP THE CHECK ITSELF EXECUTABLE: do not pass quoted test data through "
             "nested shell/source snippets such as `python -c` or `node -e`; serialize "
             "payloads with the check language's native JSON support. Pass whole "
@@ -2443,9 +2446,12 @@ class Engine:
             "self-test mode: with WORKSHOP_CHECK_SELFTEST=1 it drives EVERY such "
             "helper, and every page, fixture server, or stub the check builds "
             "itself, once on a trivial input written inside the check and exits, "
-            "without reading or starting the deliverable. Run it once that way and "
-            "fix the check until it passes: a crash in your own harness during the "
-            "real gate is the check's defect, and no builder can repair it. Do "
+            "without reading or starting the deliverable. Run it once that way, "
+            "under a time limit (`timeout 120 env WORKSHOP_CHECK_SELFTEST=1 "
+            "./acceptance_check`), and fix the check until it passes: a crash in "
+            "your own harness during the real gate is the check's defect, and no "
+            "builder can repair it. Put `timeout 120` in front of every command you "
+            "run, because your tool runner waits without a limit. Do "
             "not run the acceptance behavior; the engine owns that one real execution."
             + feedback
             + ("\n\nREMEMBER: this turn corrects ./" + _ACCEPTANCE_CHECK + " in place "
