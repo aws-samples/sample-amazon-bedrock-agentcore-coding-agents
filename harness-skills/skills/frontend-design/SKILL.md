@@ -45,6 +45,13 @@ production work, so build it that way.
   dependencies so anyone can install and run it.
 - A single static page is the right answer only for a genuinely single-interaction
   task. Say which it is on purpose, rather than defaulting to the smaller one.
+  A one-screen browser game is usually this size: separate HTML, CSS, and
+  JavaScript modules that the browser runs exactly as written need no bundler.
+- **Commit what runs, never what a tool generated.** The reviewer and the checker
+  read your committed source, so a minified or hashed bundle (`assets/index-*.js`,
+  `*.min.js`) hides the code that actually runs and can be too large to review. If
+  you use a build step, keep its output out of the commit (`.gitignore`) and make
+  the documented setup or start command produce it.
 - **Separate structure, style, and behaviour** into their own files once there is
   more than a trivial amount of any of them. Inline `style="..."` on every element
   is not a design system.

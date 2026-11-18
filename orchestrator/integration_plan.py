@@ -40,7 +40,10 @@ to connect. Keep creative decisions with the builder: do not turn a genre, theme
 screen sequence, controls, rendering technique, or visual style into a shared
 contract unless the user required it. Gameplay rules and scoring formulas belong
 to their owning builder unless the user supplied them; agree only on the score
-range and payload where other parts need those facts. Assign exclusive outcomes:
+range and payload where other parts need those facts. When one command must start
+separately built parts together, agree that committed source is what runs: no role
+commits generated build output (bundles, minified or hashed files), because the
+check and the review read the commit. Assign exclusive outcomes:
 no role may duplicate another role's
 capability merely to make its isolated checkout standalone. Builders start
 independently and do not see one another's implementation.

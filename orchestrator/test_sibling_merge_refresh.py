@@ -136,7 +136,9 @@ def test_a_conflict_refresh_preserves_exactly_one_repair_per_pull_request(
     assert [g["passed"] for g in gates] == [
         False, frontend_failure == "repairable"]
     assert len({g["check_sha256"] for g in gates}) == 1
-    assert len(frontend.review_rounds) == 2
+    # Merge with fix: a green re-run after the one repair merges without a second
+    # review round; a red re-run still posts its red assessment as round 2.
+    assert len(frontend.review_rounds) == (1 if frontend_failure == "repairable" else 2)
     if frontend_failure == "persistent":
         assert result["status"] == "needs_human"
         assert not result["resubmission_allowed"]

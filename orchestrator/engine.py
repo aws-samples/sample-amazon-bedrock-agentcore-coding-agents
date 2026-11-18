@@ -3462,6 +3462,34 @@ class Engine:
         self._record_gate(run, gate, stage, item)
         return gate
 
+    def _finish_after_fix(
+        self, run: Run, item: _work_items.WorkItem, gate: dict, stage: str
+    ) -> bool:
+        """Merge with fix: after the one fix, the SAME check decides the merge.
+
+        The fix turn already received every finding of the first round (the check's
+        own FAIL lines and the review's reasons). Reviewing the fixed pull request again
+        was a second full cycle: it cost a model turn and could block a green pull
+        request on new findings, which the 60-team load test showed as needs_human
+        after the only allowed repair. Under automatic merge the re-run of the original
+        executable is the verdict, as CI decides a pushed fix. A red re-run still
+        blocks and says so (the caller posts the red-gate assessment): nothing red
+        merges, and the check is never rewritten to obtain a pass.
+        """
+        if not gate.get("passed"):
+            return False
+        run.log(f"{item.work_id}: merge with fix: the same check passed after the "
+                "fix, so no second review round")
+        assessment = (
+            "**Assessment**: merged with the fix\n\n"
+            "The builder received every finding from the previous round and updated "
+            "this pull request once. The same executable check passed on the fixed "
+            "tree, so it merges without a second review round. The previous round's "
+            "review is above.")
+        self._comment_work_item(run, item, replay.gate_evidence_comment(
+            run, gate, stage=stage, item=item, assessment=assessment))
+        return True
+
     def _merge_if_policy_allows(
         self, run: Run, item: _work_items.WorkItem, row: dict
     ) -> bool:
@@ -3618,8 +3646,11 @@ class Engine:
                     continue
                 stage = f"{item.work_id} round {item.attempt}"
                 gate = self._gate_one_pull_request(run, item, stage)
-                approved = gate.get("passed") and self._assess_pull_request(
-                    run, item, gate, stage)
+                if github.merge_policy() == "auto":
+                    approved = self._finish_after_fix(run, item, gate, stage)
+                else:
+                    approved = gate.get("passed") and self._assess_pull_request(
+                        run, item, gate, stage)
                 if not approved and not gate.get("passed"):
                     # Exactly as in round 1: a red gate is never approved, and it must
                     # SAY SO on the pull request. Without this the `and` above

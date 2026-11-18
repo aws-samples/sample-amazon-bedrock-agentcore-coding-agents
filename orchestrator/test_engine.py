@@ -220,26 +220,23 @@ def test_a_red_pull_request_does_not_block_a_green_sibling(monkeypatch):
     pull request that cannot become acceptable is recorded and the loop CONTINUES,
     so a sibling that passed still settles, and the run reports which one is open.
     """
-    import reviewer as _reviewer
-    real_assess = _reviewer.assess
+    real_gate = Engine._gate_one_pull_request
     engine = Engine(executor_obj=FixtureExecutor())
     victim: dict[str, str] = {}
 
-    def reject_one_role(run, gate, round_no, *args, **kwargs):
-        subject = kwargs.get("subject") or (args[1] if len(args) > 1 else None)
-        work_id = getattr(subject, "work_id", "")
-        # Always reject the SAME pull request, including on its bounded repair, so it
-        # really reaches a terminal blocked state while its sibling passes.
-        if work_id and (not victim or victim.get("work_id") == work_id):
-            victim.setdefault("work_id", work_id)
-            return _reviewer.Verdict(
-                state="changes_requested", gate=gate, round=round_no,
-                reasons=["this pull request is not acceptable"],
-                assessment="**Assessment**: Request changes\n\nheld for the test",
-            )
-        return real_assess(run, gate, round_no, *args, **kwargs)
+    def red_for_one_role(self, run, item, stage):
+        # Keep the SAME pull request red, including after its one fix, so it really
+        # reaches a terminal blocked state while its sibling passes. (Under automatic
+        # merge a review rejection alone no longer blocks a fixed, green pull request:
+        # the re-run check decides, see test_merge_with_fix.py.)
+        if not victim or victim.get("work_id") == item.work_id:
+            victim.setdefault("work_id", item.work_id)
+            return {"passed": False, "summary": "held red for the test",
+                    "checks": [{"check": "held", "passed": False,
+                                "detail": "this pull request is not acceptable"}]}
+        return real_gate(self, run, item, stage)
 
-    monkeypatch.setattr("engine.reviewer.assess", reject_one_role)
+    monkeypatch.setattr(Engine, "_gate_one_pull_request", red_for_one_role)
     monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
     run = _wait_terminal(
         engine.submit("build any useful tool", ALL_AGENTS), timeout_s=180)
