@@ -583,25 +583,35 @@ def test_review_reads_definitions_beyond_the_old_prefix_limit(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize("limit", ["characters", "files"])
-def test_incomplete_review_context_is_unavailable_not_a_builder_finding(
+def test_a_review_over_its_budget_still_runs_and_says_it_is_partial(
         monkeypatch, tmp_path, limit):
+    """November 18: size never stops the review (9 of 60 green builds had abstained)."""
     import llm
 
     run, backend, _frontend = _seam_mismatch_run(tmp_path)
+    prompts = []
     monkeypatch.setattr(llm, "available", lambda: True)
-    monkeypatch.setattr(
-        llm, "invoke",
-        lambda *a, **k: pytest.fail("an incomplete source tree must not be judged"))
+
+    def invoke(_model, prompt, **_kwargs):
+        prompts.append(prompt)
+        return {"text": json.dumps({
+            "approve": True, "reasons": [],
+            "work_item_evidence": {backend.work_id: "read what fitted"},
+            "adversarial_assessment": "No defect found in what was shown.",
+            "design_assessment": "No defect found in what was shown.",
+        })}
+
+    monkeypatch.setattr(llm, "invoke", invoke)
     if limit == "characters":
         monkeypatch.setattr(reviewer, "_MAX_JUDGE_CONTENT_CHARS", 12)
     else:
         monkeypatch.setattr(reviewer, "_MAX_JUDGE_FILES", 1)
 
     verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=backend)
-    assert verdict.lgtm is False
-    assert verdict.review_unavailable is True
-    assert "review context limit" in " ".join(verdict.reasons)
-    assert "no builder is sent back" in verdict.assessment
+    assert verdict.review_unavailable is False
+    assert len(prompts) == 1
+    assert "this review is PARTIAL" in prompts[0]
+    assert "Never report a definition, rule, or behavior as missing" in prompts[0]
 
 
 def test_exact_file_limit_does_not_claim_source_was_omitted(monkeypatch, tmp_path):

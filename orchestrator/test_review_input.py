@@ -171,17 +171,13 @@ def test_omitted_files_do_not_count_toward_the_file_limit(monkeypatch, tmp_path)
     assert "and 26 more files" in section
 
 
-def test_a_source_tree_over_the_limit_is_still_review_unavailable(monkeypatch, tmp_path):
+def test_a_source_tree_over_the_budget_is_reviewed_with_its_cut_marked(monkeypatch, tmp_path):
     run, item, _tree, _source = _frontend_tree(tmp_path)
     monkeypatch.setattr(reviewer, "_MAX_JUDGE_CONTENT_CHARS", 1000)
-    import llm
-    monkeypatch.setattr(llm, "available", lambda: True)
-    monkeypatch.setattr(
-        llm, "invoke",
-        lambda *a, **k: pytest.fail("an incomplete source tree must not be judged"))
-    verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=item)
-    assert verdict.lgtm is False and verdict.review_unavailable is True
-    assert "review context limit" in " ".join(verdict.reasons)
+    review, prompts = _review(monkeypatch, run, item)
+    assert not review["review_unavailable"]
+    assert "(CUT: only the first" in prompts[0]
+    assert "this review is PARTIAL" in prompts[0]
 
 
 def test_an_authored_check_that_is_not_utf8_is_still_shown(monkeypatch, tmp_path):

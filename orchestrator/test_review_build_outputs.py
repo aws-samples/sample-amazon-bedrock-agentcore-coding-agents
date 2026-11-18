@@ -76,6 +76,17 @@ def _model_capture(monkeypatch, item, *, allow):
     return prompts
 
 
+def _kept_in_review_and_cut(prompts, verdict, rel):
+    """Size never stops the review: the file stays IN it, cut and marked as cut."""
+    assert not verdict.review_unavailable
+    assert len(prompts) == 1
+    prompt = prompts[0]
+    headers = [line for line in prompt.splitlines() if line.startswith("--- ")]
+    assert any(rel in line and "(CUT:" in line for line in headers), headers
+    assert "this review is PARTIAL" in prompt
+    assert "Never report a definition, rule, or behavior as missing" in prompt
+
+
 def test_declared_esbuild_bundle_outside_generated_directories_is_listed_with_basis(
         monkeypatch, tmp_path):
     tree, run, item = _tree(tmp_path)
@@ -118,10 +129,9 @@ def test_ambiguous_or_unsupported_commands_leave_large_file_in_review(
         monkeypatch, tmp_path, command):
     tree, run, item = _tree(tmp_path, command)
     assert declared_outputs(str(tree)) == {}
-    _model_capture(monkeypatch, item, allow=False)
+    prompts = _model_capture(monkeypatch, item, allow=True)
     verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=item)
-    assert verdict.review_unavailable and not verdict.lgtm
-    assert "public/assets/game.js" in " ".join(verdict.reasons)
+    _kept_in_review_and_cut(prompts, verdict, "public/assets/game.js")
 
 
 def test_a_genuine_large_authored_file_is_never_exempted_by_its_path_or_shape(
@@ -131,10 +141,9 @@ def test_a_genuine_large_authored_file_is_never_exempted_by_its_path_or_shape(
     authored.write_text("export const authoredValues = ["
                         + "123," * (reviewer._MAX_JUDGE_CONTENT_CHARS // 4 + 12_500) + "0];\n")
     item.changed_files.insert(0, "public/assets/authored.js")
-    _model_capture(monkeypatch, item, allow=False)
+    prompts = _model_capture(monkeypatch, item, allow=True)
     verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=item)
-    assert verdict.review_unavailable and not verdict.lgtm
-    assert "public/assets/authored.js" in " ".join(verdict.reasons)
+    _kept_in_review_and_cut(prompts, verdict, "public/assets/authored.js")
 
 
 @pytest.mark.parametrize("source", [
@@ -144,10 +153,9 @@ def test_a_genuine_large_authored_file_is_never_exempted_by_its_path_or_shape(
 def test_binary_tail_in_declared_entry_does_not_exempt_bundle(monkeypatch, tmp_path, source):
     tree, run, item = _tree(tmp_path)
     (tree / "src/main.jsx").write_bytes(source)
-    _model_capture(monkeypatch, item, allow=False)
+    prompts = _model_capture(monkeypatch, item, allow=True)
     verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=item)
-    assert verdict.review_unavailable and not verdict.lgtm
-    assert "public/assets/game.js" in " ".join(verdict.reasons)
+    _kept_in_review_and_cut(prompts, verdict, "public/assets/game.js")
 
 
 @pytest.mark.parametrize("entry", [".private/main.jsx", "node_modules/dependency.js"])

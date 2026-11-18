@@ -791,44 +791,57 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
         pass
     # Hand over complete source files. Silent 3,000-character prefixes made a
     # live reviewer claim a getter and CSS rules were missing when they were
-    # present later in the same files. Exceeding the bounded context is our
-    # review limitation, never a defect for the builder to repair. Binary files
-    # and generated build output are left out and listed (``_review_omission``).
+    # present later in the same files. Binary files and generated build output are
+    # left out and listed (``_review_omission``).
+    #
+    # Size never stops the review (November 18, at the author's direction: "remove the
+    # review limit"). Abstaining on size ended 9 of 60 green team builds on November 17.
+    # The budget below is far above a workshop pull request, and anything past it is
+    # still reviewed: the check and the pull request's own changed files come first,
+    # a file that does not fit is cut and MARKED as cut, later files are listed by
+    # name and size, and the reviewer is told never to report something missing from
+    # what it could not read.
     remaining = _MAX_JUDGE_CONTENT_CHARS
     omitted: list[tuple[str, int, str]] = []
+    partial: list[str] = []
     for label, path in _artifact_files(run, subject, omitted=omitted):
         if not path:
-            record = _review_record(
-                INTEGRATED_REVIEW_MODEL,
-                note=f"source inventory exceeds the review context limit: {label}")
-            return _combine_review(gate, record, None)
+            partial.append(label)
+            continue
         if path and os.path.isfile(path):
             size = _file_size(path)
-            # A UTF-8 character is at most four bytes, so a larger file cannot fit.
-            if size > 4 * (remaining + 1):
-                record = _review_record(
-                    INTEGRATED_REVIEW_MODEL,
-                    note=f"complete source exceeds the review context limit at {label}")
-                return _combine_review(gate, record, None)
+            if remaining <= 0:
+                omitted.append((label, size, "not included: the review input budget was used"))
+                continue
             with open(path, "rb") as f:
-                raw = f.read()
+                raw = f.read(4 * remaining + 4)
             try:
                 content = raw.decode("utf-8")
             except UnicodeDecodeError:
-                if label != _AUTHORED_CHECK_LABEL:
-                    omitted.append((label, len(raw), "binary file (not UTF-8 text)"))
+                if label != _AUTHORED_CHECK_LABEL and size <= len(raw):
+                    omitted.append((label, size, "binary file (not UTF-8 text)"))
                     continue
-                # The check that decided the gate is always shown to the reviewer.
+                # The check that decided the gate is always shown to the reviewer; a
+                # cut can also split one multi-byte character.
                 content = raw.decode("utf-8", errors="replace")
-            if len(content) > remaining:
-                record = _review_record(
-                    INTEGRATED_REVIEW_MODEL,
-                    note=f"complete source exceeds the review context limit at {label}")
-                return _combine_review(gate, record, None)
+            if len(content) > remaining or size > len(raw):
+                shown = content[:remaining]
+                parts.append(f"--- {label} (CUT: only the first {len(shown):,} characters "
+                             f"of {size:,} bytes are shown) ---\n{shown}")
+                partial.append(f"{label}: cut after {len(shown):,} characters")
+                remaining = 0
+                continue
             parts.append(f"--- {label} ---\n{content}")
             remaining -= len(content)
     if omitted:
         parts.append(_omitted_section(omitted))
+    if partial:
+        parts.append(
+            "The review input budget did not hold everything, so this review is PARTIAL:\n"
+            + "\n".join(f"- {note}" for note in partial)
+            + "\nJudge only what you can read here and the executable gate's evidence. "
+              "Never report a definition, rule, or behavior as missing because it is in "
+              "a cut or unlisted part of a file.")
     base_prompt = (
         "Review this pull request through both required lenses. Do not trust a "
         "builder's self-assessment or infer success from the green gate alone.\n\n"
@@ -851,12 +864,13 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
     return _combine_review(gate, record, decision)
 
 
-_MAX_JUDGE_FILES = 48
+_MAX_JUDGE_FILES = 200
 # The review input budget, in characters. It was 192,000, and on November 17 nine of
 # sixty team builds ended REVIEW_UNAVAILABLE on a GREEN gate because one committed
 # 203-236 KB frontend bundle exceeded it. The review model accepts far more: a measured
 # Opus 5.5 Converse call took 800,000 characters (498,128 input tokens of dense script)
-# in 10.2 s on November 18. Source still arrives complete; nothing is hidden by shape.
+# in 10.2 s on November 18. Source still arrives complete; nothing is hidden by shape,
+# and a tree past the budget is reviewed with its cut marked, never abstained on.
 _MAX_JUDGE_CONTENT_CHARS = 800_000
 
 # What the review leaves out, because it is not source a reviewer can read: binary
@@ -944,8 +958,8 @@ def _reviewable_entry(root: str, rel: str) -> bool:
 def _omitted_section(omitted: list[tuple[str, int, str]]) -> str:
     """The review-context note naming every file left out, with its size."""
     lines = [
-        "Left out of this review because they are not source text (listed so you "
-        "know they exist; committed build output can itself be a finding):"]
+        "Left out of this review (listed so you know they exist; committed build "
+        "output can itself be a finding):"]
     lines.extend(f"- {label}: {size:,} bytes, {reason}"
                  for label, size, reason in omitted[:_MAX_OMITTED_LISTED])
     rest = omitted[_MAX_OMITTED_LISTED:]
