@@ -850,7 +850,12 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
 
 
 _MAX_JUDGE_FILES = 48
-_MAX_JUDGE_CONTENT_CHARS = 192_000
+# The review input budget, in characters. It was 192,000, and on November 17 nine of
+# sixty team builds ended REVIEW_UNAVAILABLE on a GREEN gate because one committed
+# 203-236 KB frontend bundle exceeded it. The review model accepts far more: a measured
+# Opus 5.5 Converse call took 800,000 characters (498,128 input tokens of dense script)
+# in 10.2 s on November 18. Source still arrives complete; nothing is hidden by shape.
+_MAX_JUDGE_CONTENT_CHARS = 800_000
 
 # What the review leaves out, because it is not source a reviewer can read: binary
 # files and generated build output. October 19-20: a GPT-6.1 frontend committed its

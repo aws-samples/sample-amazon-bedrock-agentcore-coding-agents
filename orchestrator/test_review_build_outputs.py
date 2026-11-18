@@ -31,7 +31,10 @@ def _tree(tmp_path, command=_COMMAND):
     source = "export const score = hits => hits * 7;\n"
     (tree / "src/game.js").write_text(source)
     bundle = tree / "public/assets/game.js"
-    bundle.write_text("(()=>{const n=1;})();" * 12_000)
+    # Larger than the review budget, whatever it is: an undeclared bundle must stay
+    # in review (and so abstain), never be hidden to make room.
+    bundle.write_text("(()=>{const n=1;})();"
+                      * (reviewer._MAX_JUDGE_CONTENT_CHARS // 21 + 2_400))
     (tree / "package.json").write_text(json.dumps({
         "scripts": {"build": command}, "devDependencies": {"esbuild": "^0.25.0"},
     }))
@@ -125,7 +128,8 @@ def test_a_genuine_large_authored_file_is_never_exempted_by_its_path_or_shape(
         monkeypatch, tmp_path):
     tree, run, item = _tree(tmp_path)
     authored = tree / "public/assets/authored.js"
-    authored.write_text("export const authoredValues = [" + "123," * 50_000 + "0];\n")
+    authored.write_text("export const authoredValues = ["
+                        + "123," * (reviewer._MAX_JUDGE_CONTENT_CHARS // 4 + 12_500) + "0];\n")
     item.changed_files.insert(0, "public/assets/authored.js")
     _model_capture(monkeypatch, item, allow=False)
     verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=item)
