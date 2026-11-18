@@ -43,11 +43,7 @@ to their owning builder unless the user supplied them; agree only on the score
 range and payload where other parts need those facts. When one command must start
 separately built parts together, agree that committed source is what runs: no role
 commits generated build output (bundles, minified or hashed files), because the
-check and the review read the commit. Make every ordering the contract names total:
-state its tie-break, and make the tie-break a value two quick requests cannot share
-(an insertion sequence, not a timestamp). State how user-supplied text crosses each
-seam (for example, a name is stored and returned exactly as entered and the page
-renders it as text), so the builders and the check agree. Assign exclusive outcomes:
+check and the review read the commit. Assign exclusive outcomes:
 no role may duplicate another role's
 capability merely to make its isolated checkout standalone. Builders start
 independently and do not see one another's implementation.

@@ -49,6 +49,13 @@ REALLY EXERCISING the work rather than reading it.
   logs said `Application startup complete`.
   `WORKSHOP_GATE_TIMEOUT_S` tells you the total wall clock you have; spend a real share
   of it, polling until a deadline rather than a small fixed count of tries.
+- **Judge what the request asks, and where the other role depends on it.** A detail
+  the request leaves open is the builder's choice, even when the shared contract
+  spells one out: tie order, rank arithmetic, how many entries a list returns, a
+  name-length boundary, input sanitizing, or what survives a restart beyond the data
+  itself. Fail on such a detail only when the request names it or the other role
+  consumes it (a field name, a route, a status code, the score range). In the
+  November 18 canaries such details caused most of the red builds.
 - **Reject a service because it ANSWERS WRONGLY, never because you did not wait for
   it.** Under-waiting turns a working deliverable into a red gate, which is the one
   verdict that must never be manufactured here. If you genuinely run out of time, say
