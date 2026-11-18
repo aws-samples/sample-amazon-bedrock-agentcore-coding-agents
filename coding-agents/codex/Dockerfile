@@ -15,6 +15,14 @@ RUN node --version && npm --version && npx --version && python3 --version \
     && python3 -c 'import ssl; print(ssl.OPENSSL_VERSION)' \
     && rpm -q openssl-snapsafe-libs
 
+# The check toolchain (check-tools.sh), the same pinned versions as the checker and the
+# coordinator: the frontend builder can open its own page in a real headless browser
+# to verify it. On November 18 a Codex turn spent minutes fetching browser libraries
+# into /tmp to do exactly that.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright NODE_PATH=/opt/check-tools/node_modules
+COPY --from=toolchain check-tools.sh /opt/workshop-cli/check-tools.sh
+RUN bash /opt/workshop-cli/check-tools.sh
+
 RUN npm install -g typescript ts-node
 
 # Same pinned ARM64 collector as the other workshop Runtime images.

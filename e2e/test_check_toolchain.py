@@ -25,6 +25,7 @@ IMAGES = {
     "coordinator": ROOT / "orchestrator-agent" / "Dockerfile",
     "kiro": ROOT / "coding-agents" / "kiro" / "Dockerfile",
     "claude-code-validator": ROOT / "coding-agents" / "claude-code-validator" / "Dockerfile",
+    "codex": ROOT / "coding-agents" / "codex" / "Dockerfile",
 }
 ENV_LINE = "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright NODE_PATH=/opt/check-tools/node_modules"
 

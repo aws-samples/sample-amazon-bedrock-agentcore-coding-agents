@@ -179,6 +179,11 @@ can allow it, and surface the browser's own error instead of showing an empty re
 
 ## Verify your own work before you hand it off
 
+When your container has a headless browser installed (the workshop's frontend image
+ships Playwright with its Chromium, `require('playwright')` from any directory), use
+it to open the page you built, play it, and read its console. Never download a
+browser or its system libraries yourself; that spends the turn on setup.
+
 - It renders with no console errors, at 360px and at a desktop width.
 - Every data value on screen came from a backend call you can point to.
 - Service reads and writes work through the actual hosting path, including a proxy
