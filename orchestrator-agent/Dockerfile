@@ -9,6 +9,13 @@ RUN dnf install -y --allowerasing \
     && ln -s /usr/bin/npm-22 /usr/local/bin/npm \
     && ln -s /usr/bin/npx-22 /usr/local/bin/npx
 
+# The check toolchain (check-tools.sh, the same pinned versions as each checker's own
+# image): the engine runs every validator-authored check in this container, so a check
+# can drive a real headless Chromium and use jsdom without installing anything.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright NODE_PATH=/opt/check-tools/node_modules
+COPY check-tools.sh /opt/check-tools.sh
+RUN bash /opt/check-tools.sh
+
 # Strands' MCP dependency also brings pyjwt[crypto]. Build that crypto backend
 # against the same snapshot-safe system libraries as Python's own _ssl module.
 ENV OPENSSL_NO_VENDOR=1 \

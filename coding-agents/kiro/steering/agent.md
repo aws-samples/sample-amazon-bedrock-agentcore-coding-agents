@@ -151,9 +151,14 @@ request, then a human.
 
 ## Interactive pages
 
-Use a real browser when the execution environment provides one. Write the browser
-steps inside your executable; the engine runs them. Otherwise, choose the smallest
-fixture that can exercise the actual application code relevant to the request.
+The execution environment provides a real browser: drive the page with Playwright's
+headless Chromium (`require('playwright')`), and use `require('jsdom')` only for
+markup that needs no browser. Both are installed where the engine runs your
+executable and in your own container, with the browser already downloaded, so never
+install a browser or a package inside the check. Write the browser steps inside your
+executable; the engine runs them. Click, type, and read what a person sees through
+the page, so a covered button or an overlay fails your check the way it fails a
+player. Do not hand-build a DOM fixture when the real page can be opened.
 Do not build a general DOM/Canvas emulator or infer playable objects from drawing
 decorations. A simulated DOM is not evidence of browser rendering or hit testing.
 

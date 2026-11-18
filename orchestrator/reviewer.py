@@ -234,7 +234,9 @@ def _summary_line(out: str, code: int) -> str:
 _CHECK_ENV_NAMES = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR", "TERM",
                     "LD_LIBRARY_PATH", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
                     "REQUESTS_CA_BUNDLE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-                    "http_proxy", "https_proxy", "no_proxy"}
+                    "http_proxy", "https_proxy", "no_proxy",
+                    # The check toolchain's locations (check-tools.sh), never a secret.
+                    "PLAYWRIGHT_BROWSERS_PATH", "NODE_PATH"}
 
 
 def _check_environment() -> dict[str, str]:

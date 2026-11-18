@@ -15,6 +15,12 @@ RUN node --version && npm --version && npx --version && python3 --version \
     && python3 -c 'import ssl; print(ssl.OPENSSL_VERSION)' \
     && rpm -q openssl-snapsafe-libs
 
+# The check toolchain, at the same pinned versions as the coordinator where checks run
+# (check-tools.sh): a checker can self-test a browser check without installing one.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright NODE_PATH=/opt/check-tools/node_modules
+COPY --from=toolchain check-tools.sh /opt/workshop-cli/check-tools.sh
+RUN bash /opt/workshop-cli/check-tools.sh
+
 # OpenTelemetry collector sidecar (otelcol-contrib): baked in so entrypoint.sh can
 # start it at container boot and re-sign the agent's unsigned OTLP to CloudWatch
 # Logs / X-Ray / metrics. AgentCore Runtime is arm64 (Graviton).
