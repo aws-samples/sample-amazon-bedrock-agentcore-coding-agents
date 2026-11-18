@@ -159,6 +159,16 @@ install a browser or a package inside the check. Write the browser steps inside 
 executable; the engine runs them. Click, type, and read what a person sees through
 the page, so a covered button or an overlay fails your check the way it fails a
 player. Do not hand-build a DOM fixture when the real page can be opened.
+Chromium logs `Failed to load resource: the server responded with a status of 4xx`
+for every HTTP error response, including the ones your own check provokes (an empty
+name, an impossible score). That line is not an application error: assert on uncaught
+page errors and the application's own `console.error` output, and treat an HTTP error
+as a failure only for a request that should have succeeded. Drive time and input
+yourself (a controlled clock or deterministic key presses) before you assert a
+gameplay outcome; never fail a build on what random timing happened to produce.
+When the request asks for a clear error, any refusal a person can read and act on
+counts, whether the page or the server shows it; require a particular source or
+wording only when the request or the shared contract names one.
 Do not build a general DOM/Canvas emulator or infer playable objects from drawing
 decorations. A simulated DOM is not evidence of browser rendering or hit testing.
 

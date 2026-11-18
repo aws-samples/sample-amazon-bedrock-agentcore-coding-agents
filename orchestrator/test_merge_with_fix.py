@@ -147,3 +147,22 @@ def test_human_review_keeps_the_second_review(monkeypatch):
         assert not any("merge with fix" in (e.get("message") or "") for e in run.events)
     finally:
         engine.shutdown()
+
+
+def test_the_fix_turn_reads_the_red_check_itself(tmp_path):
+    """The canary's repeated failures: a fix that sees only FAIL lines guesses."""
+    from types import SimpleNamespace
+    engine = Engine.__new__(Engine)
+    check = tmp_path / "acceptance_check"
+    check.write_text("#!/usr/bin/env node\n// ties: the earlier entry must rank first\n")
+    item = SimpleNamespace(agent="claude-code", work_id="work_claude-code_x")
+    engine._builder_items = lambda _run: [item]
+    run = SimpleNamespace(review={"gate": {"passed": False}}, _item_checks={item.work_id: str(check)})
+    text = engine._failed_check_feedback(run, "claude-code")
+    assert "THE CHECK THAT FAILED" in text and "ties: the earlier entry must rank first" in text
+    assert "Do not edit, imitate, detect, or special-case it" in text
+    # A green gate (a review-only fix) sends no check, and neither does another role.
+    run.review = {"gate": {"passed": True}}
+    assert engine._failed_check_feedback(run, "claude-code") == ""
+    run.review = {"gate": {"passed": False}}
+    assert engine._failed_check_feedback(run, "codex") == ""

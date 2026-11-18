@@ -129,7 +129,7 @@ def session_cli(tmp_path):
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 @pytest.mark.parametrize("role,model,effort,kind,hidden", [
-    ("claude-code", "global.anthropic.claude-sonnet-5-5", "low", "builder", False),
+    ("claude-code", "global.anthropic.claude-sonnet-5-5", "medium", "builder", False),
     ("claude-code-validator", "global.anthropic.claude-sonnet-5-5", "xhigh", "checker", True),
 ])
 def test_session_uses_its_own_registry_defaults(
@@ -162,7 +162,7 @@ def test_backend_stack_model_is_isolated_from_validator_with_shared_effort(
 
 @pytest.mark.parametrize("mode", ["input", "pty"])
 @pytest.mark.parametrize("role,model,effort", [
-    ("claude-code", "us.anthropic.claude-opus-5", "low"),
+    ("claude-code", "us.anthropic.claude-opus-5", "medium"),
     ("claude-code-validator", "global.anthropic.claude-sonnet-5-5", "xhigh"),
 ])
 def test_configured_backend_keeps_restored_shelf_and_session_models_separate(

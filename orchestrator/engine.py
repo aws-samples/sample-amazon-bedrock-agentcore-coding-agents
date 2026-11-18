@@ -325,6 +325,9 @@ _NO_PRODUCER_ERROR = (
 # still a schema we invented. One subprocess, no conventions.
 _ACCEPTANCE_CHECK = "acceptance_check"
 
+_MAX_FAILED_CHECK_CHARS = 30_000
+
+
 def _gate_failure_feedback(gate: dict) -> str:
     """Give either builder the check's bounded diagnostics, including early failures."""
     lines = gate_failure_lines(gate)
@@ -1657,6 +1660,7 @@ class Engine:
                             "pull request. Address each point:\n"
                             + "\n".join(f"- {d}" for d in failed))
             feedback += _gate_failure_feedback(run.review.get("gate") or {})
+            feedback += self._failed_check_feedback(run, role.agent)
         if run._refresh_context:
             feedback += "\n\n" + run._refresh_context
         # The dispatched role, not a fixed id: role.agent is whichever role the
@@ -1751,6 +1755,7 @@ class Engine:
         conflict_feedback = ""
         if run.iterations > 1 and run.review:
             conflict_feedback += _gate_failure_feedback(run.review.get("gate") or {})
+            conflict_feedback += self._failed_check_feedback(run, role.agent)
         if run._refresh_context:
             conflict_feedback += "\n\n" + run._refresh_context
         ownership = integration_plan.ownership_guidance(self._builder_items(run))
@@ -3465,6 +3470,33 @@ class Engine:
         gate["check_evidence"] = check_evidence
         self._record_gate(run, gate, stage, item)
         return gate
+
+    def _failed_check_feedback(self, run: Run, agent: str) -> str:
+        """The red check itself, for the one fix: read what it ran, then fix the work.
+
+        November 18 canary, 60 teams: fixes that saw only the FAIL lines repeated the
+        same failure (a tie-break, a restart that dropped scores), because the builder
+        could not see what the check did. CI shows a failing test's code; so does this.
+        The check is unchanged and re-runs after the fix, so it still decides.
+        """
+        gate = (run.review or {}).get("gate") or {}
+        if gate.get("passed") is not False:
+            return ""
+        item = next((i for i in self._builder_items(run) if i.agent == agent), None)
+        path = (run._item_checks or {}).get(item.work_id, "") if item else ""
+        if not path or not os.path.isfile(path):
+            return ""
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if len(text) > _MAX_FAILED_CHECK_CHARS:
+            text = text[:_MAX_FAILED_CHECK_CHARS] + "\n[the rest of the check is not shown]"
+        return (
+            "\n\nTHE CHECK THAT FAILED, exactly as the engine runs it. The validator "
+            "authored it for this pull request, and the SAME file runs again after your "
+            "fix and decides. Read what it exercised and what it expected. Do not edit, "
+            "imitate, detect, or special-case it: change the application so it does "
+            "what the request and the shared contract ask, and the check passes for "
+            "that reason.\n```\n" + text + "\n```")
 
     def _finish_after_fix(
         self, run: Run, item: _work_items.WorkItem, gate: dict, stage: str
