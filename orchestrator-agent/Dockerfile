@@ -1,9 +1,13 @@
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b
 
+# tar, gzip, unzip and jq: the checker writes its check in a container that has them,
+# and the engine runs it HERE. November 18, a real check unpacked the base snapshot
+# with `git archive | tar -x`, failed only because this image had no tar, and needed
+# the checker's one correction to pass.
 RUN dnf install -y --allowerasing \
        ca-certificates curl git python3.13 python3.13-pip python3.13-devel \
        nodejs22 nodejs22-npm openssl-snapsafe-libs openssl-devel \
-       gcc rust cargo pkgconf-pkg-config \
+       gcc rust cargo pkgconf-pkg-config tar gzip unzip jq \
     && dnf clean all \
     && ln -s /usr/bin/node-22 /usr/local/bin/node \
     && ln -s /usr/bin/npm-22 /usr/local/bin/npm \
