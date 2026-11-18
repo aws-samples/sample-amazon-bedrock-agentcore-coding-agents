@@ -3851,14 +3851,23 @@ class Engine:
                 return True
             if kind == "corrected":
                 continue        # the builder's one repair is still unspent
-            if (not gate.get("passed") and unchanged_digest
-                    and item.patch_digest == unchanged_digest
+            unchanged = bool(unchanged_digest) and item.patch_digest == unchanged_digest
+            # November 18, round 6 (teams 1 and 34): the builder DID change its code,
+            # and the same check failed on exactly the same lines again ("fetch
+            # failed" both times). A repair that moves nothing points at the check as
+            # much as a repair that changes nothing, so the checker looks once.
+            same_red = (bool(gate_failure_lines(gate))
+                        and gate_failure_lines(gate) == gate_failure_lines(previous))
+            if (not gate.get("passed") and (unchanged or same_red)
                     and gate.get("check_sha256") == previous.get("check_sha256")
                     and item.check_corrections < MAX_CHECK_CORRECTIONS):
                 correct_because = (
                     "the builder's one repair left this pull request byte-identical, "
                     "so it found nothing in the code to change for these lines, and "
-                    "the same check failed the same way again")
+                    "the same check failed the same way again" if unchanged else
+                    "the builder's one repair changed the code, and the same check "
+                    "failed on exactly the same lines again, so look at whether the "
+                    "check itself can observe what it asserts")
                 continue
             row["state"] = "blocked"
             row["error"] = "ITERATION_CAP" if gate.get("passed") else "GATE_RED"

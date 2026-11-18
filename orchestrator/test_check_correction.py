@@ -219,3 +219,31 @@ def test_each_allowance_is_spent_at_most_once(monkeypatch):
         assert _builder(run).attempt == 1
     finally:
         engine.shutdown()
+
+
+def test_a_changed_repair_that_fails_on_the_same_lines_gets_the_correction(monkeypatch):
+    """Round 6, teams 1 and 34: the builder changed its code and the same check failed
+    on exactly the same lines again; the checker looks at its own check once."""
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
+    _triage(monkeypatch, ["claude-code"])
+    fixture, turns = _checker_writes(ORIGINAL, CORRECTED)
+    produce = fixture.produce
+
+    def changing_builder(run, agent_id, role):
+        path = produce(run, agent_id, role)
+        if roles.get(agent_id).kind != roles.CHECKER:
+            with open(os.path.join(run.roledir(agent_id), "attempt.txt"), "w") as f:
+                f.write(f"attempt {run.iterations}\n")
+        return path
+
+    fixture.produce = changing_builder
+    engine = Engine(executor_obj=fixture)
+    try:
+        run = _wait(engine.submit(TASK, TEAM))
+        assert run.status == "passed", (run.status, run.fail_reason, run.role_prs)
+        assert turns == ["author", "correct"]
+        assert [row["passed"] for row in run.gate_history] == [False, False, True]
+        first, repaired, _ = (row["patch_digest"] for row in run.gate_history)
+        assert first != repaired, "the builder's repair changed the code"
+    finally:
+        engine.shutdown()
