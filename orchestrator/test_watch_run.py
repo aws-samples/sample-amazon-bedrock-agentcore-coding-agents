@@ -777,3 +777,20 @@ def test_a_pasted_session_id_is_refused_and_a_punctuated_run_id_is_cleaned():
         watch_run._clean_run_id("2b8f1000-4295-4c3e-9d4e-1f2a3b4c5d6e")
     assert "SESSION ID" in str(excinfo.value)
     assert watch_run._clean_run_id("`run_230935_2a9340b0c184`.") == "run_230935_2a9340b0c184"
+
+
+
+def test_a_corrected_check_is_named_on_its_gate_line():
+    """Two round-1 lines would read as the same check twice; the second is the
+    checker's one correction of its own check (a different executable)."""
+    rec = {"run_id": "run_111500_abcdef012345", "status": "passed", "phase": "done",
+           "role_prs": [{"number": 35, "role": "backend", "state": "merged",
+                         "url": "https://github.com/o/r/pull/35"}],
+           "gate_history": [
+               {"sequence": 1, "stage": "work_x round 1", "work_id": "work_x",
+                "passed": False, "summary": "FAIL expected 500"},
+               {"sequence": 2, "stage": "work_x round 1 (corrected check)",
+                "work_id": "work_x", "passed": True, "summary": "ACCEPT"}]}
+    out = "\n".join(watch_run._frame(rec, watch_run._Ink(False), 160))
+    assert "gate work_x round 1: FAIL" in out
+    assert "gate work_x round 1 (corrected check): PASS" in out

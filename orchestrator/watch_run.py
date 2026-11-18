@@ -353,6 +353,10 @@ def _frame(rec: dict, ink: _Ink, width: int) -> list[str]:
         stage = re.search(r"round (\d+)", str(entry.get("stage") or ""))
         nth = (f"round {stage.group(1)}" if stage
                else f"#{entry.get('round', entry.get('sequence', '?'))}")
+        if "(corrected check)" in str(entry.get("stage") or ""):
+            # The checker's one correction of its own check: a different executable on
+            # the same round, so the two lines must not read as the same check twice.
+            nth += " (corrected check)"
         lines.append(f"    gate {entry.get('work_id', '?')} {nth}: "
                      f"{_gate_mark(entry, ink)}"
                      f"  {ink.dim(' '.join(str(entry.get('summary', '')).split())[:70])}")
