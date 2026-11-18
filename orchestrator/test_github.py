@@ -529,6 +529,12 @@ def _run_fixture_per_pr(monkeypatch, tmp_path, policy: str, *,
     while run.status not in engine.TERMINAL:
         assert time.monotonic() < deadline, f"stuck in {run.status}/{run.phase}"
         time.sleep(0.2)
+    # The worker releases the repository claim just AFTER the terminal state is
+    # saved; a caller that starts the next build at once can find it still held
+    # (BUILD_ALREADY_RUNNING in a loaded full-suite run, November 18).
+    while run._repository_claim is not None:
+        assert time.monotonic() < deadline, "the repository claim was never released"
+        time.sleep(0.05)
     return instance, run, refused
 
 
