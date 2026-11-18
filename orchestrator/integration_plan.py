@@ -28,6 +28,7 @@ PLAN_MODEL = os.environ.get(
 # brief overran its 2,500-token cap, came back as truncated JSON and needed the repair
 # call (about 55 s before any builder started); at low it was valid in 9 to 10 s.
 PLAN_EFFORT = os.environ.get("WORKSHOP_INTEGRATION_PLAN_EFFORT", "low").strip()
+REPAIR_EFFORT = os.environ.get("WORKSHOP_REPAIR_TRIAGE_EFFORT", "medium").strip()
 
 _SYSTEM = """You are the integration lead for a small software team.
 Turn one user request and a dynamic role roster into a shared implementation
@@ -43,7 +44,9 @@ to their owning builder unless the user supplied them; agree only on the score
 range and payload where other parts need those facts. When one command must start
 separately built parts together, agree that committed source is what runs: no role
 commits generated build output (bundles, minified or hashed files), because the
-check and the review read the commit. Assign exclusive outcomes:
+check and the review read the commit. When one part serves files another part
+writes, name that one directory and its entry file: it is the seam both sides
+build against, not a layout choice. Assign exclusive outcomes:
 no role may duplicate another role's
 capability merely to make its isolated checkout standalone. Builders start
 independently and do not see one another's implementation.
@@ -75,9 +78,18 @@ code review back to the builder who owns the affected work. Return strict JSON:
 Choose only from the supplied builder ids. Select every builder whose work may
 need to change; do not select the validator. A repair re-runs the existing check.
 An empty agents list is allowed only when the evidence clearly shows the check
-itself is wrong and no builder code should change. That result asks a person to
-inspect the check; it never commissions a replacement check or changes the gate
-verdict.
+itself is wrong and no builder code should change. That result gives the checker
+one correction of its own check, which then runs again on the unchanged pull
+request; it never changes a gate verdict by itself.
+
+When the evidence includes the check's source, read the failed assertion and
+the inputs the check sent before it. Recompute the expected value yourself from
+those inputs, the request, and the shared contract. If the observed value is
+the correct one (for example a ranked or limited view that already holds a
+higher entry the check sent earlier, or a count of entries that does not match
+what the check submitted), the check is wrong: return an empty agents list and
+name the assertion and the value it should have expected. If the observed value
+contradicts the request or the contract, the builder is wrong.
 
 Separate the observed failure from an assumed cause. Read the event order and
 the successful observations too. An import attempted before dependency setup,
@@ -459,8 +471,11 @@ def select_repair_agents(
             "Route this evidence to its owning builders:\n"
             + json.dumps(payload, indent=2),
             system=_REPAIR_SYSTEM,
-            max_tokens=800,
-            effort=PLAN_EFFORT,
+            # Recomputing a check's expected value is arithmetic over its inputs, so
+            # triage gets room to reason; 800 tokens at low effort was sized for
+            # routing alone, before triage read the check's source.
+            max_tokens=4000,
+            effort=REPAIR_EFFORT,
         )
         parsed = _json_object(response.get("text") or "")
         chosen = parsed.get("agents")

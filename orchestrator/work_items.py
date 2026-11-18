@@ -67,6 +67,9 @@ class WorkItem:
     # explicit unused allowance in a new item. __post_init__ always resolves it.
     repair_attempts: int = -1
     refresh_attempts: int = -1
+    # One correction of this pull request's CHECK, when triage finds the failure in
+    # the check itself (engine._correct_check). Separate from the builder's repair.
+    check_corrections: int = 0
     retry_budget_inferred: bool = False
     pr: dict[str, Any] | None = None
     review_rounds: list[dict[str, Any]] = field(default_factory=list)
@@ -150,6 +153,7 @@ class WorkItem:
             "attempt": self.attempt,
             "repair_attempts": self.repair_attempts,
             "refresh_attempts": self.refresh_attempts,
+            "check_corrections": self.check_corrections,
             "retry_budget_inferred": self.retry_budget_inferred,
             "pr": dict(self.pr or {}),
             "review_rounds": list(self.review_rounds),

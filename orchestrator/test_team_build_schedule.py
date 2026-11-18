@@ -187,3 +187,50 @@ def test_by_default_the_checker_still_waits_for_every_builder():
                                       execution_timeout=10)
     asyncio.new_event_loop().run_until_complete(graph.invoke_async(""))
     assert started["kiro"] >= max(finished["claude-code"], finished["codex"])
+
+
+def test_a_check_waits_for_its_builder_when_the_dependency_failed(monkeypatch):
+    """November 18, team 8: the backend's Runtime failed at 34 s, the frontend's
+    dependency wait no longer held, and its check was written against an EMPTY tree
+    while Codex was still building. The check is written once the work exists."""
+    real_produce = FixtureExecutor.produce
+
+    def produce(self, run, agent_id, role):
+        if agent_id == "claude-code":
+            raise RuntimeError("ROLE_EXECUTION_ERROR: the backend's shell closed")
+        if agent_id == "codex":
+            time.sleep(1.5)
+            path = real_produce(self, run, agent_id, role)
+            with open(os.path.join(run.roledir(agent_id), "codex.txt"), "w") as f:
+                f.write("codex work\n")
+            return path
+        return real_produce(self, run, agent_id, role)
+
+    def publish(self, run):
+        for item in run.work_items.values():
+            if item.kind == "builder" and run.progress[item.agent].state == "done":
+                item.state, item.stale = "in_review", False
+                if not item.pr:
+                    item.pr = {"pr_url": "https://github.com/team/app/pull/1", "number": 1,
+                               "base": item.base_branch, "head": item.branch}
+
+    monkeypatch.setattr(Engine, "_publish_active_work_items", publish)
+    monkeypatch.setattr(Engine, "_comment_work_item", lambda self, run, item, body: None)
+    monkeypatch.setattr(FixtureExecutor, "produce", produce)
+    monkeypatch.setenv("WORKSHOP_MERGE_POLICY", "auto")
+    e = Engine(executor_obj=FixtureExecutor())
+    try:
+        r = e.submit("Use preset=web-app.", ["claude-code", "codex", "kiro"])
+        deadline = time.time() + 90
+        while r.status not in TERMINAL and time.time() < deadline:
+            time.sleep(0.1)
+        messages = [str(row.get("message")) for row in r.events]
+        frontend = r.work_items["codex"].work_id
+        published = _index(messages, "frontend: prepared")
+        authored = [i for i, m in enumerate(messages)
+                    if f"authored the acceptance check for {frontend}" in m]
+        assert authored and all(i > published for i in authored), messages
+        trees = [m for m in messages if f"{frontend}: pull request tree built" in m]
+        assert trees and not any("(0 file(s))" in m for m in trees), trees
+    finally:
+        e.shutdown()

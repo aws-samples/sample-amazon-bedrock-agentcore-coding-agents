@@ -42,7 +42,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from gate_diagnostics import extract_failure_lines
+from gate_diagnostics import count_check_lines, extract_failure_lines
 from review_build_outputs import declared_outputs
 import review_tools
 
@@ -362,6 +362,9 @@ def run_gate(check_path: str, work_dir: str, task: str, url: str = "") -> dict:
         # Extract before shortening output: later PASS lines can hide an early
         # failure from both the repair prompt and the pull request.
         "failure_lines": extract_failure_lines(out) if code != 0 else [],
+        # Counted on the whole output, before it is shortened: a corrected check is
+        # compared with the check it replaced on this number (see engine).
+        "check_lines": count_check_lines(out),
         "output": (out or "")[-4000:]}
 
 

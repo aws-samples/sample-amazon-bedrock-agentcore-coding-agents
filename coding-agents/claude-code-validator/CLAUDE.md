@@ -53,6 +53,21 @@ it must find out by REALLY EXERCISING the work, not by reading it.
   whose own logs said `Application startup complete`.
   `WORKSHOP_GATE_TIMEOUT_S` tells you the total wall clock you have; spend a real share
   of it, polling until a deadline rather than a small fixed count of tries.
+- **Compute every expected value that depends on what your check sent.** Keep the
+  inputs your check submitted and which ones were accepted, and derive counts, order,
+  the first and last entries of a ranked or limited view, and what must survive a
+  restart from that record and the documented rule, in code. A hand-typed number is
+  the most common false red here: in the November 18 canaries, 8 of the 14 builds
+  that stopped for a person had correct code and a typed expectation that was wrong
+  (a top-20 view expected to end at 500 after twenty higher scores were added, a new
+  99999 expected first behind an existing 100000, eight entries counted where seven
+  were sent).
+- **A correction turn corrects; it does not rewrite.** When the engine asks you to
+  correct your own check, the file that ran is in your directory. Change only the
+  assertion or harness defect that made it wrong, keep every other assertion, and
+  derive the corrected expectation from your inputs, never from the observed output.
+  The engine refuses a correction that prints fewer checks. If the work really fails
+  the request, leave the file unchanged: a person then decides.
 - **Reject a service because it ANSWERS WRONGLY, never because you did not wait for
   it.** Under-waiting turns a working deliverable into a red gate, which is the one
   verdict that must never be manufactured here. If you genuinely run out of time, say

@@ -178,6 +178,9 @@ TERMINAL = {"passed", "failed", "needs_human"}
 # orchestrator's MAX_REVIEW_ROUNDS (one re-implement pass): the cap is the
 # initial build round plus that many re-implement rounds.
 MAX_ITERATIONS = 1 + reviewer.MAX_REVIEW_ROUNDS
+# One correction of a pull request's CHECK when triage finds the failure there, the
+# checker's counterpart of the builder's one repair (see Engine._correct_check).
+MAX_CHECK_CORRECTIONS = 1
 # A role may also receive one owner turn when its base moves: a conflict refresh
 # or an optional semantic dependency refresh. It has its own allowance, so neither
 # it nor a repair consumes or replenishes the other's budget. Clean mechanical
@@ -700,6 +703,9 @@ class Run:
     _refresh_context: str = ""
     # A checker-only round: author checks for exactly these work ids, run no builder.
     _check_subjects: set[str] | None = field(default=None, repr=False)
+    # work_id -> the context of a pending check correction (the original check to
+    # start from, the triage reason, the failed lines); empty outside that turn.
+    _check_corrections: dict[str, dict] = field(default_factory=dict, repr=False)
     # Under auto merge, a pull request whose dependency merges first has its check
     # written AFTER that merge, against the branch it merges into, instead of twice.
     _deferred_checks: set[str] = field(default_factory=set, repr=False)
@@ -2178,7 +2184,8 @@ class Engine:
         return staged
 
     def _prepare_checker_checkout(self, run: Run, agent_id: str,
-                                  subject: _work_items.WorkItem) -> None:
+                                  subject: _work_items.WorkItem,
+                                  seed_check: str = "") -> None:
         """Give the checker its own worktree at ONE pull request's tree.
 
         Called once per role pull request. ``reset_worktree`` wipes everything but
@@ -2203,12 +2210,24 @@ class Engine:
             tree,
             f"Pull request baseline for {subject.work_id}",
         )
+        source = tree
+        if seed_check:
+            # A correction starts from the check that ran, beside the same tree, so an
+            # unchanged file means "the check was right". Staged from a copy: the pull
+            # request tree itself never contains the check (see _gate_dir_check_path).
+            source = os.path.join(run.workdir, "correction-seed", subject.work_id)
+            shutil.rmtree(source, ignore_errors=True)
+            shutil.copytree(tree, source)
+            for folder in (source, dest):
+                target = os.path.join(folder, _ACCEPTANCE_CHECK)
+                shutil.copyfile(seed_check, target)
+                os.chmod(target, 0o755)
         if self.executor.name == "fixture":
             return
         if self.executor.name != "agentcore":
             raise RuntimeError(_NO_PRODUCER_ERROR)
 
-        staged = runtime_stage.stage_item(run.run_id, subject.work_id, tree)
+        staged = runtime_stage.stage_item(run.run_id, subject.work_id, source)
         run.log(f"{subject.work_id}: pull request tree staged for Runtime "
                 f"validation ({staged} files)")
         dest_subdir = run.runtime_subdir(agent_id)
@@ -2231,7 +2250,8 @@ class Engine:
 
     def _cli_validator_authors_test(self, run: Run, endpoint: str,
                                     role: RoleResult,
-                                    subject: _work_items.WorkItem) -> str:
+                                    subject: _work_items.WorkItem,
+                                    correction: dict | None = None) -> str:
         """The validator role AUTHORS the acceptance check for ONE PULL REQUEST, and
         the engine reads that file back to run it.
 
@@ -2267,6 +2287,32 @@ class Engine:
                 "\n\nThe base branch advanced because another pull request merged. "
                 "Inspect this checkout as it exists now; do not assume the prior "
                 "check is still correct.")
+        fix = ""
+        if correction:
+            failed_lines = "\n".join(
+                f"- {line}" for line in (correction.get("failure_lines") or [])[:12]
+            ) or "- (the check printed no failure line)"
+            fix = (
+                "THIS TURN CORRECTS YOUR CHECK; IT DOES NOT WRITE A NEW ONE. You already "
+                "authored the check for this pull request, and the engine ran it on "
+                f"this exact tree. It is `./{_ACCEPTANCE_CHECK}` in this directory, "
+                "exactly as it ran. You are asked to review it because "
+                + str(correction.get("why") or "it failed") + "."
+                + f"\nThe lines it failed on:\n{failed_lines}\n"
+                "The end of its output:\n```\n"
+                + str(correction.get("output") or "")
+                + "\n```\n"
+                "Edit that file in place. Change only what made it wrong: an expected "
+                "value that contradicts the request, the shared contract, or the inputs "
+                "the check itself sent (compute it in the check from those inputs; do "
+                "not type a new number); an assumption about a detail the request leaves "
+                "open; or a defect in your own harness. Keep every other assertion, "
+                "including every one that passed: the engine counts the check lines each "
+                "version prints, and a correction that checks less is not accepted. "
+                "Never copy an observed output into an expectation, and never loosen a "
+                "rule the request or the contract states. If you find the check right "
+                "and the work really fails the request, leave the file exactly as it "
+                "is; a person then decides.\n\n")
         live = (f"Reference URL: {endpoint}. Your check runs against an isolated "
                 "checkout and must start any service it needs.\n"
                 if endpoint else
@@ -2292,7 +2338,7 @@ class Engine:
             "it stands now, plus that pull request's changes. If another role's "
             "pull request has already merged, its code is HERE and this pull request "
             "must work with it.\n\n"
-            + live +
+            + fix + live +
             "TEAM INTEGRATION CONTEXT (recorded facts, not an answer key):\n"
             f"{json.dumps(integration_context, indent=2)}\n\n"
             "AUTHOR the acceptance check for this deliverable and save it as "
@@ -2336,6 +2382,24 @@ class Engine:
             "when one is available. Do not mix that oracle with hand-entered "
             "expected values for the same behavior; a contradiction inside your "
             "check is a broken check, not a defect in the work.\n\n"
+            # November 18 canary, 60 teams: 8 of the 14 builds that stopped for a
+            # person had a correct backend and a hand-typed expectation that was wrong
+            # (the last entry of a top-20 view, which entry ranks first after a
+            # restart, how many entries were stored). The steering said so; this is
+            # the last channel before the file is written.
+            "COMPUTE EVERY EXPECTED VALUE THAT DEPENDS ON WHAT YOUR CHECK SENT. Keep "
+            "a list of the inputs your check submitted and which ones were accepted, "
+            "and derive counts, order, the first and last entries of a ranked or "
+            "limited view, and what must survive a restart from that list and the "
+            "documented rule, in code. Never type such a value by hand: a check that "
+            "expects the wrong number blames working software. A ranked or limited "
+            "view may legitimately leave out an accepted entry. In a browser, the "
+            "console message 'Failed to load resource: the server responded with a "
+            "status of 4xx' is the browser logging a refused request, such as the "
+            "invalid input your own check sends; it is not a page error. Count "
+            "uncaught page errors, not that message. Wait for something you can "
+            "observe (text, a child count, or an element being attached), never for "
+            "the visibility of a container that may legitimately be empty.\n\n"
             "Contract for your file: exit 0 to accept and nonzero to reject; print "
             "one line per check so a human can read what you verified; read the "
             "deliverable's URL from the `DELIVERABLE_URL` env var"
@@ -2372,12 +2436,15 @@ class Engine:
             "defines checking helpers of its own (parsers, DOM or sandbox fixtures, "
             "stubs, replaced globals, clocks, timers, random sources), give it a "
             "self-test mode: with WORKSHOP_CHECK_SELFTEST=1 it drives EVERY such "
-            "helper once on a trivial input written inside the check and exits, "
+            "helper, and every page, fixture server, or stub the check builds "
+            "itself, once on a trivial input written inside the check and exits, "
             "without reading or starting the deliverable. Run it once that way and "
             "fix the check until it passes: a crash in your own harness during the "
             "real gate is the check's defect, and no builder can repair it. Do "
             "not run the acceptance behavior; the engine owns that one real execution."
-            + feedback)
+            + feedback
+            + ("\n\nREMEMBER: this turn corrects ./" + _ACCEPTANCE_CHECK + " in place "
+               "and keeps every other assertion." if correction else ""))
         result = self._runtime_cli(run, _validator_agent(), role, prompt, model,
                                    _ACCEPTANCE_CHECK)
         test_path = os.path.join(run.roledir(_validator_agent()), _ACCEPTANCE_CHECK)
@@ -2634,6 +2701,19 @@ class Engine:
                     run.log(f"validator: {item.work_id}'s check is written after "
                             f"{', '.join(item.depends_on)} merges, once, against the "
                             "branch it merges into")
+                # A builder still at work has published nothing to check. The
+                # schedule deferred it behind a dependency; when that dependency
+                # failed, the wait above no longer holds, and on November 18 a
+                # check was written against the frontend's EMPTY tree while Codex
+                # was still building. Finalization writes it once the work exists.
+                unfinished = [item for item in subjects
+                              if item not in waiting
+                              and run.progress[item.agent].state == "working"]
+                for item in unfinished:
+                    run._deferred_checks.add(item.work_id)
+                    run.log(f"validator: {item.work_id}'s builder is still working; "
+                            "its check is written when the work is published")
+                waiting += unfinished
                 subjects = [item for item in subjects if item not in waiting]
             # A repair selects its owner, not every still-open PR. Preserve the
             # other PRs' check paths, including evidence awaiting its first gate,
@@ -2670,7 +2750,8 @@ class Engine:
                 # against no longer exists. Then, and only then, author again.
                 # Repair guidance and base-refresh guidance share a prompt field;
                 # only the actual base bytes decide whether a check is invalidated.
-                reused = self._prior_check(run, item)
+                correction = run._check_corrections.get(item.work_id)
+                reused = "" if correction else self._prior_check(run, item)
                 if reused:
                     run._item_checks[item.work_id] = self._gate_dir_check_path(
                         run, reused, item)
@@ -2680,7 +2761,11 @@ class Engine:
                             f"{item.work_id} against the repaired tree (not "
                             "re-authoring: the request did not change)")
                     continue
-                self._prepare_checker_checkout(run, role.agent, item)
+                if correction:
+                    self._prepare_checker_checkout(
+                        run, role.agent, item, seed_check=correction["seed"])
+                else:
+                    self._prepare_checker_checkout(run, role.agent, item)
                 # The checker in the maker-checker pair. It AUTHORS the acceptance
                 # check for this pull request; the engine executes that file in
                 # finalization and reads its real exit code. The engine starts
@@ -2689,8 +2774,12 @@ class Engine:
                 # deliverable. That is why no protocol, port, or language appears
                 # anywhere on this path.
                 if self.executor.name == "agentcore":
-                    authored = self._cli_validator_authors_test(
-                        run, endpoint.get("url", ""), role, item)
+                    authored = (
+                        self._cli_validator_authors_test(
+                            run, endpoint.get("url", ""), role, item,
+                            correction=correction)
+                        if correction else self._cli_validator_authors_test(
+                            run, endpoint.get("url", ""), role, item))
                 elif self.executor.name == "fixture":
                     produced = self.executor.produce(run, role.agent, role)
                     authored = self._gate_dir_check_path(run, produced, item)
@@ -2701,9 +2790,9 @@ class Engine:
                 # Kept for the read-only review route and the compose commit, which
                 # ship the last authored check beside the work it graded.
                 run._acceptance_test_file = authored
-                run.log(f"validator: authored the acceptance check for "
-                        f"{item.work_id}; its real exit code is that pull "
-                        "request's gate")
+                run.log(f"validator: {'corrected' if correction else 'authored'} the "
+                        f"acceptance check for {item.work_id}; its real exit code is "
+                        "that pull request's gate")
             prepared_count = sum(item.work_id in run._item_checks for item in subjects)
             role.note = (f"prepared {prepared_count} acceptance check(s); "
                           f"{reused_count} reused from the prior round")
@@ -3070,6 +3159,8 @@ class Engine:
             "summary": gate.get("summary") or "",
             "checks": list(gate.get("checks") or []),
         }
+        if isinstance(gate.get("check_lines"), int):
+            row["check_lines"] = gate["check_lines"]
         failures = gate_failure_lines(gate)
         if failures:
             row["failure_lines"] = failures
@@ -3158,15 +3249,23 @@ class Engine:
     ) -> None:
         eligible = eligible if eligible is not None else self._builder_items(
             run, pending_only=True)
+        evidence = {"stage": stage, "gate": gate, "review": run.review or {}}
+        # The check's own source, so triage can tell a wrong expectation from wrong
+        # code: on November 18 it routed five correct backends to a repair because it
+        # saw only "FAIL top 20 (last 1001)", not the inputs the check had sent.
+        if not gate.get("passed") and len(eligible) == 1:
+            path = (run._item_checks or {}).get(eligible[0].work_id, "")
+            if path and os.path.isfile(path):
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    source = handle.read()
+                evidence["check_source"] = (
+                    source if len(source) <= _MAX_FAILED_CHECK_CHARS else
+                    source[:_MAX_FAILED_CHECK_CHARS] + "\n[the rest is not shown]")
         selected, rationale = integration_plan.select_repair_agents(
             run.task,
             run.integration_brief or {},
             eligible,
-            {
-                "stage": stage,
-                "gate": gate,
-                "review": run.review or {},
-            },
+            evidence,
             offline_fixture=(self.executor.name == "fixture"),
         )
         allowed = {item.agent for item in eligible}
@@ -3514,6 +3613,12 @@ class Engine:
         """
         if not gate.get("passed"):
             return False
+        if not any((r.get("gate") or {}).get("passed") for r in item.review_rounds):
+            # The first round was RED, and a red gate is never shown to the reviewer,
+            # so nobody has reviewed this pull request yet. Merge with fix skips a
+            # SECOND review; it never skips the first. (The November 18 canary merged
+            # five fixed pull requests that no reviewer had read.)
+            return self._assess_pull_request(run, item, gate, stage)
         run.log(f"{item.work_id}: merge with fix: the same check passed after the "
                 "fix, so no second review round")
         assessment = (
@@ -3640,68 +3745,9 @@ class Engine:
                 # asking the reviewer, whose own red-gate branch would say the same.
                 self._assess_pull_request(run, item, gate, stage)
 
-            if not approved and item.merge_state != "review_unavailable":
-                # ONE bounded repair for THIS pull request only. Both conflict and
-                # semantic refreshes have a separate budget; a clean rebase grants
-                # no repair credit either.
-                if item.repair_attempts >= reviewer.MAX_REVIEW_ROUNDS:
-                    row["state"] = "blocked"
-                    row["error"] = "ITERATION_CAP"
-                    item.merge_state = "blocked"
-                    run.log(f"{item.work_id}: still not acceptable after "
-                            f"{item.repair_attempts} repair attempt(s); its pull request keeps the "
-                            "evidence", "warn")
-                    continue
-                if not self._repair_pull_request(run, item, gate, stage):
-                    row["state"] = "blocked"
-                    # Keep the specific stop (a turn limit, an exhausted model quota)
-                    # instead of a generic role error, and say on the PR that its
-                    # repair did not complete: the timeline used to end at "repair
-                    # requested", and the run said the check "stayed red".
-                    row["error"] = (
-                        run.fail_reason if run.fail_reason in _REPAIR_STOPS
-                        else "CHECK_REQUIRES_HUMAN" if not run._active_builders
-                        else "ROLE_EXECUTION_ERROR")
-                    item.merge_state = "blocked"
-                    if row["error"] == "CHECK_REQUIRES_HUMAN":
-                        # No builder was asked to change anything (the comment above
-                        # says so); do not claim a builder's repair turn stopped.
-                        closing = (
-                            f"**Stopped for a person** ({row['error']}). No builder was "
-                            "asked to repair this pull request, because triage found the "
-                            "failure in the check itself, so the check was not run again. "
-                            "The evidence above is still the latest; a person decides "
-                            "what happens next.")
-                    else:
-                        closing = (
-                            f"**Repair did not complete** ({row['error']}). The builder's "
-                            "repair turn for this pull request stopped before it produced a "
-                            "change, so the check was not run again. The evidence above is "
-                            "still the latest; a person decides what happens next.")
-                    self._comment_work_item(run, item, closing)
-                    continue
-                stage = f"{item.work_id} round {item.attempt}"
-                gate = self._gate_one_pull_request(run, item, stage)
-                if github.merge_policy() == "auto":
-                    approved = self._finish_after_fix(run, item, gate, stage)
-                else:
-                    approved = gate.get("passed") and self._assess_pull_request(
-                        run, item, gate, stage)
-                if not approved and not gate.get("passed"):
-                    # Exactly as in round 1: a red gate is never approved, and it must
-                    # SAY SO on the pull request. Without this the `and` above
-                    # short-circuits, nothing is posted, and the pull request a person
-                    # is then told to go open carries only its first round -- while the
-                    # log claims it "keeps the evidence". A live routed run ended
-                    # ROLE_PR_BLOCKED with the blocking round visible nowhere but the
-                    # engine's own memory.
-                    self._assess_pull_request(run, item, gate, stage)
-                if not approved:
-                    row["state"] = "blocked"
-                    row["error"] = ("ITERATION_CAP" if gate.get("passed")
-                                    else "GATE_RED")
-                    item.merge_state = "blocked"
-                    continue
+            if (not approved and item.merge_state != "review_unavailable"
+                    and not self._repair_until_settled(run, item, row, gate, stage)):
+                continue
 
             if item.merge_state == "review_unavailable":
                 row["state"] = "blocked"
@@ -3714,6 +3760,159 @@ class Engine:
 
         self._settle_run(run, items)
         return True
+
+    def _repair_until_settled(
+        self, run: Run, item: _work_items.WorkItem, row: dict, gate: dict, stage: str
+    ) -> bool:
+        """Spend this pull request's bounded repairs; True when it may go on to merge.
+
+        Two allowances, each spent at most once, so this loop runs at most twice and
+        can never become re-entrant: the builder's ONE repair, and (November 18) ONE
+        correction of the check itself. The correction is offered when triage finds
+        the failure in the check, or when the builder's repair left the pull request
+        byte-identical and the same check failed the same way: the builder found
+        nothing to change. A False return leaves ``row`` blocked with the reason, and
+        the evidence on the PR.
+        """
+        correct_because = None
+        while True:
+            unchanged_digest = item.patch_digest
+            if correct_because is not None:
+                kind = self._correct_check(run, item, gate, reason=correct_because)
+                if kind != "corrected":
+                    row["state"], row["error"] = "blocked", "GATE_RED"
+                    item.merge_state = "blocked"
+                    self._comment_work_item(run, item, (
+                        "**Stopped for a person** (GATE_RED). The builder's one repair "
+                        "left this pull request unchanged and the same check failed "
+                        "again; "
+                        + ("the checker reviewed its check and kept it."
+                           if kind == "upheld" else
+                           "the checker's one correction did not complete.")
+                        + " The evidence above is the latest; a person decides."))
+                    return False
+            else:
+                if item.repair_attempts >= reviewer.MAX_REVIEW_ROUNDS:
+                    row["state"] = "blocked"
+                    row["error"] = ("GATE_RED" if item.check_corrections
+                                    and not gate.get("passed") else "ITERATION_CAP")
+                    item.merge_state = "blocked"
+                    run.log(f"{item.work_id}: still not acceptable after "
+                            f"{item.repair_attempts} repair attempt(s); its pull "
+                            "request keeps the evidence", "warn")
+                    return False
+                kind = ("repaired" if self._repair_pull_request(run, item, gate, stage)
+                        else "")
+                if not kind and not run._active_builders and not gate.get("passed") \
+                        and run.fail_reason not in _REPAIR_STOPS:
+                    kind = self._correct_check(run, item, gate)
+                    if kind == "corrected":
+                        # Triage asked no builder to change anything, so the builder's
+                        # one repair is still unspent; the correction has its own budget.
+                        item.repair_attempts -= 1
+                if kind not in ("repaired", "corrected"):
+                    self._block_unrepaired(run, item, row, kind)
+                    return False
+            correct_because = None
+            previous = gate
+            stage = f"{item.work_id} round {item.attempt}" + (
+                " (corrected check)" if kind == "corrected" else "")
+            gate = self._gate_one_pull_request(run, item, stage)
+            if kind == "corrected" and gate.get("passed") \
+                    and self._correction_narrowed(previous, gate):
+                self._refuse_narrowed_correction(run, item, row, previous, gate, stage)
+                return False
+            if kind == "repaired" and github.merge_policy() == "auto":
+                approved = self._finish_after_fix(run, item, gate, stage)
+            else:
+                approved = gate.get("passed") and self._assess_pull_request(
+                    run, item, gate, stage)
+            if not approved and not gate.get("passed"):
+                # Exactly as in round 1: a red gate is never approved, and it must
+                # SAY SO on the pull request. Without this the `and` above
+                # short-circuits, nothing is posted, and the pull request a person
+                # is then told to go open carries only its first round -- while the
+                # log claims it "keeps the evidence". A live routed run ended
+                # ROLE_PR_BLOCKED with the blocking round visible nowhere but the
+                # engine's own memory.
+                self._assess_pull_request(run, item, gate, stage)
+            if approved or item.merge_state == "review_unavailable":
+                return True
+            if kind == "corrected":
+                continue        # the builder's one repair is still unspent
+            if (not gate.get("passed") and unchanged_digest
+                    and item.patch_digest == unchanged_digest
+                    and gate.get("check_sha256") == previous.get("check_sha256")
+                    and item.check_corrections < MAX_CHECK_CORRECTIONS):
+                correct_because = (
+                    "the builder's one repair left this pull request byte-identical, "
+                    "so it found nothing in the code to change for these lines, and "
+                    "the same check failed the same way again")
+                continue
+            row["state"] = "blocked"
+            row["error"] = "ITERATION_CAP" if gate.get("passed") else "GATE_RED"
+            item.merge_state = "blocked"
+            return False
+
+    def _block_unrepaired(self, run: Run, item: _work_items.WorkItem, row: dict,
+                          kind: str) -> None:
+        """Record why no repair ran, on the row and on the pull request."""
+        row["state"] = "blocked"
+        # Keep the specific stop (a turn limit, an exhausted model quota) instead of
+        # a generic role error, and say on the PR that its repair did not complete:
+        # the timeline used to end at "repair requested", and the run said the check
+        # "stayed red".
+        row["error"] = (
+            run.fail_reason if run.fail_reason in _REPAIR_STOPS
+            else "CHECK_REQUIRES_HUMAN" if not run._active_builders
+            else "ROLE_EXECUTION_ERROR")
+        item.merge_state = "blocked"
+        if row["error"] == "CHECK_REQUIRES_HUMAN":
+            # No builder was asked to change anything (the comment above says so);
+            # do not claim a builder's repair turn stopped.
+            closing = (
+                f"**Stopped for a person** ({row['error']}). No builder was asked to "
+                "repair this pull request, because triage found the failure in the "
+                "check itself"
+                + (", and the checker reviewed its check and kept it"
+                   if kind == "upheld" else
+                   ", and the checker's one correction did not complete"
+                   if kind == "failed" else "")
+                + ", so the check was not run again. The evidence above is still the "
+                "latest; a person decides what happens next.")
+        else:
+            closing = (
+                f"**Repair did not complete** ({row['error']}). The builder's repair "
+                "turn for this pull request stopped before it produced a change, so "
+                "the check was not run again. The evidence above is still the latest; "
+                "a person decides what happens next.")
+        self._comment_work_item(run, item, closing)
+
+    def _refuse_narrowed_correction(self, run: Run, item: _work_items.WorkItem,
+                                    row: dict, original: dict, corrected: dict,
+                                    stage: str) -> None:
+        row["state"], row["error"] = "blocked", "CHECK_CORRECTION_NARROWED"
+        item.merge_state = "blocked"
+        before, after = original.get("check_lines"), corrected.get("check_lines")
+        run.log(f"{item.work_id}: the corrected check ran {after} checks where the "
+                f"original ran {before}; its pass is not accepted", "warn")
+        self._comment_work_item(run, item, replay.gate_evidence_comment(
+            run, corrected, stage=stage, item=item, assessment=(
+                "**Assessment**: correction not accepted (CHECK_CORRECTION_NARROWED)"
+                f"\n\nThe corrected check passed but ran {after} checks where the "
+                f"original ran {before}. A correction may fix a wrong expectation; it "
+                "may not check less, so this pass does not count. A person decides.")))
+
+    @staticmethod
+    def _correction_narrowed(original: dict, corrected: dict) -> bool:
+        """True when a corrected check printed fewer checks than the one it replaced.
+
+        The documented failure this guards: a re-authored check ran 80 assertions where
+        the original ran 141, passed, and nothing reported that the bar had moved. A
+        correction fixes the check's own mistake; it does not get to check less. Only
+        ever keeps a result from counting; it never makes anything pass."""
+        before, after = original.get("check_lines"), corrected.get("check_lines")
+        return isinstance(before, int) and isinstance(after, int) and after < before
 
     def _finalize_ready_early(self, run: Run) -> None:
         """Gate, review and merge green pull requests while a slower builder works.
@@ -3797,6 +3996,89 @@ class Engine:
         if run._item_checks.get(item.work_id):
             return ""
         return run.fail_reason or "CHECK_NOT_AUTHORED"
+
+    def _correct_check(self, run: Run, item: _work_items.WorkItem, gate: dict,
+                       reason: str | None = None) -> str:
+        """Give the checker ONE correction of its own red check, never the engine.
+
+        November 18 canary, 60 teams: in 8 of the 14 builds that stopped for a person
+        the builder's code was right and the check's own expectation was wrong: a
+        top-20 view expected to end at 500 after twenty higher scores were added, a
+        new 99999 expected first behind an existing 100000, eight entries counted
+        where the check had sent seven. Triage named the check, and the run stopped,
+        because a builder defect had one repair and a checker defect had none. Both
+        sides of the maker-checker pair now get the same single chance. The checker
+        starts from its previous file and may change only what made it wrong; the
+        corrected file runs on the SAME unchanged pull request and its real exit code
+        decides; both hashes are recorded and the correction is posted on the PR; a
+        corrected check that runs fewer checks does not count
+        (``_correction_narrowed``). Returns "corrected", "upheld" (the checker kept
+        its check: a person decides), "failed" (the turn did not complete), or "" (no
+        correction is left for this pull request).
+        """
+        if item.check_corrections >= MAX_CHECK_CORRECTIONS:
+            return ""
+        kept = self._kept_check_path(run, item)
+        if not os.path.isfile(kept):
+            return ""
+        item.check_corrections += 1
+        original = kept + ".before-correction"
+        shutil.copyfile(kept, original)
+        with open(original, "rb") as handle:
+            before = hashlib.sha256(handle.read()).hexdigest()
+        triaged = reason is None
+        if triaged:
+            reason = ""
+            for entry in reversed(run.retry_reasons):
+                if entry.get("routing"):
+                    reason = str(entry["routing"])
+                    break
+        why = (("triage found the failure in the check itself, not in the code"
+                + (f": {reason}" if reason else "")) if triaged else reason)
+        run._check_corrections[item.work_id] = {
+            "seed": original,
+            "why": why,
+            "failure_lines": gate_failure_lines(gate),
+            "output": str(gate.get("output") or "")[-3000:],
+        }
+        prior_active, prior_phase = run._active_builders, run.phase
+        prior_status, prior_fail = run.status, run.fail_reason
+        run._check_subjects, run._active_builders = {item.work_id}, set()
+        run.log(f"validator: correcting {item.work_id}'s own check once, because {why}",
+                "warn")
+        try:
+            completed = self._execute(run, defer_failure=True)
+        finally:
+            run._check_subjects, run._active_builders = None, prior_active
+            run.phase = prior_phase
+            run._check_corrections.pop(item.work_id, None)
+        path = run._item_checks.get(item.work_id, "")
+        if not completed or not path or not os.path.isfile(path):
+            # The failed turn is the checker's, reported on this PR alone; it must not
+            # become the run's headline over the other pull requests' own outcomes.
+            run.status, run.fail_reason = prior_status, prior_fail
+            self._keep_check_for_later_rounds(run, item, original)
+            run._item_checks[item.work_id] = kept
+            run.log(f"{item.work_id}: the checker's correction did not complete; the "
+                    "original check and its red result stand", "warn")
+            return "failed"
+        with open(path, "rb") as handle:
+            after = hashlib.sha256(handle.read()).hexdigest()
+        if after == before:
+            run.log(f"{item.work_id}: the checker reviewed its check and kept it "
+                    "unchanged; a person decides", "warn")
+            return "upheld"
+        run.log(f"{item.work_id}: the checker corrected its own check "
+                f"({before[:12]} -> {after[:12]}); the corrected check runs on the "
+                "unchanged pull request", "warn")
+        self._comment_work_item(run, item, (
+            f"**The check was corrected once.** For this pull request, {why}. The "
+            "checker corrected its own check, and the corrected check now runs on this "
+            "same, unchanged pull request; its real exit code decides. A correction "
+            "that runs fewer checks than the original does not count."
+            f"\n\nOriginal check SHA-256: `{before}`\n"
+            f"Corrected check SHA-256: `{after}`"))
+        return "corrected"
 
     def _refresh_after_sibling_merge(
         self, run: Run, item: _work_items.WorkItem, merged: _work_items.WorkItem

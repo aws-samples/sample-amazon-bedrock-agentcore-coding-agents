@@ -31,7 +31,13 @@ There is no race and no conflict winner. Roles start independently against a sha
 contract, and a red pull request never blocks a green sibling. Each pull request is
 checked and reviewed against the default branch AS IT STANDS, so once one role's work
 merges, the next role's check runs against a tree that contains it. Red evidence buys
-one repair turn for the responsible existing pull request. Separately, when a sibling
+one repair turn for the responsible existing pull request. When triage finds the
+failure in the check itself, or the builder's repair leaves the pull request
+unchanged and the same check fails the same way, the checker gets one correction of
+its own check instead; the corrected check runs on the unchanged pull request, and a
+correction that prints fewer checks does not count. Under auto merge a fixed green
+pull request merges without a second review, but never without a first one: a pull
+request whose first round was red is reviewed once its check is green. Separately, when a sibling
 merges and moves a path a still-open pull request also changed, that owner gets one
 bounded refresh. Merging supports either human review or guarded auto-merge.
 
@@ -97,8 +103,10 @@ exercise the published browser's restrictions.
 A repair preserves its authored executable. The kept record includes the base
 source digest and the executable's SHA-256; repair prompt text cannot invalidate
 it. A changed base snapshot permits a new check, while altered kept evidence
-fails loudly. A suspected checker defect goes to a person. Gate history and PR
-comments include the executable hash used for that execution.
+fails loudly. A suspected checker defect gets one correction by the checker,
+never by the engine, and a check the checker keeps goes to a person. Gate
+history and PR comments include the executable hash used for each execution,
+so an original and a corrected check are both on record.
 `run_store.save_check` also retains the exact bytes beneath
 `evidence/<run_id>/<work_id>/<sha256>/acceptance_check`. When the workshop bucket
 is available, it mirrors them beneath `orchestrator/run-evidence/` and records

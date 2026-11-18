@@ -8,6 +8,10 @@ MAX_FAILURE_LINES = 25
 MAX_FAILURE_LINE_CHARS = 300
 _EXCEPTION_LINE = re.compile(
     r"^[\w.]*(?:Error|Exception)(?:\s*\[[^\]]+\])?\s*:", re.IGNORECASE)
+# One line per check is the authored check's own contract ("print one line per check
+# so a human can read what you verified"). Counted, never read as a verdict.
+_CHECK_LINE = re.compile(r"^\s*(?:PASS|FAIL|OK|NOT OK)\b|^\s*[\u2713\u2714\u2717\u2718\u00d7]",
+                         re.IGNORECASE)
 
 
 def extract_failure_lines(output: str) -> list[str]:
@@ -28,6 +32,16 @@ def extract_failure_lines(output: str) -> list[str]:
         if len(hits) >= MAX_FAILURE_LINES:
             break
     return hits
+
+
+def count_check_lines(output: str) -> int:
+    """How many verdict lines (PASS/FAIL/ok/not ok, or a check mark) a run printed.
+
+    Recorded beside the gate so a corrected check can be compared with the one it
+    replaced: a correction that runs fewer checks has moved the bar, and is refused.
+    It only ever keeps a red result red; it never decides a pass.
+    """
+    return sum(1 for line in (output or "").splitlines() if _CHECK_LINE.match(line))
 
 
 def gate_failure_lines(gate: dict) -> list[str]:
