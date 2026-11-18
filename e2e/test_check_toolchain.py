@@ -49,6 +49,19 @@ def test_every_checking_image_installs_it_and_sets_its_locations():
         assert re.search(r"^RUN bash /opt/(workshop-cli/)?check-tools\.sh$", text, re.M), name
 
 
+def test_a_non_root_image_links_its_users_browser_cache():
+    for name in ("kiro", "codex", "claude-code-validator"):
+        text = IMAGES[name].read_text()
+        assert "ln -sfn /opt/ms-playwright /home/agent/.cache/ms-playwright" in text, name
+        assert text.index("useradd") < text.index("/home/agent/.cache/ms-playwright"), name
+
+
+def test_the_installer_works_without_its_variables():
+    text = SCRIPT.read_text()
+    assert "ln -sfn /opt/check-tools/node_modules /node_modules" in text
+    assert "env -u NODE_PATH -u PLAYWRIGHT_BROWSERS_PATH node -e" in text
+
+
 def test_the_check_process_receives_the_toolchain_locations():
     assert {"PLAYWRIGHT_BROWSERS_PATH", "NODE_PATH"} <= reviewer._CHECK_ENV_NAMES
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/ms-playwright"

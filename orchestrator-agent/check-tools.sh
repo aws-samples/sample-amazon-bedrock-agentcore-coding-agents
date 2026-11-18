@@ -28,11 +28,18 @@ npm install --no-audit --no-fund --omit=dev \
 PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
     node node_modules/playwright/cli.js install --only-shell chromium
 chmod -R a+rX /opt/check-tools /opt/ms-playwright
+# Found WITHOUT the two variables too: a coding CLI may run its commands with a reduced
+# environment (Codex printed "No Playwright module" on November 18 although the image
+# set NODE_PATH). Node resolves /node_modules from any directory, and Playwright's
+# default browser cache is ~/.cache/ms-playwright for root and for the agent user.
+ln -sfn /opt/check-tools/node_modules /node_modules
+mkdir -p /root/.cache && ln -sfn /opt/ms-playwright /root/.cache/ms-playwright
+# An image with a non-root user links its cache after creating that user (Dockerfile).
 
-# Prove it from an unrelated directory, the way a check resolves it: a real click in
-# headless Chromium, and jsdom, through NODE_PATH alone.
+# Prove it from an unrelated directory with neither variable set, the hardest way a
+# check or a builder's command can resolve it: a real click in headless Chromium, and jsdom.
 cd /tmp
-NODE_PATH=/opt/check-tools/node_modules PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright node -e '
+env -u NODE_PATH -u PLAYWRIGHT_BROWSERS_PATH node -e '
 const { chromium } = require("playwright");
 const { JSDOM } = require("jsdom");
 (async () => {

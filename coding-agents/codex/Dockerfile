@@ -34,6 +34,8 @@ RUN curl -fsSL -o /tmp/otelcol.tar.gz \
     && /usr/local/bin/otelcol-contrib --version
 
 RUN useradd -m -d /home/agent -u 1000 agent
+# The check toolchain's browsers, at the agent user's default Playwright cache.
+RUN install -d -o agent -g agent /home/agent/.cache && ln -sfn /opt/ms-playwright /home/agent/.cache/ms-playwright
 
 COPY --from=toolchain cli-versions.json cli_versions.py /opt/workshop-cli/
 RUN python3 /opt/workshop-cli/cli_versions.py install --cli codex \

@@ -35,6 +35,8 @@ RUN npm install -g typescript ts-node
 
 # Non-root user
 RUN useradd -m -d /home/agent -u 1000 agent
+# The check toolchain's browsers, at the agent user's default Playwright cache.
+RUN install -d -o agent -g agent /home/agent/.cache && ln -sfn /opt/ms-playwright /home/agent/.cache/ms-playwright
 
 # Verify the immutable archive before running its installer as the agent user.
 # Both kiro-cli and its re-executed chat sibling must report the pinned version.
