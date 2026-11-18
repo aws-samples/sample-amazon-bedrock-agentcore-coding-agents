@@ -780,15 +780,18 @@ def _open_through_retry(client):
     return asyncio.run(go()), slept
 
 
-def test_an_asyncio_handshake_timeout_is_retried_on_the_same_shell():
+def test_an_asyncio_handshake_timeout_is_retried_on_the_same_session():
+    """Same session (the microVM the first attempt started); a NEW shell ID, because
+    the abandoned upgrade can still arrive and kick a shell that shares its ID
+    (November 18, team 8; see test_runtime_connect_retry.py)."""
     import asyncio
 
     client = _HandshakeClient(
         [asyncio.TimeoutError("timed out during opening handshake"), "SHELL"])
     shell, slept = _open_through_retry(client)
     assert shell == "SHELL" and slept == [2.0]
-    assert [(c["session_id"], c["shell_id"]) for c in client.calls] == [
-        ("s" * 36, "shell-1")] * 2
+    assert [c["session_id"] for c in client.calls] == ["s" * 36] * 2
+    assert client.calls[0]["shell_id"] == "shell-1" != client.calls[1]["shell_id"]
 
 
 def test_the_python_310_asyncio_timeout_class_is_transient(monkeypatch):

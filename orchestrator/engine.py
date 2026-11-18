@@ -203,7 +203,12 @@ _FIXTURE_BASE_BRANCH = "main"
 # effectively a scope cap that rewarded the cheapest possible answer: the CLI got
 # killed mid-build, so the deliverable that survived was whatever a single file
 # could do. Raised so the ambition in the preset text is actually reachable.
-HARNESS_ROLE_TIMEOUT_S = int(os.environ.get("HARNESS_ROLE_TIMEOUT_S", "1200"))
+#
+# 1800s since November 18, when the builders moved to medium effort: in the 60-team
+# canary Codex's turns had a median of 405 s and a p90 of 661 s, and one finished a
+# complete game at 1429 s, 229 s after 1200s had already stopped its build. A wedged
+# CLI is still stopped, half an hour in rather than twenty minutes.
+HARNESS_ROLE_TIMEOUT_S = int(os.environ.get("HARNESS_ROLE_TIMEOUT_S", "1800"))
 
 # Bounds for the per-role structured event feed (run.role_events): a chatty agent
 # must not grow the in-memory run record without limit. Long bodies are truncated

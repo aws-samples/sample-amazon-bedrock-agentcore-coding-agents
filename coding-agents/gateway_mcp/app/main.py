@@ -749,7 +749,14 @@ def create_pull_request(
     body: str = "",
     draft: bool = False,
 ) -> dict:
-    """Open a PR from `head` → `base`. Returns {number, url}."""
+    """Open a PR from `head` → `base`. Returns {number, url}.
+
+    Idempotent for the caller's retry: when GitHub answers 422 because an open
+    pull request for this head already exists (a first attempt that GitHub
+    completed but whose answer the caller never received), return that pull
+    request instead of failing. November 18: a cold Runtime behind the Gateway
+    turned a successful first create into a 422 on the retry.
+    """
     with httpx.Client(timeout=30) as c:
         r = c.post(
             f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
@@ -762,6 +769,17 @@ def create_pull_request(
                 "draft": draft,
             },
         )
+        if r.status_code == 422 and "already exists" in r.text:
+            found = c.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
+                headers=_headers(),
+                params={"head": f"{owner}:{head}", "base": base, "state": "open"},
+            )
+            found.raise_for_status()
+            rows = found.json()
+            if len(rows) == 1:
+                return {"number": rows[0]["number"], "url": rows[0]["html_url"],
+                        "existing": True}
         r.raise_for_status()
         d = r.json()
         return {"number": d["number"], "url": d["html_url"]}
@@ -792,6 +810,17 @@ def merge_pull_request(
             json=payload,
         )
         if r.is_error:
+            # Idempotent for the caller's retry: a first merge that GitHub completed,
+            # whose answer never arrived, is reported as that merge, but only for the
+            # exact head the caller pinned.
+            state = c.get(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
+                          headers=_headers())
+            if state.status_code == 200:
+                pr = state.json()
+                if pr.get("merged") and (not head_sha
+                                         or pr.get("head", {}).get("sha") == head_sha):
+                    return {"merged": True, "sha": pr.get("merge_commit_sha", ""),
+                            "existing": True}
             try:
                 detail = r.json().get("message") or r.text
             except (ValueError, AttributeError):

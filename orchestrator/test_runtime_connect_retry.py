@@ -1,9 +1,14 @@
-"""A shell that never opened is retried, a few times, on the same session and shell.
+"""A shell that never opened is retried, a few times, on the same session.
 
 October 13, dev stack: the first backend dispatch after a Runtime update failed with
 `TimeoutError: timed out during opening handshake` and the team build stopped at
 ROLE_EXECUTION_ERROR, although the Runtime answered in 4 s minutes later. Nothing had
 been typed, so retrying the connect cannot run anything twice.
+
+November 18, team 8: the abandoned handshake still reached the cold microVM after the
+retry, and two connections on ONE shell ID kicked each other until the engine's
+closed. The first connect's retry now uses a new shell ID; a reconnect to a shell
+that already holds a command keeps its ID.
 """
 from __future__ import annotations
 
@@ -44,26 +49,38 @@ class _Rejected(Exception):
         self.response = type("R", (), {"status_code": status})()
 
 
-def _use(client, deadline_s=60.0):
-    slept = []
+def _use(client, deadline_s=60.0, **kw):
+    slept, used = [], []
 
     async def sleep(seconds):
         slept.append(seconds)
 
     async def go():
         async with runtime_exec._open_shell(client, "arn:rt", "s" * 36, "shell-1",
-                                            time.monotonic() + deadline_s, sleep=sleep) as shell:
+                                            time.monotonic() + deadline_s, sleep=sleep,
+                                            connected=used.append, **kw) as shell:
             return shell
-    return asyncio.run(go()), slept
+    shell = asyncio.run(go())
+    _use.used = used
+    return shell, slept
 
 
-def test_a_handshake_timeout_is_retried_on_the_same_session_and_shell():
+def test_a_handshake_timeout_is_retried_on_the_same_session_with_a_new_shell():
     client = _Client([TimeoutError("timed out during opening handshake"), "SHELL"])
     shell, slept = _use(client)
     assert shell == "SHELL" and slept == [2.0]
     assert [c["session_id"] for c in client.calls] == ["s" * 36] * 2
-    assert {c["shell_id"] for c in client.calls} == {"shell-1"}
+    first, retry = (c["shell_id"] for c in client.calls)
+    assert first == "shell-1" and retry != "shell-1", "a late abandoned upgrade must not share it"
+    assert _use.used == [retry]
     assert client.log == ["enter", "enter", "exit"]
+
+
+def test_a_reconnect_retry_keeps_the_shell_that_holds_the_command():
+    client = _Client([TimeoutError("timed out during opening handshake"), "SHELL"])
+    shell, _ = _use(client, new_shell_on_retry=False)
+    assert shell == "SHELL"
+    assert {c["shell_id"] for c in client.calls} == {"shell-1"}
 
 
 def test_a_throttled_or_unavailable_service_is_retried_but_a_refusal_is_not():

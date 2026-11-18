@@ -245,6 +245,11 @@ _RPC_ID_LOCK = threading.Lock()
 # single reset or 503 must receive a bounded transport retry.
 _RPC_ATTEMPTS = 3
 _RPC_BACKOFF_S = 2.0
+# Every Gateway call waits at least this long. The GitHub MCP target is a Runtime,
+# and a call can land on a cold microVM: on November 18 each call to one team's
+# target took 20 to 22 s to start, so a 20-second read timeout failed all three
+# attempts of a merge's default-branch check and the pull request never merged.
+_GATEWAY_MIN_TIMEOUT_S = float(os.environ.get("WORKSHOP_GATEWAY_MIN_TIMEOUT_S", "90"))
 # Retry ONLY what is genuinely transient. A 4xx is the gateway or GitHub telling us the
 # request is wrong (bad repo, missing permission, protected branch) and retrying it
 # hides a real answer behind a slower failure.
@@ -259,6 +264,7 @@ def _gateway_rpc(cfg: dict, method: str, params: dict, timeout: float = 30.0) ->
     JSON-RPC error is returned immediately, because those are answers, not blips.
     """
     global _RPC_ID
+    timeout = max(timeout, _GATEWAY_MIN_TIMEOUT_S)
     with _RPC_ID_LOCK:
         # Increment and CAPTURE under the lock: read-then-serialize is not atomic, so
         # concurrent runs could otherwise put the same id on two different requests.

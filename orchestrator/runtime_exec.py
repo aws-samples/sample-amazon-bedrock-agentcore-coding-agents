@@ -658,7 +658,20 @@ def _transient_connect_error(exc: BaseException) -> bool:
 
 @contextlib.asynccontextmanager
 async def _open_shell(client: Any, runtime_arn: str, session_id: str, shell_id: str,
-                      deadline: float, sleep: Callable[[float], Any] = asyncio.sleep):
+                      deadline: float, sleep: Callable[[float], Any] = asyncio.sleep,
+                      *, new_shell_on_retry: bool = True,
+                      connected: Callable[[str], None] | None = None):
+    """Open one shell, retrying a connect that never opened on the SAME session.
+
+    A retry of the FIRST connect uses a NEW shell ID. November 18, team 8, in
+    every canary round: a cold microVM took longer than the client's 10-second
+    handshake limit, the abandoned upgrade still reached the microVM after the
+    retry, and two connections on one shell ID kicked each other ("Kicked by new
+    connection") until the engine's connection closed. Nothing was typed into the
+    abandoned shell, so a fresh ID is safe and cannot collide with it. A RECONNECT
+    to a shell that already holds a command keeps its ID (``new_shell_on_retry=
+    False``): that PTY is the one to resume. ``connected`` receives the ID in use.
+    """
     attempt = 0
     while True:
         attempt += 1
@@ -672,7 +685,11 @@ async def _open_shell(client: Any, runtime_arn: str, session_id: str, shell_id: 
                     or time.monotonic() + wait >= deadline):
                 raise
             await sleep(wait)
+            if new_shell_on_retry:
+                shell_id = str(uuid.uuid4())
             continue
+        if connected:
+            connected(shell_id)
         try:
             yield shell
         finally:
@@ -720,8 +737,15 @@ async def _drive_shell_connected(runtime_arn: str, command: str, region: str,
     pending = [""]   # the half line a frame boundary cut in two
 
     status_seen = False
+    live = [shell_id]   # the shell ID that holds the command once it is typed
+
+    def _connected(used: str) -> None:
+        live[0] = used
+
     while True:
-        async with _open_shell(client, runtime_arn, session_id, shell_id, deadline) as shell:
+        async with _open_shell(client, runtime_arn, session_id, live[0], deadline,
+                               new_shell_on_retry=not execution.get("attempted"),
+                               connected=_connected) as shell:
             if not execution.get("attempted"):
                 # A failed send can be ambiguous: bytes may have reached the Runtime.
                 execution["attempted"] = True
