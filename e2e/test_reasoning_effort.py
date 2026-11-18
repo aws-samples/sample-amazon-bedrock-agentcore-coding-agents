@@ -1,6 +1,6 @@
 """Claude Code and the opencode restore path keep their effort settings wirable.
 
-The backend defaults to low effort. The restored validator keeps its own
+The backend defaults to medium effort (November 18). The restored validator keeps its own
 default, and explicit settings can raise effort or omit the flag.
 
 The flag names were verified against the INSTALLED CLIs, not assumed:
@@ -56,7 +56,7 @@ def test_dispatch_keeps_separate_backend_and_validator_effort_defaults():
         for role in roles.REGISTRY:
             cli = role.cli
             if cli.startswith("claude"):
-                expected = "low" if role.id == "claude-code" else "xhigh"
+                expected = "medium" if role.id == "claude-code" else "xhigh"
                 assert f"--effort {expected}" in cli, cli
             elif cli.startswith("opencode"):
                 assert "--variant high" in cli, cli
@@ -132,12 +132,12 @@ def test_opencode_never_passes_a_flag_it_does_not_have():
         _roles_with({})
 
 
-def test_codex_effort_defaults_low_is_wirable_and_rejects_typos():
-    """Codex's model_reasoning_effort rides on every dispatch. Low by default: at
-    medium, GPT-6.1 Sol ran every October 19-20 team build past ten minutes."""
+def test_codex_effort_defaults_medium_is_wirable_and_rejects_typos():
+    """Codex's model_reasoning_effort rides on every dispatch. Medium by default since
+    November 18: at low, the frontend passed its first check in 35 of 60 team builds."""
     saved = os.environ.pop("WORKSHOP_CODEX_EFFORT", None)
     try:
-        for value, expected in ((None, "low"), ("medium", "medium"), ("", None)):
+        for value, expected in ((None, "medium"), ("low", "low"), ("", None)):
             os.environ.pop("WORKSHOP_CODEX_EFFORT", None)
             if value is not None:
                 os.environ["WORKSHOP_CODEX_EFFORT"] = value

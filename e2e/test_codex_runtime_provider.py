@@ -303,7 +303,7 @@ def test_a_dispatched_codex_turn_never_reads_an_open_stdin(cli_env, tmp_path):
     record = _run_with_open_stdin(["bash", "-c", 'P="the request"; ' + cli], env, tmp_path)
     assert record["argv"][0] == "exec" and record["argv"][-1] == "the request"
     assert record["stdin_is_devnull"] is True
-    assert _cli_settings(record["argv"])["model_reasoning_effort"] == "low"
+    assert _cli_settings(record["argv"])["model_reasoning_effort"] == "medium"
 
 
 def test_missing_model_argument_fails_before_codex(cli_env):

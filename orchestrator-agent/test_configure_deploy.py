@@ -277,7 +277,7 @@ def test_codex_effort_survives_coordinator_configuration(monkeypatch, tmp_path, 
         "print(json.dumps({'cli':r.cli,'env':r.env}))"],
         env=child_env, text=True)
     observed = json.loads(child)
-    expected = "low" if effort is None else effort
+    expected = "medium" if effort is None else effort
     assert observed["env"]["WORKSHOP_CODEX_EFFORT"] == expected
     assert (f"model_reasoning_effort=\"{expected}\"" in observed["cli"]) == bool(expected)
     assert ("model_reasoning_effort" in observed["cli"]) == bool(expected)
@@ -343,7 +343,7 @@ print(json.dumps({"roster": roles.roster_ids(), "roles": records}))
     assert backend["default"] == "us.anthropic.claude-opus-5"
     assert validator["default"] == "global.anthropic.claude-sonnet-5-5"
     for role, expected, effort in (
-            (backend, backend_model, "low"), (validator, validator_model, "xhigh")):
+            (backend, backend_model, "medium"), (validator, validator_model, "xhigh")):
         argv = role["argv"]
         assert argv[argv.index("--model") + 1] == expected
         assert argv[argv.index("--effort") + 1] == role["effort"] == effort

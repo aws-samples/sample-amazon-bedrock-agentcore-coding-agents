@@ -186,7 +186,10 @@ _CLAUDE_TELEMETRY = {
 # effort, decides the verdict. Keep the restored validator's separate default and
 # explicit operator overrides.
 # `claude --effort` accepts low|medium|high|xhigh|max; an empty setting omits the flag.
-_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "low").strip()
+# November 18: medium. With every builder and Kiro at medium the team build passed
+# 2 of 2 on its first try (no repair); the backend turn costs about the same (53 s at
+# low, 54-66 s at medium), and quality decides more than seconds on this path.
+_CLAUDE_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "medium").strip()
 _CLAUDE_VALIDATOR_EFFORT = os.environ.get("WORKSHOP_CLAUDE_EFFORT", "xhigh").strip()
 # opencode calls the same idea a model VARIANT and its accepted values are
 # provider-specific (its help names high, max, minimal), so it gets its own variable.
@@ -215,7 +218,11 @@ _CODEX_MODEL = os.environ.get("WORKSHOP_CODEX_MODEL", "global.openai.gpt-6.1-sol
 # Low, measured: on 2026-10-19/20 GPT-6.1 Sol wrote the frontend in 152-386 s at
 # low and 407-658 s at medium, and every medium team build ran past ten minutes.
 # An empty value omits the flag, so the image's config.toml decides.
-_CODEX_EFFORT = os.environ.get("WORKSHOP_CODEX_EFFORT", "low").strip()
+# November 18: medium, at the author's direction (quality first, then speed). The
+# 60-team load test at low passed the frontend's FIRST check in 35 of 60 builds and a
+# repair rescued only 5 of 25; medium wrote the frontend in 383-479 s (low: median
+# 326 s over 60) and both all-medium builds passed on the first try.
+_CODEX_EFFORT = os.environ.get("WORKSHOP_CODEX_EFFORT", "medium").strip()
 CODEX_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh")
 if _CODEX_EFFORT not in CODEX_EFFORTS:
     raise ValueError("WORKSHOP_CODEX_EFFORT must be none, minimal, low, medium, high, "
