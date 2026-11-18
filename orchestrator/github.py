@@ -306,12 +306,33 @@ def _gateway_rpc(cfg: dict, method: str, params: dict, timeout: float = 30.0) ->
     raise last if last else GatewayError("gateway call failed with no error recorded")
 
 
+# GitHub itself answering 5xx inside a tool call: the tool returns an error TEXT, so
+# the transport retry in _gateway_rpc never sees it. November 18, team 18: one 502
+# on `ensure_labels` while republishing a refreshed pull request blocked it as
+# ROLE_PR_REFRESH_ERROR. A 5xx from GitHub means the request did not complete; the
+# tools are idempotent or guarded (labels, reads, an expected parent, an existing
+# pull request or merge), so the same call is made again, a bounded number of times.
+_GITHUB_5XX = re.compile(r"Server error '50[0234]|\b50[234] (Bad Gateway|Service Unavailable|Gateway Timeout)\b")
+_TOOL_RETRIES = 2
+
+
 def _tool(cfg: dict, tool: str, arguments: dict, timeout: float = 30.0) -> Any:
     """Call a GitHub MCP tool through the gateway target (``<target>___<tool>``).
 
     Unwraps MCP content blocks: a tool returning structured JSON arrives as a
     ``text`` block holding that JSON; a tool returning a bare string (e.g.
     put_file's commit sha) arrives as text that is not JSON -- return it raw."""
+    for attempt in range(_TOOL_RETRIES + 1):
+        try:
+            return _tool_once(cfg, tool, arguments, timeout)
+        except GatewayError as exc:
+            if attempt >= _TOOL_RETRIES or not _GITHUB_5XX.search(str(exc)):
+                raise
+            time.sleep(_RPC_BACKOFF_S * (attempt + 1))
+    raise AssertionError("tool retry loop exhausted")
+
+
+def _tool_once(cfg: dict, tool: str, arguments: dict, timeout: float) -> Any:
     name = f"{cfg['target']}___{tool}"
     result = _gateway_rpc(cfg, "tools/call", {"name": name, "arguments": arguments}, timeout)
     if isinstance(result, dict) and "content" in result:

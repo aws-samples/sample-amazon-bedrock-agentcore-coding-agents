@@ -185,3 +185,71 @@ def test_concurrent_calls_never_share_a_request_id(monkeypatch):
     for t in threads:
         t.join()
     assert len(seen) == len(set(seen)), f"duplicate JSON-RPC ids: {sorted(seen)}"
+
+
+def _tool_text(text: str) -> bytes:
+    import json as _json
+    return _json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+        "content": [{"type": "text", "text": text}]}}).encode()
+
+
+def test_a_github_5xx_inside_a_tool_is_retried(monkeypatch):
+    """November 18, team 18: one 502 from GitHub on ensure_labels blocked a
+    refreshed pull request. The tool reports it as error TEXT, not a transport
+    failure, so only _tool can see it."""
+    answers = [
+        _tool_text("Error calling tool 'ensure_labels': Server error '502 Bad Gateway' "
+                   "for url 'https://api.github.com/repos/me/repo/labels/x'"),
+        _tool_text('["run:x"]'),
+    ]
+    calls = []
+
+    def urlopen(req, timeout=None):
+        calls.append(req)
+        return _Resp(answers.pop(0))
+
+    monkeypatch.setattr(github.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(github, "_sigv4_headers", lambda *a: {})
+    monkeypatch.setattr(github.time, "sleep", lambda s: None)
+    assert github._tool(_CFG, "ensure_labels", {}) == ["run:x"]
+    assert len(calls) == 2
+
+
+def test_a_github_4xx_inside_a_tool_is_an_answer_not_a_blip(monkeypatch):
+    calls = []
+
+    def urlopen(req, timeout=None):
+        calls.append(req)
+        return _Resp(_tool_text("Error calling tool 'create_branch': Client error "
+                                "'404 Not Found' for url 'https://api.github.com/x'"))
+
+    monkeypatch.setattr(github.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(github, "_sigv4_headers", lambda *a: {})
+    monkeypatch.setattr(github.time, "sleep", lambda s: None)
+    try:
+        github._tool(_CFG, "create_branch", {})
+    except github.GatewayError as exc:
+        assert "404" in str(exc)
+    else:
+        raise AssertionError("a 404 must fail")
+    assert len(calls) == 1
+
+
+def test_a_persistent_github_5xx_still_fails_after_the_bounded_retries(monkeypatch):
+    calls = []
+
+    def urlopen(req, timeout=None):
+        calls.append(req)
+        return _Resp(_tool_text("Error calling tool 'get_issue': Server error "
+                                "'503 Service Unavailable' for url 'https://api.github.com/x'"))
+
+    monkeypatch.setattr(github.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(github, "_sigv4_headers", lambda *a: {})
+    monkeypatch.setattr(github.time, "sleep", lambda s: None)
+    try:
+        github._tool(_CFG, "get_issue", {})
+    except github.GatewayError:
+        pass
+    else:
+        raise AssertionError("a persistent 503 must fail")
+    assert len(calls) == 1 + github._TOOL_RETRIES
