@@ -33,8 +33,8 @@ checked and reviewed against the default branch AS IT STANDS, so once one role's
 merges, the next role's check runs against a tree that contains it. Red evidence buys
 one repair turn for the responsible existing pull request. When triage finds the
 failure in the check itself, or the builder's repair leaves the pull request
-unchanged and the same check fails the same way, the checker gets one correction of
-its own check instead; the corrected check runs on the unchanged pull request, and a
+unchanged (or changes it) and the same check fails on the same lines, the checker gets
+one correction of its own check instead; the corrected check runs on the unchanged pull request, and a
 correction that prints fewer checks does not count. Under auto merge a fixed green
 pull request merges without a second review, but never without a first one: a pull
 request whose first round was red is reviewed once its check is green. Separately, when a sibling
