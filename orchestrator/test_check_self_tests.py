@@ -68,7 +68,10 @@ def test_prompt_repeats_both_rules_and_keeps_the_single_real_execution():
     flat = _flat(ENGINE.replace('"\n', "").replace('            "', ""))
     assert "WORKSHOP_CHECK_SELFTEST=1" in ENGINE
     assert "numbers to every process and network timeout" in ENGINE
-    assert "drives EVERY such helper once on a trivial input" in flat
+    # November 18, team 58: the check's own probe page ran its script before the
+    # element it wrote; the self-test covers pages and stubs the check builds itself.
+    assert ("drives EVERY such helper, and every page, fixture server, or stub the "
+            "check builds itself, once on a trivial input") in flat
     assert "without reading or starting the deliverable" in flat
     assert "no builder can repair it" in flat
     assert "not run the acceptance behavior; the engine owns that one real execution." in ENGINE

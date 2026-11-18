@@ -694,99 +694,136 @@ async def _drive_shell(runtime_arn: str, command: str, region: str,
         raise
 
 
+# A connection that closes before the command's STATUS frame is not the end of the
+# command: the PTY lives on in the microVM. November 18, team 8, every canary round:
+# the Runtime logged "Kicked by new connection" 0.4 s after the shell started, the
+# engine's connection closed with no exit code, and the engine stopped the build as
+# REMOTE_EXECUTION_UNSETTLED, while the SAME PTY reconnected and the backend's command
+# finished with exit 0 36 s later. The SDK's documented recovery is to reopen the same
+# session and shell IDs; a resumed PTY replays its buffered output. A reconnect never
+# types the command again, and one that lands on a NEW PTY proves nothing, so it ends
+# exactly as before: completion unknown.
+SHELL_RECONNECTS = 2
+
+
 async def _drive_shell_connected(runtime_arn: str, command: str, region: str,
                                  on_line: Callable[[str], None] | None,
                                  timeout_s: float, session_id: str,
                                  execution: dict[str, bool]) -> dict[str, Any]:
     """Run in a PTY and capture the command's actual exit code."""
-    from bedrock_agentcore.runtime.shell import ShellChannel  # noqa: PLC0415
     client = _client(region)
     shell_id = str(uuid.uuid4())
     out: list[str] = []
     exit_code: int | None = None
     deadline = time.monotonic() + timeout_s
+    reconnects = 0
+    pending = [""]   # the half line a frame boundary cut in two
 
-    async with _open_shell(client, runtime_arn, session_id, shell_id, deadline) as shell:
-        # asyncio.wait_for on EACH frame, not a check inside the loop body. The
-        # deadline used to be tested only after a frame arrived, so a shell that
-        # connected and then went silent blocked forever: `async for` simply never
-        # yielded, the check never ran, and the timeout was unreachable. Observed
-        # live twice on one box (a 600s dispatch sat 9m02s, a 180s probe 4m32s,
-        # both with zero output) until killed by hand. A run that hangs reports no
-        # verdict at all, which is worse than any red gate, so the wall clock -- not
-        # the peer -- has to decide when to give up.
-        # A failed send can be ambiguous: bytes may have reached the Runtime.
-        execution["attempted"] = True
-        await asyncio.wait_for(shell.send(typeable(command)),
-                               timeout=max(1.0, deadline - time.monotonic()))
-        frames = shell.__aiter__()
-        pending = ""   # the half line a frame boundary cut in two
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RoleExecutionError(
-                    f"ROLE_EXECUTION_ERROR: runtime dispatch exceeded {timeout_s:.0f}s")
-            try:
-                frame = await asyncio.wait_for(frames.__anext__(), timeout=remaining)
-            except asyncio.TimeoutError as exc:
-                # Silence past the deadline is the SAME failure as an overlong run,
-                # and it must be reported, never waited out.
-                raise RoleExecutionError(
-                    f"ROLE_EXECUTION_ERROR: runtime dispatch exceeded "
-                    f"{timeout_s:.0f}s with no further output from the shell "
-                    f"(the session stopped sending frames)") from exc
-            except StopAsyncIteration:
+    status_seen = False
+    while True:
+        async with _open_shell(client, runtime_arn, session_id, shell_id, deadline) as shell:
+            if not execution.get("attempted"):
+                # A failed send can be ambiguous: bytes may have reached the Runtime.
+                execution["attempted"] = True
+                await asyncio.wait_for(shell.send(typeable(command)),
+                                       timeout=max(1.0, deadline - time.monotonic()))
+            elif getattr(shell, "reconnected", False) is not True:
+                # A new PTY, not the one that ran the command: its result is unknown.
                 break
-            ch = frame.channel
-            if ch == ShellChannel.STDOUT:
-                text = frame.text
-                out.append(text)
-                if on_line:
-                    # A frame boundary falls wherever the network put it, so the last
-                    # piece of a frame is usually HALF A LINE. Emitting it as a line
-                    # made one sentence arrive as a dozen one-word "lines", which is
-                    # what a live watcher then showed. Hold the tail until the next
-                    # frame completes it; `out` (and therefore `raw`) is untouched.
-                    #
-                    # Normalize CR the way _slice does, and for the same reason: the PTY
-                    # emits CRLF, and a TUI redraws a line with a bare CR. Splitting on
-                    # LF alone glues those redraws into one line -- observed live as
-                    # words losing their first letter, because the joined text then
-                    # looked like an escape sequence to the display filter.
-                    pending += text.replace("\r\n", "\n").replace("\r", "\n")
-                    if "\n" in pending:
-                        *complete, pending = pending.split("\n")
-                        for line in complete:
-                            # Clean PER LINE, the way the local-dev path already does.
-                            # Buffering is what makes this possible AND necessary: a
-                            # sequence split across two frames is whole here, and a bare
-                            # ESC that reaches a display makes the terminal eat the
-                            # characters after it (observed live: " - Completed" rendered
-                            # as "ompleted").
-                            on_line(_clean(line))
-            elif ch == ShellChannel.STDERR:
-                out.append(frame.text)
-            elif ch == ShellChannel.STATUS:
-                exit_code = _exit_from_status(frame)
-                execution["exited"] = type(exit_code) is int
-                break
-            elif ch == ShellChannel.CLOSE:
-                break
-        # A shell can end without a trailing newline; flush what it left rather than
-        # dropping the last thing the role said.
-        if on_line and pending:
-            on_line(_clean(pending))
-        # SDK versions can consume the termination frame and expose its result
-        # on the shell. CLOSE alone means eviction/disconnection, never success.
-        if exit_code is None and type(getattr(shell, "exit_code", None)) is int:
-            exit_code = shell.exit_code
+            status_seen, exit_code = await _read_until_status(
+                shell, out, pending, on_line, deadline, timeout_s)
+            # SDK versions can consume the termination frame and expose its result
+            # on the shell. CLOSE alone means eviction/disconnection, never success.
+            if exit_code is None and type(getattr(shell, "exit_code", None)) is int:
+                exit_code = shell.exit_code
         execution["exited"] = type(exit_code) is int
+        # Reconnect only when the CONNECTION ended first. A STATUS frame, even one
+        # whose code cannot be read, means the command ended; nothing is left to read.
+        if status_seen or exit_code is not None or reconnects >= SHELL_RECONNECTS \
+                or time.monotonic() >= deadline:
+            break
+        reconnects += 1
+        if on_line:
+            on_line("[runtime shell connection closed before the command finished; "
+                    "reconnecting to the same shell]")
+    # A shell can end without a trailing newline; flush what it left rather than
+    # dropping the last thing the role said.
+    if on_line and pending[0]:
+        on_line(_clean(pending[0]))
     if exit_code is None:
         raise RoleExecutionError(
             "ROLE_EXECUTION_ERROR: runtime shell closed without a command exit code; "
             "execution success is unknown")
     return {"raw": "".join(out), "exit": exit_code,
             "session_id": session_id}
+
+
+async def _read_until_status(shell: Any, out: list[str], pending: list[str],
+                             on_line: Callable[[str], None] | None,
+                             deadline: float, timeout_s: float) -> tuple[bool, int | None]:
+    """Read one connection's frames until the command's STATUS, or the connection ends.
+
+    Returns (whether a STATUS frame arrived, the exit code it carried, if readable).
+
+    asyncio.wait_for on EACH frame, not a check inside the loop body. The deadline
+    used to be tested only after a frame arrived, so a shell that connected and then
+    went silent blocked forever: `async for` simply never yielded, the check never
+    ran, and the timeout was unreachable. Observed live twice on one box (a 600s
+    dispatch sat 9m02s, a 180s probe 4m32s, both with zero output) until killed by
+    hand. A run that hangs reports no verdict at all, which is worse than any red
+    gate, so the wall clock -- not the peer -- has to decide when to give up.
+    """
+    from bedrock_agentcore.runtime.shell import ShellChannel  # noqa: PLC0415
+    frames = shell.__aiter__()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: runtime dispatch exceeded {timeout_s:.0f}s")
+        try:
+            frame = await asyncio.wait_for(frames.__anext__(), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            # Silence past the deadline is the SAME failure as an overlong run,
+            # and it must be reported, never waited out.
+            raise RoleExecutionError(
+                f"ROLE_EXECUTION_ERROR: runtime dispatch exceeded "
+                f"{timeout_s:.0f}s with no further output from the shell "
+                f"(the session stopped sending frames)") from exc
+        except StopAsyncIteration:
+            return False, None
+        ch = frame.channel
+        if ch == ShellChannel.STDOUT:
+            text = frame.text
+            out.append(text)
+            if on_line:
+                # A frame boundary falls wherever the network put it, so the last
+                # piece of a frame is usually HALF A LINE. Emitting it as a line
+                # made one sentence arrive as a dozen one-word "lines", which is
+                # what a live watcher then showed. Hold the tail until the next
+                # frame completes it; `out` (and therefore `raw`) is untouched.
+                #
+                # Normalize CR the way _slice does, and for the same reason: the PTY
+                # emits CRLF, and a TUI redraws a line with a bare CR. Splitting on
+                # LF alone glues those redraws into one line -- observed live as
+                # words losing their first letter, because the joined text then
+                # looked like an escape sequence to the display filter.
+                pending[0] += text.replace("\r\n", "\n").replace("\r", "\n")
+                if "\n" in pending[0]:
+                    *complete, pending[0] = pending[0].split("\n")
+                    for line in complete:
+                        # Clean PER LINE, the way the local-dev path already does.
+                        # Buffering is what makes this possible AND necessary: a
+                        # sequence split across two frames is whole here, and a bare
+                        # ESC that reaches a display makes the terminal eat the
+                        # characters after it (observed live: " - Completed" rendered
+                        # as "ompleted").
+                        on_line(_clean(line))
+        elif ch == ShellChannel.STDERR:
+            out.append(frame.text)
+        elif ch == ShellChannel.STATUS:
+            return True, _exit_from_status(frame)
+        elif ch == ShellChannel.CLOSE:
+            return False, None
 
 
 def _exit_from_status(frame: Any) -> int | None:
