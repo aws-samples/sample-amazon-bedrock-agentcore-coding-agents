@@ -44,6 +44,7 @@ from typing import Any
 
 from gate_diagnostics import extract_failure_lines
 from review_build_outputs import declared_outputs
+import review_tools
 
 
 LGTM_TOKEN = "LGTM: no changes needed"   # the exact pass token, kept verbatim
@@ -397,6 +398,17 @@ _REVIEW_TOOL = {"toolSpec": {
                                    "additionalProperties": {"type": "string"}},
             "adversarial_assessment": {"type": "string"},
             "design_assessment": {"type": "string"},
+            "findings": {"type": "array", "items": {
+                "type": "object",
+                "required": ["priority", "title", "failure"],
+                "properties": {
+                    "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+                    "title": {"type": "string"},
+                    "place": {"type": "string", "description": "path:line"},
+                    "failure": {"type": "string"},
+                    "fix": {"type": "string"},
+                }}},
+            "not_verified": {"type": "array", "items": {"type": "string"}},
         },
     }},
 }}
@@ -415,7 +427,20 @@ _REVIEW_RESPONSE_CONTRACT = (
     "reasons lists concrete unresolved defects, never approval rationale. "
     "Use an empty reasons array only when neither lens found a defect. Every "
     "confirmed defect described in either assessment must also appear in reasons. "
-    "Set approve=false when EITHER lens finds a material defect. "
+    "Put every defect in findings, one per ROOT CAUSE (list every affected place "
+    "inside that one finding), each with a priority, a place (path:line on this tree), "
+    "the concrete failure, and the fix. Priorities: P0 must fix before merging (crash, "
+    "data loss, security hole, broken build or start); P1 should fix before merging "
+    "(wrong behavior, a case the request names that does not work, a regression "
+    "against the base branch, a broken seam with code already on it); P2 worth fixing "
+    "(a likely future bug, a missing test for changed logic); P3 minor (style, wording, "
+    "a doc that disagrees with the code). Only P0 and P1 block the merge: set "
+    "approve=true exactly when no P0 or P1 finding remains, and list only the P0 and P1 "
+    "findings, one line each, in reasons. A P0 or P1 you cannot state as a concrete "
+    "case is not one: downgrade it or drop it. Before you submit, re-read the cited "
+    "lines of every P0 and P1 with read_file and drop any the code does not support. "
+    "A claim you could not check is not a finding: put it in not_verified. "
+    "Set approve=false when EITHER lens finds a P0 or P1 defect. "
     "An approval must identify concrete usage evidence for the work id under "
     "review. Evidence must say how that contribution participates in the running "
     "product; a changed-file list alone is not evidence. If you cannot establish "
@@ -435,8 +460,9 @@ _INTEGRATED_REVIEW_SYSTEM = (
     "pull request's code ACROSS EVERY SEAM IT TOUCHES -- both the seams the contract "
     "assigns it and any code already on the base branch that it calls or is called "
     "by. Compare field names, enums, null semantics, errors, and state transitions "
-    "on BOTH sides of each seam, using the base-branch files you were given rather "
-    "than assuming the other side matches. A mismatch between what this pull request "
+    "on BOTH sides of each seam, reading the base-branch code with your read-only "
+    "tools rather than assuming the other side matches. A mismatch between what this "
+    "pull request "
     "produces and what its counterpart consumes is a material defect even when the "
     "executable passed, because a check can exercise one side alone. Look for edge "
     "cases, persistence failures, security defects, dead paths, and checks that "
@@ -509,6 +535,19 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
     # The model decides which defects exist. Its approval flag cannot erase a
     # finding it recorded, just as it cannot turn a red executable green.
     approve = parsed["approve"] and not reasons
+    findings = _parse_findings(parsed.get("findings"))
+    not_verified = [
+        cleaned for cleaned in (_strip_stray_markup(str(item).strip())
+                                for item in (parsed.get("not_verified") or [])
+                                if isinstance(item, str))
+        if cleaned][:8]
+    if findings is not None:
+        # The priorities decide (Foxl's scale): P0 and P1 block, P2 and P3 are posted
+        # and never block. The model's approve flag and its free-text reasons cannot
+        # turn a recorded P0 or P1 into an approval, or a P3 into a block.
+        blocking = [f for f in findings if f["priority"] in ("P0", "P1")]
+        approve = not blocking
+        reasons = [_finding_line(f) for f in blocking][:5]
     missing = [
         work_id for work_id in required_work_ids
         if not evidence.get(work_id)
@@ -542,6 +581,8 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
         "#### Design & integration\n\n"
         f"{design}"
     )
+    if findings is not None:
+        assessment = _findings_sections(findings, not_verified) + assessment
     if evidence:
         rows = [
             f"- `{work_id}`: {evidence[work_id]}"
@@ -567,7 +608,60 @@ def _parse_judge_response(text: str, required_work_ids: list[str]) -> dict:
         "adversarial_assessment": adversarial,
         "design_assessment": design,
         "assessment": assessment,
+        "findings": findings or [],
+        "not_verified": not_verified,
     }
+
+
+def _parse_findings(raw: Any) -> list[dict[str, str]] | None:
+    """The structured findings, or None when the response has none (older shape)."""
+    if not isinstance(raw, list):
+        return None
+    findings = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        priority = str(item.get("priority") or "").strip().upper()
+        title = _strip_stray_markup(str(item.get("title") or "").strip())
+        failure = _strip_stray_markup(str(item.get("failure") or "").strip())
+        if priority not in ("P0", "P1", "P2", "P3") or not (title or failure):
+            raise ValueError("every finding needs a priority P0-P3 and a title or failure")
+        findings.append({
+            "priority": priority, "title": title or failure[:80], "failure": failure,
+            "place": _strip_stray_markup(str(item.get("place") or "").strip()),
+            "fix": _strip_stray_markup(str(item.get("fix") or "").strip()),
+        })
+    return sorted(findings, key=lambda f: f["priority"])
+
+
+def _finding_line(f: dict[str, str]) -> str:
+    place = f" - `{f['place']}`" if f["place"] else ""
+    fix = f" Fix: {f['fix']}" if f["fix"] else ""
+    return f"{f['priority']}: {f['title']}{place}: {f['failure']}{fix}"
+
+
+def _findings_sections(findings: list[dict[str, str]], not_verified: list[str]) -> str:
+    """Must fix (P0, P1), Worth fixing (P2, P3), Not verified: what a person acts on first."""
+    must = [f for f in findings if f["priority"] in ("P0", "P1")]
+    worth = [f for f in findings if f["priority"] in ("P2", "P3")]
+    out = []
+    if must:
+        out.append("### Must fix\n\n" + "\n".join(
+            f"{i}. **{f['title']}** ({f['priority']})"
+            + (f" - `{f['place']}`" if f["place"] else "")
+            + (f"\n   {f['failure']}" if f["failure"] else "")
+            + (f"\n   Fix: {f['fix']}" if f["fix"] else "")
+            for i, f in enumerate(must, 1)))
+    if worth:
+        out.append("### Worth fixing (does not block the merge)\n\n" + "\n".join(
+            f"- **{f['title']}** ({f['priority']})"
+            + (f" - `{f['place']}`" if f["place"] else "")
+            + (f": {f['failure']}" if f["failure"] else "")
+            + (f" Fix: {f['fix']}" if f["fix"] else "")
+            for f in worth))
+    if not_verified:
+        out.append("### Not verified\n\n" + "\n".join(f"- {item}" for item in not_verified))
+    return ("\n\n".join(out) + "\n\n") if out else ""
 
 
 def _review_record(model: str, *, state: str = "abstained",
@@ -584,14 +678,47 @@ def _review_record(model: str, *, state: str = "abstained",
     }
 
 
+def _review_conversation(llm_module: Any, model: str, prompt: str,
+                         tree: Any = None) -> dict[str, Any]:
+    """One review: the model reads with the read-only tools until it submits.
+
+    Without a tree (no checkout to read) it is one call, as before. Each tool round
+    returns every requested read at once; after ``_REVIEW_MAX_TOOL_ROUNDS`` rounds the
+    reviewer is told to submit from what it has read.
+    """
+    tools = review_tools.READ_TOOLS if tree is not None else None
+    messages: list[dict[str, Any]] = [{"role": "user", "content": [{"text": prompt}]}]
+    out: dict[str, Any] = {}
+    for round_no in range(_REVIEW_MAX_TOOL_ROUNDS + 1):
+        out = llm_module.invoke(
+            model, prompt, system=_INTEGRATED_REVIEW_SYSTEM,
+            max_tokens=_REVIEW_MAX_TOKENS, tool=_REVIEW_TOOL, effort=_REVIEW_EFFORT,
+            tools=tools, messages=messages if tools else None)
+        calls = [c for c in (out.get("tool_calls") or [])
+                 if c.get("name") in review_tools.TOOL_NAMES]
+        if tools is None or out.get("tool_input") is not None or not calls:
+            return out
+        messages.append({"role": "assistant", "content": out.get("content") or []})
+        results = [{"toolResult": {"toolUseId": c.get("id"),
+                                   "content": [{"text": tree.run(c.get("name"), c.get("input"))}]}}
+                   for c in calls]
+        if round_no + 1 >= _REVIEW_MAX_TOOL_ROUNDS:
+            results.append({"text": "That was your last read. Call submit_review now, "
+                                    "judging from what you have read; list anything you "
+                                    "could not check under not_verified."})
+        messages.append({"role": "user", "content": results})
+    return out
+
+
 def _run_review_turn(
     llm_module: Any,
     *,
     model: str,
     base_prompt: str,
     required_work_ids: list[str],
+    tree: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Run one integrated review turn with one bounded response repair."""
+    """Run one integrated review with one bounded response repair."""
     record = _review_record(model)
     prior_text = ""
     prior_error = ""
@@ -616,10 +743,10 @@ def _run_review_turn(
                     "the complete strict JSON object."
                 )
         try:
-            out = llm_module.invoke(
-                model, prompt + "\n\nSubmit the verdict by calling the submit_review tool once.",
-                system=_INTEGRATED_REVIEW_SYSTEM, max_tokens=_REVIEW_MAX_TOKENS,
-                tool=_REVIEW_TOOL, effort=_REVIEW_EFFORT)
+            out = _review_conversation(
+                llm_module, model,
+                prompt + "\n\nSubmit the verdict by calling the submit_review tool once.",
+                tree)
         except Exception as exc:  # noqa: BLE001 (record the model boundary)
             prior_error = f"model invocation unavailable ({type(exc).__name__})"
             if not attempt:
@@ -789,63 +916,49 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
             + json.dumps(context, indent=2))
     except Exception:
         pass
-    # Hand over complete source files. Silent 3,000-character prefixes made a
-    # live reviewer claim a getter and CSS rules were missing when they were
-    # present later in the same files. Binary files and generated build output are
-    # left out and listed (``_review_omission``).
-    #
-    # Size never stops the review (November 18, at the author's direction: "remove the
-    # review limit"). Abstaining on size ended 9 of 60 green team builds on November 17.
-    # The budget below is far above a workshop pull request, and anything past it is
-    # still reviewed: the check and the pull request's own changed files come first,
-    # a file that does not fit is cut and MARKED as cut, later files are listed by
-    # name and size, and the reviewer is told never to report something missing from
-    # what it could not read.
-    remaining = _MAX_JUDGE_CONTENT_CHARS
+    # What the reviewer starts from (November 18, after Foxl's reviewer, RV1): the
+    # check that decided the gate, then THIS pull request's own changed files. The base
+    # branch is NOT pasted in; the reviewer reads, lists and searches the merged tree
+    # with read-only tools (review_tools.py), the way a person opens the files a diff
+    # touches. So no review is refused or cut for size: a long changed file arrives as
+    # its first lines plus how to read the rest, and every file left out of the opening
+    # message (binary, generated) is listed and can still be read.
     omitted: list[tuple[str, int, str]] = []
-    partial: list[str] = []
-    for label, path in _artifact_files(run, subject, omitted=omitted):
+    previews: list[str] = []
+    for label, path in _artifact_files(run, subject, omitted=omitted, changed_only=True):
         if not path:
-            partial.append(label)
+            parts.append(label)
             continue
-        if path and os.path.isfile(path):
-            size = _file_size(path)
-            if remaining <= 0:
-                omitted.append((label, size, "not included: the review input budget was used"))
-                continue
-            with open(path, "rb") as f:
-                raw = f.read(4 * remaining + 4)
-            try:
-                content = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                if label != _AUTHORED_CHECK_LABEL and size <= len(raw):
-                    omitted.append((label, size, "binary file (not UTF-8 text)"))
-                    continue
-                # The check that decided the gate is always shown to the reviewer; a
-                # cut can also split one multi-byte character.
-                content = raw.decode("utf-8", errors="replace")
-            if len(content) > remaining or size > len(raw):
-                shown = content[:remaining]
-                parts.append(f"--- {label} (CUT: only the first {len(shown):,} characters "
-                             f"of {size:,} bytes are shown) ---\n{shown}")
-                partial.append(f"{label}: cut after {len(shown):,} characters")
-                remaining = 0
-                continue
-            parts.append(f"--- {label} ---\n{content}")
-            remaining -= len(content)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as f:
+            raw = f.read()
+        if b"\0" in raw[:8192] and label != _AUTHORED_CHECK_LABEL:
+            omitted.append((label, len(raw), "binary file"))
+            continue
+        content = raw.decode("utf-8", errors="replace")
+        if label != _AUTHORED_CHECK_LABEL and len(content) > _OPENING_FILE_CHARS:
+            lines = content[:_OPENING_FILE_CHARS].splitlines()[:-1] or [content[:_OPENING_FILE_CHARS]]
+            total = content.count("\n") + 1
+            parts.append(f"--- {label} (first {len(lines)} of {total} lines; read_file "
+                         f"with start_line={len(lines) + 1} for the rest) ---\n" + "\n".join(lines))
+            previews.append(label)
+            continue
+        parts.append(f"--- {label} ---\n{content}")
     if omitted:
         parts.append(_omitted_section(omitted))
-    if partial:
-        parts.append(
-            "The review input budget did not hold everything, so this review is PARTIAL:\n"
-            + "\n".join(f"- {note}" for note in partial)
-            + "\nJudge only what you can read here and the executable gate's evidence. "
-              "Never report a definition, rule, or behavior as missing because it is in "
-              "a cut or unlisted part of a file.")
+    root = _review_root(run, subject)
+    tree = review_tools.ReviewTree(root) if root else None
     base_prompt = (
         "Review this pull request through both required lenses. Do not trust a "
         "builder's self-assessment or infer success from the green gate alone.\n\n"
         + "\n\n".join(parts)
+        + ("\n\nYou have read-only tools over this pull request's tree exactly as it "
+           "would merge (the base branch as it stands plus these changes): read_file, "
+           "list_files and search_code. Read the rest of any file shown only in part, and "
+           "open the base-branch code this pull request calls or is called by before you "
+           "judge a seam. Ask for several files in one turn when you can."
+           if tree else "")
     )
     required_work_ids = ([subject.work_id] if subject is not None
                          else _builder_work_ids(run))
@@ -854,6 +967,7 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
         model=INTEGRATED_REVIEW_MODEL,
         base_prompt=base_prompt,
         required_work_ids=required_work_ids,
+        tree=tree,
     )
 
     logger = getattr(run, "log", None)
@@ -865,6 +979,20 @@ def _default_judge(run: Any, gate: dict, subject: Any = None) -> dict | None:
 
 
 _MAX_JUDGE_FILES = 200
+# A changed file longer than this opens with its first lines and how to read the rest;
+# the reviewer pages through it with read_file. Nothing is refused for size.
+_OPENING_FILE_CHARS = 60_000
+# Tool rounds one review may spend reading before it must submit its verdict.
+_REVIEW_MAX_TOOL_ROUNDS = int(os.environ.get("WORKSHOP_REVIEW_MAX_TOOL_ROUNDS", "12"))
+
+
+def _review_root(run: Any, subject: Any = None) -> str:
+    """The merged tree the executable gate inspected, which the reviewer's tools read."""
+    root = getattr(run, "_review_work_dir", "") or ""
+    if not root and subject is not None:
+        getter = getattr(run, "item_tree_dir", None)
+        root = getter(subject.work_id) if callable(getter) else ""
+    return root if root and os.path.isdir(root) else ""
 # The review input budget, in characters. It was 192,000, and on November 17 nine of
 # sixty team builds ended REVIEW_UNAVAILABLE on a GREEN gate because one committed
 # 203-236 KB frontend bundle exceeded it. The review model accepts far more: a measured
@@ -971,6 +1099,7 @@ def _omitted_section(omitted: list[tuple[str, int, str]]) -> str:
 
 def _artifact_files(run: Any, subject: Any = None,
                     omitted: list[tuple[str, int, str]] | None = None,
+                    changed_only: bool = False,
                     ) -> list[tuple[str, str]]:
     """(label, path) for the artifacts of ONE pull request under review.
 
@@ -1035,6 +1164,9 @@ def _artifact_files(run: Any, subject: Any = None,
         seen.add(os.path.abspath(full))
         files.append((label, full))
 
+    if changed_only and changed:
+        # The reviewer opens the rest of the tree with its read-only tools.
+        return files
     # Fill the remaining budget from the tree, so a read-only review of an older run
     # (which carries no per-item provenance) still sees real code.
     for dirpath, dirnames, filenames in os.walk(root):

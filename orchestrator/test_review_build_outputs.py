@@ -77,15 +77,15 @@ def _model_capture(monkeypatch, item, *, allow):
 
 
 def _kept_in_review_and_cut(prompts, verdict, rel):
-    """Size never stops the review: the file stays IN it, cut and marked as cut."""
+    """Size never stops the review: an undeclared large file stays IN it, opening with
+    its first lines and how to read the rest, and is never listed as generated."""
     assert not verdict.review_unavailable
     assert len(prompts) == 1
     prompt = prompts[0]
     headers = [line for line in prompt.splitlines() if line.startswith("--- ")]
-    assert any(rel in line and "(CUT:" in line for line in headers), headers
-    assert "this review is PARTIAL" in prompt
-    assert "Never report a definition, rule, or behavior as missing" in prompt
-
+    assert any(rel in line and "read_file with start_line=" in line for line in headers), headers
+    assert not any(line.startswith("- ") and rel in line and "generated" in line
+                   for line in prompt.splitlines())
 
 def test_declared_esbuild_bundle_outside_generated_directories_is_listed_with_basis(
         monkeypatch, tmp_path):

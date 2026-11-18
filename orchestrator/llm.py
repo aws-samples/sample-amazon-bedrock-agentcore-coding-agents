@@ -113,20 +113,28 @@ def available() -> bool:
 # --------------------------------------------------------------------- invoke
 def invoke(model: str, prompt: str, system: str | None = None,
            max_tokens: int = 8000, tool: dict[str, Any] | None = None,
-           effort: str = "") -> dict[str, Any]:
+           effort: str = "", tools: list[dict[str, Any]] | None = None,
+           messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """One model call. Returns the API's own text + token counts.
 
     ``{"text", "input_tokens", "output_tokens", "model_id", "api"}`` where
     ``api`` is ``converse`` (Claude) or ``responses`` (OpenAI-on-Bedrock).
     With ``tool``, a Claude model must answer through that tool, and ``text`` is
     its JSON input. OpenAI models ignore ``tool`` and ``effort``.
+
+    ``tools`` and ``messages`` make this one turn of a tool-using conversation: the
+    model may call any of ``tools`` (or ``tool``, the final answer) and the result
+    adds ``tool_calls`` (every call, with its id, name and input) and ``content`` (the
+    assistant message to append before the tool results). ``messages`` replaces
+    ``prompt`` as the conversation so far.
     Raises LLMUnavailable on any transport/credential/access failure.
     """
     model_id = resolve(model)
     if model_id.startswith("openai."):
         return _invoke_openai(model_id, prompt, system, max_tokens)
     if tool is not None:
-        return _invoke_claude_tool(model_id, prompt, tool, system, max_tokens, effort)
+        return _invoke_claude_tool(model_id, prompt, tool, system, max_tokens, effort,
+                                   tools=tools, messages=messages)
     return _invoke_claude(model_id, prompt, system, max_tokens, effort)
 
 
@@ -181,7 +189,8 @@ def _starts_with_auto_tool_choice(model_id: str) -> bool:
 
 def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
                        system: str | None, max_tokens: int,
-                       effort: str) -> dict[str, Any]:
+                       effort: str, *, tools: list[dict[str, Any]] | None = None,
+                       messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """One Claude Converse call whose answer arrives as a tool call's JSON input.
 
     A schema-validated tool input cannot contain the bracket or quoting mistakes a
@@ -199,10 +208,12 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
         rt = boto3.client("bedrock-runtime", region_name=claude_region() or None)
         kwargs: dict[str, Any] = {
             "modelId": model_id,
-            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "messages": (list(messages) if messages
+                         else [{"role": "user", "content": [{"text": prompt}]}]),
             "inferenceConfig": {"maxTokens": max_tokens},
-            "toolConfig": {"tools": [tool], "toolChoice": (
-                {"auto": {}} if _starts_with_auto_tool_choice(model_id) else {"any": {}})},
+            "toolConfig": {"tools": [tool] + list(tools or []), "toolChoice": (
+                {"auto": {}} if tools or _starts_with_auto_tool_choice(model_id)
+                else {"any": {}})},
         }
         if system:
             kwargs["system"] = [{"text": system}]
@@ -237,6 +248,11 @@ def _invoke_claude_tool(model_id: str, prompt: str, tool: dict[str, Any],
     usage = resp.get("usage", {})
     return {"text": json.dumps(tool_input) if tool_input is not None else text,
             "tool_input": tool_input,
+            "tool_calls": [{"id": b["toolUse"].get("toolUseId"),
+                            "name": b["toolUse"].get("name"),
+                            "input": b["toolUse"].get("input")}
+                           for b in blocks if "toolUse" in b],
+            "content": blocks,
             "input_tokens": usage.get("inputTokens", 0),
             "output_tokens": usage.get("outputTokens", 0),
             "stop_reason": resp.get("stopReason"),

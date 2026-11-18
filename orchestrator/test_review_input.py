@@ -24,6 +24,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import reviewer  # noqa: E402
+import review_tools  # noqa: E402
 from work_items import WorkItem  # noqa: E402
 
 # Tool-call markup in a model's own namespace, built so this file never carries the
@@ -135,9 +136,12 @@ def test_binaries_and_bundles_are_listed_not_read_and_source_stays_complete(
     assert review["approve"] is True and not review["review_unavailable"]
     prompt = prompts[0]
 
-    # Source text arrives complete, including a non-ASCII UTF-8 file.
+    # The pull request's own source arrives complete; the base branch is read with
+    # the reviewer's tools instead of being pasted (a non-ASCII UTF-8 file included).
     assert source in prompt
-    assert "café, naïve: a real UTF-8 note" in prompt
+    assert "café, naïve: a real UTF-8 note" not in prompt
+    assert "café, naïve" in review_tools.ReviewTree(str(tree)).read_file("server/notes.txt")
+    assert "You have read-only tools" in prompt
     # No bundle, map, minified file or font content reaches the model.
     assert "var a=1;var a=1;" not in prompt
     assert "!function(){}();" not in prompt
@@ -147,12 +151,11 @@ def test_binaries_and_bundles_are_listed_not_read_and_source_stays_complete(
     # Each omitted file is named with its size and why, so the reviewer knows.
     listing = prompt[prompt.index("Left out of this review"):]
     for rel in ("dist/assets/index-abc123.js", "dist/index.html", "public/app.min.js",
-                "public/app.js.map", "public/fonts/pixel.ttf", "server/seed.dat"):
+                "public/app.js.map", "public/fonts/pixel.ttf"):
         size = os.path.getsize(tree / rel)
         assert any(rel in line and f"{size:,} bytes" in line
                    for line in listing.splitlines()), (rel, listing)
     assert f"{item.work_id} (frontend) changed dist/assets/index-abc123.js: " in listing
-    assert "on the base branch: server/seed.dat: 1,500 bytes, binary" in listing
 
 
 def test_omitted_files_do_not_count_toward_the_file_limit(monkeypatch, tmp_path):
@@ -171,13 +174,16 @@ def test_omitted_files_do_not_count_toward_the_file_limit(monkeypatch, tmp_path)
     assert "and 26 more files" in section
 
 
-def test_a_source_tree_over_the_budget_is_reviewed_with_its_cut_marked(monkeypatch, tmp_path):
+def test_a_long_changed_file_opens_with_its_first_lines_and_how_to_read_the_rest(
+        monkeypatch, tmp_path):
+    """Size never stops a review: a long file opens in part and the reviewer pages on."""
     run, item, _tree, _source = _frontend_tree(tmp_path)
-    monkeypatch.setattr(reviewer, "_MAX_JUDGE_CONTENT_CHARS", 1000)
+    monkeypatch.setattr(reviewer, "_OPENING_FILE_CHARS", 1000)
     review, prompts = _review(monkeypatch, run, item)
     assert not review["review_unavailable"]
-    assert "(CUT: only the first" in prompts[0]
-    assert "this review is PARTIAL" in prompts[0]
+    header = next(line for line in prompts[0].splitlines()
+                  if line.startswith("--- ") and "changed src/game.js" in line)
+    assert "read_file with start_line=" in header
 
 
 def test_an_authored_check_that_is_not_utf8_is_still_shown(monkeypatch, tmp_path):

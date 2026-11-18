@@ -30,6 +30,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import reviewer  # noqa: E402
+import review_tools  # noqa: E402
 from reviewer import (  # noqa: E402
     LGTM_TOKEN,
     Verdict,
@@ -368,7 +369,8 @@ def test_integrated_review_runs_once_and_either_lens_can_block(
 
     calls = []
 
-    def invoke(model, prompt, system=None, max_tokens=0, tool=None, effort=""):
+    def invoke(model, prompt, system=None, max_tokens=0, tool=None, effort="",
+               tools=None, messages=None):
         calls.append({
             "model": model,
             "prompt": prompt,
@@ -376,6 +378,7 @@ def test_integrated_review_runs_once_and_either_lens_can_block(
             "max_tokens": max_tokens,
             "tool": tool,
             "effort": effort,
+            "tools": tools,
         })
         return {
             "model_id": "integrated-review-model",
@@ -411,12 +414,15 @@ def test_integrated_review_runs_once_and_either_lens_can_block(
     assert "Design and integration" in calls[0]["system"]
 
     # The turn is scoped to ONE pull request, is told which base it merges into, and
-    # is handed both sides of the seam so the mismatch is actually findable.
+    # can read both sides of the seam so the mismatch is actually findable: its own
+    # change is in the opening message, the counterpart on the base through its tools.
     prompt = calls[0]["prompt"]
     assert f"YOU ARE REVIEWING ONE PULL REQUEST: {backend.work_id}" in prompt
     assert "'main'" in prompt
     assert "detail: {before" in prompt          # this pull request's own change
-    assert "detail.from" in prompt              # the counterpart already on the base
+    assert {t["toolSpec"]["name"] for t in calls[0]["tools"]} == review_tools.TOOL_NAMES
+    tree = review_tools.ReviewTree(run.item_tree_dir(backend.work_id))
+    assert "detail.from" in tree.search_code("detail.from")   # the counterpart on the base
 
     assert review["approve"] is False
     assert [row["state"] for row in review["panels"]] == [
@@ -578,14 +584,16 @@ def test_review_reads_definitions_beyond_the_old_prefix_limit(monkeypatch, tmp_p
     review = reviewer._default_judge(run, _GREEN_GATE, backend)
     assert review["approve"] is True
     assert len(prompts) == 1
-    assert code in prompts[0]
+    # The base file is not pasted; the reviewer reads it whole with its tools, and
+    # installed dependencies are neither pasted nor readable.
+    tools = review_tools.ReviewTree(str(tree))
+    assert "export const isSubmitted = state => state.scoreSubmitted;" in tools.read_file("web/ui.js")
     assert "dependency cache should not consume review context" not in prompts[0]
+    assert tools.run("read_file", {"path": "node_modules/dependency.js"}).startswith("ERROR")
 
 
-@pytest.mark.parametrize("limit", ["characters", "files"])
-def test_a_review_over_its_budget_still_runs_and_says_it_is_partial(
-        monkeypatch, tmp_path, limit):
-    """November 18: size never stops the review (9 of 60 green builds had abstained)."""
+def test_a_review_is_never_refused_for_its_size(monkeypatch, tmp_path):
+    """November 18: 9 of 60 green builds had abstained on size; size never stops it now."""
     import llm
 
     run, backend, _frontend = _seam_mismatch_run(tmp_path)
@@ -596,22 +604,18 @@ def test_a_review_over_its_budget_still_runs_and_says_it_is_partial(
         prompts.append(prompt)
         return {"text": json.dumps({
             "approve": True, "reasons": [],
-            "work_item_evidence": {backend.work_id: "read what fitted"},
-            "adversarial_assessment": "No defect found in what was shown.",
-            "design_assessment": "No defect found in what was shown.",
+            "work_item_evidence": {backend.work_id: "read what it needed"},
+            "adversarial_assessment": "No defect found.",
+            "design_assessment": "No defect found.",
         })}
 
     monkeypatch.setattr(llm, "invoke", invoke)
-    if limit == "characters":
-        monkeypatch.setattr(reviewer, "_MAX_JUDGE_CONTENT_CHARS", 12)
-    else:
-        monkeypatch.setattr(reviewer, "_MAX_JUDGE_FILES", 1)
-
+    monkeypatch.setattr(reviewer, "_OPENING_FILE_CHARS", 12)
+    monkeypatch.setattr(reviewer, "_MAX_JUDGE_FILES", 1)
     verdict = reviewer.assess(run, _GREEN_GATE, 1, subject=backend)
     assert verdict.review_unavailable is False
     assert len(prompts) == 1
-    assert "this review is PARTIAL" in prompts[0]
-    assert "Never report a definition, rule, or behavior as missing" in prompts[0]
+    assert "read_file with start_line=" in prompts[0]
 
 
 def test_exact_file_limit_does_not_claim_source_was_omitted(monkeypatch, tmp_path):
