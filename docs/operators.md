@@ -64,6 +64,15 @@ inference profiles. With a stack from before November 19 (no boundary), roles ar
 created as before. If a step reports `AccessDenied`, find the action and resource in
 CloudTrail before widening anything.
 
+Grants the full-access policies used to hide, measured on a fresh stack: the CDK
+bootstrap attaches `AWSCloudFormationReadOnlyAccess` to its deploy role;
+`CreateAgentRuntime` and `UpdateAgentRuntime` also authorize
+`CreateAgentRuntimeEndpoint` and `UpdateAgentRuntimeEndpoint` as their caller;
+`agentcore invoke` sends a runtime user ID, so it needs `InvokeAgentRuntimeForUser`;
+a Lambda event invoke config is on the qualified `:$LATEST` ARN; and Transaction
+Search's Application Signals discovery creates a CloudTrail service channel
+(`cloudtrail:CreateServiceLinkedChannel`).
+
 ## The game preset and the event gallery
 
 The game preset asks for one short, complete round around one core mechanic, with
