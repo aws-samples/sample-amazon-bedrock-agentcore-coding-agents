@@ -4,6 +4,13 @@ Description: >-
   an agent in its own AgentCore Runtime session to review the change, and the
   repository owner opening an issue starts the deployed coordinator's team. Deploy it from this folder with aws cloudformation package, then aws
   cloudformation deploy.
+Parameters:
+  # The workshop stack publishes the permissions boundary every role it lets this
+  # terminal create must carry; CloudFormation reads it here at deploy time.
+  RoleBoundaryArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /workshop/iam/role-boundary
+    Description: The workshop's permissions boundary (from the workshop stack)
 Resources:
   # GitHub calls this endpoint for every event of the workshop App: a pull request wakes an
   # agent in its own Runtime session to review the change, and an issue the repository
@@ -18,6 +25,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub agentcore-pr-review-${AWS::Region}
+      PermissionsBoundary: !Ref RoleBoundaryArn
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

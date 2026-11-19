@@ -48,6 +48,22 @@ is separate from the numbered configuration revisions. The coordinator keeps its
 generated CLI/CDK project, verifies the current deployment, and uses the shared
 SDK helper to verify or update the selected platform.
 
+### IAM: one boundary for every role the workshop creates
+
+The workshop stack creates the managed policy `coding-agents-role-boundary-<region>`
+and publishes its ARN as the SSM parameter `/workshop/iam/role-boundary`. The host's
+terminal may create, change, re-trust or delete a workshop role (`agentcore-*`,
+`github-mcp-gateway-role`) only while that boundary is attached, so the deployers attach
+it: `coding-agents/runtime_deploy.py` (every role's `deploy.py`), the GitHub MCP scripts,
+and `coding-agents/pr_review/template.yaml`. A role made before the boundary existed gets
+it before its policy changes. `orchestrator-agent/configure_deploy.py` names the boundary
+in the coordinator CDK app's context, because the CDK bootstrap's execution role (the
+stack's `coding-agents-cdk-execution-<region>`, not AdministratorAccess) may create the
+container build's roles only with it. Bedrock access is limited to the five configured
+inference profiles. With a stack from before November 19 (no boundary), roles are
+created as before. If a step reports `AccessDenied`, find the action and resource in
+CloudTrail before widening anything.
+
 ## The game preset and the event gallery
 
 The game preset asks for one short, complete round around one core mechanic, with

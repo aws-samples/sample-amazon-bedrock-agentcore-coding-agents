@@ -57,9 +57,15 @@ GW_POLICY='{
   ]
 }'
 
+BOUNDARY_ARN="$(workshop_role_boundary 2>/dev/null || true)"
+BOUNDARY_ARGS=()
+[ -n "$BOUNDARY_ARN" ] && BOUNDARY_ARGS=(--permissions-boundary "$BOUNDARY_ARN")
 if aws iam get-role --role-name "$GW_ROLE_NAME" &>/dev/null; then
   echo "Gateway IAM role '${GW_ROLE_NAME}' already exists."
   GW_ROLE_ARN=$(aws iam get-role --role-name "$GW_ROLE_NAME" --query 'Role.Arn' --output text)
+  # A role made before the boundary gets it before its trust or policy changes.
+  [ -z "$BOUNDARY_ARN" ] || aws iam put-role-permissions-boundary \
+    --role-name "$GW_ROLE_NAME" --permissions-boundary "$BOUNDARY_ARN"
   aws iam update-assume-role-policy \
     --role-name "$GW_ROLE_NAME" \
     --policy-document "$GW_TRUST_POLICY"
@@ -68,6 +74,7 @@ else
   GW_ROLE_ARN=$(aws iam create-role \
     --role-name "$GW_ROLE_NAME" \
     --assume-role-policy-document "$GW_TRUST_POLICY" \
+    ${BOUNDARY_ARGS[@]+"${BOUNDARY_ARGS[@]}"} \
     --query 'Role.Arn' --output text)
 
   echo "Waiting for role to propagate..."

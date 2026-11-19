@@ -13,6 +13,16 @@ export GATEWAY_NAME="github-mcp-gateway"
 export ECR_REPO_NAME="github-mcp"
 export IAM_ROLE_NAME="agentcore-github-mcp-role"
 
+# The permissions boundary every workshop role carries. The stack lets this terminal
+# create or change a workshop role only with it attached (an older stack has none).
+workshop_role_boundary() {
+  local arn
+  arn="$(aws ssm get-parameter --name /workshop/iam/role-boundary --region "$AWS_REGION" \
+    --query Parameter.Value --output text 2>/dev/null || true)"
+  [ "$arn" = "None" ] && arn=""
+  printf '%s' "$arn"
+}
+
 # Container
 export APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/app" && pwd)"
 export ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"

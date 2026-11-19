@@ -116,7 +116,7 @@ def _runtime_arns(source_root: Path) -> dict[str, str]:
 
 
 def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
-              region: str, account_id: str) -> dict:
+              region: str, account_id: str, *, boundary: str = "") -> dict:
     data = json.loads(project_file.read_text(encoding="utf-8"))
     runtime = next((r for r in data.get("runtimes", []) if r.get("name") == "orchestrator"), None)
     if runtime is None:
@@ -224,9 +224,40 @@ def configure(project_file: Path, source_root: Path, outputs: dict[str, str],
                 "region": region}]
     targets_file.write_text(json.dumps(targets, indent=2) + "\n", encoding="utf-8")
 
+    # The CDK app's own roles (the container build's function and project) must carry
+    # the workshop's permissions boundary: the bootstrap's execution role may create a
+    # role only with it. CDK applies this context to every role in the app.
+    if boundary:
+        cdk_json = project_file.parent / "cdk" / "cdk.json"
+        if not cdk_json.exists():
+            raise SystemExit(f"{cdk_json} is missing: create the AgentCore project first")
+        apply_role_boundary(cdk_json, boundary)
+
     return {"project": str(project_file), "execution_role": execution_role,
             "target": {"account": account_id, "region": region},
-            "runtimes": arns, "environment": sorted(env)}
+            "runtimes": arns, "environment": sorted(env), "role_boundary": boundary}
+
+
+BOUNDARY_CONTEXT = "@aws-cdk/core:permissionsBoundary"
+
+
+def apply_role_boundary(cdk_json: Path, boundary_arn: str) -> None:
+    """Name the workshop's permissions boundary in the CDK app's context."""
+    data = json.loads(cdk_json.read_text(encoding="utf-8"))
+    data.setdefault("context", {})[BOUNDARY_CONTEXT] = {"name": boundary_arn.rsplit("/", 1)[-1]}
+    cdk_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def role_boundary(region: str) -> str:
+    """The workshop's permissions boundary ARN, or "" on a stack without one."""
+    explicit = os.environ.get("WORKSHOP_ROLE_BOUNDARY", "").strip()
+    if explicit:
+        return explicit
+    try:
+        return boto3.client("ssm", region_name=region).get_parameter(
+            Name="/workshop/iam/role-boundary")["Parameter"]["Value"]
+    except Exception:  # noqa: BLE001 - an older stack has no boundary
+        return ""
 
 
 def main() -> None:
@@ -247,7 +278,7 @@ def main() -> None:
     outputs = {**_derived_role_arns(account_id, region),
                **_stack_outputs(args.stack_name, region)}
     result = configure(args.project.resolve(), args.source_root.resolve(), outputs,
-                       region, account_id)
+                       region, account_id, boundary=role_boundary(region))
     print(json.dumps(result, indent=2))
 
 

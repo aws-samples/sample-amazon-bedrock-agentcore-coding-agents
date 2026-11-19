@@ -165,14 +165,20 @@ EXECUTION_POLICY='{
   ]
 }'
 
+BOUNDARY_ARN="$(workshop_role_boundary 2>/dev/null || true)"
+BOUNDARY_ARGS=()
+[ -n "$BOUNDARY_ARN" ] && BOUNDARY_ARGS=(--permissions-boundary "$BOUNDARY_ARN")
 if aws iam get-role --role-name "$IAM_ROLE_NAME" &>/dev/null; then
   echo "IAM role '${IAM_ROLE_NAME}' already exists."
   ROLE_ARN=$(aws iam get-role --role-name "$IAM_ROLE_NAME" --query 'Role.Arn' --output text)
+  [ -z "$BOUNDARY_ARN" ] || aws iam put-role-permissions-boundary \
+    --role-name "$IAM_ROLE_NAME" --permissions-boundary "$BOUNDARY_ARN"
 else
   echo "Creating IAM role '${IAM_ROLE_NAME}'..."
   ROLE_ARN=$(aws iam create-role \
     --role-name "$IAM_ROLE_NAME" \
     --assume-role-policy-document "$TRUST_POLICY" \
+    ${BOUNDARY_ARGS[@]+"${BOUNDARY_ARGS[@]}"} \
     --query 'Role.Arn' --output text)
 
   echo "Attaching execution policy..."

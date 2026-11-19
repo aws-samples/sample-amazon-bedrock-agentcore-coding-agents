@@ -156,7 +156,8 @@ def create_execution_role() -> str:
     role_name, trust_policy, inline_policy = execution_role_documents()
     return runtime_deploy.create_execution_role(
         session.client("iam"), role_name, trust_policy, inline_policy,
-        agent_name=AGENT_NAME, account_id=ACCOUNT_ID, sleep=time.sleep)
+        agent_name=AGENT_NAME, account_id=ACCOUNT_ID, sleep=time.sleep,
+        region=REGION)
 
 
 def _runtime_environment() -> dict:

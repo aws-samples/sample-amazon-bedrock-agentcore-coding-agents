@@ -970,15 +970,45 @@ def identity_statement() -> dict:
     }
 
 
+ROLE_BOUNDARY_POLICY = "coding-agents-role-boundary-{region}"
+
+
+def role_boundary_arn(iam, *, account_id: str, region: str | None) -> str:
+    """The permissions boundary every workshop role carries, or "" on a stack without one.
+
+    The stack's own build exports WORKSHOP_ROLE_BOUNDARY; a terminal finds the policy by
+    its fixed name (also published as /workshop/iam/role-boundary). The stack lets this
+    role create or change a workshop role only with the boundary attached, so a role
+    made here can never hold more than the boundary allows. A stack from before the
+    boundary has none, and its roles are created as before.
+    """
+    explicit = os.environ.get("WORKSHOP_ROLE_BOUNDARY", "").strip()
+    if explicit:
+        return explicit
+    get_policy = getattr(iam, "get_policy", None)
+    if not region or get_policy is None:
+        return ""
+    arn = f"arn:aws:iam::{account_id}:policy/{ROLE_BOUNDARY_POLICY.format(region=region)}"
+    try:
+        get_policy(PolicyArn=arn)
+    except Exception:  # noqa: BLE001 - no boundary on this stack: create as before
+        return ""
+    return arn
+
+
 def create_execution_role(iam, role_name: str, trust: dict, inline: dict, *,
-                          agent_name: str, account_id: str, sleep=time.sleep) -> str:
+                          agent_name: str, account_id: str, sleep=time.sleep,
+                          region: str | None = None) -> str:
     """Create (or reuse) the role and write its one inline policy; returns its ARN."""
     created_now = True
+    boundary = role_boundary_arn(iam, account_id=account_id, region=region)
+    extra = {"PermissionsBoundary": boundary} if boundary else {}
     try:
         resp = iam.create_role(
             RoleName=role_name,
             AssumeRolePolicyDocument=json.dumps(trust),
             Description=f"Execution role for {agent_name} on AgentCore",
+            **extra,
         )
         role_arn = resp["Role"]["Arn"]
         print(f"\nCreated IAM role: {role_arn}")
@@ -986,6 +1016,11 @@ def create_execution_role(iam, role_name: str, trust: dict, inline: dict, *,
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
         created_now = False
         print(f"\nIAM role exists: {role_arn}")
+        if boundary:
+            # A role made before the boundary gets it before its policy changes.
+            iam.put_role_permissions_boundary(RoleName=role_name, PermissionsBoundary=boundary)
+    if boundary:
+        print(f"Permissions boundary: {boundary}")
 
     iam.put_role_policy(
         RoleName=role_name,

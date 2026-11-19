@@ -473,3 +473,32 @@ def test_invalid_coordinator_platform_fails_before_project_write(monkeypatch, tm
     assert json.loads(project.read_text()) == {
         "runtimes": [{"name": "orchestrator", "build": "Container"}]}
     assert not (project.parent / "aws-targets.json").exists()
+
+
+def test_the_cdk_app_gives_its_roles_the_workshop_boundary(tmp_path):
+    """The bootstrap's execution role creates a role only with the workshop boundary,
+    so the coordinator's CDK app must name it in its context for every role it makes."""
+    project = tmp_path / "agentcore" / "agentcore.json"
+    project.parent.mkdir(parents=True)
+    (project.parent / "cdk").mkdir()
+    cdk_json = project.parent / "cdk" / "cdk.json"
+    cdk_json.write_text(json.dumps({"app": "node dist/bin/cdk.js", "context": {"keep": True}}))
+    configure_deploy.apply_role_boundary(
+        cdk_json, "arn:aws:iam::111122223333:policy/coding-agents-role-boundary-us-west-2")
+    data = json.loads(cdk_json.read_text())
+    assert data["context"]["@aws-cdk/core:permissionsBoundary"] == {
+        "name": "coding-agents-role-boundary-us-west-2"}
+    assert data["context"]["keep"] is True and data["app"] == "node dist/bin/cdk.js"
+
+
+def test_an_older_stack_without_a_boundary_reads_as_none(monkeypatch):
+    monkeypatch.delenv("WORKSHOP_ROLE_BOUNDARY", raising=False)
+
+    class NoParameter:
+        def get_parameter(self, **_kwargs):
+            raise RuntimeError("ParameterNotFound")
+
+    monkeypatch.setattr(configure_deploy.boto3, "client", lambda *_a, **_k: NoParameter())
+    assert configure_deploy.role_boundary("us-west-2") == ""
+    monkeypatch.setenv("WORKSHOP_ROLE_BOUNDARY", "arn:aws:iam::111122223333:policy/b")
+    assert configure_deploy.role_boundary("us-west-2") == "arn:aws:iam::111122223333:policy/b"
