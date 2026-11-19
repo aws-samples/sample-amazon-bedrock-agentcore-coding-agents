@@ -75,7 +75,8 @@ distribution, without code-server login. This trusted wrapper has no scripts
 and embeds `/play/app/` under an enforced opaque-origin CSP sandbox. The
 isolated game copy still runs as a `DynamicUser` on the same host. No additional
 CloudFront distribution is created for publishing.
-Lab 3 republishes `~/game-lab3` on port 8001 at the same public URL.
+A Go Further follow-up republishes its `~/team-game-vN` checkout on port 8001 at the
+same public URL.
 Each copy keeps its own saved results; visitors' scores do not sync back to
 the original project. Republishing copies the project again without importing
 visitors' results. Earlier published copies remain on the host.

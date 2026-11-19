@@ -882,6 +882,45 @@ def _item_labels(run: Any, item: Any) -> list[dict[str, str]]:
     ]
 
 
+# A pull request title names the attendee's idea in their own words. The first line of
+# the admitted task is the preset's canonical sentence (every team build's pull
+# requests were "[backend] Build a compact browser game with a shared leaderboard that
+# a whole room", cut mid-phrase at 72 characters), so the title prefers the request the
+# person typed: the creative direction of a preset request (a new issue's title is its
+# first line), else the request itself. Reporting only: it never changes what is built.
+_PR_TITLE_MAX = 72
+_DIRECTION_RE = re.compile(r"Creative direction:\s*(.+)", re.S)
+_SELECTOR_ONLY_RE = re.compile(r"\s*(?:use\s+)?preset\s*=\s*[\w-]+[.!]?\s*", re.I)
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in str(text or "").splitlines() if line.strip()), "")
+
+
+def pr_title(capability: str, run: Any) -> str:
+    """``[<capability>] <idea>``: the person's words, cut at a word boundary."""
+    options = getattr(run, "options", None) or {}
+    provenance = (options.get("chat_request") or {}) if isinstance(options, dict) else {}
+    request = str(provenance.get("current_user_text") or "")
+    if provenance.get("current_turn_is_approval") or not request.strip():
+        # "go" approved an earlier turn: that turn holds the idea.
+        earlier = [str(row.get("text") or "") for row in provenance.get("request_turns") or []
+                   if isinstance(row, dict)]
+        request = next((text for text in earlier if text.strip()), request)
+    direction = _DIRECTION_RE.search(request)
+    if direction:
+        idea = _first_line(direction.group(1))
+    elif request and not _SELECTOR_ONLY_RE.fullmatch(request):
+        idea = _first_line(request)
+    else:
+        idea = ""
+    idea = " ".join((idea or _first_line(getattr(run, "task", "")) or "Workshop build").split())
+    if len(idea) > _PR_TITLE_MAX:
+        cut = idea[:_PR_TITLE_MAX - 3].rsplit(" ", 1)[0].rstrip(" ,.;:")
+        idea = (cut or idea[:_PR_TITLE_MAX - 3]) + "..."
+    return f"[{capability}] {idea}"
+
+
 def publish_work_item(run: Any, item: Any, body_md: str) -> dict[str, Any]:
     """Create or refresh one role-owned branch and its existing pull request."""
     cfg = _gateway_config()
@@ -943,7 +982,7 @@ def publish_work_item(run: Any, item: Any, body_md: str) -> dict[str, Any]:
                 {
                     "owner": owner,
                     "repo": repo_name,
-                    "title": f"[{item.capability}] {run.task.splitlines()[0][:72]}",
+                    "title": pr_title(item.capability, run),
                     "head": item.branch,
                     "base": item.base_branch,
                     "body": body_md,
@@ -1148,6 +1187,15 @@ _PLAY_PORTS = {"game": 8000, "game-lab3": 8001}
 _GALLERY_PORTS = {"team-game": 8000, "team-game-v2": 8001}
 
 
+def _gallery_port(name: str) -> int | None:
+    """The publish port for a team-game checkout folder, else None. Every follow-up
+    (Improve Your Game's v2, a later Chat build's v3) replaces the published copy on
+    the port Improve Your Game step 5 uses."""
+    if name in _GALLERY_PORTS:
+        return _GALLERY_PORTS[name]
+    return _GALLERY_PORTS["team-game-v2"] if re.fullmatch(r"team-game-v\d+", name) else None
+
+
 def _print_play_hint(destination: str) -> None:
     """After a checkout, name the finished URL to open instead of asking for one.
 
@@ -1164,13 +1212,14 @@ def _print_play_hint(destination: str) -> None:
         if home and destination.startswith(home.rstrip("/") + "/"):
             shown = "~/" + destination[len(home.rstrip("/")) + 1:]
         name = os.path.basename(destination.rstrip("/"))
-        if name in _GALLERY_PORTS:
+        gallery_port = _gallery_port(name)
+        if gallery_port:
             print(f"\nNext: read {shown}/README.md and run only its setup commands. "
                   "If none are required, skip installation. Then publish with its "
                   "start command after --:")
             print("  cd ~/sample-amazon-bedrock-agentcore-coding-agents && python3 "
                   f"orchestrator/gallery.py publish --project {shown} --port "
-                  f"{_GALLERY_PORTS[name]} -- npm start")
+                  f"{gallery_port} -- npm start")
             return
         port = _PLAY_PORTS.get(name)
         if not port:

@@ -119,6 +119,30 @@ def test_the_output_tail_rolls_instead_of_freezing():
     assert activity["opencode"][-1]["text"] == "line 499"
 
 
+def test_a_redrawn_progress_bar_keeps_one_line_in_the_window():
+    """November 18 walk: every Kiro check turn opened with seven or more "Loading model"
+    frames, most of the twelve-line window. One bar keeps its newest frame, once, and
+    the real work around it stays."""
+    run = _dispatched_run()
+    run.add_output("kiro", "Let me read the request.")
+    for done in ("22.82", "47.64", "79.38"):
+        run.add_output("kiro", f"Loading model \u2824 [00:00:07] [#######>------------] "
+                               f"{done} MiB/79.46 MiB (5.4 MiB/s, 3s)")
+    run.add_output("kiro", "[tool] Running: ls -la")
+    run.add_output("kiro", "Downloading Chromium [=====>      ] 10 MiB/100 MiB")
+    run.add_output("kiro", "Downloading Chromium [===========>] 100 MiB/100 MiB")
+    texts = [e["text"] for e in engine._persistable_activity(run)["kiro"]]
+    assert texts[0] == "Let me read the request."
+    assert sum("Loading model" in t for t in texts) == 1 and "79.38 MiB" in texts[1]
+    assert texts[2] == "[tool] Running: ls -la"
+    assert texts[3:] == ["Downloading Chromium [===========>] 100 MiB/100 MiB"]
+    # Ordinary bracketed text and sizes are never mistaken for a bar.
+    run.add_output("kiro", "array[10] holds 5 MiB")
+    run.add_output("kiro", "array[10] holds 6 MiB")
+    assert [e["text"] for e in engine._persistable_activity(run)["kiro"]][-2:] == [
+        "array[10] holds 5 MiB", "array[10] holds 6 MiB"]
+
+
 def test_the_echoed_dispatch_command_is_not_mistaken_for_work():
     run = _dispatched_run()
     run.add_output("claude-code", "x" * (engine._OUTPUT_LINE_MAX + 1))
@@ -525,6 +549,30 @@ def test_a_second_team_build_never_replaces_the_first_team_checkout(monkeypatch,
     flat = " ".join(out.split("what to do now", 1)[1].split())
     assert "checkout ~/team-game-abcdef" in flat and "Share What You Built" in flat
     assert "earlier games run" not in flat
+
+
+def test_a_follow_up_after_the_team_game_checks_out_to_the_next_version(
+        monkeypatch, tmp_path):
+    """November 18 walk: an ./ask.sh follow-up's watcher said ~/game while Improve
+    Your Game checks it out to ~/team-game-v2, and a later Agent Studio Chat build to
+    ~/team-game-v3. Once ~/team-game holds the team's game, every later build is such
+    a follow-up, and the watcher names the first version that holds no app."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "team-game").mkdir()
+    (tmp_path / "team-game" / "server.js").write_text("// the team's game")
+    merged = [{"work_id": "w1", "pr_url": _PR, "state": "merged"}]
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, role_prs=merged)
+    block = out.split("what to do now", 1)[1]
+    flat = " ".join(block.split())
+    assert "1. python3 orchestrator/github.py checkout ~/team-game-v2" in block
+    assert "Improve Your Game step 5" in flat and "already holds" not in flat
+    (tmp_path / "team-game-v2").mkdir()
+    (tmp_path / "team-game-v2" / "server.js").write_text("// the first follow-up")
+    with tempfile.TemporaryDirectory() as tmp:
+        out, _rc = _terminal(tmp, role_prs=merged, submitted_by="attendee@workshop.aws")
+    assert "checkout ~/team-game-v3" in out.split("what to do now", 1)[1]
+    assert run_advice.natural_folder({"preset": "team-game"}, str(tmp_path)) == "team-game"
 
 
 def _blocked(error):

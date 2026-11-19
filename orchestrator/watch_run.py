@@ -166,6 +166,10 @@ def _home() -> str:
 
 def _start_hint(target: str) -> str:
     port = run_advice.port_for(target)
+    if re.fullmatch(r"~/team-game-v\d+", target):
+        return ("Its README names its start command. Record the current publication, "
+                "then publish this folder with that command after --, as Improve Your "
+                "Game step 5 shows.")
     if target == "~/team-game" or target.startswith("~/team-game-"):
         return ("Its README names its one start command. Publish it to the event gallery "
                 "with that command after --, as Share What You Built shows.")
@@ -181,7 +185,7 @@ def _start_hint(target: str) -> str:
 def _checkout_steps(rec: dict, para, lead: str) -> list[str]:
     """The checkout command for this run's lab, or why the natural folder is taken."""
     target, taken = run_advice.checkout_target(rec, _home())
-    natural = "~/" + run_advice.natural_folder(rec)
+    natural = "~/" + run_advice.natural_folder(rec, _home())
     lines: list[str] = []
     command = f"python3 orchestrator/github.py checkout {target}"
     if taken:

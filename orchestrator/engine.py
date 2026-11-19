@@ -248,6 +248,21 @@ _OUTPUT_LINE_MAX = 1000
 # A DIGIT before the final letter is required, so ordinary bracketed prose (`[abc]`,
 # `array[10]`) is never eaten.
 _PTY_RESIDUE_RE = re.compile(r"\[\??[\d;]*\d[A-Za-z]")
+# A CLI's redrawn progress bar arrives as one line per frame: on November 18 every Kiro
+# check turn opened with seven or more "Loading model [####>---] 22.8 MiB/79.5 MiB"
+# lines, most of the twelve-line window. A frame of the same bar REPLACES the previous
+# frame, so the window keeps the bar's latest state once and the role's real work.
+_PROGRESS_RE = re.compile(r"\[[#=>\-.\s]{8,}\]|\d[\d.]*\s*[KMGT]i?B\s*/\s*\d[\d.]*\s*[KMGT]i?B")
+_PROGRESS_LABEL_RE = re.compile(r"^[^\[\d]*")
+
+
+def _progress_label(line: str) -> str | None:
+    """The bar's label ("Loading model") when ``line`` is a progress frame, else None."""
+    if not _PROGRESS_RE.search(line):
+        return None
+    return " ".join(re.sub(r"[^\w\s]", " ", _PROGRESS_LABEL_RE.match(line).group(0)).split())
+
+
 # A line worth showing has a letter or a digit in it. Prompt furniture (`>`, box-drawing,
 # spinner frames) does not, and a TUI emits a great deal of it.
 _WORDLIKE_RE = re.compile(r"[A-Za-z0-9]")
@@ -891,11 +906,15 @@ class Run:
             return
         if not _WORDLIKE_RE.search(line):
             return
+        label = _progress_label(line)
         with self._lock:
             tail = self.role_output.get(agent)
             if tail is None:
                 tail = collections.deque(maxlen=_OUTPUT_TAIL_PER_ROLE)
                 self.role_output[agent] = tail
+            if label is not None and tail and _progress_label(tail[-1]) == label:
+                tail[-1] = line
+                return
             tail.append(line)
 
     def transition(self, to_status: str, *expected: str,

@@ -289,6 +289,47 @@ def test_the_team_game_checkout_points_at_the_gallery_as_part_4_does(
     assert "claude" not in out.split("Next:", 1)[1]
 
 
+def test_every_follow_up_checkout_points_at_the_gallery_on_the_follow_up_port(
+        monkeypatch, tmp_path, capsys):
+    """Improve Your Game publishes ~/team-game-v2 on port 8001, and Use Agent Studio
+    says to repeat it with ~/team-game-v3: the hint for every version is that page's."""
+    _checkout_fixture(monkeypatch, tmp_path)
+    for name in ("team-game-v2", "team-game-v3"):
+        assert github._main(["checkout", str(tmp_path / name)]) == 0
+        out = capsys.readouterr().out
+        assert f"gallery.py publish --project ~/{name} --port 8001 -- npm start" in out, out
+    assert github._gallery_port("team-game-abcdef") is None
+
+
+class _TitledRun:
+    task = ("Build a compact browser game with a shared leaderboard that a whole room "
+            "can play together.")
+
+    def __init__(self, provenance=None):
+        self.options = {"chat_request": provenance} if provenance is not None else {}
+
+
+def test_a_pull_request_title_names_the_attendees_idea():
+    """November 18 walk: every team pull request was titled "[backend] Build a compact
+    browser game with a shared leaderboard that a whole room": the preset's sentence,
+    cut mid-phrase. The title is the person's words, cut at a word boundary."""
+    issue = _TitledRun({"current_user_text": "Use preset=team-game. Creative direction: "
+                                             "Create an original arcade game\n\nChoose its theme."})
+    assert github.pr_title("backend", issue) == "[backend] Create an original arcade game"
+    note = _TitledRun({"current_user_text": "Improve our existing game. How to reproduce: "
+                                            "Start a round, press P. What happened: Nothing."})
+    title = github.pr_title("frontend", note)
+    assert title == "[frontend] Improve our existing game. How to reproduce: Start a round, press P..."
+    assert len(title) - len("[frontend] ") <= github._PR_TITLE_MAX
+    approved = _TitledRun({"current_user_text": "go", "current_turn_is_approval": True,
+                           "request_turns": [{"turn": 1, "text": "Build a word-count tool"}]})
+    assert github.pr_title("backend", approved) == "[backend] Build a word-count tool"
+    # A bare preset selector and a run with no recorded request fall back to the task.
+    for run in (_TitledRun({"current_user_text": "Use preset=team-game"}), _TitledRun()):
+        assert github.pr_title("backend", run) == (
+            "[backend] Build a compact browser game with a shared leaderboard that a whole...")
+
+
 def test_the_play_hint_never_changes_the_checkout_result(monkeypatch, tmp_path, capsys):
     """Advisory only: an unresolvable origin still names the path, and a hint that
     raises is swallowed. The checkout itself and its exit code are unchanged."""

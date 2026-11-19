@@ -86,10 +86,29 @@ def is_team_build(rec: dict) -> bool:
     return str(rec.get("preset") or "") == "team-game"
 
 
-def natural_folder(rec: dict) -> str:
+def follow_up_folder(home: str) -> str | None:
+    """The next ``team-game-vN`` for a change to the team's game, or None before one.
+
+    Go Further checks each follow-up out beside the earlier source: Improve Your Game
+    uses ``~/team-game-v2``, a later Agent Studio Chat build ``~/team-game-v3``. Once
+    ``~/team-game`` holds the team's game, every later build is such a follow-up, and
+    its folder is the first version that holds no app yet."""
+    if not holds_app(os.path.join(home, "team-game"))[0]:
+        return None
+    for n in range(2, 100):
+        name = f"team-game-v{n}"
+        if not holds_app(os.path.join(home, name))[0]:
+            return name
+    return None
+
+
+def natural_folder(rec: dict, home: str | None = None) -> str:
     """The folder the page names for this run's checkout, without ``~/``."""
     if is_team_build(rec):
         return "team-game"
+    follow_up = follow_up_folder(home) if home else None
+    if follow_up:
+        return follow_up
     return "game-lab3" if is_chat_build(rec) else "game"
 
 
@@ -115,14 +134,15 @@ def checkout_target(rec: dict, home: str) -> tuple[str, bool]:
     """(``~/<dir>``, already) for this run's checkout.
 
     The folder follows the kind of build: ``~/team-game`` for Lab 3's team
-    build, ``~/game-lab3`` for an Agent Studio Chat build, and ``~/game`` for any
-    other single-builder build.
+    build, the next ``~/team-game-vN`` for a later change to that game (Go Further),
+    and before a team game ``~/game-lab3`` for an Agent Studio Chat build and
+    ``~/game`` for any other single-builder build.
     ``github.py checkout`` REPLACES its destination, so a folder that already holds
     an app is never suggested: the caller says it is already checked out and offers
     a separate, unused folder.
     A folder holding only the repository's starter files is safe to replace.
     """
-    natural = natural_folder(rec)
+    natural = natural_folder(rec, home)
     has, _ = holds_app(os.path.join(home, natural))
     if not has:
         return f"~/{natural}", False

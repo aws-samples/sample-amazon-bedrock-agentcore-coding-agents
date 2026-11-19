@@ -96,8 +96,9 @@ JavaScript `fetch`; APIs support CORS preflight. The sandbox includes
 Popups, new tabs, and browser dialogs are unavailable. Existing games need a
 compatibility check and real play/save/reload verification through the public link.
 
-After the Lab 3 change is checked, reviewed, merged, and played, publish from
-`~/game-lab3` with `--port 8001` and that version's README command. The public
+After a Go Further change is checked, reviewed, merged, and played, publish from
+its `~/team-game-vN` checkout with `--port 8001` and that version's README command.
+The public
 GameUrl stays the same. `python3 orchestrator/gallery.py unpublish` stops the
 copy and removes the listing. If an own-account deployment has no central event
 configuration, supply `--gallery` or skip the room-sharing step. The legacy
