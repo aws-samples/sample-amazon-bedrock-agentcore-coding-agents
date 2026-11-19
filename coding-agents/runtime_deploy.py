@@ -481,6 +481,7 @@ _POLICY_WHY = {
     "ECRPull": "pull its own container image",
     "S3Files": "mount and write the shared S3 Files workspace",
     "EFS": "use the NFS client the mount is built on",
+    "MountHelperLogs": "let the mount helper write its own log group",
     "ReadCoordinatorArchives": "read source archives owned by the coordinator",
     "CreateOwnArchives": "create its own immutable results outside the shared mount",
     "AgentCoreGateway": "call the GitHub tools behind the Gateway",
@@ -923,6 +924,22 @@ def storage_statements(s3files_resources: list, *, region: str, account_id: str,
             "Resource": [
                 f"arn:aws:elasticfilesystem:{region}:{account_id}:file-system/*",
                 f"arn:aws:elasticfilesystem:{region}:{account_id}:access-point/*",
+            ],
+        },
+        {
+            # The mount helper in the microVM (efs-proxy) writes its own log group as
+            # this role; without this every session left AccessDenied in CloudTrail.
+            "Sid": "MountHelperLogs",
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+                "logs:DescribeLogStreams",
+            ],
+            "Resource": [
+                f"arn:aws:logs:{region}:{account_id}:log-group:/aws/efs/utils",
+                f"arn:aws:logs:{region}:{account_id}:log-group:/aws/efs/utils:*",
             ],
         },
         *team_exchange_policy.statements(bucket, role_id),

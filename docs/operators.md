@@ -71,7 +71,13 @@ bootstrap attaches `AWSCloudFormationReadOnlyAccess` to its deploy role;
 `agentcore invoke` sends a runtime user ID, so it needs `InvokeAgentRuntimeForUser`;
 a Lambda event invoke config is on the qualified `:$LATEST` ARN; and Transaction
 Search's Application Signals discovery creates a CloudTrail service channel
-(`cloudtrail:CreateServiceLinkedChannel`).
+(`cloudtrail:CreateServiceLinkedChannel`). At an event: the first API key credential
+provider creates `token-vault/default` as its caller, which needs
+`bedrock-agentcore:CreateTokenVault` (not in the Service Authorization Reference), and
+each Runtime session's S3 Files mount helper writes the `/aws/efs/utils` log group as
+the Runtime role (`MountHelperLogs` in `runtime_deploy.storage_statements`).
+`logs:PutResourcePolicy`, which AgentCore attempts as each Runtime role, stays denied: it
+is permissions management and nothing depends on it.
 
 ## The game preset and the event gallery
 

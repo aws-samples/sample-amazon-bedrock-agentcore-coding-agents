@@ -109,3 +109,17 @@ def test_the_endpoint_and_github_roles_carry_the_boundary():
         assert "put-role-permissions-boundary" in text, script
     assert json.dumps("/workshop/iam/role-boundary")[1:-1] in (
         ROOT / "coding-agents" / "gateway_mcp" / "config.sh").read_text()
+
+
+def test_the_mount_helper_may_write_only_its_own_log_group():
+    """Every session's S3 Files mount helper (efs-proxy) creates /aws/efs/utils as the
+    Runtime role; without a grant each session left AccessDenied in CloudTrail."""
+    statements = runtime_deploy.storage_statements(
+        [f"arn:aws:s3files:us-west-2:{ACCOUNT}:file-system/fs-1"], region="us-west-2",
+        account_id=ACCOUNT, bucket="coding-agents-bucket", role_id="codex")
+    mount = next(s for s in statements if s.get("Sid") == "MountHelperLogs")
+    assert "logs:CreateLogGroup" in mount["Action"]
+    assert mount["Resource"] == [
+        f"arn:aws:logs:us-west-2:{ACCOUNT}:log-group:/aws/efs/utils",
+        f"arn:aws:logs:us-west-2:{ACCOUNT}:log-group:/aws/efs/utils:*",
+    ]
