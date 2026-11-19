@@ -114,3 +114,23 @@ def test_reconnects_are_bounded(monkeypatch):
         _, opened, _ = _drive(monkeypatch, connections)
     assert sum(len(c.sent) for c in connections) == 1
     assert sum(1 for c in connections if not c.frames) == 1 + runtime_exec.SHELL_RECONNECTS
+
+
+def test_a_command_over_the_frame_limit_is_typed_in_pieces_that_fit(monkeypatch):
+    """A 65 KB check in a repair prompt once made a single 70 KB STDIN frame, which the
+    SDK refuses and the shell protocol would close on (November 19)."""
+    only = Connection([_out("done\n"), _status(0)])
+    opened = []
+
+    def open_shell(**kwargs):
+        opened.append(kwargs["shell_id"])
+        return only
+
+    monkeypatch.setattr(runtime_exec, "_client",
+                        lambda _region: SimpleNamespace(open_shell=open_shell))
+    big = "printf %s " + "y" * 70_000
+    result = asyncio.run(runtime_exec._drive_shell(ARN, big, "us-west-2", None, 10, "s" * 40))
+    assert result["exit"] == 0
+    assert len(only.sent) > 1
+    assert all(len(piece.encode()) < 64 * 1024 for piece in only.sent)
+    assert "".join(only.sent) == runtime_exec.typeable(big)

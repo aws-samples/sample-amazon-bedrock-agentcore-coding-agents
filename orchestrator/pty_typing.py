@@ -22,6 +22,31 @@ SAFE_LINE = 3000   # well under the 4095-character canonical limit
 CHUNK = 1000       # also under macOS's 1024, so local PTY tests exercise the same path
 
 
+# The AgentCore shell protocol closes the connection on a STDIN frame of 64 KB or
+# more; the SDK refuses one ("Split large pastes into multiple encode_stdin() calls").
+FRAME_BYTES = 60 * 1024
+
+
+def frames(keystrokes: str) -> list[str]:
+    """``keystrokes`` as whole lines, in pieces each under the shell's frame limit.
+
+    A repair prompt carries the check's own source, which reached 65 KB on November 19
+    and closed the round's shell before the builder saw it. The PTY receives the pieces
+    in order, so typing them one after another is the same as typing them at once.
+    """
+    pieces, current, size = [], [], 0
+    for line in keystrokes.splitlines(keepends=True):
+        width = len(line.encode("utf-8"))
+        if current and size + width > FRAME_BYTES:
+            pieces.append("".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += width
+    if current:
+        pieces.append("".join(current))
+    return pieces
+
+
 def typeable(command: str) -> str:
     """The keystrokes to send for ``command``, each line short enough to arrive whole."""
     body = command.rstrip("\n")

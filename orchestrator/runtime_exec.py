@@ -39,7 +39,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import roles as _roles
-from pty_typing import typeable
+from pty_typing import frames, typeable
 
 # Strip the VT/ANSI noise the PTY interleaves with output so sentinel lines
 # compare cleanly. In order: OSC (ESC ] … BEL/ST, set-title etc.); CSI (ESC [,
@@ -749,8 +749,9 @@ async def _drive_shell_connected(runtime_arn: str, command: str, region: str,
             if not execution.get("attempted"):
                 # A failed send can be ambiguous: bytes may have reached the Runtime.
                 execution["attempted"] = True
-                await asyncio.wait_for(shell.send(typeable(command)),
-                                       timeout=max(1.0, deadline - time.monotonic()))
+                for piece in frames(typeable(command)):
+                    await asyncio.wait_for(shell.send(piece),
+                                           timeout=max(1.0, deadline - time.monotonic()))
             elif getattr(shell, "reconnected", False) is not True:
                 # A new PTY, not the one that ran the command: its result is unknown.
                 break

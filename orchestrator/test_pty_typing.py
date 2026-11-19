@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from pty_typing import CHUNK, SAFE_LINE, typeable
+from pty_typing import CHUNK, FRAME_BYTES, SAFE_LINE, frames, typeable
 
 
 def _long_command(n: int = 9000) -> str:
@@ -116,3 +116,19 @@ def test_negative_control_the_raw_long_line_does_not_survive():
     out, code = _type_into_pty(_long_command() + "\n", "DONE-MARK", timeout_s=8.0)
     assert "LEN=9000" not in out
     assert code != 7
+
+
+def test_a_long_command_is_sent_in_frames_under_the_shell_limit():
+    """The AgentCore shell refuses a STDIN frame of 64 KB or more; a repair prompt with
+    a 65 KB check closed its round before the builder saw it (November 19)."""
+    command = "printf %s " + "x" * 70_000
+    keystrokes = typeable(command)
+    pieces = frames(keystrokes)
+    assert len(pieces) > 1
+    assert "".join(pieces) == keystrokes
+    assert all(len(piece.encode()) <= FRAME_BYTES < 64 * 1024 for piece in pieces)
+    assert all(piece.endswith("\n") for piece in pieces), "every frame ends at a whole line"
+
+
+def test_a_short_command_is_one_frame():
+    assert frames(typeable("echo hi")) == ["echo hi\n"]
